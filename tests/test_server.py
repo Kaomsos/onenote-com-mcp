@@ -139,6 +139,26 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
     assert "merge_sections" not in names
 
 
+def test_page_content_digest_ignores_page_clock_and_hierarchy_metadata():
+    first = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p" name="Old" lastModifiedTime="1"><one:Outline objectID="o" /></one:Page>"""
+    second = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p" name="New" lastModifiedTime="2"><one:Outline objectID="o" /></one:Page>"""
+
+    assert server._page_content_digest(first) == server._page_content_digest(second)
+
+
+def test_list_hierarchy_children_returns_only_direct_typed_children(monkeypatch):
+    xml = """<one:Notebooks xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">
+      <one:Notebook name="NB" ID="n"><one:SectionGroup name="G" ID="g"><one:Section name="S" ID="s" /></one:SectionGroup></one:Notebook>
+    </one:Notebooks>"""
+    monkeypatch.setattr(server, "_hierarchy_xml", lambda start_id="", scope="pages": xml)
+
+    result = asyncio.run(server.list_hierarchy("n", scope="children"))
+
+    assert result["ok"] is True
+    assert [item["id"] for item in result["items"]] == ["g"]
+    assert result["items"][0]["resource_type"] == "section_group"
+
+
 @pytest.mark.write_contract
 def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path):
     captured = {}

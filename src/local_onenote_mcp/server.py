@@ -386,6 +386,16 @@ def _page_xml(page_id: str, page_info: str = "basic") -> str:
     )["xml"]
 
 
+def _page_content_digest(xml: str) -> str:
+    """Hash Page content while ignoring hierarchy/clock metadata that may change on move."""
+
+    root = ET.fromstring(xml)
+    for attribute in ("ID", "name", "dateTime", "lastModifiedTime", "pageLevel", "isCurrentlyViewed"):
+        root.attrib.pop(attribute, None)
+    canonical = ET.tostring(root, encoding="utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def _local_text_search(
     start_id: str,
     query: str,
@@ -546,6 +556,7 @@ async def list_hierarchy(
         items = parse_domain_hierarchy(xml)
         if not include_recycle_bin:
             items = [item for item in items if not item["is_in_recycle_bin"]]
+        root = None
         if start_identifier:
             legacy = resolve_item(parse_hierarchy(xml), start_identifier)
             root = next(item for item in items if item["id"] == legacy["id"])
@@ -559,9 +570,15 @@ async def list_hierarchy(
         }
         if scope not in scope_types:
             _enum("scope", scope, HIERARCHY_SCOPES)
-        if scope == "self" and items:
-            items = items[:1]
-        elif scope != "children":
+        if scope == "self":
+            items = [root] if root else []
+        elif scope == "children":
+            items = [
+                item
+                for item in items
+                if item["parent_id"] == (root["id"] if root else None)
+            ]
+        else:
             items = [item for item in items if item["resource_type"] in scope_types[scope]]
         data = _ok(items=items, count=len(items))
         if include_xml:
@@ -1294,7 +1311,7 @@ async def move_section(
             if item["resource_type"] == "page" and item["section_id"] == section_id
         ]
         before_pages.sort(key=lambda item: item["order"])
-        before_hashes = {item["id"]: hashlib.sha256(_page_xml(item["id"], "all").encode("utf-8")).hexdigest() for item in before_pages}
+        before_hashes = {item["id"]: _page_content_digest(_page_xml(item["id"], "all")) for item in before_pages}
         _bridge("update_hierarchy", xml=_section_move_xml(section, destination), schema=XML_SCHEMA_2013)
         moved = _wait_domain_item(
             section_id,
@@ -1311,7 +1328,7 @@ async def move_section(
         after_pages.sort(key=lambda item: item["order"])
         if [item["id"] for item in after_pages] != [item["id"] for item in before_pages]:
             raise RuntimeError("Section moved, but Page identity/order verification failed.")
-        after_hashes = {item["id"]: hashlib.sha256(_page_xml(item["id"], "all").encode("utf-8")).hexdigest() for item in after_pages}
+        after_hashes = {item["id"]: _page_content_digest(_page_xml(item["id"], "all")) for item in after_pages}
         if after_hashes != before_hashes:
             raise RuntimeError("Section moved, but Page content verification failed.")
         return _ok(
@@ -1344,10 +1361,10 @@ async def append_to_page(
             expected_section_id=expected_section_id,
             expected_modified=expected_modified,
         )
-        before_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
+        before_hash = _page_content_digest(_page_xml(page_id, "all"))
         xml = build_page_update_xml(page_id, content=content, content_format=content_format, x=x, y=y)
         _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        after_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
+        after_hash = _page_content_digest(_page_xml(page_id, "all"))
         if after_hash == before_hash:
             raise RuntimeError("Append returned success, but Page content did not change during read-back verification.")
         after = _wait_domain_item(page_id, "page")
@@ -1379,7 +1396,7 @@ async def add_image_to_page(
             expected_section_id=expected_section_id,
             expected_modified=expected_modified,
         )
-        before_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
+        before_hash = _page_content_digest(_page_xml(page_id, "all"))
         path = Path(image_path)
         if not path.is_file():
             raise ValueError(f"Image file not found: {image_path}")
@@ -1398,7 +1415,7 @@ async def add_image_to_page(
             height=resolved_height,
         )
         _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        after_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
+        after_hash = _page_content_digest(_page_xml(page_id, "all"))
         if after_hash == before_hash:
             raise RuntimeError("Image update returned success, but Page content did not change during read-back verification.")
         item = _wait_domain_item(page_id, "page")
@@ -1431,7 +1448,7 @@ async def replace_page_body(
             expected_modified=expected_modified,
         )
         page_xml = _page_xml(page_id, "all")
-        before_hash = hashlib.sha256(page_xml.encode("utf-8")).hexdigest()
+        before_hash = _page_content_digest(page_xml)
         objects = collect_page_objects(page_xml)
         for obj in objects:
             if obj.get("type") not in REPLACE_BODY_OBJECT_TYPES:
@@ -1443,7 +1460,7 @@ async def replace_page_body(
             deleted.append(object_id)
         xml = build_page_update_xml(page_id, title=title, content=content, content_format=content_format)
         _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        after_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
+        after_hash = _page_content_digest(_page_xml(page_id, "all"))
         if after_hash == before_hash:
             raise RuntimeError("Rebuild returned success, but Page content did not change during read-back verification.")
         item = _wait_domain_item(page_id, "page")
