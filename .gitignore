@@ -8,3 +8,7 @@ dist/
 build/
 tmp/
 *.log
+
+# Local agent preferences and isolated validation artifacts
+.claude/settings.local.json
+.codex-tmp/
