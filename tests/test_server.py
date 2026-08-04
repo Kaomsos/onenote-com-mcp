@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from local_onenote_mcp import server
 
 
@@ -27,14 +29,16 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
 
 
 def test_resolve_identifier_returns_single_item(monkeypatch):
-    expected = {"type": "section", "id": "section-id", "path": "NB/Sec"}
+    resolved = {"type": "section", "id": "section-id", "path": "NB/Sec"}
+    expected = {"resource_type": "section", "id": "section-id", "path": "NB/Sec", "name": "Sec"}
 
     def fake_resolve_item(identifier, item_type=None):
         assert identifier == "NB/Sec"
         assert item_type == "section"
-        return expected
+        return resolved
 
     monkeypatch.setattr(server, "_resolve_item", fake_resolve_item)
+    monkeypatch.setattr(server, "_domain_item", lambda object_id, item_type=None: expected)
 
     result = asyncio.run(server.resolve_identifier("NB/Sec", "section"))
 
@@ -66,7 +70,7 @@ def test_without_recycle_bin_removes_container_and_children():
     ]
 
 
-def test_search_pages_include_unindexed_uses_local_scan(monkeypatch):
+def test_search_pages_uses_explicit_local_scan_without_index_fallback(monkeypatch):
     bridge_called = False
 
     def fake_bridge(*args, **kwargs):
@@ -74,22 +78,29 @@ def test_search_pages_include_unindexed_uses_local_scan(monkeypatch):
         bridge_called = True
         raise AssertionError("OneNote index should not be used for include_unindexed=True")
 
-    def fake_local_text_search(start_id, query, max_results, include_recycle_bin):
-        assert start_id == ""
+    def fake_local_text_search(start_id, query, max_results, include_recycle_bin, budget=None, include_snippets=True):
+        assert start_id == "section-id"
         assert query == "needle"
         assert max_results == 3
         assert include_recycle_bin is False
-        return [{"type": "page", "id": "page-id", "name": "Found", "path": "NB/Sec/Found"}]
+        assert include_snippets is False
+        return ([{"type": "page", "id": "page-id", "name": "Found", "path": "NB/Sec/Found"}], {"scanned_pages": 1})
 
     monkeypatch.setattr(server, "_bridge", fake_bridge)
     monkeypatch.setattr(server, "_local_text_search", fake_local_text_search)
+    monkeypatch.setattr(
+        server,
+        "_domain_item",
+        lambda object_id, item_type=None: {"resource_type": "section", "id": "section-id", "name": "Sec"},
+    )
 
     result = asyncio.run(
         server.search_pages(
             "needle",
+            scope_type="section",
+            scope_id="section-id",
             max_results=3,
             include_snippets=False,
-            include_unindexed=True,
         )
     )
 
@@ -99,13 +110,38 @@ def test_search_pages_include_unindexed_uses_local_scan(monkeypatch):
     assert bridge_called is False
 
 
+def test_local_search_rejects_candidate_overflow_before_page_reads(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_hierarchy_items",
+        lambda start_id, scope: [
+            {"type": "page", "id": "p1", "name": "One", "path": "NB/S/One"},
+            {"type": "page", "id": "p2", "name": "Two", "path": "NB/S/Two"},
+        ],
+    )
+    monkeypatch.setattr(
+        server,
+        "_page_xml",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Page content must not be read")),
+    )
+    budget = server.SearchBudget(max_pages=1, max_page_chars=100, max_total_chars=100, max_seconds=5, snippet_chars=40)
+
+    with pytest.raises(ValueError, match="candidate pages"):
+        server._local_text_search("section-id", "needle", 10, False, budget)
+
+
+def test_default_tool_profile_excludes_generic_raw_mutations():
+    names = set(server.mcp._tool_manager._tools)
+
+    assert "update_page_xml" not in names
+    assert "update_hierarchy_xml" not in names
+    assert "delete_hierarchy" not in names
+    assert "merge_sections" not in names
+
+
+@pytest.mark.write_contract
 def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path):
     captured = {}
-
-    def fake_resolve_id(identifier, item_type=None):
-        assert identifier == "page-id"
-        assert item_type is None
-        return "resolved-page-id"
 
     def fake_bridge(operation, **params):
         captured["operation"] = operation
@@ -113,7 +149,11 @@ def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path
         return {"path": params["target_path"]}
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(server, "_resolve_id", fake_resolve_id)
+    monkeypatch.setattr(
+        server,
+        "_domain_item",
+        lambda object_id, item_type=None: {"resource_type": "page", "id": object_id, "title": "Page"},
+    )
     monkeypatch.setattr(server, "_bridge", fake_bridge)
 
     result = asyncio.run(
@@ -158,19 +198,17 @@ def test_open_hierarchy_resolves_existing_friendly_path_without_bridge(monkeypat
     assert bridge_called is False
 
 
+@pytest.mark.write_contract
 def test_create_section_returns_refreshed_current_section_id(monkeypatch):
-    parent = {"type": "section_group", "id": "group-id", "path": "Notebook/Group", "name": "Group"}
-    refreshed = {"type": "section", "id": "current-section-id", "path": "Notebook/Group/New Sec", "name": "New Sec"}
+    parent = {"resource_type": "section_group", "id": "group-id", "path": "Notebook/Group", "name": "Group"}
+    refreshed = {"resource_type": "section", "id": "current-section-id", "path": "Notebook/Group/New Sec", "name": "New Sec"}
 
-    monkeypatch.setattr(server, "_resolve_item", lambda identifier, item_type=None: parent)
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server, "_domain_item", lambda object_id, item_type=None: parent)
     monkeypatch.setattr(server, "_bridge", lambda operation, **params: {"object_id": "stale-section-id"})
-    monkeypatch.setattr(
-        server,
-        "_refresh_created_item",
-        lambda **kwargs: refreshed,
-    )
+    monkeypatch.setattr(server, "_wait_created_domain_item", lambda *args, **kwargs: refreshed)
 
-    result = asyncio.run(server.create_section("Notebook/Group", "New Sec"))
+    result = asyncio.run(server.create_section("group-id", "New Sec"))
 
     assert result["ok"] is True
     assert result["section_id"] == "current-section-id"
@@ -178,6 +216,7 @@ def test_create_section_returns_refreshed_current_section_id(monkeypatch):
     assert result["path"] == "Notebook/Group/New Sec"
 
 
+@pytest.mark.write_contract
 def test_delete_page_content_rejects_non_deletable_child_with_parent_suggestion(monkeypatch):
     page_xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
     <one:Outline objectID="outline-id"><one:OEChildren><one:OE objectID="oe-id">
@@ -185,16 +224,28 @@ def test_delete_page_content_rejects_non_deletable_child_with_parent_suggestion(
     </one:OE></one:OEChildren></one:Outline>
     </one:Page>"""
 
-    monkeypatch.setattr(server, "_resolve_id", lambda identifier, item_type=None: "page-id")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setattr(
+        server,
+        "_domain_item",
+        lambda object_id, item_type=None: {
+            "resource_type": "page",
+            "id": "page-id",
+            "title": "Page",
+            "section_id": "section-id",
+            "modified": None,
+        },
+    )
     monkeypatch.setattr(server, "_page_xml", lambda page_id, page_info="basic": page_xml)
 
-    result = asyncio.run(server.delete_page_content("page-id", "oe-id"))
+    result = asyncio.run(server.delete_page_content("page-id", "oe-id", "Page", "section-id"))
 
     assert result["ok"] is False
     assert "not directly deletable" in result["error"]
     assert "outline-id" in result["error"]
 
 
+@pytest.mark.write_contract
 def test_delete_hierarchy_retries_when_same_path_reappears_with_new_id(monkeypatch):
     calls = []
     initial = {"type": "section_group", "id": "old-id", "path": "Notebook/Test", "name": "Test"}
@@ -210,6 +261,9 @@ def test_delete_hierarchy_retries_when_same_path_reappears_with_new_id(monkeypat
         return remaining if len(calls) == 1 else None
 
     monkeypatch.setattr(server, "_resolve_item", lambda identifier, item_type=None: initial)
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RAW_XML", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES", "true")
     monkeypatch.setattr(server, "_bridge", fake_bridge)
     monkeypatch.setattr(server, "_find_item_by_path", fake_find_item_by_path)
     monkeypatch.setattr(server.time, "sleep", lambda seconds: None)

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import re
 import sys
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +21,15 @@ from .constants import (
     FILING_LOCATIONS,
     HIERARCHY_SCOPES,
     NEW_PAGE_STYLES,
+    ONE_NS,
     PAGE_INFO,
     PUBLISH_FORMATS,
     SPECIAL_LOCATIONS,
     XML_SCHEMA_2013,
 )
 from .image_utils import proportional_dimensions
+from .domain import content_objects, filter_resources, parse_domain_hierarchy
+from .policy import MutationPolicy, SearchBudget, env_bool
 from .xml_utils import (
     build_image_page_update_xml,
     build_page_update_xml,
@@ -46,12 +51,22 @@ mcp = FastMCP(MCP_NAME)
 bridge = OneNoteBridge(timeout_seconds=DEFAULT_TIMEOUT)
 
 
-def _error(message: str) -> dict[str, Any]:
-    return {"ok": False, "error": message}
+def _error(message: str, code: str = "operation_failed", **details: Any) -> dict[str, Any]:
+    return {"ok": False, "error": message, "code": code, "complete": False, **details}
 
 
 def _ok(**data: Any) -> dict[str, Any]:
-    return {"ok": True, **data}
+    return {"ok": True, "complete": True, "warnings": [], **data}
+
+
+def _caught(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, PermissionError):
+        code = "policy_disabled"
+    elif isinstance(exc, ValueError):
+        code = "validation_error"
+    else:
+        code = "backend_error"
+    return _error(str(exc), code)
 
 
 def _enum(name: str, value: str, options: dict[str, int]) -> int:
@@ -80,6 +95,73 @@ def _hierarchy_xml(start_id: str = "", scope: str = "pages") -> str:
 
 def _hierarchy_items(start_id: str = "", scope: str = "pages") -> list[dict[str, Any]]:
     return parse_hierarchy(_hierarchy_xml(start_id, scope))
+
+
+def _domain_items(include_recycle_bin: bool = False) -> list[dict[str, Any]]:
+    items = parse_domain_hierarchy(_hierarchy_xml("", "pages"))
+    return items if include_recycle_bin else [item for item in items if not item["is_in_recycle_bin"]]
+
+
+def _domain_item(object_id: str, resource_type: str | None = None) -> dict[str, Any]:
+    if not object_id:
+        raise ValueError("An object ID is required.")
+    matches = [
+        item
+        for item in _domain_items(include_recycle_bin=True)
+        if item["id"] == object_id and (resource_type is None or item["resource_type"] == resource_type)
+    ]
+    if len(matches) != 1:
+        label = resource_type or "object"
+        raise ValueError(f"No {label} found for ID '{object_id}'.")
+    return matches[0]
+
+
+def _item_name(item: dict[str, Any]) -> str:
+    return item.get("title") or item.get("name") or ""
+
+
+def _confirm_item(
+    object_id: str,
+    resource_type: str,
+    *,
+    expected_name: str,
+    expected_parent_id: str | None,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    item = _domain_item(object_id, resource_type)
+    actual_name = _item_name(item)
+    if actual_name != expected_name:
+        raise ValueError(f"Confirmation mismatch: expected name '{expected_name}', found '{actual_name}'.")
+    if item["parent_id"] != expected_parent_id:
+        raise ValueError(
+            f"Confirmation mismatch: expected parent_id '{expected_parent_id}', found '{item['parent_id']}'."
+        )
+    if expected_modified is not None and item.get("modified") != expected_modified:
+        raise ValueError(
+            f"Confirmation mismatch: expected modified '{expected_modified}', found '{item.get('modified')}'."
+        )
+    return item
+
+
+def _confirm_page(
+    page_id: str,
+    *,
+    expected_title: str,
+    expected_section_id: str,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    item = _domain_item(page_id, "page")
+    if item["title"] != expected_title:
+        raise ValueError(f"Confirmation mismatch: expected title '{expected_title}', found '{item['title']}'.")
+    if item["section_id"] != expected_section_id:
+        raise ValueError(
+            f"Confirmation mismatch: expected section_id '{expected_section_id}', found '{item['section_id']}'."
+        )
+    if expected_modified is not None and item.get("modified") != expected_modified:
+        raise ValueError(
+            f"Confirmation mismatch: expected modified '{expected_modified}', found '{item.get('modified')}'."
+        )
+    return item
 
 
 def _resolve_id(identifier: str, item_type: str | None = None) -> str:
@@ -142,6 +224,124 @@ def _refresh_created_item(
     return None
 
 
+def _wait_domain_item(
+    object_id: str,
+    resource_type: str,
+    *,
+    predicate: Any | None = None,
+    retries: int = 8,
+    delay_seconds: float = 0.5,
+) -> dict[str, Any] | None:
+    for attempt in range(retries):
+        try:
+            item = _domain_item(object_id, resource_type)
+        except ValueError:
+            item = None
+        if item is not None and (predicate is None or predicate(item)):
+            return item
+        if attempt + 1 < retries:
+            time.sleep(delay_seconds)
+    return None
+
+
+def _wait_created_domain_item(
+    expected_path: str,
+    resource_type: str,
+    fallback_id: str,
+    *,
+    retries: int = 8,
+    delay_seconds: float = 0.5,
+) -> dict[str, Any] | None:
+    for attempt in range(retries):
+        items = _domain_items(include_recycle_bin=True)
+        item = next(
+            (
+                candidate
+                for candidate in items
+                if candidate["resource_type"] == resource_type
+                and (candidate["path"].casefold() == expected_path.casefold() or candidate["id"] == fallback_id)
+            ),
+            None,
+        )
+        if item:
+            return item
+        if attempt + 1 < retries:
+            time.sleep(delay_seconds)
+    return None
+
+
+def _hierarchy_update_xml(item: dict[str, Any], **attributes: str) -> str:
+    """Build a minimal UpdateHierarchy document rooted at an item's ancestors."""
+
+    all_items = _domain_items(include_recycle_bin=True)
+    by_id = {candidate["id"]: candidate for candidate in all_items}
+    chain = [item]
+    parent_id = item.get("parent_id")
+    while parent_id:
+        parent = by_id.get(parent_id)
+        if parent is None:
+            raise RuntimeError(f"Cannot build hierarchy update: missing ancestor {parent_id}.")
+        chain.append(parent)
+        parent_id = parent.get("parent_id")
+    chain.reverse()
+    root = ET.Element(f"{{{ONE_NS}}}Notebooks")
+    current = root
+    tags = {
+        "notebook": "Notebook",
+        "section_group": "SectionGroup",
+        "section": "Section",
+        "page": "Page",
+    }
+    for candidate in chain:
+        attrs = {"ID": candidate["id"], "name": _item_name(candidate)}
+        if candidate is item:
+            attrs.update(attributes)
+        current = ET.SubElement(current, f"{{{ONE_NS}}}{tags[candidate['resource_type']]}", attrs)
+    return ET.tostring(root, encoding="unicode")
+
+
+def _section_move_xml(section: dict[str, Any], destination: dict[str, Any]) -> str:
+    """Build the target-parent form used by OneNote UpdateHierarchy for a Section move."""
+
+    all_items = _domain_items(include_recycle_bin=True)
+    by_id = {candidate["id"]: candidate for candidate in all_items}
+    chain = [destination]
+    parent_id = destination.get("parent_id")
+    while parent_id:
+        parent = by_id.get(parent_id)
+        if parent is None:
+            raise RuntimeError(f"Cannot build move update: missing ancestor {parent_id}.")
+        chain.append(parent)
+        parent_id = parent.get("parent_id")
+    chain.reverse()
+    root = ET.Element(f"{{{ONE_NS}}}Notebooks")
+    current = root
+    tags = {"notebook": "Notebook", "section_group": "SectionGroup"}
+    for candidate in chain:
+        current = ET.SubElement(
+            current,
+            f"{{{ONE_NS}}}{tags[candidate['resource_type']]}",
+            {"ID": candidate["id"], "name": _item_name(candidate)},
+        )
+    ET.SubElement(current, f"{{{ONE_NS}}}Section", {"ID": section["id"], "name": _item_name(section)})
+    return ET.tostring(root, encoding="unicode")
+
+
+def _page_order_update_xml(section: dict[str, Any], pages: list[dict[str, Any]]) -> str:
+    """Build a complete ordered Page sequence for one Section."""
+
+    root_xml = _hierarchy_update_xml(section)
+    root = ET.fromstring(root_xml)
+    section_node = next(node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Section")
+    for page in pages:
+        ET.SubElement(
+            section_node,
+            f"{{{ONE_NS}}}Page",
+            {"ID": page["id"], "name": _item_name(page), "pageLevel": str(page["page_level"])},
+        )
+    return ET.tostring(root, encoding="unicode")
+
+
 def _create_type_to_item_type(create_type: str) -> str | None:
     key = create_type.casefold()
     if key == "section":
@@ -191,29 +391,72 @@ def _local_text_search(
     query: str,
     max_results: int,
     include_recycle_bin: bool,
-) -> list[dict[str, Any]]:
+    budget: SearchBudget | None = None,
+    include_snippets: bool = True,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    budget = budget or SearchBudget.current()
     items = _hierarchy_items(start_id, "pages")
     pages = filter_items(items, "page")
     if not include_recycle_bin:
         pages = _without_recycle_bin(pages)
+    if len(pages) > budget.max_pages:
+        raise ValueError(
+            f"Search scope contains {len(pages)} candidate pages, exceeding LOCAL_ONENOTE_MAX_SEARCH_PAGES={budget.max_pages}."
+        )
     query_lower = query.casefold()
     matches = []
+    total_chars = 0
+    scanned_pages = 0
+    started = time.monotonic()
     for page in pages:
         if len(matches) >= max(1, max_results):
             break
+        if time.monotonic() - started > budget.max_seconds:
+            raise RuntimeError(f"Local search exceeded its {budget.max_seconds}-second budget.")
         haystacks = [page.get("name", ""), page.get("path", "")]
         try:
-            haystacks.append(text_from_page_xml(_page_xml(page["id"], "basic")))
+            page_text = text_from_page_xml(_page_xml(page["id"], "basic"))
+            scanned_pages += 1
+            if len(page_text) > budget.max_page_chars:
+                page_text = page_text[: budget.max_page_chars]
+            total_chars += len(page_text)
+            if total_chars > budget.max_total_chars:
+                raise RuntimeError(
+                    f"Local search exceeded LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS={budget.max_total_chars}."
+                )
+            haystacks.append(page_text)
         except Exception as exc:
+            if isinstance(exc, RuntimeError):
+                raise
             page["scan_error"] = str(exc)
         if any(query_lower in value.casefold() for value in haystacks if value):
+            if include_snippets and len(haystacks) > 2:
+                text = haystacks[-1]
+                index = text.casefold().find(query_lower)
+                if index >= 0:
+                    radius = max(40, budget.snippet_chars // 2)
+                    page["snippet"] = text[max(0, index - radius) : index + len(query) + radius].strip()
             matches.append(page)
-    return matches
+    return matches, {
+        "candidate_pages": len(pages),
+        "scanned_pages": scanned_pages,
+        "scanned_chars": total_chars,
+        "max_pages": budget.max_pages,
+        "max_page_chars": budget.max_page_chars,
+        "max_total_chars": budget.max_total_chars,
+        "max_seconds": budget.max_seconds,
+    }
 
 
 REPLACE_BODY_OBJECT_TYPES = {"Outline", "Image", "InkDrawing", "FileAttachment", "InsertedFile", "MediaFile"}
 IDENTIFIER_RESOLUTION_ORDER = ["id", "exact_path", "unique_name"]
 IDENTIFIER_TYPES = {"notebook", "section_group", "section", "page"}
+
+
+def _advanced_tool(function: Any) -> Any:
+    """Register raw mutation tools only in an explicit development profile."""
+
+    return mcp.tool()(function) if env_bool("LOCAL_ONENOTE_ENABLE_RAW_XML") else function
 
 
 @mcp.tool()
@@ -224,6 +467,8 @@ async def health_check() -> dict[str, Any]:
         items = _without_recycle_bin(_hierarchy_items("", "sections"))
         notebooks = filter_items(items, "notebook")
         sections = filter_items(items, "section")
+        policy = MutationPolicy.current()
+        search_budget = SearchBudget.current()
         return _ok(
             server=MCP_NAME,
             transport="stdio",
@@ -235,6 +480,19 @@ async def health_check() -> dict[str, Any]:
             identifier_resolution_order=IDENTIFIER_RESOLUTION_ORDER,
             search_default_backend="local_scan",
             content_formats=["plain", "html", "markdown"],
+            mutation_policy={
+                "writes_enabled": policy.writes_enabled,
+                "deletes_enabled": policy.deletes_enabled,
+                "permanent_deletes_enabled": policy.permanent_deletes_enabled,
+                "experimental_move_section_enabled": policy.experimental_move_section_enabled,
+                "raw_xml_enabled": policy.raw_xml_enabled,
+            },
+            search_budget={
+                "max_pages": search_budget.max_pages,
+                "max_page_chars": search_budget.max_page_chars,
+                "max_total_chars": search_budget.max_total_chars,
+                "max_seconds": search_budget.max_seconds,
+            },
             notebooks=len(notebooks),
             sections=len(sections),
             write_backend="OneNote desktop COM API",
@@ -254,7 +512,8 @@ async def resolve_identifier(identifier: str, item_type: str = "") -> dict[str, 
         if normalized_type and normalized_type not in IDENTIFIER_TYPES:
             allowed = ", ".join(sorted(IDENTIFIER_TYPES))
             raise ValueError(f"item_type must be empty or one of: {allowed}")
-        item = _resolve_item(identifier, normalized_type)
+        resolved = _resolve_item(identifier, normalized_type)
+        item = _domain_item(resolved["id"], normalized_type)
         return _ok(item=item, identifier_resolution_order=IDENTIFIER_RESOLUTION_ORDER)
     except Exception as exc:
         return _error(str(exc))
@@ -283,11 +542,27 @@ async def list_hierarchy(
     """List live OneNote hierarchy objects. Identifiers may be an ID, exact path, or unique name."""
 
     try:
-        start_id = _resolve_id(start_identifier) if start_identifier else ""
-        xml = _hierarchy_xml(start_id, scope)
-        items = parse_hierarchy(xml)
+        xml = _hierarchy_xml("", "pages")
+        items = parse_domain_hierarchy(xml)
         if not include_recycle_bin:
-            items = _without_recycle_bin(items)
+            items = [item for item in items if not item["is_in_recycle_bin"]]
+        if start_identifier:
+            legacy = resolve_item(parse_hierarchy(xml), start_identifier)
+            root = next(item for item in items if item["id"] == legacy["id"])
+            items = [item for item in items if item["id"] == root["id"] or item["path"].startswith(root["path"] + "/")]
+        scope_types = {
+            "self": set(),
+            "children": IDENTIFIER_TYPES,
+            "notebooks": {"notebook"},
+            "sections": {"notebook", "section_group", "section"},
+            "pages": IDENTIFIER_TYPES,
+        }
+        if scope not in scope_types:
+            _enum("scope", scope, HIERARCHY_SCOPES)
+        if scope == "self" and items:
+            items = items[:1]
+        elif scope != "children":
+            items = [item for item in items if item["resource_type"] in scope_types[scope]]
         data = _ok(items=items, count=len(items))
         if include_xml:
             data["xml"] = xml
@@ -297,160 +572,210 @@ async def list_hierarchy(
 
 
 @mcp.tool()
-async def list_notebooks() -> dict[str, Any]:
+async def list_notebooks(include_recycle_bin: bool = False) -> dict[str, Any]:
     """List live notebooks currently known to the local OneNote desktop app."""
 
     try:
-        items = _hierarchy_items("", "notebooks")
-        notebooks = filter_items(items, "notebook")
+        notebooks = filter_resources(_domain_items(include_recycle_bin), "notebook")
         return _ok(notebooks=notebooks, count=len(notebooks))
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def list_sections(notebook_identifier: str = "", include_recycle_bin: bool = False) -> dict[str, Any]:
-    """List sections, optionally restricted to a notebook ID, exact path, or unique name."""
+async def get_notebook(notebook_id: str) -> dict[str, Any]:
+    """Get stable metadata for one notebook by COM object ID."""
 
     try:
-        items = _hierarchy_items("", "sections")
-        if not include_recycle_bin:
-            items = _without_recycle_bin(items)
-        sections = filter_items(items, "section")
-        if notebook_identifier:
-            notebook = resolve_item(items, notebook_identifier, "notebook")
-            prefix = notebook["path"] + "/"
-            sections = [section for section in sections if section["path"].startswith(prefix)]
+        return _ok(item=_domain_item(notebook_id, "notebook"))
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def list_section_groups(parent_id: str = "", recursive: bool = True, include_recycle_bin: bool = False) -> dict[str, Any]:
+    """List section groups, optionally below one notebook or section-group ID."""
+
+    try:
+        items = _domain_items(include_recycle_bin)
+        groups = filter_resources(items, "section_group")
+        if parent_id:
+            parent = next((item for item in items if item["id"] == parent_id), None)
+            if not parent or parent["resource_type"] not in {"notebook", "section_group"}:
+                raise ValueError("parent_id must identify a notebook or section_group.")
+            if recursive:
+                prefix = parent["path"] + "/"
+                groups = [item for item in groups if item["path"].startswith(prefix)]
+            else:
+                groups = [item for item in groups if item["parent_id"] == parent_id]
+        return _ok(items=groups, count=len(groups))
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def get_section_group(section_group_id: str) -> dict[str, Any]:
+    """Get stable metadata for one section group by COM object ID."""
+
+    try:
+        return _ok(item=_domain_item(section_group_id, "section_group"))
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def list_sections(parent_id: str = "", recursive: bool = True, include_recycle_bin: bool = False) -> dict[str, Any]:
+    """List sections, optionally below one notebook or section-group ID."""
+
+    try:
+        items = _domain_items(include_recycle_bin)
+        sections = filter_resources(items, "section")
+        if parent_id:
+            parent = next((item for item in items if item["id"] == parent_id), None)
+            if not parent or parent["resource_type"] not in {"notebook", "section_group"}:
+                raise ValueError("parent_id must identify a notebook or section_group.")
+            if recursive:
+                prefix = parent["path"] + "/"
+                sections = [item for item in sections if item["path"].startswith(prefix)]
+            else:
+                sections = [item for item in sections if item["parent_id"] == parent_id]
         return _ok(sections=sections, count=len(sections))
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def list_pages(section_identifier: str, include_xml: bool = False, include_recycle_bin: bool = False) -> dict[str, Any]:
-    """List pages in a section selected by section ID, exact path, or unique name."""
+async def get_section(section_id: str) -> dict[str, Any]:
+    """Get stable metadata for one section by COM object ID."""
 
     try:
-        section = _resolve_item(section_identifier, "section")
-        xml = _hierarchy_xml(section["id"], "pages")
-        pages = filter_items(parse_hierarchy(xml), "page")
-        if not include_recycle_bin:
-            pages = _without_recycle_bin(pages)
-        for page in pages:
-            if not page.get("path", "").startswith(section["path"] + "/"):
-                page["path"] = f"{section['path']}/{page.get('name', '(untitled)')}"
-                page["notebook_name"] = section.get("notebook_name")
-                page["section_name"] = section.get("section_name")
-        data = _ok(section=section, pages=pages, count=len(pages))
-        if include_xml:
-            data["xml"] = xml
-        return data
+        return _ok(item=_domain_item(section_id, "section"))
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def get_page(page_identifier: str, include_xml: bool = False, page_info: str = "basic", max_chars: int = MAX_TEXT_CHARS) -> dict[str, Any]:
-    """Read a page's title, plain text, object IDs, and optionally raw OneNote XML."""
+async def list_pages(section_id: str, include_recycle_bin: bool = False) -> dict[str, Any]:
+    """List page metadata in one section selected by its COM object ID."""
 
     try:
-        page = _resolve_item(page_identifier, "page")
-        xml = _page_xml(page["id"], page_info)
-        text = _truncate(text_from_page_xml(xml), max_chars)
-        data = _ok(
-            page=page,
-            title=title_from_page_xml(xml),
-            text=text,
-            objects=collect_page_objects(xml),
-        )
-        if include_xml:
-            data["xml"] = xml
-        return data
+        section = _domain_item(section_id, "section")
+        pages = [
+            item
+            for item in _domain_items(include_recycle_bin)
+            if item["resource_type"] == "page" and item["section_id"] == section_id
+        ]
+        return _ok(section=section, pages=pages, count=len(pages))
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def get_page_xml(page_identifier: str, page_info: str = "basic") -> dict[str, Any]:
+async def get_page(page_id: str) -> dict[str, Any]:
+    """Get page metadata only; use the dedicated content tools for text, XML, objects, or binary."""
+
+    try:
+        return _ok(item=_domain_item(page_id, "page"))
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def get_page_xml(page_id: str, page_info: str = "basic") -> dict[str, Any]:
     """Return raw OneNote XML for a page."""
 
     try:
-        page_id = _resolve_id(page_identifier, "page")
+        _domain_item(page_id, "page")
         return _ok(xml=_page_xml(page_id, page_info))
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def get_page_text(page_identifier: str, max_chars: int = MAX_TEXT_CHARS) -> dict[str, Any]:
+async def get_page_text(page_id: str, max_chars: int = MAX_TEXT_CHARS) -> dict[str, Any]:
     """Return plain text extracted from a OneNote page."""
 
     try:
-        page_id = _resolve_id(page_identifier, "page")
+        _domain_item(page_id, "page")
         text = text_from_page_xml(_page_xml(page_id, "basic"))
         return _ok(text=_truncate(text, max_chars), chars=len(text))
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def get_page_objects(page_identifier: str) -> dict[str, Any]:
+async def get_page_objects(page_id: str) -> dict[str, Any]:
     """List page content objects such as outlines, images, attachments, and callback IDs."""
 
     try:
-        page_id = _resolve_id(page_identifier, "page")
-        objects = collect_page_objects(_page_xml(page_id, "all"))
+        _domain_item(page_id, "page")
+        objects = content_objects(page_id, collect_page_objects(_page_xml(page_id, "all")))
         return _ok(objects=objects, count=len(objects))
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def get_binary_content(page_identifier: str, callback_id: str) -> dict[str, Any]:
+async def get_binary_content(page_id: str, callback_id: str) -> dict[str, Any]:
     """Read binary page content by callback ID returned from get_page_objects."""
 
     try:
-        page_id = _resolve_id(page_identifier, "page")
+        _domain_item(page_id, "page")
+        objects = content_objects(page_id, collect_page_objects(_page_xml(page_id, "all")))
+        matched = next((item for item in objects if item["callback_id"] == callback_id), None)
+        if not matched:
+            raise ValueError("callback_id was not found in the current page object snapshot.")
         result = _bridge("get_binary_page_content", page_id=page_id, callback_id=callback_id)
-        return _ok(base64=result["base64"])
+        return _ok(object=matched, base64=result["base64"])
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
 async def search_pages(
     query: str,
-    start_identifier: str = "",
+    scope_type: str,
+    scope_id: str,
+    backend: str = "local_scan",
     max_results: int = 20,
     include_snippets: bool = True,
-    include_unindexed: bool = True,
     include_recycle_bin: bool = False,
 ) -> dict[str, Any]:
-    """Search pages. include_unindexed=true scans live page text instead of relying on OneNote's index."""
+    """Search Page text in an explicit notebook, section-group, or section scope."""
 
     try:
-        start_id = _resolve_id(start_identifier) if start_identifier else ""
-        used_local_scan = include_unindexed
-        if include_unindexed:
-            pages = _local_text_search(start_id, query, max_results, include_recycle_bin)
+        if not query.strip():
+            raise ValueError("query is required.")
+        normalized_scope = scope_type.strip().casefold()
+        if normalized_scope not in {"notebook", "section_group", "section"}:
+            raise ValueError("scope_type must be one of: notebook, section_group, section.")
+        scope = _domain_item(scope_id, normalized_scope)
+        normalized_backend = backend.strip().casefold()
+        budget_data: dict[str, Any] | None = None
+        if normalized_backend == "local_scan":
+            pages, budget_data = _local_text_search(
+                scope["id"],
+                query,
+                max_results,
+                include_recycle_bin,
+                include_snippets=include_snippets,
+            )
+        elif normalized_backend == "onenote_index":
+            xml = _bridge(
+                "find_pages",
+                start_id=scope["id"],
+                query=query,
+                include_unindexed=False,
+                display=False,
+                schema=XML_SCHEMA_2013,
+            )["xml"]
+            pages = filter_items(parse_hierarchy(xml), "page")
         else:
-            try:
-                xml = _bridge(
-                    "find_pages",
-                    start_id=start_id,
-                    query=query,
-                    include_unindexed=False,
-                    display=False,
-                    schema=XML_SCHEMA_2013,
-                )["xml"]
-                pages = filter_items(parse_hierarchy(xml), "page")
-            except Exception:
-                used_local_scan = True
-                pages = _local_text_search(start_id, query, max_results, include_recycle_bin)
+            raise ValueError("backend must be one of: local_scan, onenote_index.")
         if not include_recycle_bin:
             pages = _without_recycle_bin(pages)
         pages = pages[: max(1, max_results)]
-        if include_snippets:
+        if include_snippets and normalized_backend == "onenote_index":
             q = query.casefold()
             for page in pages:
                 try:
@@ -458,16 +783,116 @@ async def search_pages(
                     idx = text.casefold().find(q)
                     if idx >= 0:
                         start = max(0, idx - 160)
-                        end = min(len(text), idx + len(query) + 240)
+                        end = min(len(text), idx + len(query) + SearchBudget.current().snippet_chars)
                         page["snippet"] = text[start:end].strip()
                 except Exception as exc:
                     page["snippet_error"] = str(exc)
-        return _ok(pages=pages, count=len(pages), search_backend="local_scan" if used_local_scan else "onenote_index")
+        return _ok(
+            pages=pages,
+            count=len(pages),
+            scope=scope,
+            search_backend=normalized_backend,
+            scan_budget=budget_data,
+        )
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
+async def query_hierarchy(
+    resource_type: str,
+    name_equals: str = "",
+    name_contains: str = "",
+    parent_id: str = "",
+    modified_after: str = "",
+    modified_before: str = "",
+    include_recycle_bin: bool = False,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Query stable hierarchy metadata without reading Page content."""
+
+    try:
+        normalized_type = resource_type.strip().casefold()
+        if normalized_type not in IDENTIFIER_TYPES:
+            raise ValueError("resource_type must be one of: notebook, section_group, section, page.")
+        items = filter_resources(_domain_items(include_recycle_bin), normalized_type)
+        if name_equals:
+            target = name_equals.casefold()
+            items = [item for item in items if _item_name(item).casefold() == target]
+        if name_contains:
+            target = name_contains.casefold()
+            items = [item for item in items if target in _item_name(item).casefold()]
+        if parent_id:
+            if normalized_type == "page":
+                items = [item for item in items if item["section_id"] == parent_id or item["parent_page_id"] == parent_id]
+            else:
+                items = [item for item in items if item["parent_id"] == parent_id]
+        if modified_after:
+            items = [item for item in items if item.get("modified") and item["modified"] > modified_after]
+        if modified_before:
+            items = [item for item in items if item.get("modified") and item["modified"] < modified_before]
+        bounded = items[: max(1, min(limit, 1000))]
+        return _ok(items=bounded, count=len(bounded), total_matches=len(items), truncated=len(bounded) < len(items))
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def get_path(object_id: str) -> dict[str, Any]:
+    """Get a display path and stable ancestor IDs for one hierarchy object."""
+
+    try:
+        items = _domain_items(include_recycle_bin=True)
+        by_id = {item["id"]: item for item in items}
+        item = by_id.get(object_id)
+        if item is None:
+            raise ValueError(f"No object found for ID '{object_id}'.")
+        ancestors = []
+        parent_id = item.get("parent_id")
+        while parent_id:
+            parent = by_id.get(parent_id)
+            if parent is None:
+                break
+            ancestors.append(parent)
+            parent_id = parent.get("parent_id")
+        ancestors.reverse()
+        return _ok(item=item, path=item["path"], ancestors=ancestors)
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def get_tree(root_id: str, max_depth: int = 8, include_recycle_bin: bool = False) -> dict[str, Any]:
+    """Get a typed hierarchy tree; Page children follow derived indentation relationships."""
+
+    try:
+        items = _domain_items(include_recycle_bin)
+        by_id = {item["id"]: item for item in items}
+        root = by_id.get(root_id)
+        if root is None:
+            raise ValueError(f"No object found for ID '{root_id}'.")
+        children: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            if item["id"] == root_id:
+                continue
+            parent = item.get("parent_page_id") if item["resource_type"] == "page" else item.get("parent_id")
+            if item["resource_type"] == "page" and parent is None:
+                parent = item.get("section_id")
+            if parent:
+                children.setdefault(parent, []).append(item)
+
+        def build(item: dict[str, Any], depth: int) -> dict[str, Any]:
+            node = {"item": item, "children": []}
+            if depth < max(0, max_depth):
+                node["children"] = [build(child, depth + 1) for child in children.get(item["id"], [])]
+            return node
+
+        return _ok(tree=build(root, 0))
+    except Exception as exc:
+        return _caught(exc)
+
+
+@_advanced_tool
 async def find_meta(start_identifier: str, name: str, include_unindexed: bool = True) -> dict[str, Any]:
     """Find pages or objects with matching OneNote meta name."""
 
@@ -487,30 +912,32 @@ async def find_meta(start_identifier: str, name: str, include_unindexed: bool = 
 
 
 @mcp.tool()
-async def get_hyperlink(object_identifier: str, page_content_object_id: str = "", web: bool = False) -> dict[str, Any]:
+async def get_hyperlink(object_id: str, page_content_object_id: str = "", web: bool = False) -> dict[str, Any]:
     """Return a OneNote client or web hyperlink for an object."""
 
     try:
-        object_id = _resolve_id(object_identifier)
+        item = _domain_item(object_id)
         operation = "get_web_hyperlink" if web else "get_hyperlink"
         result = _bridge(operation, object_id=object_id, page_content_object_id=page_content_object_id)
-        return _ok(hyperlink=result["hyperlink"])
+        return _ok(item=item, hyperlink=result["hyperlink"])
     except Exception as exc:
         return _error(str(exc))
 
 
 @mcp.tool()
-async def get_parent(object_identifier: str) -> dict[str, Any]:
-    """Return the parent object ID for a notebook hierarchy object."""
+async def get_parent(object_id: str) -> dict[str, Any]:
+    """Return stable metadata for an object's parent."""
 
     try:
-        object_id = _resolve_id(object_identifier)
-        return _ok(parent_id=_bridge("get_hierarchy_parent", object_id=object_id)["parent_id"])
+        item = _domain_item(object_id)
+        parent_id = _bridge("get_hierarchy_parent", object_id=object_id)["parent_id"]
+        parent = _domain_item(parent_id) if parent_id else None
+        return _ok(item=item, parent=parent, parent_id=parent_id)
     except Exception as exc:
         return _error(str(exc))
 
 
-@mcp.tool()
+@_advanced_tool
 async def open_hierarchy(path: str, relative_to_identifier: str = "", create_type: str = "none") -> dict[str, Any]:
     """Open or create a notebook, section group, or section. Existing OneNote hierarchy paths resolve directly."""
 
@@ -533,6 +960,8 @@ async def open_hierarchy(path: str, relative_to_identifier: str = "", create_typ
                     return _ok(object_id=existing["id"], item=existing, opened_existing=True)
                 except Exception:
                     pass
+
+        MutationPolicy.current().require_write()
 
         result = _bridge(
             "open_hierarchy",
@@ -559,6 +988,7 @@ async def create_notebook(name_or_path: str, base_folder: str = "") -> dict[str,
     """Create a local notebook folder and open it in OneNote."""
 
     try:
+        MutationPolicy.current().require_write()
         raw = Path(name_or_path)
         if raw.is_absolute():
             notebook_path = raw
@@ -574,19 +1004,23 @@ async def create_notebook(name_or_path: str, base_folder: str = "") -> dict[str,
             relative_to_id="",
             create_file_type=CREATE_FILE_TYPES["notebook"],
         )
-        return _ok(path=str(notebook_path), notebook_id=result["object_id"])
+        notebook = _wait_created_domain_item(notebook_path.name, "notebook", result["object_id"])
+        if notebook is None:
+            raise RuntimeError("Notebook creation returned success, but the new notebook could not be verified.")
+        return _ok(path=str(notebook_path), notebook_id=result["object_id"], item=notebook)
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def create_section(parent_identifier: str, section_name: str) -> dict[str, Any]:
+async def create_section(parent_id: str, section_name: str) -> dict[str, Any]:
     """Create a section under a notebook or section group."""
 
     try:
-        parent = _resolve_item(parent_identifier)
-        if parent["type"] not in {"notebook", "section_group"}:
-            raise ValueError("parent_identifier must resolve to a notebook or section_group.")
+        MutationPolicy.current().require_write()
+        parent = _domain_item(parent_id)
+        if parent["resource_type"] not in {"notebook", "section_group"}:
+            raise ValueError("parent_id must identify a notebook or section_group.")
         filename = _safe_leaf_name(section_name)
         if not filename.lower().endswith(".one"):
             filename += ".one"
@@ -597,7 +1031,9 @@ async def create_section(parent_identifier: str, section_name: str) -> dict[str,
             create_file_type=CREATE_FILE_TYPES["section"],
         )
         expected_path = _friendly_child_path(parent["path"], filename)
-        section = _refresh_created_item(expected_path=expected_path, item_type="section", fallback_id=result["object_id"])
+        section = _wait_created_domain_item(expected_path, "section", result["object_id"])
+        if section is None:
+            raise RuntimeError("Section creation returned success, but the new section could not be verified.")
         return _ok(
             parent=parent,
             section=section,
@@ -606,17 +1042,18 @@ async def create_section(parent_identifier: str, section_name: str) -> dict[str,
             path=expected_path,
         )
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def create_section_group(parent_identifier: str, group_name: str) -> dict[str, Any]:
+async def create_section_group(parent_id: str, group_name: str) -> dict[str, Any]:
     """Create a section group under a notebook or another section group."""
 
     try:
-        parent = _resolve_item(parent_identifier)
-        if parent["type"] not in {"notebook", "section_group"}:
-            raise ValueError("parent_identifier must resolve to a notebook or section_group.")
+        MutationPolicy.current().require_write()
+        parent = _domain_item(parent_id)
+        if parent["resource_type"] not in {"notebook", "section_group"}:
+            raise ValueError("parent_id must identify a notebook or section_group.")
         result = _bridge(
             "open_hierarchy",
             path=_safe_leaf_name(group_name),
@@ -624,7 +1061,9 @@ async def create_section_group(parent_identifier: str, group_name: str) -> dict[
             create_file_type=CREATE_FILE_TYPES["section_group"],
         )
         expected_path = _friendly_child_path(parent["path"], group_name)
-        group = _refresh_created_item(expected_path=expected_path, item_type="section_group", fallback_id=result["object_id"])
+        group = _wait_created_domain_item(expected_path, "section_group", result["object_id"])
+        if group is None:
+            raise RuntimeError("Section-group creation returned success, but the new group could not be verified.")
         return _ok(
             parent=parent,
             section_group=group,
@@ -633,12 +1072,12 @@ async def create_section_group(parent_identifier: str, group_name: str) -> dict[
             path=expected_path,
         )
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
 async def create_page(
-    section_identifier: str,
+    section_id: str,
     title: str,
     content: str = "",
     content_format: str = "plain",
@@ -647,7 +1086,8 @@ async def create_page(
     """Create a page in a local OneNote section. content_format accepts plain, html, or markdown."""
 
     try:
-        section = _resolve_item(section_identifier, "section")
+        MutationPolicy.current().require_write()
+        section = _domain_item(section_id, "section")
         result = _bridge(
             "create_new_page",
             section_id=section["id"],
@@ -657,29 +1097,239 @@ async def create_page(
         xml = build_page_update_xml(page_id, title=title, content=content, content_format=content_format)
         _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
         expected_path = _friendly_child_path(section["path"], title)
-        page = _refresh_created_item(expected_path=expected_path, item_type="page", fallback_id=page_id)
+        page = _wait_created_domain_item(expected_path, "page", page_id)
+        if page is None:
+            raise RuntimeError("Page creation returned success, but the new page could not be verified.")
         return _ok(page_id=page["id"] if page else page_id, page=page, section=section, title=title, path=expected_path)
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def update_page_title(page_identifier: str, title: str) -> dict[str, Any]:
+async def update_page_title(
+    page_id: str,
+    title: str,
+    expected_title: str,
+    expected_section_id: str,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
     """Update a page title."""
 
     try:
-        page_id = _resolve_id(page_identifier, "page")
+        MutationPolicy.current().require_write()
+        _confirm_page(
+            page_id,
+            expected_title=expected_title,
+            expected_section_id=expected_section_id,
+            expected_modified=expected_modified,
+        )
         xml = build_page_update_xml(page_id, title=title)
         _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        return _ok(page_id=page_id, title=title)
+        item = _wait_domain_item(page_id, "page", predicate=lambda value: value["title"] == title)
+        if item is None:
+            raise RuntimeError("Update returned success, but the page title could not be verified.")
+        return _ok(item=item)
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
+
+
+async def _rename_resource(
+    object_id: str,
+    resource_type: str,
+    new_name: str,
+    expected_name: str,
+    expected_parent_id: str,
+    expected_modified: str | None,
+) -> dict[str, Any]:
+    MutationPolicy.current().require_write()
+    item = _confirm_item(
+        object_id,
+        resource_type,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        expected_modified=expected_modified,
+    )
+    normalized_name = _safe_leaf_name(new_name)
+    _bridge(
+        "update_hierarchy",
+        xml=_hierarchy_update_xml(item, name=normalized_name),
+        schema=XML_SCHEMA_2013,
+    )
+    refreshed = _wait_domain_item(
+        object_id,
+        resource_type,
+        predicate=lambda value: value["name"] == normalized_name and value["parent_id"] == expected_parent_id,
+    )
+    if refreshed is None:
+        raise RuntimeError("Rename returned success, but the new name could not be verified by ID.")
+    return _ok(item=refreshed, previous_name=expected_name)
+
+
+@mcp.tool()
+async def rename_section_group(
+    section_group_id: str,
+    new_name: str,
+    expected_name: str,
+    expected_parent_id: str,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Rename a confirmed section group and verify the same ID after mutation."""
+
+    try:
+        return await _rename_resource(
+            section_group_id, "section_group", new_name, expected_name, expected_parent_id, expected_modified
+        )
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def rename_section(
+    section_id: str,
+    new_name: str,
+    expected_name: str,
+    expected_parent_id: str,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Rename a confirmed section and verify the same ID after mutation."""
+
+    try:
+        return await _rename_resource(
+            section_id, "section", new_name, expected_name, expected_parent_id, expected_modified
+        )
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def reorder_page(
+    page_id: str,
+    expected_title: str,
+    expected_section_id: str,
+    after_page_id: str = "",
+    page_level: int = 0,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Reorder a Page within its Section and optionally change its indentation level."""
+
+    try:
+        MutationPolicy.current().require_write()
+        page = _confirm_page(
+            page_id,
+            expected_title=expected_title,
+            expected_section_id=expected_section_id,
+            expected_modified=expected_modified,
+        )
+        section = _domain_item(expected_section_id, "section")
+        pages = [
+            item
+            for item in _domain_items(include_recycle_bin=False)
+            if item["resource_type"] == "page" and item["section_id"] == expected_section_id
+        ]
+        pages.sort(key=lambda item: item["order"])
+        pages = [item for item in pages if item["id"] != page_id]
+        if after_page_id:
+            if after_page_id == page_id:
+                raise ValueError("after_page_id cannot equal page_id.")
+            indexes = [index for index, item in enumerate(pages) if item["id"] == after_page_id]
+            if not indexes:
+                raise ValueError("after_page_id must identify another page in the same section.")
+            insertion_index = indexes[0] + 1
+        else:
+            insertion_index = 0
+        target_level = page_level or page["page_level"]
+        if target_level < 1:
+            raise ValueError("page_level must be zero (preserve) or at least 1.")
+        if insertion_index == 0 and target_level != 1:
+            raise ValueError("The first page in a section must have page_level=1.")
+        if insertion_index > 0 and target_level > pages[insertion_index - 1]["page_level"] + 1:
+            raise ValueError("page_level cannot jump by more than one level from the preceding page.")
+        moved = {**page, "page_level": target_level}
+        pages.insert(insertion_index, moved)
+        _bridge("update_hierarchy", xml=_page_order_update_xml(section, pages), schema=XML_SCHEMA_2013)
+        refreshed_pages = [
+            item
+            for item in _domain_items(include_recycle_bin=False)
+            if item["resource_type"] == "page" and item["section_id"] == expected_section_id
+        ]
+        refreshed_pages.sort(key=lambda item: item["order"])
+        refreshed = next((item for item in refreshed_pages if item["id"] == page_id), None)
+        if refreshed is None or refreshed["order"] != insertion_index or refreshed["page_level"] != target_level:
+            raise RuntimeError("Reorder returned success, but order/page_level read-back verification failed.")
+        return _ok(item=refreshed, pages=refreshed_pages)
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def move_section(
+    section_id: str,
+    destination_parent_id: str,
+    expected_name: str,
+    expected_parent_id: str,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Experimentally move a Section inside the same Notebook with identity/content/order verification."""
+
+    try:
+        MutationPolicy.current().require_experimental_move()
+        section = _confirm_item(
+            section_id,
+            "section",
+            expected_name=expected_name,
+            expected_parent_id=expected_parent_id,
+            expected_modified=expected_modified,
+        )
+        destination = _domain_item(destination_parent_id)
+        if destination["resource_type"] not in {"notebook", "section_group"}:
+            raise ValueError("destination_parent_id must identify a notebook or section_group.")
+        destination_notebook_id = (
+            destination["id"] if destination["resource_type"] == "notebook" else destination["notebook_id"]
+        )
+        if destination_notebook_id != section["notebook_id"]:
+            raise ValueError("move_section only supports destinations in the same notebook.")
+        before_pages = [
+            item
+            for item in _domain_items(include_recycle_bin=False)
+            if item["resource_type"] == "page" and item["section_id"] == section_id
+        ]
+        before_pages.sort(key=lambda item: item["order"])
+        before_hashes = {item["id"]: hashlib.sha256(_page_xml(item["id"], "all").encode("utf-8")).hexdigest() for item in before_pages}
+        _bridge("update_hierarchy", xml=_section_move_xml(section, destination), schema=XML_SCHEMA_2013)
+        moved = _wait_domain_item(
+            section_id,
+            "section",
+            predicate=lambda value: value["parent_id"] == destination_parent_id,
+        )
+        if moved is None:
+            raise RuntimeError("Move returned success, but the Section parent could not be verified.")
+        after_pages = [
+            item
+            for item in _domain_items(include_recycle_bin=False)
+            if item["resource_type"] == "page" and item["section_id"] == section_id
+        ]
+        after_pages.sort(key=lambda item: item["order"])
+        if [item["id"] for item in after_pages] != [item["id"] for item in before_pages]:
+            raise RuntimeError("Section moved, but Page identity/order verification failed.")
+        after_hashes = {item["id"]: hashlib.sha256(_page_xml(item["id"], "all").encode("utf-8")).hexdigest() for item in after_pages}
+        if after_hashes != before_hashes:
+            raise RuntimeError("Section moved, but Page content verification failed.")
+        return _ok(
+            item=moved,
+            verified={"section_id_preserved": True, "page_ids_and_order_preserved": True, "page_content_preserved": True},
+            warnings=["Experimental COM behavior: keep this tool disabled until the documented isolated test passes."],
+        )
+    except Exception as exc:
+        return _caught(exc)
 
 
 @mcp.tool()
 async def append_to_page(
-    page_identifier: str,
+    page_id: str,
     content: str,
+    expected_title: str,
+    expected_section_id: str,
+    expected_modified: str | None = None,
     content_format: str = "plain",
     x: float | None = None,
     y: float | None = None,
@@ -687,18 +1337,32 @@ async def append_to_page(
     """Append a new outline block to a page. content_format accepts plain, html, or markdown."""
 
     try:
-        page_id = _resolve_id(page_identifier, "page")
+        MutationPolicy.current().require_write()
+        before = _confirm_page(
+            page_id,
+            expected_title=expected_title,
+            expected_section_id=expected_section_id,
+            expected_modified=expected_modified,
+        )
+        before_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
         xml = build_page_update_xml(page_id, content=content, content_format=content_format, x=x, y=y)
         _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        return _ok(page_id=page_id, appended=True)
+        after_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
+        if after_hash == before_hash:
+            raise RuntimeError("Append returned success, but Page content did not change during read-back verification.")
+        after = _wait_domain_item(page_id, "page")
+        return _ok(item=after, before_modified=before.get("modified"), appended=True)
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
 async def add_image_to_page(
-    page_identifier: str,
+    page_id: str,
     image_path: str,
+    expected_title: str,
+    expected_section_id: str,
+    expected_modified: str | None = None,
     image_format: str = "",
     x: float = 36.0,
     y: float = 120.0,
@@ -708,6 +1372,14 @@ async def add_image_to_page(
     """Add a local image file to a OneNote page."""
 
     try:
+        MutationPolicy.current().require_write()
+        _confirm_page(
+            page_id,
+            expected_title=expected_title,
+            expected_section_id=expected_section_id,
+            expected_modified=expected_modified,
+        )
+        before_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
         path = Path(image_path)
         if not path.is_file():
             raise ValueError(f"Image file not found: {image_path}")
@@ -716,7 +1388,6 @@ async def add_image_to_page(
             raise ValueError("image_format is required when image_path has no extension.")
         resolved_width, resolved_height = proportional_dimensions(path, width, height)
         image_base64 = base64.b64encode(path.read_bytes()).decode("ascii")
-        page_id = _resolve_id(page_identifier, "page")
         xml = build_image_page_update_xml(
             page_id,
             image_base64=image_base64,
@@ -727,46 +1398,85 @@ async def add_image_to_page(
             height=resolved_height,
         )
         _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        return _ok(page_id=page_id, image_path=str(path), width=resolved_width, height=resolved_height)
+        after_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
+        if after_hash == before_hash:
+            raise RuntimeError("Image update returned success, but Page content did not change during read-back verification.")
+        item = _wait_domain_item(page_id, "page")
+        return _ok(item=item, image_path=str(path), width=resolved_width, height=resolved_height)
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
 async def replace_page_body(
-    page_identifier: str,
+    page_id: str,
     content: str,
+    expected_title: str,
+    expected_section_id: str,
+    expected_modified: str | None = None,
     title: str | None = None,
     content_format: str = "plain",
 ) -> dict[str, Any]:
-    """Delete existing page content objects and write new body content. content_format accepts plain, html, or markdown."""
+    """Rebuild page body content. This is a multi-step, non-atomic mutation."""
 
+    deleted: list[str] = []
     try:
-        page_id = _resolve_id(page_identifier, "page")
+        policy = MutationPolicy.current()
+        policy.require_write()
+        policy.require_delete()
+        _confirm_page(
+            page_id,
+            expected_title=expected_title,
+            expected_section_id=expected_section_id,
+            expected_modified=expected_modified,
+        )
         page_xml = _page_xml(page_id, "all")
+        before_hash = hashlib.sha256(page_xml.encode("utf-8")).hexdigest()
         objects = collect_page_objects(page_xml)
-        deleted = []
         for obj in objects:
             if obj.get("type") not in REPLACE_BODY_OBJECT_TYPES:
                 continue
             object_id = obj.get("object_id")
             if not object_id:
                 continue
-            _bridge("delete_page_content", page_id=page_id, object_id=object_id, force=True)
+            _bridge("delete_page_content", page_id=page_id, object_id=object_id, force=False)
             deleted.append(object_id)
         xml = build_page_update_xml(page_id, title=title, content=content, content_format=content_format)
-        _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=True)
-        return _ok(page_id=page_id, deleted_objects=deleted, replaced=True)
+        _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
+        after_hash = hashlib.sha256(_page_xml(page_id, "all").encode("utf-8")).hexdigest()
+        if after_hash == before_hash:
+            raise RuntimeError("Rebuild returned success, but Page content did not change during read-back verification.")
+        item = _wait_domain_item(page_id, "page")
+        return _ok(item=item, deleted_objects=deleted, replaced=True, partial=False)
     except Exception as exc:
-        return _error(str(exc))
+        if deleted:
+            return _error(
+                str(exc),
+                "partial_failure",
+                partial=True,
+                completed_steps=[{"operation": "delete_page_content", "object_id": value} for value in deleted],
+            )
+        return _caught(exc)
 
 
 @mcp.tool()
-async def delete_page_content(page_identifier: str, object_id: str) -> dict[str, Any]:
+async def delete_page_content(
+    page_id: str,
+    object_id: str,
+    expected_title: str,
+    expected_section_id: str,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
     """Delete one deletable page content object by object ID. Use get_page_objects to find delete_supported objects."""
 
     try:
-        page_id = _resolve_id(page_identifier, "page")
+        MutationPolicy.current().require_delete()
+        _confirm_page(
+            page_id,
+            expected_title=expected_title,
+            expected_section_id=expected_section_id,
+            expected_modified=expected_modified,
+        )
         objects = collect_page_objects(_page_xml(page_id, "all"))
         matched = next((obj for obj in objects if obj.get("object_id") == object_id), None)
         if matched and not matched.get("delete_supported"):
@@ -781,18 +1491,127 @@ async def delete_page_content(page_identifier: str, object_id: str) -> dict[str,
                 f"Object '{object_id}' is a {matched.get('type')} child and is not directly deletable by OneNote COM. "
                 f"Deletable object types: {allowed}."
             )
-        _bridge("delete_page_content", page_id=page_id, object_id=object_id, force=True)
+        if matched is None or not matched.get("delete_supported"):
+            raise ValueError("object_id is not a currently verified deletable page content object.")
+        _bridge("delete_page_content", page_id=page_id, object_id=object_id, force=False)
+        remaining = collect_page_objects(_page_xml(page_id, "all"))
+        if any(item.get("object_id") == object_id for item in remaining):
+            raise RuntimeError("Delete returned success, but the page content object still exists.")
         return _ok(page_id=page_id, object_id=object_id, deleted=True)
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
+
+
+async def _delete_resource(
+    object_id: str,
+    resource_type: str,
+    expected_name: str,
+    expected_parent_id: str,
+    expected_modified: str | None,
+    permanently: bool,
+) -> dict[str, Any]:
+    policy = MutationPolicy.current()
+    policy.require_delete(permanently=permanently)
+    item = _confirm_item(
+        object_id,
+        resource_type,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        expected_modified=expected_modified,
+    )
+    _bridge("delete_hierarchy", object_id=object_id, permanently=permanently)
+    final_state: dict[str, Any] | None = None
+    for attempt in range(8):
+        try:
+            final_state = _domain_item(object_id, resource_type)
+        except ValueError:
+            final_state = None
+        if final_state is None or (not permanently and final_state["is_in_recycle_bin"]):
+            return _ok(
+                item=item,
+                object_id=object_id,
+                permanently=permanently,
+                deleted=True,
+                final_state=final_state,
+            )
+        if attempt < 7:
+            time.sleep(0.5)
+    raise RuntimeError("Delete returned success, but the object remained active after read-back verification.")
 
 
 @mcp.tool()
-async def delete_hierarchy(object_identifier: str, permanently: bool = False) -> dict[str, Any]:
-    """Delete a notebook, section group, section, or page."""
+async def delete_section_group(
+    section_group_id: str,
+    expected_name: str,
+    expected_parent_id: str,
+    expected_modified: str | None = None,
+    permanently: bool = False,
+) -> dict[str, Any]:
+    """Delete a confirmed section group; recycle-bin deletion is the default."""
 
     try:
+        return await _delete_resource(
+            section_group_id, "section_group", expected_name, expected_parent_id, expected_modified, permanently
+        )
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def delete_section(
+    section_id: str,
+    expected_name: str,
+    expected_parent_id: str,
+    expected_modified: str | None = None,
+    permanently: bool = False,
+) -> dict[str, Any]:
+    """Delete a confirmed section; recycle-bin deletion is the default."""
+
+    try:
+        return await _delete_resource(section_id, "section", expected_name, expected_parent_id, expected_modified, permanently)
+    except Exception as exc:
+        return _caught(exc)
+
+
+@mcp.tool()
+async def delete_page(
+    page_id: str,
+    expected_title: str,
+    expected_section_id: str,
+    expected_modified: str | None = None,
+    permanently: bool = False,
+) -> dict[str, Any]:
+    """Delete a confirmed page; recycle-bin deletion is the default."""
+
+    try:
+        page = _confirm_page(
+            page_id,
+            expected_title=expected_title,
+            expected_section_id=expected_section_id,
+            expected_modified=expected_modified,
+        )
+        return await _delete_resource(
+            page_id,
+            "page",
+            page["title"],
+            page["parent_id"],
+            expected_modified,
+            permanently,
+        )
+    except Exception as exc:
+        return _caught(exc)
+
+
+@_advanced_tool
+async def delete_hierarchy(object_identifier: str, permanently: bool = False) -> dict[str, Any]:
+    """Development profile only: legacy generic hierarchy delete (Notebook is always rejected)."""
+
+    try:
+        MutationPolicy.current().require_raw_xml()
+        MutationPolicy.current().require_delete(permanently=permanently)
         item = _resolve_item(object_identifier)
+        if item["type"] == "notebook":
+            raise ValueError("Notebook deletion is unsupported; close_notebook is not deletion.")
         deleted_ids = []
         for attempt in range(4):
             object_id = item["id"]
@@ -813,25 +1632,31 @@ async def delete_hierarchy(object_identifier: str, permanently: bool = False) ->
                 raise RuntimeError(f"Delete returned success, but '{item['path']}' still exists with ID {item['id']}.")
         raise RuntimeError("Delete did not complete.")
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
-@mcp.tool()
-async def update_page_xml(xml: str, force: bool = False) -> dict[str, Any]:
+@_advanced_tool
+async def update_page_xml(xml: str) -> dict[str, Any]:
     """Advanced: submit raw OneNote page XML to UpdatePageContent."""
 
     try:
-        _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=force)
-        return _ok(updated=True, force=force)
+        policy = MutationPolicy.current()
+        policy.require_raw_xml()
+        policy.require_write()
+        _bridge("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
+        return _ok(updated=True)
     except Exception as exc:
         return _error(str(exc))
 
 
-@mcp.tool()
+@_advanced_tool
 async def update_hierarchy_xml(xml: str) -> dict[str, Any]:
     """Advanced: submit raw OneNote hierarchy XML to UpdateHierarchy."""
 
     try:
+        policy = MutationPolicy.current()
+        policy.require_raw_xml()
+        policy.require_write()
         _bridge("update_hierarchy", xml=xml, schema=XML_SCHEMA_2013)
         return _ok(updated=True)
     except Exception as exc:
@@ -839,7 +1664,7 @@ async def update_hierarchy_xml(xml: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def publish_object(object_identifier: str, target_path: str, format: str = "pdf", overwrite: bool = False) -> dict[str, Any]:
+async def publish_object(object_id: str, target_path: str, format: str = "pdf", overwrite: bool = False) -> dict[str, Any]:
     """Export a notebook, section, or page to a local file."""
 
     try:
@@ -850,28 +1675,30 @@ async def publish_object(object_identifier: str, target_path: str, format: str =
         if output.exists() and not overwrite:
             raise ValueError(f"Target already exists: {target_path}")
         output.parent.mkdir(parents=True, exist_ok=True)
-        object_id = _resolve_id(object_identifier)
+        item = _domain_item(object_id)
+        if item["resource_type"] not in {"notebook", "section", "page"}:
+            raise ValueError("publish_object supports notebook, section, or page IDs.")
         result = _bridge(
             "publish",
             object_id=object_id,
             target_path=str(output),
             format=_enum("format", format, PUBLISH_FORMATS),
         )
-        return _ok(path=result["path"])
+        return _ok(item=item, path=result["path"], format=format.casefold())
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def navigate_to(object_identifier: str, page_content_object_id: str = "", new_window: bool = False) -> dict[str, Any]:
+async def navigate_to(object_id: str, page_content_object_id: str = "", new_window: bool = False) -> dict[str, Any]:
     """Open a OneNote object in the desktop app."""
 
     try:
-        object_id = _resolve_id(object_identifier)
+        item = _domain_item(object_id)
         _bridge("navigate_to", object_id=object_id, page_content_object_id=page_content_object_id, new_window=new_window)
-        return _ok(navigated=True)
+        return _ok(item=item, navigated=True)
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
@@ -886,34 +1713,54 @@ async def navigate_to_url(url: str, new_window: bool = False) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def sync_hierarchy(object_identifier: str) -> dict[str, Any]:
-    """Ask OneNote to sync a notebook hierarchy object."""
+async def sync_notebook(notebook_id: str) -> dict[str, Any]:
+    """Ask OneNote to sync one Notebook selected by exact COM object ID."""
 
     try:
-        object_id = _resolve_id(object_identifier)
-        _bridge("sync_hierarchy", object_id=object_id)
-        return _ok(object_id=object_id, synced=True)
+        item = _domain_item(notebook_id, "notebook")
+        _bridge("sync_hierarchy", object_id=notebook_id)
+        return _ok(item=item, synced=True)
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
 @mcp.tool()
-async def close_notebook(notebook_identifier: str, force: bool = False) -> dict[str, Any]:
+async def close_notebook(notebook_id: str, expected_name: str, expected_modified: str | None = None) -> dict[str, Any]:
     """Close a notebook in the desktop OneNote app."""
 
     try:
-        notebook_id = _resolve_id(notebook_identifier, "notebook")
-        _bridge("close_notebook", notebook_id=notebook_id, force=force)
-        return _ok(notebook_id=notebook_id, closed=True)
+        MutationPolicy.current().require_write()
+        item = _confirm_item(
+            notebook_id,
+            "notebook",
+            expected_name=expected_name,
+            expected_parent_id=None,
+            expected_modified=expected_modified,
+        )
+        _bridge("close_notebook", notebook_id=notebook_id, force=False)
+        closed_state: dict[str, Any] | None = None
+        for attempt in range(8):
+            try:
+                closed_state = _domain_item(notebook_id, "notebook")
+            except ValueError:
+                closed_state = None
+            if closed_state is None or closed_state.get("is_open") is False:
+                return _ok(item=item, closed=True, final_state=closed_state)
+            if attempt < 7:
+                time.sleep(0.5)
+        raise RuntimeError("Close returned success, but the Notebook still appears open after read-back verification.")
     except Exception as exc:
-        return _error(str(exc))
+        return _caught(exc)
 
 
-@mcp.tool()
+@_advanced_tool
 async def merge_sections(source_section_identifier: str, destination_section_identifier: str) -> dict[str, Any]:
     """Merge one section into another."""
 
     try:
+        policy = MutationPolicy.current()
+        policy.require_raw_xml()
+        policy.require_write()
         source_id = _resolve_id(source_section_identifier, "section")
         destination_id = _resolve_id(destination_section_identifier, "section")
         _bridge("merge_sections", source_section_id=source_id, destination_section_id=destination_id)
@@ -922,11 +1769,12 @@ async def merge_sections(source_section_identifier: str, destination_section_ide
         return _error(str(exc))
 
 
-@mcp.tool()
+@_advanced_tool
 async def set_filing_location(filing_location: str, filing_location_type: str, section_or_page_identifier: str) -> dict[str, Any]:
     """Set OneNote's local filing location for email, web clips, printouts, and similar content."""
 
     try:
+        MutationPolicy.current().require_write()
         object_id = _resolve_id(section_or_page_identifier)
         _bridge(
             "set_filing_location",
