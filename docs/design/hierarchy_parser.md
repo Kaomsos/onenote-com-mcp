@@ -20,7 +20,7 @@ hierarchy.parse_hierarchy
       └─ server tools / mutation confirmation / search
 ```
 
-`xml_utils.py` 只负责 Page XML、正文/对象提取和 Page update XML 构造，不再定义 `HierarchyItem`、层级解析或标识符解析。
+`page/` 包负责 Page XML、正文/对象提取、内容格式化和 Page update XML 构造，不定义 `HierarchyItem`、层级解析或标识符解析。
 
 ## 2. 公开内部 API
 
@@ -64,7 +64,7 @@ matches = parse_hierarchy(find_pages_xml, catalog=catalog)
 
 ## 5. 已删除的旧层
 
-以下实现已移除：
+以下原 `xml_utils.py` 层级实现已移除：
 
 - `xml_utils.HierarchyItem` 扁平 dataclass；
 - `xml_utils.parse_hierarchy` 的原始 attribute 展开；

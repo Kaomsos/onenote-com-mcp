@@ -34,9 +34,9 @@
 
 - [server.py](../../src/local_onenote_mcp/server.py)：36 个公开 MCP 工具、标识符解析、搜索和业务返回；
 - [bridge.py](../../src/local_onenote_mcp/bridge.py)：20 个固定 PowerShell/COM 操作，以及每次调用创建 PowerShell 进程和 `OneNote.Application` 的执行方式；
-- [xml_utils.py](../../src/local_onenote_mcp/xml_utils.py)：层级扁平化、Page 文本/内容对象解析、HTML/Markdown 到 OneNote XML 的转换；
+- 审计时的 `xml_utils.py`（现已拆分至 [page/](../../src/local_onenote_mcp/page/)）：当时负责层级扁平化、Page 文本/内容对象解析、HTML/Markdown 到 OneNote XML 的转换；
 - [constants.py](../../src/local_onenote_mcp/constants.py)：层级 Scope、创建类型、PageInfo、Publish 格式等枚举；
-- [test_server.py](../../tests/test_server.py) 与 [test_xml_utils.py](../../tests/test_xml_utils.py)：当前 Mock 实际覆盖范围；
+- [test_server.py](../../tests/test_server.py) 与审计时的 `test_xml_utils.py`（现为 [test_page.py](../../tests/test_page.py)）：Mock 实际覆盖范围；
 - [README](../../README.md)：项目对外宣称的产品能力。
 
 当前真实架构是：

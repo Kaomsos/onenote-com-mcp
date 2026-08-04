@@ -17,7 +17,7 @@ flowchart LR
 
     Tools --> Policy["policy.py：MutationPolicy / SearchBudget"]
     Tools --> Hierarchy["hierarchy.py：层级 XML → typed resources"]
-    Tools --> PageXML["xml_utils.py：Page 内容解析与更新 XML"]
+    Tools --> PageXML["page/：Page 解析、格式化与更新 XML"]
     Tools --> Images["image_utils.py：图片尺寸解析"]
     Tools --> Bridge["bridge.py：OneNoteBridge"]
 
@@ -31,7 +31,7 @@ flowchart LR
 
 - `server.py` 知道所有模块，但领域和解析模块不知道 MCP 或 COM；
 - `hierarchy.py` 是唯一层级解析入口；
-- `xml_utils.py` 只处理 Page 内容和 Page update XML，不解析层级；
+- `page/` 分别处理 Page 内容解析、格式转换和 update XML 构造，不解析层级；
 - `bridge.py` 不理解领域对象，只执行固定白名单操作；
 - 写操作必须先经过 `MutationPolicy` 和对象确认，再进入 bridge。
 
@@ -42,7 +42,12 @@ src/local_onenote_mcp/
 ├─ server.py       MCP 注册、应用服务编排、mutation 回读
 ├─ domain.py       稳定领域模型和 PageContentObject 规范化
 ├─ hierarchy.py    唯一层级解析器、关系推导和资源定位
-├─ xml_utils.py    Page XML 读取/构造、HTML/Markdown 转换
+├─ page/
+│  ├─ __init__.py  Page 子系统公开 facade
+│  ├─ parser.py    Page XML → title/text/content objects
+│  ├─ formatting.py plain/HTML/Markdown → 内容块
+│  ├─ builder.py   typed Page content → UpdatePageContent XML
+│  └─ models.py    TextBlock/TableBlock/TableCell 内部模型
 ├─ bridge.py       JSON 临时文件 + PowerShell + COM 白名单
 ├─ policy.py       写删开关和 Search 预算
 ├─ image_utils.py  PNG/JPEG/GIF/BMP 尺寸与比例换算
@@ -55,7 +60,10 @@ src/local_onenote_mcp/
 | `server.py` | MCP/Application | MCP 参数 | 统一 `{ok, complete, warnings, ...}` envelope |
 | `domain.py` | Domain | 已规范化字段、Page 对象中间记录 | dataclass 或稳定字典 |
 | `hierarchy.py` | Mapper/Domain service | OneNote hierarchy XML | Notebook/SectionGroup/Section/Page typed 字典 |
-| `xml_utils.py` | Page mapper/XML builder | Page XML、plain/HTML/Markdown | 文本、内容对象、OneNote Page update XML |
+| `page.parser` | Page mapper | Page XML | 标题、正文、内容对象中间记录 |
+| `page.formatting` | Content formatting | plain/HTML/Markdown | 净化 HTML、TextBlock/TableBlock |
+| `page.builder` | Page XML builder | 标题、正文、图片和内容块 | OneNote Page update XML |
+| `page.models` | Page internal model | 净化后的内容 | TextBlock/TableBlock/TableCell |
 | `bridge.py` | Infrastructure adapter | 固定 operation + JSON 参数 | COM 结果字典或 `OneNoteBridgeError` |
 | `policy.py` | Application policy | 环境变量 | mutation 决策和 SearchBudget |
 | `image_utils.py` | Utility | 本地图片头和目标尺寸 | 原始或等比尺寸 |
@@ -183,7 +191,7 @@ classDiagram
 - `OneNoteBridgeError`：封装 PowerShell 失败、COM 错误和超时，可保存 HRESULT；server 将其转换为 `RuntimeError/backend_error`。当前不会返回 HRESULT，但错误 message 仍可能包含 COM 提供的文本。
 - `ImageDimensionError`：图片头不受支持或损坏时由 `image_utils.py` 抛出。
 
-### 3.4 Page 内容转换类
+### 3.4 Page 包内容转换类
 
 ```mermaid
 classDiagram
@@ -217,12 +225,14 @@ classDiagram
 
 | 类 | 职责 |
 | --- | --- |
-| `InlineHTMLSanitizer` | HTMLParser 子类；保留允许的 inline tag/style/link，移除 script/style 和不安全属性。 |
-| `OneNoteHTMLBlockParser` | 将 HTML 拆成有序 TextBlock/TableBlock；OneNote table 必须生成为原生 `one:Table`。 |
-| `HTMLTextExtractor` | 从 `one:T` 内嵌 HTML 提取可见纯文本。 |
-| `TextBlock` | 一个已净化文本块。 |
-| `TableCell` | 原生 OneNote table cell 的 HTML 和 header 标记。 |
-| `TableBlock` | 二维 TableCell 列表。 |
+| `InlineHTMLSanitizer` | `page.formatting`；保留允许的 inline tag/style/link，移除 script/style 和不安全属性。 |
+| `OneNoteHTMLBlockParser` | `page.formatting`；将 HTML 拆成有序 TextBlock/TableBlock。 |
+| `HTMLTextExtractor` | `page.parser`；从 `one:T` 内嵌 HTML 提取可见纯文本。 |
+| `TextBlock` | `page.models`；一个已净化文本块。 |
+| `TableCell` | `page.models`；原生 OneNote table cell 的 HTML 和 header 标记。 |
+| `TableBlock` | `page.models`；二维 TableCell 列表。 |
+
+`page.__init__` 是 facade，只重新导出 server 需要的稳定入口；子模块依赖方向为 `builder → formatting → models`，`parser` 独立于写入链。
 
 ## 4. 层级解析器与领域模型
 
@@ -296,7 +306,7 @@ append_to_page
   → MutationPolicy.require_write
   → _confirm_page（ID/title/section/modified）
   → GetPageContent + 内容摘要
-  → xml_utils.build_page_update_xml
+  → page.builder.build_page_update_xml
   → OneNoteBridge(update_page_content)
   → GetPageContent + 新摘要
   → typed Page 回读
@@ -345,7 +355,7 @@ append_to_page
 | --- | --- | --- |
 | `test_domain.py` | 领域序列化和关系字段 | 否 |
 | `test_hierarchy.py` | 完整/局部层级 XML、hydration、解析歧义 | 否 |
-| `test_xml_utils.py` | Page XML、HTML/Markdown、table、内容对象 | 否 |
+| `test_page.py` | Page parser/builder/formatting、table、内容对象 | 否 |
 | `test_policy.py` | 环境开关和 SearchBudget | 否 |
 | `test_server.py` | MCP 应用编排和 mock bridge 合同 | 默认只读；mutation 测试标记为 `write_contract` |
 
