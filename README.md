@@ -10,6 +10,7 @@ A local Microsoft OneNote MCP server for Windows. It controls the OneNote deskto
 - **COM-First Engineering:** No direct binary `.one` file manipulation. All writes and reads leverage OneNote’s native COM engine, ensuring maximum data integrity and sync compatibility.
 - **Safe Execution Bridge:** Inputs are passed safely through JSON-based temp files, completely avoiding PowerShell string interpolation or risk of command injections.
 - **Typed Object Surface:** Stable Notebook, SectionGroup, Section, Page, and PageContentObject contracts with ID-only mutations.
+- **Single Hierarchy Parser:** Complete hierarchy and Search fragments flow through one bridge-independent typed parser; legacy raw-attribute hierarchy models are removed.
 - **Safe-by-Default Mutations:** Writes, deletes, permanent deletes, experimental moves, and raw development tools are independently disabled by default.
 - **Bounded Search:** Local text scanning requires an explicit scope and enforces candidate, per-page, total-character, and time budgets.
 
