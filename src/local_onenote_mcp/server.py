@@ -38,7 +38,7 @@ from .hierarchy import (
     resolve_resource,
 )
 from .policy import MutationPolicy, SearchBudget, env_bool
-from .xml_utils import (
+from .page import (
     build_image_page_update_xml,
     build_page_update_xml,
     collect_page_objects,
@@ -54,6 +54,7 @@ MAX_TEXT_CHARS = int(os.environ.get("LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS", "60000")
 
 mcp = FastMCP(MCP_NAME)
 bridge = OneNoteBridge(timeout_seconds=DEFAULT_TIMEOUT)
+ET.register_namespace("one", ONE_NS)
 
 
 def _error(message: str, code: str = "operation_failed", **details: Any) -> dict[str, Any]:

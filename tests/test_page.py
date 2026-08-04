@@ -1,6 +1,6 @@
 from local_onenote_mcp.image_utils import image_dimensions, proportional_dimensions
-from local_onenote_mcp import xml_utils
-from local_onenote_mcp.xml_utils import (
+from local_onenote_mcp.page import formatting
+from local_onenote_mcp.page import (
     build_image_page_update_xml,
     build_page_update_xml,
     collect_page_objects,
@@ -81,7 +81,7 @@ def test_html_table_cells_preserve_inline_formatting():
 
 def test_markdown_content_uses_onemore_markdig_html(monkeypatch):
     monkeypatch.setattr(
-        xml_utils,
+        formatting,
         "markdown_to_html",
         lambda content: "<h1>Heading</h1><table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><tr><td>1</td><td><strong>2</strong></td></tr></tbody></table>",
     )

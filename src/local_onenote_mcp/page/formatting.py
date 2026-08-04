@@ -1,4 +1,4 @@
-"""OneNote XML and inline HTML helpers."""
+"""Sanitize Page content and convert plain/HTML/Markdown into content blocks."""
 
 from __future__ import annotations
 
@@ -8,15 +8,10 @@ import re
 import subprocess
 import tempfile
 import winreg
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Literal
 
-from .constants import ONE_NS
-
-ET.register_namespace("one", ONE_NS)
+from .models import ContentBlock, TableBlock, TableCell, TextBlock
 
 
 BLOCK_TAGS = {
@@ -76,8 +71,6 @@ INLINE_STYLE_TAGS = {
     "s": "text-decoration:line-through",
     "strike": "text-decoration:line-through",
 }
-
-DELETABLE_PAGE_OBJECT_TYPES = {"Outline", "Image", "InkDrawing", "FileAttachment", "InsertedFile", "MediaFile"}
 
 HEADING_STYLES = {
     "h1": "font-size:20.0pt;font-weight:bold",
@@ -167,31 +160,8 @@ class InlineHTMLSanitizer(HTMLParser):
             self.parts.append("<br/>")
 
 
-@dataclass
-class TextBlock:
-    html: str
-
-
-@dataclass
-class TableCell:
-    html: str
-    header: bool = False
-
-
-@dataclass
-class TableBlock:
-    rows: list[list[TableCell]]
-
-
-ContentBlock = TextBlock | TableBlock
-
-
 class OneNoteHTMLBlockParser(HTMLParser):
-    """Convert simple HTML into ordered text/table blocks for OneNote XML.
-
-    OneNote's COM API does not preserve HTML <table> markup when it is put
-    inside one:T CDATA. Tables must be emitted as native one:Table elements.
-    """
+    """Convert simple HTML into ordered text/table blocks for OneNote XML."""
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -266,7 +236,6 @@ class OneNoteHTMLBlockParser(HTMLParser):
             return
         if self._current_cell is not None:
             self._current_cell.handle_starttag(tag, attrs)
-            return
 
     def _handle_table_endtag(self, tag: str) -> None:
         if self._drop_stack:
@@ -297,54 +266,13 @@ class OneNoteHTMLBlockParser(HTMLParser):
     def _close_cell(self) -> None:
         if self._current_cell is None:
             return
-        cell_html = self._cell_html()
+        cell_html = self._current_cell.get_html()
         if cell_html or self._current_row is not None:
             if self._current_row is None:
                 self._current_row = []
             self._current_row.append(TableCell(html=cell_html, header=self._current_cell_header))
         self._current_cell = None
         self._current_cell_header = False
-
-    def _cell_html(self) -> str:
-        if self._current_cell is None:
-            return ""
-        return self._current_cell.get_html()
-
-    def _append_cell_break(self) -> None:
-        if self._current_cell is None:
-            return
-        self._current_cell.handle_starttag("br", [])
-
-
-class HTMLTextExtractor(HTMLParser):
-    """Extract readable text from a OneNote T element's inline HTML fragment."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() in {"br", "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}:
-            self._newline()
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in {"p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6"}:
-            self._newline()
-
-    def handle_data(self, data: str) -> None:
-        if data:
-            self.parts.append(data)
-
-    def text(self) -> str:
-        value = "".join(self.parts)
-        value = value.replace("\x00", "")
-        value = re.sub(r"[ \t]+\n", "\n", value)
-        value = re.sub(r"\n{3,}", "\n\n", value)
-        return value.strip()
-
-    def _newline(self) -> None:
-        if not self.parts or not self.parts[-1].endswith("\n"):
-            self.parts.append("\n")
 
 
 def normalize_content(content: str, content_format: str = "plain") -> str:
@@ -363,6 +291,13 @@ def normalize_content(content: str, content_format: str = "plain") -> str:
     raise ValueError("content_format must be 'plain', 'html', or 'markdown'.")
 
 
+def html_content_blocks(content: str) -> list[ContentBlock]:
+    parser = OneNoteHTMLBlockParser()
+    parser.feed(content)
+    parser.close()
+    return parser.get_blocks()
+
+
 def _registry_value(root: int, subkey: str, value_name: str) -> str | None:
     try:
         with winreg.OpenKey(root, subkey) as key:
@@ -379,7 +314,6 @@ def find_markdig_dll() -> Path:
     candidates: list[Path] = []
     if env_path:
         candidates.append(Path(env_path))
-
     addin_path = _registry_value(
         winreg.HKEY_CURRENT_USER,
         r"Software\Microsoft\Windows\CurrentVersion\App Paths\River.OneMoreAddIn.dll",
@@ -387,7 +321,6 @@ def find_markdig_dll() -> Path:
     )
     if addin_path:
         candidates.append(Path(addin_path).parent / "Markdig.Signed.dll")
-
     candidates.extend(
         [
             Path(r"C:\Program Files\River\OneMoreAddIn\Markdig.Signed.dll"),
@@ -484,248 +417,3 @@ def _remove_quietly(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def html_fragment_to_text(fragment: str) -> str:
-    parser = HTMLTextExtractor()
-    parser.feed(fragment or "")
-    parser.close()
-    return parser.text()
-
-
-def cdata(value: str) -> str:
-    return "<![CDATA[" + value.replace("]]>", "]]]]><![CDATA[>") + "]]>"
-
-
-def attr(value: str) -> str:
-    return html.escape(value, quote=True)
-
-
-def one_t(fragment_html: str) -> str:
-    return f"<one:T>{cdata(fragment_html)}</one:T>"
-
-
-def oe_children(fragment_html: str) -> str:
-    parts = re.split(r"<br\s*/?>", fragment_html)
-    if not parts:
-        parts = [""]
-    return "".join(f"<one:OE>{one_t(part)}</one:OE>" for part in parts)
-
-
-def _one_table_cell(cell: TableCell) -> str:
-    shading = ' shadingColor="#D9EAF7"' if cell.header else ""
-    font_size = "10.5pt" if cell.header else "10.0pt"
-    style_attr = f' style="font-family:\'Microsoft YaHei\';font-size:{font_size}"'
-    cell_html = cell.html
-    if cell.header:
-        cell_html = f"<span style='font-weight:bold'>{cell_html}</span>"
-    return (
-        f"<one:Cell{shading}>"
-        "<one:OEChildren>"
-        f'<one:OE alignment="left" quickStyleIndex="0"{style_attr}>{one_t(cell_html)}</one:OE>'
-        "</one:OEChildren>"
-        "</one:Cell>"
-    )
-
-
-def _table_column_widths(rows: list[list[TableCell]]) -> list[float]:
-    column_count = max((len(row) for row in rows), default=0)
-    if column_count <= 0:
-        return []
-    # Keep tables comfortably inside a normal OneNote page width while still
-    # allowing enough room for short checklist-style tables.
-    total_width = 960.0
-    width = max(90.0, min(220.0, total_width / column_count))
-    return [width] * column_count
-
-
-def one_table(rows: list[list[TableCell]]) -> str:
-    widths = _table_column_widths(rows)
-    if not widths:
-        return ""
-    column_xml = "".join(
-        f'<one:Column index="{index}" width="{width:.1f}" isLocked="true"/>'
-        for index, width in enumerate(widths)
-    )
-    row_xml = []
-    column_count = len(widths)
-    for row in rows:
-        padded = row + [TableCell(html="")] * (column_count - len(row))
-        row_xml.append("<one:Row>" + "".join(_one_table_cell(cell) for cell in padded[:column_count]) + "</one:Row>")
-    return (
-        '<one:OE alignment="left"><one:Table bordersVisible="true" hasHeaderRow="false">'
-        f"<one:Columns>{column_xml}</one:Columns>"
-        f"{''.join(row_xml)}"
-        "</one:Table></one:OE>"
-    )
-
-
-def html_content_blocks(content: str) -> list[ContentBlock]:
-    parser = OneNoteHTMLBlockParser()
-    parser.feed(content)
-    parser.close()
-    return parser.get_blocks()
-
-
-def content_to_oe_xml(content: str, content_format: Literal["plain", "html", "markdown", "md"] = "plain") -> str:
-    if content_format == "plain":
-        return oe_children(normalize_content(content, "plain"))
-    if content_format == "html":
-        blocks = html_content_blocks(content)
-        if not blocks:
-            return ""
-        parts: list[str] = []
-        for block in blocks:
-            if isinstance(block, TextBlock):
-                parts.append(oe_children(block.html))
-            else:
-                parts.append(one_table(block.rows))
-        return "".join(parts)
-    if content_format in {"markdown", "md"}:
-        return content_to_oe_xml(markdown_to_html(content), "html")
-    raise ValueError("content_format must be 'plain', 'html', or 'markdown'.")
-
-
-def build_outline_xml(
-    content: str,
-    *,
-    content_format: Literal["plain", "html", "markdown", "md"] = "plain",
-    object_id: str | None = None,
-    x: float | None = None,
-    y: float | None = None,
-) -> str:
-    object_attr = f' objectID="{attr(object_id)}"' if object_id else ""
-    position = ""
-    if x is not None or y is not None:
-        px = 36.0 if x is None else float(x)
-        py = 86.0 if y is None else float(y)
-        position = f'<one:Position x="{px:.2f}" y="{py:.2f}" z="0"/>'
-    return (
-        f"<one:Outline{object_attr}>"
-        f"{position}"
-        f"<one:OEChildren>{content_to_oe_xml(content, content_format)}</one:OEChildren>"
-        "</one:Outline>"
-    )
-
-
-def build_title_xml(title: str) -> str:
-    return f"<one:Title><one:OE>{one_t(html.escape(title, quote=False))}</one:OE></one:Title>"
-
-
-def build_page_update_xml(
-    page_id: str,
-    *,
-    title: str | None = None,
-    content: str | None = None,
-    content_format: str = "plain",
-    x: float | None = None,
-    y: float | None = None,
-) -> str:
-    parts = [f'<one:Page xmlns:one="{ONE_NS}" ID="{attr(page_id)}">']
-    if title is not None:
-        parts.append(build_title_xml(title))
-    if content is not None and content != "":
-        parts.append(build_outline_xml(content, content_format=content_format, x=x, y=y))
-    parts.append("</one:Page>")
-    return "".join(parts)
-
-
-def build_image_page_update_xml(
-    page_id: str,
-    *,
-    image_base64: str,
-    image_format: str,
-    x: float = 36.0,
-    y: float = 120.0,
-    width: float | None = None,
-    height: float | None = None,
-) -> str:
-    size = ""
-    if width is not None and height is not None:
-        size = f'<one:Size width="{float(width):.2f}" height="{float(height):.2f}"/>'
-    return (
-        f'<one:Page xmlns:one="{ONE_NS}" ID="{attr(page_id)}">'
-        "<one:Outline>"
-        f'<one:Position x="{float(x):.2f}" y="{float(y):.2f}" z="0"/>'
-        "<one:OEChildren><one:OE>"
-        f'<one:Image format="{attr(image_format.lower())}">'
-        f"{size}<one:Data>{image_base64}</one:Data>"
-        "</one:Image>"
-        "</one:OE></one:OEChildren>"
-        "</one:Outline>"
-        "</one:Page>"
-    )
-
-
-def local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
-
-
-def parse_xml(xml: str) -> ET.Element:
-    return ET.fromstring(xml.encode("utf-8"))
-
-
-def text_from_page_xml(xml: str) -> str:
-    root = parse_xml(xml)
-    texts = []
-    for node in root.iter():
-        if local_name(node.tag) == "T" and node.text:
-            texts.append(html_fragment_to_text(node.text))
-    return "\n\n".join(t for t in texts if t).strip()
-
-
-def title_from_page_xml(xml: str) -> str | None:
-    root = parse_xml(xml)
-    for title in root.iter():
-        if local_name(title.tag) != "Title":
-            continue
-        for node in title.iter():
-            if local_name(node.tag) == "T" and node.text:
-                value = html_fragment_to_text(node.text)
-                if value:
-                    return value
-    return None
-
-
-def collect_page_objects(xml: str) -> list[dict[str, Any]]:
-    root = parse_xml(xml)
-    objects = []
-    content_without_own_id = {"Image", "FileAttachment", "InsertedFile", "MediaFile"}
-
-    def walk(
-        node: ET.Element,
-        container_object_id: str | None = None,
-        deletable_container_id: str | None = None,
-        in_title: bool = False,
-    ) -> None:
-        kind = local_name(node.tag)
-        next_in_title = in_title or kind == "Title"
-        object_id = node.attrib.get("objectID") or node.attrib.get("ID")
-        next_container_id = object_id or container_object_id
-        delete_supported = kind in DELETABLE_PAGE_OBJECT_TYPES and bool(object_id)
-        next_deletable_container_id = object_id if delete_supported else deletable_container_id
-
-        if not next_in_title and kind != "Page" and (object_id or kind in content_without_own_id):
-            record: dict[str, Any] = {"type": kind}
-            if object_id:
-                record["object_id"] = object_id
-            elif container_object_id:
-                record["container_object_id"] = container_object_id
-            if container_object_id and object_id != container_object_id:
-                record["parent_object_id"] = container_object_id
-            record["delete_supported"] = delete_supported
-            if delete_supported and object_id:
-                record["delete_object_id"] = object_id
-            elif deletable_container_id:
-                record["delete_object_id"] = deletable_container_id
-            if "callbackID" in node.attrib:
-                record["callback_id"] = node.attrib["callbackID"]
-            if "format" in node.attrib:
-                record["format"] = node.attrib["format"]
-            objects.append(record)
-
-        for child in list(node):
-            walk(child, next_container_id, next_deletable_container_id, next_in_title)
-
-    walk(root)
-    return objects

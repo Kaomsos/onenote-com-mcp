@@ -10,6 +10,7 @@
   "files": [
     "bin/",
     "src/local_onenote_mcp/*.py",
+    "src/local_onenote_mcp/page/*.py",
     "pyproject.toml",
     "README.md",
     "LICENSE"
