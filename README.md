@@ -6,6 +6,8 @@ A local Microsoft OneNote MCP server for Windows. It controls the OneNote deskto
 
 ## Design & Architecture
 
+项目文档的分类、权威来源和 TODO 维护规则见 [`docs/README.md`](docs/README.md)；项目级待办统一收录在 [`docs/todo/README.md`](docs/todo/README.md)。
+
 - **Local-Only Boundary:** Every operation executes directly through the local OneNote desktop installation. No data ever leaves your computer.
 - **COM-First Engineering:** No direct binary `.one` file manipulation. All writes and reads leverage OneNote’s native COM engine, ensuring maximum data integrity and sync compatibility.
 - **Safe Execution Bridge:** Inputs are passed safely through JSON-based temp files, completely avoiding PowerShell string interpolation or risk of command injections.
