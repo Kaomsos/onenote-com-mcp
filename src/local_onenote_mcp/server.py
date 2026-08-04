@@ -28,16 +28,21 @@ from .constants import (
     XML_SCHEMA_2013,
 )
 from .image_utils import proportional_dimensions
-from .domain import content_objects, filter_resources, parse_domain_hierarchy
+from .domain import content_objects
+from .hierarchy import (
+    display_name,
+    filter_resources,
+    find_resource_by_id,
+    find_resource_by_path,
+    parse_hierarchy,
+    resolve_resource,
+)
 from .policy import MutationPolicy, SearchBudget, env_bool
 from .xml_utils import (
     build_image_page_update_xml,
     build_page_update_xml,
     collect_page_objects,
     DELETABLE_PAGE_OBJECT_TYPES,
-    filter_items,
-    parse_hierarchy,
-    resolve_item,
     text_from_page_xml,
     title_from_page_xml,
 )
@@ -93,31 +98,23 @@ def _hierarchy_xml(start_id: str = "", scope: str = "pages") -> str:
     )["xml"]
 
 
-def _hierarchy_items(start_id: str = "", scope: str = "pages") -> list[dict[str, Any]]:
-    return parse_hierarchy(_hierarchy_xml(start_id, scope))
-
-
 def _domain_items(include_recycle_bin: bool = False) -> list[dict[str, Any]]:
-    items = parse_domain_hierarchy(_hierarchy_xml("", "pages"))
+    items = parse_hierarchy(_hierarchy_xml("", "pages"))
     return items if include_recycle_bin else [item for item in items if not item["is_in_recycle_bin"]]
 
 
 def _domain_item(object_id: str, resource_type: str | None = None) -> dict[str, Any]:
     if not object_id:
         raise ValueError("An object ID is required.")
-    matches = [
-        item
-        for item in _domain_items(include_recycle_bin=True)
-        if item["id"] == object_id and (resource_type is None or item["resource_type"] == resource_type)
-    ]
-    if len(matches) != 1:
+    item = find_resource_by_id(_domain_items(include_recycle_bin=True), object_id, resource_type)
+    if item is None:
         label = resource_type or "object"
         raise ValueError(f"No {label} found for ID '{object_id}'.")
-    return matches[0]
+    return item
 
 
 def _item_name(item: dict[str, Any]) -> str:
-    return item.get("title") or item.get("name") or ""
+    return display_name(item)
 
 
 def _confirm_item(
@@ -164,37 +161,12 @@ def _confirm_page(
     return item
 
 
-def _resolve_id(identifier: str, item_type: str | None = None) -> str:
-    if not identifier:
-        return ""
-    items = _hierarchy_items("", "pages")
-    return resolve_item(items, identifier, item_type)["id"]
+def _resolve_resource(identifier: str, resource_type: str | None = None) -> dict[str, Any]:
+    return resolve_resource(_domain_items(include_recycle_bin=True), identifier, resource_type)
 
 
-def _resolve_item(identifier: str, item_type: str | None = None) -> dict[str, Any]:
-    items = _hierarchy_items("", "pages")
-    return resolve_item(items, identifier, item_type)
-
-
-def _find_item_by_path(path: str, item_type: str | None = None) -> dict[str, Any] | None:
-    target = path.casefold()
-    for item in _hierarchy_items("", "pages"):
-        if item_type and item.get("type") != item_type:
-            continue
-        if item.get("path", "").casefold() == target:
-            return item
-    return None
-
-
-def _find_item_by_id(object_id: str, item_type: str | None = None) -> dict[str, Any] | None:
-    if not object_id:
-        return None
-    for item in _hierarchy_items("", "pages"):
-        if item_type and item.get("type") != item_type:
-            continue
-        if item.get("id") == object_id:
-            return item
-    return None
+def _find_resource_path(path: str, resource_type: str | None = None) -> dict[str, Any] | None:
+    return find_resource_by_path(_domain_items(include_recycle_bin=True), path, resource_type)
 
 
 def _friendly_child_path(parent_path: str, child_name: str) -> str:
@@ -202,26 +174,6 @@ def _friendly_child_path(parent_path: str, child_name: str) -> str:
     if normalized.lower().endswith(".one"):
         normalized = normalized[:-4]
     return f"{parent_path}/{normalized}" if normalized else parent_path
-
-
-def _refresh_created_item(
-    *,
-    expected_path: str,
-    item_type: str,
-    fallback_id: str = "",
-    retries: int = 8,
-    delay_seconds: float = 0.5,
-) -> dict[str, Any] | None:
-    for attempt in range(retries):
-        item = _find_item_by_path(expected_path, item_type)
-        if item:
-            return item
-        item = _find_item_by_id(fallback_id, item_type)
-        if item:
-            return item
-        if attempt + 1 < retries:
-            time.sleep(delay_seconds)
-    return None
 
 
 def _wait_domain_item(
@@ -372,9 +324,7 @@ def _without_recycle_bin(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _is_recycle_bin_item(item: dict[str, Any]) -> bool:
-    if item.get("isInRecycleBin") == "true" or item.get("isRecycleBin") == "true":
-        return True
-    return "OneNote_RecycleBin" in item.get("path", "").split("/")
+    return item.get("is_in_recycle_bin") is True
 
 
 def _page_xml(page_id: str, page_info: str = "basic") -> str:
@@ -405,10 +355,14 @@ def _local_text_search(
     include_snippets: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     budget = budget or SearchBudget.current()
-    items = _hierarchy_items(start_id, "pages")
-    pages = filter_items(items, "page")
-    if not include_recycle_bin:
-        pages = _without_recycle_bin(pages)
+    items = _domain_items(include_recycle_bin)
+    pages = filter_resources(items, "page")
+    if start_id:
+        root = find_resource_by_id(items, start_id)
+        if root is None:
+            raise ValueError(f"No search scope found for ID '{start_id}'.")
+        prefix = root["path"] + "/"
+        pages = [page for page in pages if page["id"] == start_id or page["path"].startswith(prefix)]
     if len(pages) > budget.max_pages:
         raise ValueError(
             f"Search scope contains {len(pages)} candidate pages, exceeding LOCAL_ONENOTE_MAX_SEARCH_PAGES={budget.max_pages}."
@@ -423,7 +377,7 @@ def _local_text_search(
             break
         if time.monotonic() - started > budget.max_seconds:
             raise RuntimeError(f"Local search exceeded its {budget.max_seconds}-second budget.")
-        haystacks = [page.get("name", ""), page.get("path", "")]
+        haystacks = [display_name(page), page.get("path", "")]
         try:
             page_text = text_from_page_xml(_page_xml(page["id"], "basic"))
             scanned_pages += 1
@@ -474,9 +428,9 @@ async def health_check() -> dict[str, Any]:
     """Verify local OneNote COM access and return a small hierarchy summary."""
 
     try:
-        items = _without_recycle_bin(_hierarchy_items("", "sections"))
-        notebooks = filter_items(items, "notebook")
-        sections = filter_items(items, "section")
+        items = _domain_items(include_recycle_bin=False)
+        notebooks = filter_resources(items, "notebook")
+        sections = filter_resources(items, "section")
         policy = MutationPolicy.current()
         search_budget = SearchBudget.current()
         return _ok(
@@ -522,8 +476,7 @@ async def resolve_identifier(identifier: str, item_type: str = "") -> dict[str, 
         if normalized_type and normalized_type not in IDENTIFIER_TYPES:
             allowed = ", ".join(sorted(IDENTIFIER_TYPES))
             raise ValueError(f"item_type must be empty or one of: {allowed}")
-        resolved = _resolve_item(identifier, normalized_type)
-        item = _domain_item(resolved["id"], normalized_type)
+        item = _resolve_resource(identifier, normalized_type)
         return _ok(item=item, identifier_resolution_order=IDENTIFIER_RESOLUTION_ORDER)
     except Exception as exc:
         return _error(str(exc))
@@ -553,13 +506,12 @@ async def list_hierarchy(
 
     try:
         xml = _hierarchy_xml("", "pages")
-        items = parse_domain_hierarchy(xml)
+        items = parse_hierarchy(xml)
         if not include_recycle_bin:
             items = [item for item in items if not item["is_in_recycle_bin"]]
         root = None
         if start_identifier:
-            legacy = resolve_item(parse_hierarchy(xml), start_identifier)
-            root = next(item for item in items if item["id"] == legacy["id"])
+            root = resolve_resource(items, start_identifier)
             items = [item for item in items if item["id"] == root["id"] or item["path"].startswith(root["path"] + "/")]
         scope_types = {
             "self": set(),
@@ -786,7 +738,8 @@ async def search_pages(
                 display=False,
                 schema=XML_SCHEMA_2013,
             )["xml"]
-            pages = filter_items(parse_hierarchy(xml), "page")
+            catalog = _domain_items(include_recycle_bin=True)
+            pages = filter_resources(parse_hierarchy(xml, catalog=catalog), "page")
         else:
             raise ValueError("backend must be one of: local_scan, onenote_index.")
         if not include_recycle_bin:
@@ -914,7 +867,7 @@ async def find_meta(start_identifier: str, name: str, include_unindexed: bool = 
     """Find pages or objects with matching OneNote meta name."""
 
     try:
-        start_id = _resolve_id(start_identifier) if start_identifier else ""
+        start_id = _resolve_resource(start_identifier)["id"] if start_identifier else ""
         xml = _bridge(
             "find_meta",
             start_id=start_id,
@@ -922,7 +875,7 @@ async def find_meta(start_identifier: str, name: str, include_unindexed: bool = 
             include_unindexed=include_unindexed,
             schema=XML_SCHEMA_2013,
         )["xml"]
-        items = parse_hierarchy(xml)
+        items = parse_hierarchy(xml, catalog=_domain_items(include_recycle_bin=True))
         return _ok(items=items, count=len(items), xml=xml)
     except Exception as exc:
         return _error(str(exc))
@@ -963,17 +916,17 @@ async def open_hierarchy(path: str, relative_to_identifier: str = "", create_typ
         relative_to_id = ""
         expected_path = path.replace("\\", "/").strip("/")
         if relative_to_identifier:
-            parent = _resolve_item(relative_to_identifier)
+            parent = _resolve_resource(relative_to_identifier)
             relative_to_id = parent["id"]
             expected_path = _friendly_child_path(parent["path"], path)
 
         if normalized_create_type == "none":
-            existing = _find_item_by_path(expected_path)
+            existing = _find_resource_path(expected_path)
             if existing:
                 return _ok(object_id=existing["id"], item=existing, opened_existing=True)
             if not relative_to_identifier:
                 try:
-                    existing = _resolve_item(path)
+                    existing = _resolve_resource(path)
                     return _ok(object_id=existing["id"], item=existing, opened_existing=True)
                 except Exception:
                     pass
@@ -988,7 +941,7 @@ async def open_hierarchy(path: str, relative_to_identifier: str = "", create_typ
         )
         item_type = _create_type_to_item_type(normalized_create_type)
         item = (
-            _refresh_created_item(expected_path=expected_path, item_type=item_type, fallback_id=result["object_id"])
+            _wait_created_domain_item(expected_path, item_type, result["object_id"])
             if item_type
             else None
         )
@@ -1626,8 +1579,8 @@ async def delete_hierarchy(object_identifier: str, permanently: bool = False) ->
     try:
         MutationPolicy.current().require_raw_xml()
         MutationPolicy.current().require_delete(permanently=permanently)
-        item = _resolve_item(object_identifier)
-        if item["type"] == "notebook":
+        item = _resolve_resource(object_identifier)
+        if item["resource_type"] == "notebook":
             raise ValueError("Notebook deletion is unsupported; close_notebook is not deletion.")
         deleted_ids = []
         for attempt in range(4):
@@ -1635,7 +1588,7 @@ async def delete_hierarchy(object_identifier: str, permanently: bool = False) ->
             _bridge("delete_hierarchy", object_id=object_id, permanently=permanently)
             deleted_ids.append(object_id)
             time.sleep(0.5)
-            remaining = _find_item_by_path(item["path"], item["type"])
+            remaining = _find_resource_path(item["path"], item["resource_type"])
             if not remaining:
                 return _ok(
                     object_id=object_id,
@@ -1778,8 +1731,8 @@ async def merge_sections(source_section_identifier: str, destination_section_ide
         policy = MutationPolicy.current()
         policy.require_raw_xml()
         policy.require_write()
-        source_id = _resolve_id(source_section_identifier, "section")
-        destination_id = _resolve_id(destination_section_identifier, "section")
+        source_id = _resolve_resource(source_section_identifier, "section")["id"]
+        destination_id = _resolve_resource(destination_section_identifier, "section")["id"]
         _bridge("merge_sections", source_section_id=source_id, destination_section_id=destination_id)
         return _ok(source_section_id=source_id, destination_section_id=destination_id, merged=True)
     except Exception as exc:
@@ -1792,7 +1745,7 @@ async def set_filing_location(filing_location: str, filing_location_type: str, s
 
     try:
         MutationPolicy.current().require_write()
-        object_id = _resolve_id(section_or_page_identifier)
+        object_id = _resolve_resource(section_or_page_identifier)["id"]
         _bridge(
             "set_filing_location",
             filing_location=_enum("filing_location", filing_location, FILING_LOCATIONS),

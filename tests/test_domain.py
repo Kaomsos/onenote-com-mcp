@@ -1,4 +1,5 @@
-from local_onenote_mcp.domain import content_objects, filter_resources, parse_domain_hierarchy
+from local_onenote_mcp.domain import content_objects
+from local_onenote_mcp.hierarchy import filter_resources, parse_hierarchy
 
 
 HIERARCHY_XML = """<one:Notebooks xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">
@@ -15,7 +16,7 @@ HIERARCHY_XML = """<one:Notebooks xmlns:one="http://schemas.microsoft.com/office
 
 
 def test_domain_hierarchy_has_typed_relationships_and_no_unknown_attributes():
-    items = parse_domain_hierarchy(HIERARCHY_XML)
+    items = parse_hierarchy(HIERARCHY_XML)
     notebook, group, section, parent, child, sibling = items
 
     assert notebook["resource_type"] == "notebook"
@@ -33,7 +34,7 @@ def test_domain_hierarchy_has_typed_relationships_and_no_unknown_attributes():
 
 
 def test_filter_resources_returns_only_requested_static_type():
-    pages = filter_resources(parse_domain_hierarchy(HIERARCHY_XML), "page")
+    pages = filter_resources(parse_hierarchy(HIERARCHY_XML), "page")
     assert [page["id"] for page in pages] == ["p1", "p2", "p3"]
 
 

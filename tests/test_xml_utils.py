@@ -5,8 +5,6 @@ from local_onenote_mcp.xml_utils import (
     build_page_update_xml,
     collect_page_objects,
     normalize_content,
-    parse_hierarchy,
-    resolve_item,
     text_from_page_xml,
 )
 
@@ -163,34 +161,3 @@ def test_collect_page_objects_marks_deletable_containers_and_child_suggestions()
     assert outline["delete_object_id"] == "outline-id"
     assert oe["delete_supported"] is False
     assert oe["delete_object_id"] == "outline-id"
-
-
-def test_parse_hierarchy_flattens_paths():
-    xml = """<one:Notebooks xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">
-      <one:Notebook name="NB" ID="n">
-        <one:SectionGroup name="Group" ID="g">
-          <one:Section name="Sec" ID="s">
-            <one:Page name="Page" ID="p" />
-          </one:Section>
-        </one:SectionGroup>
-      </one:Notebook>
-    </one:Notebooks>"""
-    items = parse_hierarchy(xml)
-    assert [item["type"] for item in items] == ["notebook", "section_group", "section", "page"]
-    assert items[-1]["path"] == "NB/Group/Sec/Page"
-
-
-def test_resolve_item_prefers_exact_path_before_same_name():
-    xml = """<one:Notebooks xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">
-      <one:Notebook name="Notebook" ID="notebook-id" />
-      <one:Notebook name="Projects" ID="projects-id">
-        <one:Section name="People" ID="section-id">
-          <one:Page name="notebook" ID="page-id" />
-        </one:Section>
-      </one:Notebook>
-    </one:Notebooks>"""
-
-    item = resolve_item(parse_hierarchy(xml), "Notebook")
-
-    assert item["type"] == "notebook"
-    assert item["id"] == "notebook-id"
