@@ -1,4 +1,4 @@
-"""Small image helpers for OneNote page updates."""
+"""Image inspection and sizing helpers for OneNote Page updates."""
 
 from __future__ import annotations
 

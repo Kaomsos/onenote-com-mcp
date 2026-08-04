@@ -1,4 +1,3 @@
-from local_onenote_mcp.image_utils import image_dimensions, proportional_dimensions
 from local_onenote_mcp.page import formatting
 from local_onenote_mcp.page import (
     build_image_page_update_xml,
@@ -7,6 +6,7 @@ from local_onenote_mcp.page import (
     normalize_content,
     text_from_page_xml,
 )
+from local_onenote_mcp.page.images import image_dimensions, proportional_dimensions
 
 
 def test_plain_text_becomes_onenote_inline_html():
