@@ -1,7 +1,9 @@
 # OneNote mutation 隔离验证流程
 
-> 本文只定义人工触发流程。任何 Agent、CI 或本次开发会话都不得自动执行本流程。  
+> 本文只定义用户显式触发的隔离流程。CI、hook、后台 Agent 或默认测试不得自动执行。
 > 真实验证对象必须是专用、无业务数据、可丢弃的本地 Notebook。
+
+当前可由用户手动逐项调用 MCP，也可按 [Codex CLI 间接调用流程](codex_cli_mcp_validation.md) 启动一次性非交互编排。两种方式都必须遵守本页的 ID 确认、权限隔离、回读和恢复要求。更可控的本地程序化 runner 尚在规划，见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
 
 ## 1. 目标
 
@@ -143,4 +145,6 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 .venv\Scripts\python.exe -B -m pytest -m write_contract -p no:cacheprovider
 ```
 
-真实 COM mutation 永远不能进入默认 CI、pre-commit 或 smoke test。本次实现会话只运行 `-m "not write_contract"` 的只读测试。
+真实 COM mutation 永远不能进入默认 CI、pre-commit 或 smoke test。`write_contract` 仅是 mock 合同测试；真实隔离验证必须由用户在终端明确启动。
+
+Codex CLI 间接调用和未来程序化 runner 都不是默认自动化：前者要求用户显式运行带阶段工具白名单的 `codex exec`；后者以用户手动运行具体 mutation 子命令作为授权，并根据场景自动为单次 MCP 子进程开启最小必要权限，不再要求额外的权限开关或二次确认。永久删除和 raw XML 始终保持关闭。
