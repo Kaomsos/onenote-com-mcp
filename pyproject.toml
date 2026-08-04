@@ -6,8 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
-    "mcp>=1.26.0",
+    "mcp>=1.26.0,<2.0.0",
 ]
+
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Win32 (MS Windows)",
@@ -22,6 +23,11 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/Peteroooooooo/local-onenote-mcp"
 Issues = "https://github.com/Peteroooooooo/local-onenote-mcp/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
 
 [project.scripts]
 local-onenote-mcp = "local_onenote_mcp.server:main"

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "local-onenote": {
+      "command": "uv",
+      "args": ["run", "--locked", "local-onenote-mcp"],
+      "env": {
+        "LOCAL_ONENOTE_MCP_TIMEOUT": "90",
+        "LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS": "60000"
+      }
+    }
+  }
+}

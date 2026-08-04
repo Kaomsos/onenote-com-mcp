@@ -120,29 +120,23 @@ To contribute or run the server from source:
    git clone https://github.com/Peteroooooooo/local-onenote-mcp
    cd local-onenote-mcp
    ```
-2. **Build the Python Virtual Environment:**
+2. **Create the development environment with uv:**
    ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install -e .
+   uv sync --all-groups
    ```
-3. **Configure your Client to use the local dev build:**
-   ```json
-   {
-     "mcpServers": {
-       "local-onenote-dev": {
-         "command": "C:\\path\\to\\local-onenote-mcp\\.venv\\Scripts\\python.exe",
-         "args": ["-m", "local_onenote_mcp.server"],
-         "env": {
-           "LOCAL_ONENOTE_MCP_TIMEOUT": "90",
-           "LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS": "60000"
-         }
-       }
-     }
-   }
-   ```
-4. **Validate local configurations:**
+3. **Start Codex or Claude Code from the repository root:**
    ```powershell
-   .\.venv\Scripts\python.exe scripts\check_codex_config.py
+   codex
+   # or
+   claude
+   ```
+   The checked-in project MCP configurations start the local server through
+   `uv run --locked local-onenote-mcp`:
+   - Codex reads `.codex/config.toml` when the project is trusted.
+   - Claude Code reads `.mcp.json`; it asks for approval before first using a project-scoped MCP server.
+4. **Run the unit tests:**
+   ```powershell
+   uv run pytest
    ```
 
 ---
@@ -205,10 +199,10 @@ Ensure everything is configured and operating as expected before starting:
 
 ```powershell
 # 1. Run a read-only discovery verification
-.\.venv\Scripts\python.exe scripts\smoke_mcp.py
+uv run python scripts\smoke_mcp.py
 
 # 2. Run a full write/read/search verification cycle
-.\.venv\Scripts\python.exe scripts\smoke_mcp.py --notebook "MyNotebook" --section "MyNotebook/General" --export-dir tmp
+uv run python scripts\smoke_mcp.py --notebook "MyNotebook" --section "MyNotebook/General" --export-dir tmp
 ```
 
 ---
