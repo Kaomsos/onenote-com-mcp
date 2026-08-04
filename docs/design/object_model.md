@@ -2,7 +2,7 @@
 
 > 状态：实现契约
 > 更新日期：2026-08-04
-> 对应模型：`src/local_onenote_mcp/domain.py`
+> 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
 ## 1. 边界与标识符

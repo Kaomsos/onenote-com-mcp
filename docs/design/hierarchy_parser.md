@@ -6,7 +6,7 @@
 
 ## 1. 模块边界
 
-`hierarchy.py` 是 Notebook、SectionGroup、Section、Page 层级 XML 的唯一解析入口。它不导入 MCP server、COM bridge、mutation policy 或文件系统代码，只依赖 `domain.py` 中的静态领域模型。
+`hierarchy.py` 是 Notebook、SectionGroup、Section、Page 层级 XML 的唯一解析入口。它不导入 MCP server、COM bridge、mutation policy 或文件系统代码，只依赖 `domain/` 包统一导出的静态领域模型。
 
 ```text
 OneNote COM XML
@@ -17,7 +17,7 @@ hierarchy.parse_hierarchy
       ├─ resolve_resource
       ├─ find_resource_by_id / find_resource_by_path
       ├─ filter_resources
-      └─ server tools / mutation confirmation / search
+      └─ HierarchyService / mutation confirmation / search
 ```
 
 `page/` 包负责 Page XML、正文/对象提取、内容格式化和 Page update XML 构造，不定义 `HierarchyItem`、层级解析或标识符解析。
@@ -70,9 +70,9 @@ matches = parse_hierarchy(find_pages_xml, catalog=catalog)
 - `xml_utils.parse_hierarchy` 的原始 attribute 展开；
 - `xml_utils.filter_items`；
 - `xml_utils.resolve_item`；
-- server 内 `_hierarchy_items/_resolve_id/_resolve_item/_find_item_by_*` 兼容链。
+- 旧 server 内 `_hierarchy_items/_resolve_id/_resolve_item/_find_item_by_*` 兼容链。
 
-兼容的 `resolve_identifier` MCP 工具仍保留，但内部直接使用 typed snapshot 和 `resolve_resource`，返回值不再经历旧字段模型。
+兼容的 `resolve_identifier` MCP 工具仍保留，由 `tools.system → HierarchyService → resolve_resource` 调用 typed snapshot，返回值不再经历旧字段模型。
 
 ## 6. 测试责任
 

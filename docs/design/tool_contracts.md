@@ -4,6 +4,8 @@
 > 更新日期：2026-08-04  
 > ID 参数均指 OneNote COM 对象 ID，除 `resolve_identifier` 和兼容只读 `list_hierarchy.start_identifier` 外不接受名称或路径。
 
+默认 profile 共 43 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。
+
 ## 1. 通用返回 envelope
 
 成功：

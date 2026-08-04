@@ -2,74 +2,175 @@
 
 > 状态：当前实现态
 > 更新日期：2026-08-04
-> 适用版本：commit `1a1de5f` 之后
+> 相关契约：[对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md)
 
-本文描述仓库当前实际架构、类、模块关系和运行时调用链。对象字段详见 [object_model.md](object_model.md)，层级解析细节见 [hierarchy_parser.md](hierarchy_parser.md)，MCP 参数与返回值详见 [tool_contracts.md](tool_contracts.md)。
+## 1. 架构结论
 
-## 1. 总体结构
-
-项目采用一个轻量的分层架构：MCP 工具和应用编排集中在 `server.py`，领域对象、层级解析、Page XML、策略和 COM bridge 分别位于独立模块。
+项目采用“装配入口 → MCP 工具适配层 → 应用服务层 → mapper/领域模型 → COM bridge”的分层结构。`server.py` 只创建对象和注册工具；业务规则不再放在 server 中。
 
 ```mermaid
 flowchart LR
     Client["MCP Client"] --> FastMCP["FastMCP / stdio"]
-    FastMCP --> Tools["server.py：typed tools 与应用编排"]
-
-    Tools --> Policy["policy.py：MutationPolicy / SearchBudget"]
-    Tools --> Hierarchy["hierarchy.py：层级 XML → typed resources"]
-    Tools --> PageXML["page/：Page 解析、格式化与更新 XML"]
-    Tools --> Images["image_utils.py：图片尺寸解析"]
-    Tools --> Bridge["bridge.py：OneNoteBridge"]
-
-    Hierarchy --> Domain["domain.py：领域 dataclass"]
-    PageXML --> Domain
-    Bridge --> PowerShell["固定 PowerShell bridge"]
+    FastMCP --> Server["server.py\ncomposition root"]
+    Server --> Tools["tools/\n参数与 envelope 适配"]
+    Tools --> Services["services/\n用例、策略执行、回读验证"]
+    Services --> Hierarchy["hierarchy.py\n唯一层级解析器"]
+    Services --> Page["page/\nPage 内容子系统"]
+    Hierarchy --> Domain["domain/\n唯一公开对象模型"]
+    Page --> Domain
+    Services --> Policy["policy.py\n权限与搜索预算"]
+    Services --> Bridge["bridge.py\n固定操作白名单"]
+    Bridge --> PowerShell["PowerShell bridge"]
     PowerShell --> COM["OneNote.Application COM"]
 ```
 
-核心边界：
+必须保持的边界：
 
-- `server.py` 知道所有模块，但领域和解析模块不知道 MCP 或 COM；
-- `hierarchy.py` 是唯一层级解析入口；
-- `page/` 分别处理 Page 内容解析、格式转换和 update XML 构造，不解析层级；
-- `bridge.py` 不理解领域对象，只执行固定白名单操作；
-- 写操作必须先经过 `MutationPolicy` 和对象确认，再进入 bridge。
+- `domain/` 是 Notebook、SectionGroup、Section、Page、PageContentObject 的唯一静态模型；服务层和工具层不得复制 DTO。
+- `hierarchy.py` 是层级 XML 的唯一解析入口；`page/` 只解析 Page 内容 XML。
+- `tools/` 只做同步服务到 async MCP 的适配和统一响应，不直接调用 COM。
+- `services/` 承担用例编排、策略检查、XML 构造调用和 mutation 回读验证。
+- `bridge.py` 不理解领域对象，只接受固定 operation 和 JSON 参数。
 
-## 2. 源码模块
+## 2. 源码结构与依赖方向
 
 ```text
 src/local_onenote_mcp/
-├─ server.py       MCP 注册、应用服务编排、mutation 回读
-├─ domain.py       稳定领域模型和 PageContentObject 规范化
-├─ hierarchy.py    唯一层级解析器、关系推导和资源定位
+├─ server.py                 依赖装配与 FastMCP 启动
+├─ tools/
+│  ├─ context.py             当前 ServiceContainer 绑定
+│  ├─ responses.py           ok/error/caught/invoke envelope
+│  ├─ system.py              健康检查、标识符、特殊目录
+│  ├─ hierarchy.py           层级 List/Get/Query/Path/Tree
+│  ├─ pages.py               Page 内容读取与 Search
+│  ├─ mutations.py           typed Create/Update/Delete
+│  ├─ operations.py          Export/导航/Sync/Close
+│  ├─ advanced.py            启动时可选的开发 profile
+│  └─ __init__.py            默认/高级工具集合和注册
+├─ services/
+│  ├─ base.py                BaseService
+│  ├─ container.py           ServiceContainer
+│  ├─ hierarchy.py           HierarchyService
+│  ├─ pages.py               PageService
+│  ├─ search.py              SearchService
+│  ├─ mutations.py           MutationService
+│  ├─ operations.py          OperationsService
+│  └─ errors.py              PartialFailure
+├─ domain/
+│  ├─ resource.py            Resource
+│  ├─ notebook.py            Notebook
+│  ├─ section_group.py       SectionGroup
+│  ├─ section.py             Section
+│  ├─ page.py                Page
+│  ├─ page_content.py        PageContentObject/content_objects
+│  └─ __init__.py            对象模型 facade
+├─ hierarchy.py              纯层级 XML mapper 与定位函数
 ├─ page/
-│  ├─ __init__.py  Page 子系统公开 facade
-│  ├─ parser.py    Page XML → title/text/content objects
-│  ├─ formatting.py plain/HTML/Markdown → 内容块
-│  ├─ builder.py   typed Page content → UpdatePageContent XML
-│  └─ models.py    TextBlock/TableBlock/TableCell 内部模型
-├─ bridge.py       JSON 临时文件 + PowerShell + COM 白名单
-├─ policy.py       写删开关和 Search 预算
-├─ image_utils.py  PNG/JPEG/GIF/BMP 尺寸与比例换算
-├─ constants.py    COM enum、XML namespace 和 schema 常量
-└─ __init__.py     包版本
+│  ├─ parser.py              Page XML 读取
+│  ├─ formatting.py          plain/HTML/Markdown 规范化
+│  ├─ builder.py             UpdatePageContent XML 构造
+│  ├─ images.py              图片尺寸读取与等比换算
+│  ├─ models.py              Page 格式化内部块模型
+│  └─ __init__.py            Page 子系统 facade
+├─ bridge.py                 PowerShell/COM infrastructure adapter
+├─ policy.py                 MutationPolicy 与 SearchBudget
+├─ settings.py               server 名称、超时和文本长度配置
+└─ constants.py              COM enum、namespace、schema
 ```
 
-| 模块 | 所属层 | 主要输入 | 主要输出 |
-| --- | --- | --- | --- |
-| `server.py` | MCP/Application | MCP 参数 | 统一 `{ok, complete, warnings, ...}` envelope |
-| `domain.py` | Domain | 已规范化字段、Page 对象中间记录 | dataclass 或稳定字典 |
-| `hierarchy.py` | Mapper/Domain service | OneNote hierarchy XML | Notebook/SectionGroup/Section/Page typed 字典 |
-| `page.parser` | Page mapper | Page XML | 标题、正文、内容对象中间记录 |
-| `page.formatting` | Content formatting | plain/HTML/Markdown | 净化 HTML、TextBlock/TableBlock |
-| `page.builder` | Page XML builder | 标题、正文、图片和内容块 | OneNote Page update XML |
-| `page.models` | Page internal model | 净化后的内容 | TextBlock/TableBlock/TableCell |
-| `bridge.py` | Infrastructure adapter | 固定 operation + JSON 参数 | COM 结果字典或 `OneNoteBridgeError` |
-| `policy.py` | Application policy | 环境变量 | mutation 决策和 SearchBudget |
-| `image_utils.py` | Utility | 本地图片头和目标尺寸 | 原始或等比尺寸 |
-| `constants.py` | Infrastructure constants | 字符串 enum | OneNote COM 数值 enum |
+允许的主依赖方向为：
 
-## 3. 类及其关系
+```text
+server → tools → services → hierarchy/page/policy → domain
+                           └──────────────────────→ bridge → COM
+```
+
+反向依赖被禁止。例如 `domain/` 不导入 service，`hierarchy.py` 不导入 bridge 或 MCP，service 不导入 tool。
+
+## 3. 类关系总览
+
+### 3.1 应用与基础设施类
+
+```mermaid
+classDiagram
+    class ServiceContainer {
+        +HierarchyService hierarchy
+        +PageService pages
+        +SearchService search
+        +MutationService mutations
+        +OperationsService operations
+        +build(bridge, max_text_chars)$ ServiceContainer
+    }
+    class BaseService {
+        +OneNoteBridge bridge
+        +call(operation, params) dict
+        +enum(name, value, options) int
+    }
+    class HierarchyService
+    class PageService
+    class SearchService
+    class MutationService
+    class OperationsService
+    class OneNoteBridge {
+        +int timeout_seconds
+        +call(operation, params) dict
+    }
+    class MutationPolicy {
+        +current()$ MutationPolicy
+        +require_write()
+        +require_delete(permanently)
+        +require_experimental_move()
+        +require_raw_xml()
+    }
+    class SearchBudget {
+        +current()$ SearchBudget
+    }
+    class PartialFailure
+    class OneNoteBridgeError
+
+    BaseService <|-- HierarchyService
+    BaseService <|-- PageService
+    BaseService <|-- SearchService
+    BaseService <|-- MutationService
+    BaseService <|-- OperationsService
+    ServiceContainer *-- HierarchyService
+    ServiceContainer *-- PageService
+    ServiceContainer *-- SearchService
+    ServiceContainer *-- MutationService
+    ServiceContainer *-- OperationsService
+    PageService --> HierarchyService
+    SearchService --> HierarchyService
+    SearchService --> PageService
+    MutationService --> HierarchyService
+    MutationService --> PageService
+    OperationsService --> HierarchyService
+    OperationsService --> MutationService
+    BaseService --> OneNoteBridge
+    MutationService ..> MutationPolicy
+    OperationsService ..> MutationPolicy
+    SearchService ..> SearchBudget
+    MutationService ..> PartialFailure : raises
+    OneNoteBridge ..> OneNoteBridgeError : raises
+```
+
+| 类 | 所在模块 | 职责 |
+| --- | --- | --- |
+| `ServiceContainer` | `services.container` | 构造并持有共享 bridge 上的五个 service；表达显式依赖。 |
+| `BaseService` | `services.base` | 提供 bridge 错误归一化和 enum 校验。 |
+| `HierarchyService` | `services.hierarchy` | 获取 typed snapshot，完成 List/Get/Query/Path/Tree、ID/路径解析、层级更新 XML。 |
+| `PageService` | `services.pages` | 读取 Page XML/text/object/binary，确认 Page，计算内容摘要。 |
+| `SearchService` | `services.search` | 执行有显式 scope 和硬预算的 local scan 或 OneNote index 搜索。 |
+| `MutationService` | `services.mutations` | typed 创建、修改、删除；策略检查、乐观确认和操作后回读均在此。 |
+| `OperationsService` | `services.operations` | 特殊目录、超链接、父级、导出、导航、同步、关闭及高级应用操作。 |
+| `MutationPolicy` | `policy` | 从环境变量生成不可变权限快照。 |
+| `SearchBudget` | `policy` | 从环境变量生成不可变搜索预算。 |
+| `OneNoteBridge` | `bridge` | 通过临时 JSON 与固定 PowerShell 脚本执行白名单 COM 操作。 |
+| `PartialFailure` | `services.errors` | 携带非原子多步 mutation 已完成步骤。 |
+| `OneNoteBridgeError` | `bridge` | 表达 PowerShell、COM、超时和响应错误。 |
+
+`ServiceContainer.build()` 的创建顺序体现了依赖：先 `HierarchyService`，再 `PageService`，随后 `SearchService` 和 `MutationService`，最后创建依赖 mutation 的 `OperationsService`。
+
+### 3.2 领域类
 
 ```mermaid
 classDiagram
@@ -84,9 +185,8 @@ classDiagram
         +str? modified
         +bool is_in_recycle_bin
         +str relationship_source
-        +as_dict()
+        +as_dict() dict
     }
-
     class Notebook {
         +list section_group_ids
         +list section_ids
@@ -118,7 +218,10 @@ classDiagram
         +str? id
         +str page_id
         +str kind
+        +str? parent_object_id
+        +str? container_object_id
         +str? callback_id
+        +str? media_type
         +bool can_delete
         +str? delete_target_id
     }
@@ -127,236 +230,138 @@ classDiagram
     Resource <|-- SectionGroup
     Resource <|-- Section
     Resource <|-- Page
-    Notebook "1" o-- "*" SectionGroup : hierarchy
-    Notebook "1" o-- "*" Section : direct children
-    SectionGroup "0..1" o-- "*" SectionGroup : nested groups
-    SectionGroup "0..1" o-- "*" Section : direct children
-    Section "1" o-- "*" Page : section_id / order
-    Page "0..1" o-- "*" Page : parent_page_id
+    Notebook "1" o-- "*" SectionGroup
+    Notebook "1" o-- "*" Section
+    SectionGroup "0..1" o-- "*" SectionGroup
+    SectionGroup "0..1" o-- "*" Section
+    Section "1" o-- "*" Page
+    Page "0..1" o-- "*" Page : indentation tree
     Page "1" o-- "*" PageContentObject : logical association
-
-    class MutationPolicy {
-        +bool writes_enabled
-        +bool deletes_enabled
-        +bool permanent_deletes_enabled
-        +bool experimental_move_section_enabled
-        +bool raw_xml_enabled
-        +current() MutationPolicy
-        +require_write()
-        +require_delete(permanently)
-        +require_experimental_move()
-        +require_raw_xml()
-    }
-    class SearchBudget {
-        +int max_pages
-        +int max_page_chars
-        +int max_total_chars
-        +int max_seconds
-        +int snippet_chars
-        +current() SearchBudget
-    }
-    class OneNoteBridge {
-        +int timeout_seconds
-        +call(operation, params) dict
-    }
-    class OneNoteBridgeError {
-        +int? hresult
-    }
-    OneNoteBridge ..> OneNoteBridgeError : raises
 ```
 
-### 3.1 领域类
+这些 dataclass 只在 mapper 内表达白名单字段，再通过 `as_dict()` 进入服务和 MCP 边界。Page 的公开名称是 `title`，其 `as_dict()` 不保留继承来的 `name` alias。`PageContentObject` 属于 Page 内容快照，不进入层级树。
 
-领域类全部位于 `domain.py`，使用 dataclass 表达静态字段：
-
-| 类 | 继承/关系 | 职责 |
-| --- | --- | --- |
-| `Resource` | 基类 | 定义四层对象共有字段和 `as_dict()`。 |
-| `Notebook` | `Resource` | 表达打开状态和直属 SectionGroup/Section ID。 |
-| `SectionGroup` | `Resource` | 表达所属 Notebook、父组及直属子项。 |
-| `Section` | `Resource` | 表达父组、Page 数和只读/锁定状态。 |
-| `Page` | `Resource` | 表达标题、Section、顺序和缩进树；序列化时不暴露旧 `name` alias。 |
-| `PageContentObject` | 与 Page 逻辑关联 | 表达 Outline、Image、Attachment 等 Page 内对象，不嵌入普通 Page metadata。 |
-
-这些 dataclass 是解析时的字段约束。当前 MCP 边界传输的是 `as_dict()` 结果，而不是 dataclass 实例。
-
-### 3.2 策略类
-
-- `MutationPolicy`：不可变配置快照。`current()` 每次从环境读取开关，避免工具绕过运行时策略；`require_*` 失败时抛出 `PermissionError`，由 server 转为 `policy_disabled`。
-- `SearchBudget`：不可变 Search 限额快照，控制候选 Page、单页字符、总字符、耗时和 snippet 长度。
-
-### 3.3 基础设施类
-
-- `OneNoteBridge`：不可变 COM adapter。每次 `call()` 创建请求/响应 JSON 临时文件，启动非交互 PowerShell，执行固定 `POWERSHELL_BRIDGE`，读取 JSON 后清理临时文件。
-- `OneNoteBridgeError`：封装 PowerShell 失败、COM 错误和超时，可保存 HRESULT；server 将其转换为 `RuntimeError/backend_error`。当前不会返回 HRESULT，但错误 message 仍可能包含 COM 提供的文本。
-- `ImageDimensionError`：图片头不受支持或损坏时由 `image_utils.py` 抛出。
-
-### 3.4 Page 包内容转换类
+### 3.3 Page 内部类
 
 ```mermaid
 classDiagram
-    class InlineHTMLSanitizer {
-        +parts
-        +get_html() str
-    }
-    class OneNoteHTMLBlockParser {
-        +blocks
-        +get_blocks() list
-    }
-    class HTMLTextExtractor {
-        +get_text() str
-    }
-    class TextBlock {
-        +str html
-    }
-    class TableCell {
-        +str html
-        +bool header
-    }
-    class TableBlock {
-        +list rows
-    }
+    class InlineHTMLSanitizer
+    class OneNoteHTMLBlockParser
+    class HTMLTextExtractor
+    class TextBlock
+    class TableCell
+    class TableBlock
+    class ImageDimensionError
 
-    OneNoteHTMLBlockParser --> InlineHTMLSanitizer : sanitizes text/cells
+    OneNoteHTMLBlockParser --> InlineHTMLSanitizer
     OneNoteHTMLBlockParser --> TextBlock : produces
     OneNoteHTMLBlockParser --> TableBlock : produces
-    TableBlock "1" o-- "*" TableCell
+    TableBlock "1" *-- "*" TableCell
 ```
 
-| 类 | 职责 |
+- `InlineHTMLSanitizer` 删除不安全 tag/attribute/style。
+- `OneNoteHTMLBlockParser` 把 HTML 转成有序文本块和表格块。
+- `HTMLTextExtractor` 从 Page XML 的内嵌 HTML 提取可见文本。
+- `TextBlock/TableCell/TableBlock` 是 builder 使用的内部格式模型，不是公开对象模型。
+- `ImageDimensionError` 表达不受支持或损坏的图片头。
+
+## 4. MCP 工具适配层
+
+`tools/` 当前由模块级 async 函数组成，不引入“工具类”。`tools.context` 在启动时绑定一个 `ServiceContainer`；每个工具读取对应 service，调用同步用例，再由 `responses.invoke()` 转为统一 envelope。
+
+| 工具模块 | 默认注册数 | 调用的 service |
+| --- | ---: | --- |
+| `tools.system` | 3 | hierarchy、operations |
+| `tools.hierarchy` | 11 | hierarchy |
+| `tools.pages` | 6 | pages、search |
+| `tools.mutations` | 16 | mutations |
+| `tools.operations` | 7 | operations |
+| 合计 | 43 | — |
+
+`tools.advanced` 另有 7 个开发 profile 工具，仅当进程启动时 `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 才注册。注册并不代表取得写权限；service 仍会再次执行 write/delete/raw policy。
+
+响应映射：
+
+| Python 异常 | MCP `code` |
 | --- | --- |
-| `InlineHTMLSanitizer` | `page.formatting`；保留允许的 inline tag/style/link，移除 script/style 和不安全属性。 |
-| `OneNoteHTMLBlockParser` | `page.formatting`；将 HTML 拆成有序 TextBlock/TableBlock。 |
-| `HTMLTextExtractor` | `page.parser`；从 `one:T` 内嵌 HTML 提取可见纯文本。 |
-| `TextBlock` | `page.models`；一个已净化文本块。 |
-| `TableCell` | `page.models`；原生 OneNote table cell 的 HTML 和 header 标记。 |
-| `TableBlock` | `page.models`；二维 TableCell 列表。 |
+| `ValueError` | `validation_error` |
+| `PermissionError` | `policy_disabled` |
+| `PartialFailure` | `partial_failure`，附带 `partial/completed_steps` |
+| 其他 service/bridge 异常 | `backend_error` |
 
-`page.__init__` 是 facade，只重新导出 server 需要的稳定入口；子模块依赖方向为 `builder → formatting → models`，`parser` 独立于写入链。
+## 5. 关键调用链
 
-## 4. 层级解析器与领域模型
-
-`hierarchy.py` 本身不定义状态类，而是提供一组纯函数：
-
-1. `parse_hierarchy()` 读取 XML tag 和白名单 attribute；
-2. 创建 `Notebook/SectionGroup/Section/Page` dataclass，再立即序列化为稳定字典；
-3. `_complete_relationships()` 补直属子 ID 和 Page count；
-4. `_derive_page_tree()` 根据同 Section 的 `order/page_level` 推导 Page 父子关系；
-5. `resolve_resource()`、`find_resource_by_*()`、`filter_resources()` 对 typed snapshot 操作。
-
-FindPages/FindMeta 返回局部 XML 时，`parse_hierarchy(xml, catalog=full_snapshot)` 用命中 ID 从完整 snapshot 回填路径和关系，避免局部 XML 冒充完整树。
-
-## 5. Server 应用编排
-
-`server.py` 当前不是 class-based service；它由 FastMCP 实例、一个进程级 `OneNoteBridge` 实例以及一组私有应用函数和 async tool 函数组成。
-
-```mermaid
-flowchart TD
-    Tool["async MCP tool"] --> Validate["参数、enum、ID 和确认字段"]
-    Validate --> PolicyGate{"是否 mutation？"}
-    PolicyGate -->|是| PolicyCheck["MutationPolicy.require_* "]
-    PolicyGate -->|否| ServiceLogic["读取/查询逻辑"]
-    PolicyCheck --> Before["按 ID 获取 typed before snapshot"]
-    Before --> Build["构造 typed hierarchy/page update XML"]
-    Build --> Call["OneNoteBridge.call"]
-    ServiceLogic --> Call
-    Call --> ReadBack["重新读取 hierarchy 或 Page XML"]
-    ReadBack --> Verify["验证 ID、父级、名称、顺序或内容摘要"]
-    Verify --> Envelope["_ok / _caught 返回统一 envelope"]
-```
-
-私有函数可以按职责分为：
-
-- bridge facade：`_bridge/_hierarchy_xml/_page_xml`；
-- typed snapshot：`_domain_items/_domain_item/_resolve_resource`；
-- mutation guard：`_confirm_item/_confirm_page`；
-- read-back：`_wait_domain_item/_wait_created_domain_item`；
-- hierarchy XML builder：`_hierarchy_update_xml/_section_move_xml/_page_order_update_xml`；
-- Search service：`_local_text_search`；
-- response mapper：`_ok/_error/_caught`。
-
-默认 profile 注册 43 个 typed 工具。`_advanced_tool` 只在 server 启动时检测到 `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 才注册 raw/legacy 开发工具；运行时仍要通过 write/delete policy。
-
-## 6. 典型调用链
-
-### 6.1 层级读取
+### 5.1 只读层级查询
 
 ```mermaid
 sequenceDiagram
     participant C as MCP Client
-    participant S as server.py
+    participant T as tools.hierarchy
+    participant S as HierarchyService
     participant B as OneNoteBridge
-    participant O as OneNote COM
     participant H as hierarchy.py
 
-    C->>S: list_pages(section_id)
+    C->>T: list_pages(section_id)
+    T->>S: list_pages(section_id)
     S->>B: get_hierarchy(scope=pages)
-    B->>O: GetHierarchy
-    O-->>B: hierarchy XML
-    B-->>S: {xml}
+    B-->>S: hierarchy XML
     S->>H: parse_hierarchy(xml)
-    H-->>S: typed resources
-    S-->>C: {ok, section, pages, count}
+    H-->>S: typed resource dicts
+    S-->>T: section/pages/count
+    T-->>C: ok envelope
 ```
 
-### 6.2 Page 内容更新
+### 5.2 typed mutation
 
-```text
-append_to_page
-  → MutationPolicy.require_write
-  → _confirm_page（ID/title/section/modified）
-  → GetPageContent + 内容摘要
-  → page.builder.build_page_update_xml
-  → OneNoteBridge(update_page_content)
-  → GetPageContent + 新摘要
-  → typed Page 回读
-  → 成功 envelope
+```mermaid
+sequenceDiagram
+    participant T as tools.mutations
+    participant M as MutationService
+    participant P as MutationPolicy
+    participant H as HierarchyService/PageService
+    participant B as OneNoteBridge
+
+    T->>M: mutation parameters + expected fields
+    M->>P: require_write/delete/experimental
+    M->>H: resolve exact ID and confirm before state
+    M->>B: fixed COM operation / typed XML
+    B-->>M: operation result
+    M->>H: fresh read-back
+    M-->>T: verified result or PartialFailure
 ```
 
-### 6.3 Search
+Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可选 modified 是乐观确认字段。写后必须验证同 ID、名称、父级、顺序或内容摘要。`replace_page_body` 是明确的非原子多步操作。
 
-- `local_scan`：完整 typed hierarchy → 显式 scope 过滤 → 候选数硬检查 → 逐页读取且受 SearchBudget 约束；
-- `onenote_index`：COM FindPages → 局部 XML → 完整 catalog hydration → 可选读取命中 Page 生成 snippet；
-- 两种后端不会静默互相 fallback。
+### 5.3 Search
 
-## 7. 数据与错误边界
+- `local_scan`：typed hierarchy → 显式 scope → 候选数预检查 → 在字符/耗时预算内顺序读取 Page。
+- `onenote_index`：COM FindPages → 局部 XML → 用完整 typed catalog hydration → 可选正文 snippet。
+- 两个后端不会静默 fallback。
 
-| 边界 | 约束 |
-| --- | --- |
-| MCP → server | mutation 使用精确 ID；名称/路径解析只用于只读辅助。 |
-| server → policy | 写、删、永久删除、实验 Move、raw XML 分开授权。 |
-| server → hierarchy | 只传 XML/catalog，不传 bridge 或 MCP context。 |
-| server → bridge | operation 必须属于 PowerShell switch 白名单；用户输入只进入 JSON。 |
-| bridge → PowerShell | 请求/响应通过临时 JSON 路径环境变量交换，不插值到脚本文本。 |
-| server → MCP | 成功和失败使用固定 envelope；未知 COM attribute 不公开；bridge message 当前可能作为 `backend_error.error` 返回。 |
+## 6. 运行时生命周期与并发
 
-## 8. 生命周期与并发模型
+- `server.py` 创建一个 `FastMCP`、一个 `OneNoteBridge` 和一个 `ServiceContainer`，随后注册工具并运行 stdio。
+- service 实例共享同一个 bridge；当前没有 repository 或 hierarchy cache。
+- 每个 bridge 调用启动非交互 PowerShell，并在该进程中创建 OneNote COM 对象。
+- 工具函数是 async transport 接口，service 和 bridge 当前为同步阻塞执行。
+- mutation 回读使用有限次数的同步轮询；搜索顺序读取 Page，不并行调用 COM。
 
-- MCP server 通过 stdio 长驻；`mcp` 和 `bridge` 是模块级单例；
-- 每次 bridge 调用创建一个 PowerShell 进程和一个新的 `OneNote.Application` COM 对象；
-- 当前没有 hierarchy cache、repository 或长驻 COM broker；每个 typed lookup 通常重新读取完整 hierarchy；
-- mutation read-back 采用有限重试和同步 `time.sleep`；工具函数虽为 async，底层 bridge 仍是同步阻塞调用；
-- Search 当前顺序读取 Page，没有并行 COM 调用。
+## 7. 测试与写入隔离
 
-这些是当前实现事实，不代表目标架构承诺。
-
-## 9. 当前技术债与后续演进边界
-
-1. `server.py` 同时承担 MCP 注册、应用服务和部分 hierarchy mutation XML builder，体积较大；后续可拆为 `tools/` 与 `services/`，但不得重新引入第二套对象模型。
-2. `OneNoteBridge` 每次启动 PowerShell/COM，延迟和资源消耗尚无基准；长驻 broker 必须先验证 COM apartment、超时和恢复语义。
-3. 层级 snapshot 未缓存，同一工具内可能多次读取完整 hierarchy；若增加缓存，mutation 前确认和操作后回读必须强制绕过缓存。
-4. dataclass 目前在 mapper 内短暂存在，MCP 边界仍使用可变字典；未来可引入显式 DTO，但字段必须保持与对象模型文档兼容。
-5. `replace_page_body` 是非原子多步操作；不能通过架构命名把它描述为事务。
-6. Section Move 仍是实验能力；架构层的 read-back 不能替代特定 OneNote 版本的隔离验证。
-
-## 10. 测试分层
-
-| 测试文件 | 覆盖层 | 是否访问 OneNote |
+| 测试文件 | 主要边界 | 自动运行权限 |
 | --- | --- | --- |
-| `test_domain.py` | 领域序列化和关系字段 | 否 |
-| `test_hierarchy.py` | 完整/局部层级 XML、hydration、解析歧义 | 否 |
-| `test_page.py` | Page parser/builder/formatting、table、内容对象 | 否 |
-| `test_policy.py` | 环境开关和 SearchBudget | 否 |
-| `test_server.py` | MCP 应用编排和 mock bridge 合同 | 默认只读；mutation 测试标记为 `write_contract` |
+| `test_domain.py` | dataclass 序列化 | 纯内存、只读 |
+| `test_hierarchy.py` | 层级 XML mapper | 纯字符串、只读 |
+| `test_page.py` | Page parser/formatter/builder | 纯内存/本地 fixture、只读 |
+| `test_policy.py` | policy/budget | 纯环境快照、只读 |
+| `test_server.py` | tool/service 集成 | 默认只读；写合同标记 `write_contract` |
 
-真实 COM mutation 只能按照 `docs/dev/isolated_mutation_validation.md` 人工触发，不属于默认测试或 CI。
+本会话与默认自动验证仅运行 `pytest -m "not write_contract"`。真实 COM mutation 以及 `write_contract` 流程只能按 [隔离 mutation 验证](../dev/isolated_mutation_validation.md) 人工触发。
+
+## 8. 已知演进边界
+
+1. 完整层级快照会在一次复杂用例中被多次读取；若引入缓存，mutation 前确认和写后回读必须绕过缓存。
+2. `tools.context` 是进程级 service 绑定，适合当前单 server 实例；多租户或多 bridge 配置需要改为显式 MCP context 注入。
+3. PowerShell/COM 每次调用的延迟尚无正式基准；长驻 broker 必须先验证 COM apartment、超时和恢复语义。
+4. 字典是当前 MCP 边界格式；新增 DTO 时必须复用 `domain/` 的字段契约，不能建立第二套对象模型。
+5. Section Move 在真实 OneNote 版本隔离验证前仍保持实验开关关闭。
