@@ -12,3 +12,4 @@ tmp/
 # Local agent preferences and isolated validation artifacts
 .claude/settings.local.json
 .codex-tmp/
+.local-validation/
