@@ -5,9 +5,10 @@ import pytest
 
 from local_onenote_mcp import server
 from local_onenote_mcp.policy import SearchBudget
+from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.tools.advanced import delete_hierarchy, open_hierarchy
 from local_onenote_mcp.tools.hierarchy import list_hierarchy
-from local_onenote_mcp.tools.mutations import create_section, delete_page_content
+from local_onenote_mcp.tools.mutations import create_page, create_section, delete_page_content
 from local_onenote_mcp.tools.operations import publish_object
 from local_onenote_mcp.tools.pages import search_pages
 from local_onenote_mcp.tools.system import health_check, resolve_identifier
@@ -271,6 +272,62 @@ def test_create_section_returns_refreshed_current_section_id(monkeypatch):
 
     assert result["ok"] is True
     assert result["section_id"] == "current-section-id"
+
+
+@pytest.mark.write_contract
+def test_create_page_reports_allocated_id_when_initial_content_write_fails(monkeypatch):
+    section = {
+        "resource_type": "section",
+        "id": "section-id",
+        "path": "Notebook/Section",
+        "name": "Section",
+    }
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: section)
+
+    def fake_call(operation, **params):
+        if operation == "create_new_page":
+            return {"page_id": "allocated-page-id"}
+        raise RuntimeError("initial content failed")
+
+    monkeypatch.setattr(server.services.mutations, "call", fake_call)
+
+    result = asyncio.run(create_page("section-id", "Title"))
+
+    assert result["ok"] is False
+    assert result["code"] == "partial_failure"
+    assert result["created_ids"] == ["allocated-page-id"]
+    assert result["failed_step"] == "initialize_created_page"
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize("kind", ["notebook", "section_group", "section"])
+def test_create_container_reports_allocated_id_when_readback_fails(monkeypatch, tmp_path, kind):
+    parent = {
+        "resource_type": "notebook",
+        "id": "parent-id",
+        "path": "Notebook",
+        "name": "Notebook",
+    }
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda operation, **params: {"object_id": f"allocated-{kind}-id"},
+    )
+    monkeypatch.setattr(server.services.hierarchy, "wait_for_created", lambda *args, **kwargs: None)
+
+    with pytest.raises(PartialFailure) as caught:
+        if kind == "notebook":
+            server.services.mutations.create_notebook("Copy", str(tmp_path))
+        elif kind == "section_group":
+            server.services.mutations.create_section_group("parent-id", "Copy")
+        else:
+            server.services.mutations.create_section("parent-id", "Copy")
+
+    assert caught.value.details["created_ids"] == [f"allocated-{kind}-id"]
+    assert caught.value.details["failed_step"] == f"verify_created_{kind}"
 
 
 @pytest.mark.write_contract
