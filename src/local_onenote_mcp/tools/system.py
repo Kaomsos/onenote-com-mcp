@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..policy import MutationPolicy, SearchBudget
+from ..policy import CopyBudget, MutationPolicy, SearchBudget
 from ..services import IDENTIFIER_RESOLUTION_ORDER, RESOURCE_TYPES
 from ..settings import MCP_NAME
 from .context import get_services
@@ -21,6 +21,7 @@ async def health_check() -> dict[str, Any]:
         items = services.hierarchy.resources(include_recycle_bin=False)
         policy = MutationPolicy.current()
         budget = SearchBudget.current()
+        copy_budget = CopyBudget.current()
         return {
             "server": MCP_NAME,
             "transport": "stdio",
@@ -37,6 +38,8 @@ async def health_check() -> dict[str, Any]:
                 "deletes_enabled": policy.deletes_enabled,
                 "permanent_deletes_enabled": policy.permanent_deletes_enabled,
                 "experimental_move_section_enabled": policy.experimental_move_section_enabled,
+                "experimental_copy_enabled": policy.experimental_copy_enabled,
+                "reconstructive_move_page_enabled": policy.reconstructive_move_page_enabled,
                 "raw_xml_enabled": policy.raw_xml_enabled,
             },
             "search_budget": {
@@ -44,6 +47,15 @@ async def health_check() -> dict[str, Any]:
                 "max_page_chars": budget.max_page_chars,
                 "max_total_chars": budget.max_total_chars,
                 "max_seconds": budget.max_seconds,
+            },
+            "copy_budget": {
+                "max_resources": copy_budget.max_resources,
+                "max_pages": copy_budget.max_pages,
+                "max_content_objects": copy_budget.max_content_objects,
+                "max_page_xml_bytes": copy_budget.max_page_xml_bytes,
+                "max_total_xml_bytes": copy_budget.max_total_xml_bytes,
+                "max_plan_seconds": copy_budget.max_plan_seconds,
+                "max_execute_seconds": copy_budget.max_execute_seconds,
             },
             "notebooks": sum(item["resource_type"] == "notebook" for item in items),
             "sections": sum(item["resource_type"] == "section" for item in items),

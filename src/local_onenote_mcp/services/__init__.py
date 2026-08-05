@@ -1,6 +1,7 @@
 """Application service layer."""
 
 from .container import ServiceContainer
+from .copying import CopyService
 from .errors import PartialFailure
 from .hierarchy import HierarchyService, IDENTIFIER_RESOLUTION_ORDER, RESOURCE_TYPES
 from .mutations import MutationService
@@ -12,6 +13,7 @@ __all__ = [
     "HierarchyService",
     "IDENTIFIER_RESOLUTION_ORDER",
     "MutationService",
+    "CopyService",
     "OperationsService",
     "PageService",
     "PartialFailure",

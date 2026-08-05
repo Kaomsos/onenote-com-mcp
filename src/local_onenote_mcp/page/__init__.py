@@ -9,17 +9,29 @@ from .parser import (
     title_from_page_xml,
 )
 from .builder import build_image_page_update_xml, build_page_update_xml
+from .copying import (
+    COPYABLE_CONTENT_ROOTS,
+    VALIDATED_COPY_CONTENT_TYPES,
+    canonical_page_digest,
+    page_equivalence,
+    transform_page_for_copy,
+)
 
 __all__ = [
     "DELETABLE_PAGE_OBJECT_TYPES",
     "ImageDimensionError",
     "build_image_page_update_xml",
     "build_page_update_xml",
+    "canonical_page_digest",
     "collect_page_objects",
+    "COPYABLE_CONTENT_ROOTS",
     "image_dimensions",
     "markdown_to_html",
     "normalize_content",
     "proportional_dimensions",
+    "page_equivalence",
     "text_from_page_xml",
     "title_from_page_xml",
+    "transform_page_for_copy",
+    "VALIDATED_COPY_CONTENT_TYPES",
 ]

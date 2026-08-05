@@ -135,7 +135,13 @@ class MutationService(BaseService):
         )
         notebook = self.hierarchy.wait_for_created(notebook_path.name, "notebook", result["object_id"])
         if notebook is None:
-            raise RuntimeError("Notebook creation returned success, but the new notebook could not be verified.")
+            raise PartialFailure(
+                "Notebook creation returned success, but the new notebook could not be verified.",
+                partial=True,
+                created_ids=[result["object_id"]],
+                completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
+                failed_step="verify_created_notebook",
+            )
         return {"path": str(notebook_path), "notebook_id": result["object_id"], "item": notebook}
 
     def create_section(self, parent_id: str, section_name: str) -> dict[str, Any]:
@@ -155,7 +161,13 @@ class MutationService(BaseService):
         expected_path = self.hierarchy.friendly_child_path(parent["path"], filename)
         section = self.hierarchy.wait_for_created(expected_path, "section", result["object_id"])
         if section is None:
-            raise RuntimeError("Section creation returned success, but the new section could not be verified.")
+            raise PartialFailure(
+                "Section creation returned success, but the new section could not be verified.",
+                partial=True,
+                created_ids=[result["object_id"]],
+                completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
+                failed_step="verify_created_section",
+            )
         return {
             "parent": parent,
             "section": section,
@@ -178,7 +190,13 @@ class MutationService(BaseService):
         expected_path = self.hierarchy.friendly_child_path(parent["path"], group_name)
         group = self.hierarchy.wait_for_created(expected_path, "section_group", result["object_id"])
         if group is None:
-            raise RuntimeError("Section-group creation returned success, but the new group could not be verified.")
+            raise PartialFailure(
+                "Section-group creation returned success, but the new group could not be verified.",
+                partial=True,
+                created_ids=[result["object_id"]],
+                completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
+                failed_step="verify_created_section_group",
+            )
         return {
             "parent": parent,
             "section_group": group,
@@ -202,12 +220,27 @@ class MutationService(BaseService):
             section_id=section["id"],
             new_page_style=self.enum("new_page_style", new_page_style, NEW_PAGE_STYLES),
         )["page_id"]
-        xml = build_page_update_xml(page_id, title=title, content=content, content_format=content_format)
-        self.call("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        expected_path = self.hierarchy.friendly_child_path(section["path"], title)
-        page = self.hierarchy.wait_for_created(expected_path, "page", page_id)
-        if page is None:
-            raise RuntimeError("Page creation returned success, but the new page could not be verified.")
+        completed_steps = [{"operation": "create_new_page", "object_id": page_id}]
+        try:
+            xml = build_page_update_xml(page_id, title=title, content=content, content_format=content_format)
+            self.call("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
+            completed_steps.append({"operation": "update_page_content", "object_id": page_id})
+            expected_path = self.hierarchy.friendly_child_path(section["path"], title)
+            page = self.hierarchy.wait_for_created(expected_path, "page", page_id)
+            if page is None:
+                raise RuntimeError("Page creation returned success, but the new page could not be verified.")
+        except Exception as exc:
+            raise PartialFailure(
+                str(exc),
+                partial=True,
+                created_ids=[page_id],
+                completed_steps=completed_steps,
+                failed_step=(
+                    "verify_created_page"
+                    if any(step["operation"] == "update_page_content" for step in completed_steps)
+                    else "initialize_created_page"
+                ),
+            ) from exc
         return {"page_id": page["id"], "page": page, "section": section, "title": title, "path": expected_path}
 
     def update_page_title(

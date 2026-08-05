@@ -30,6 +30,7 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
     assert result["identifier_resolution_order"] == ["id", "exact_path", "unique_name"]
     assert result["search_default_backend"] == "local_scan"
     assert result["content_formats"] == ["plain", "html", "markdown"]
+    assert result["copy_budget"]["max_pages"] > 0
     assert result["python_executable"]
     assert result["module_path"].endswith("tools\\system.py") or result["module_path"].endswith("tools/system.py")
 
@@ -140,11 +141,62 @@ def test_local_search_rejects_candidate_overflow_before_page_reads(monkeypatch):
 def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
-    assert len(names) == 43
+    assert len(names) == 50
+    assert {
+        "plan_copy",
+        "copy_page",
+        "copy_section",
+        "copy_section_group",
+        "copy_notebook",
+        "plan_reconstructive_move_page",
+        "reconstructive_move_page",
+    } <= names
     assert "update_page_xml" not in names
     assert "update_hierarchy_xml" not in names
     assert "delete_hierarchy" not in names
     assert "merge_sections" not in names
+
+
+def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
+    tools = server.mcp._tool_manager._tools
+    expected_required = {
+        "plan_copy": {"source_id"},
+        "copy_page": {
+            "page_id",
+            "destination_section_id",
+            "expected_title",
+            "expected_section_id",
+            "plan_digest",
+        },
+        "copy_section": {
+            "section_id",
+            "destination_parent_id",
+            "expected_name",
+            "expected_parent_id",
+            "plan_digest",
+        },
+        "copy_section_group": {
+            "section_group_id",
+            "destination_parent_id",
+            "expected_name",
+            "expected_parent_id",
+            "plan_digest",
+        },
+        "copy_notebook": {"notebook_id", "expected_name", "plan_digest"},
+        "plan_reconstructive_move_page": {"page_id", "destination_section_id"},
+        "reconstructive_move_page": {
+            "page_id",
+            "destination_section_id",
+            "expected_title",
+            "expected_section_id",
+            "plan_digest",
+        },
+    }
+
+    for name, required in expected_required.items():
+        assert set(tools[name].parameters.get("required", [])) == required
+    assert "destination_parent_id" not in tools["copy_notebook"].parameters["properties"]
+    assert tools["plan_copy"].parameters["properties"]["destination_base_folder"]["default"] == ""
 
 
 def test_page_content_digest_ignores_page_clock_and_hierarchy_metadata():

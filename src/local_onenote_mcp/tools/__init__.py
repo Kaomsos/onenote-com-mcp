@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..services import ServiceContainer
+from .copying import TOOLS as COPY_TOOLS
 from .advanced import TOOLS as ADVANCED_TOOLS
 from .context import configure
 from .hierarchy import TOOLS as HIERARCHY_TOOLS
@@ -19,6 +20,7 @@ DEFAULT_TOOLS = [
     *HIERARCHY_TOOLS,
     *PAGE_TOOLS,
     *MUTATION_TOOLS,
+    *COPY_TOOLS,
     *OPERATION_TOOLS,
 ]
 
