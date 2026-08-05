@@ -1,10 +1,10 @@
-# MCP 工具参数与返回格式（P0/P1 实现版）
+# MCP 工具参数与返回格式（P0/P1 + P2 实验实现）
 
 > 状态：默认工具 profile 的权威契约  
-> 更新日期：2026-08-04  
+> 更新日期：2026-08-05
 > ID 参数均指 OneNote COM 对象 ID，除 `resolve_identifier` 和兼容只读 `list_hierarchy.start_identifier` 外不接受名称或路径。
 
-默认 profile 共 43 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。
+默认 profile 共 50 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。P2 Copy/重建式 Move 已注册但由默认关闭的独立策略保护，尚不能视为真实 OneNote 已验证能力。
 
 ## 1. 通用返回 envelope
 
@@ -36,7 +36,7 @@
 
 | 工具 | 参数 | 成功时的主要返回 |
 | --- | --- | --- |
-| `health_check` | 无 | 运行时位置、统计、`mutation_policy`、`search_budget`。 |
+| `health_check` | 无 | 运行时位置、统计、`mutation_policy`、`search_budget`、`copy_budget`。 |
 | `resolve_identifier` | `identifier`, `item_type=""` | `item`、`identifier_resolution_order`；仅只读辅助。 |
 | `list_notebooks` | `include_recycle_bin=false` | `notebooks`, `count`。 |
 | `get_notebook` | `notebook_id` | `item: Notebook`。 |
@@ -110,7 +110,31 @@ Delete 总开关为 `LOCAL_ONENOTE_ENABLE_DELETES=true`；`permanently=true` 还
 
 Notebook 没有 Delete 工具。
 
-## 7. Export、导航、同步与关闭
+## 7. P2 Copy 与 Page 重建式 Move（实验）
+
+计划工具只读；执行工具除现有确认字段外必须提交刚生成的 `plan_digest`。摘要包含源树、每页完整 XML hash、目标直属子项、名称和执行模式；执行前重算不一致即在 mutation 前拒绝。计划返回的 `snapshots.source` 公开稳定资源列表与 Page hash、`snapshots.destination` 公开目标直属快照，但不返回原始 Page XML。
+
+| 工具 | 参数 | 成功时的主要返回/验证 |
+| --- | --- | --- |
+| `plan_copy` | `source_id`, `destination_parent_id=""`, `destination_name=""`, `destination_base_folder=""` | `plan_digest`, `source`, `destination`, `estimated`, `copyability`, `steps`, `execute_tool`。 |
+| `copy_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `plan_digest`, `expected_modified=null`, `destination_title=""` | 完整缩进子树的 `item`, `copy_report`, `created_ids`；目标根追加为 level 1。 |
+| `copy_section` | `section_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `plan_digest`, `expected_modified=null`, `destination_name=""` | 递归创建 Section 与全部 Page。 |
+| `copy_section_group` | `section_group_id`, 其余确认/目标字段同上 | 递归创建 SectionGroup、Section 和 Page。 |
+| `copy_notebook` | `notebook_id`, `expected_name`, `plan_digest`, `expected_modified=null`, `destination_name=""`, `destination_base_folder=""` | 新 Notebook 及全部后代；不提供 Notebook 删除回滚。 |
+| `plan_reconstructive_move_page` | `page_id`, `destination_section_id`, `destination_title=""` | Copy 计划加源 Page 回收步骤和外部入站链接警告。 |
+| `reconstructive_move_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `plan_digest`, `expected_modified=null`, `destination_title=""` | lossless/verified 后叶到根回收源 Page；否则 `partial_failure`, `outcome=copy_only`, `source_deleted=false`。 |
+
+`copy_report` 固定包含 `id_map/copied_counts/skipped_content/issues/lossless/verified/page_results`；Notebook Copy 还包含经过创建返回值核对的 `destination_path`。已知有损但执行完整的 Copy 可返回成功和 warning；运行中失败保留已创建目标，返回 `created_ids/completed_steps/failed_step`，不做破坏性自动回滚。
+
+Page Copy 始终包含完整子树。名称冲突按直属子项 case-insensitive 拒绝；没有覆盖、合并或自动后缀。范围内已识别 ID 引用会改写，范围外出站链接保留；重建式 Move 不扫描外部入站链接且始终返回 old→new ID。
+
+递归容器按源 hierarchy snapshot 的确定性深度优先顺序创建。Page 的顺序和相对 `page_level` 必须回读验证；Section/SectionGroup 没有稳定 COM 顺序字段，因此只承诺并验证父子结构，不声明容器顺序保真。Notebook 名称冲突只在解析后的目标 `destination_base_folder/name` 路径上判断，不因其他目录存在同名已打开 Notebook 而误拒绝。
+
+Move 删除阶段的部分失败分别返回 `attempted_source_ids`、已确认带回收站标记的 `recycled_source_ids/deleted_source_ids`、状态未知的 `unverified_source_ids` 和尚未完成步骤的 `remaining_source_ids`；未通过回读验证的 ID 不得计入已回收列表。
+
+当前候选 XML 内容会尽力保留；能力清单除 Outline/Image/附件/墨迹/媒体对象外，还单独识别 `RichText/Table/List/Tag/MeetingInfo`。真实隔离验证尚未确认的类型产生 `content_type_unverified`，使 `lossless=false` 并阻止 Move 删除源。已知顶层内容块内只要出现不在 OneNote 2013 静态节点 allowlist 的后代节点，整个顶层块即省略并返回 `unsupported_nested_page_node`，不会静默透传未来扩展。验证流程见 `tests/manual_isolated/README.md`。
+
+## 8. Export、导航、同步与关闭
 
 | 工具 | 参数 | 成功时的主要返回 |
 | --- | --- | --- |
@@ -123,7 +147,7 @@ Notebook 没有 Delete 工具。
 
 导出格式：`one/onepkg/mhtml/mht/pdf/xps/word/doc/docx/emf/html/one2007`。`publish_object` 会写本地文件，但不修改 OneNote 对象。
 
-## 8. 配置与默认 profile
+## 9. 配置与默认 profile
 
 | 环境变量 | 默认值 | 作用 |
 | --- | --- | --- |
@@ -131,11 +155,20 @@ Notebook 没有 Delete 工具。
 | `LOCAL_ONENOTE_ENABLE_DELETES` | `false` | 层级和 Page 内容删除。 |
 | `LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES` | `false` | 永久删除，不能替代 Delete 总开关。 |
 | `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_MOVE_SECTION` | `false` | 同 Notebook Section Move，不能替代写开关。 |
+| `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY` | `false` | 四层 Copy；不能替代写开关。 |
+| `LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE` | `false` | Page 重建式 Move；还要求 Writes、Deletes 和 Experimental Copy。 |
 | `LOCAL_ONENOTE_ENABLE_RAW_XML` | `false` | 启动时注册开发 profile 工具。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_PAGES` | `200` | 本地扫描候选 Page 上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS` | `100000` | 单 Page 扫描字符上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS` | `2000000` | 单次扫描总字符上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_SECONDS` | `30` | 单次本地扫描秒数上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_SNIPPET_CHARS` | `400` | snippet 上限。 |
+| `LOCAL_ONENOTE_MAX_COPY_RESOURCES` | `1000` | 单次 Copy 的层级对象上限。 |
+| `LOCAL_ONENOTE_MAX_COPY_PAGES` | `200` | 单次 Copy 的 Page 上限。 |
+| `LOCAL_ONENOTE_MAX_COPY_CONTENT_OBJECTS` | `10000` | 单次 Copy 的内容对象上限。 |
+| `LOCAL_ONENOTE_MAX_COPY_PAGE_XML_BYTES` | `33554432` | 单 Page 完整 XML 字节上限。 |
+| `LOCAL_ONENOTE_MAX_COPY_TOTAL_XML_BYTES` | `268435456` | 单次计划全部 Page XML 字节上限。 |
+| `LOCAL_ONENOTE_MAX_COPY_PLAN_SECONDS` | `300` | 只读计划阶段秒数上限。 |
+| `LOCAL_ONENOTE_MAX_COPY_EXECUTE_SECONDS` | `1800` | 执行阶段秒数上限；超限按部分失败报告。 |
 
 默认不注册 `update_page_xml/update_hierarchy_xml/delete_hierarchy/open_hierarchy/find_meta/merge_sections/set_filing_location`。开发 profile 即使注册 raw mutation，也仍需对应 write/delete 开关；`force` 不进入默认 typed 工具。

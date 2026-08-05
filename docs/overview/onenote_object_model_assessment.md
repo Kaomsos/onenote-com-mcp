@@ -15,7 +15,7 @@
 
 ## 1. 结论先行
 
-这个项目已经证明了一件很有价值的事：Windows OneNote COM 足以支撑一个无需 Azure、OAuth 和公网请求的快速自用 MCP。它有 36 个公开工具，覆盖四层层级发现、正文读取与搜索、四层创建、Page 内容修改、层级删除、导出、导航、同步和 Section 合并；PowerShell bridge 也避免了把用户输入直接插值进脚本。
+这个项目已经证明了一件很有价值的事：Windows OneNote COM 足以支撑一个无需 Azure、OAuth 和公网请求的快速自用 MCP。它有 36 个公开工具，覆盖四层层级发现、正文读取与搜索、四层创建、Page 内容修改、层级删除、导出、导航和同步；PowerShell bridge 也避免了把用户输入直接插值进脚本。
 
 但它目前更像“COM 方法工具箱”，还不是一个边界稳定、对象语义统一的 OneNote 产品模型。核心问题不是能力少，而是能力组织方式不够整齐：
 
@@ -126,12 +126,11 @@ Page 比其他对象多一层内容解析：
 | `U` | 重新排序/缩进 | `—` | `L`：raw hierarchy XML | `L`：raw hierarchy XML | `L`：raw hierarchy XML；无 typed reorder/indent/outdent |
 | `D` | 删除 | `X/M*`：工具接受 Notebook，但 COM `DeleteHierarchy` 不提供 Notebook 删除语义 | `M*`：generic delete，可永久删除，无服务开关与对象确认 | `M*`：同左 | `M*`：同左；另有内容对象删除 |
 | `O` | 复制 | `—` | `—` | `—` | `—` |
-| `O` | 移动 | `—` | `—` | `—`：`merge_sections` 不是 Move | `—` |
+| `O` | 移动 | `—` | `—` | `—` | `—` |
 | `O` | 导出 | `M`：`publish_object` | `—` | `M`：`publish_object` | `M`：`publish_object` |
 | `O` | 导航 | `M` | `M` | `M` | `M`：还可定位内容对象 |
 | `O` | 同步 | `M*`：generic `sync_hierarchy` | `M*` | `M*` | `M*` |
 | `O` | 关闭 Notebook | `M` | `—` | `—` | `—` |
-| `O` | 合并 Section | `—` | `—` | `M`：`merge_sections` | `—` |
 
 ### 4.1 README 与源码之间需要校正的表述
 
@@ -231,7 +230,6 @@ Page 比其他对象多一层内容解析：
 | `O` | 导航 | `P0` | `P0` | `P0` | `P0` |
 | `O` | 同步 | `P1` | `V` | `V` | `V` |
 | `O` | 关闭 Notebook | `P1` | `—` | `—` | `—` |
-| `O` | 合并 Section | `—` | `—` | `P2`：破坏性、不可逆语义单列 | `—` |
 
 ## 7. 动态操作契约建议
 
@@ -316,7 +314,7 @@ adapters/com/
 
 1. Copy/Move 先生成计划并估算对象数、字节数和破坏范围。
 2. 任何“复制后删除”必须明确叫重建式 Move，返回新旧 ID 和部分失败状态。
-3. `merge_sections`、永久删除、整页重建等能力使用更严格确认和独立配置。
+3. 永久删除、整页重建等能力使用更严格确认和独立配置。
 
 ## 10. 验收标准
 

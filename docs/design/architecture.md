@@ -44,6 +44,7 @@ src/local_onenote_mcp/
 │  ├─ hierarchy.py           层级 List/Get/Query/Path/Tree
 │  ├─ pages.py               Page 内容读取与 Search
 │  ├─ mutations.py           typed Create/Update/Delete
+│  ├─ copying.py             P2 Copy/重建式 Page Move
 │  ├─ operations.py          Export/导航/Sync/Close
 │  ├─ advanced.py            启动时可选的开发 profile
 │  └─ __init__.py            默认/高级工具集合和注册
@@ -54,6 +55,7 @@ src/local_onenote_mcp/
 │  ├─ pages.py               PageService
 │  ├─ search.py              SearchService
 │  ├─ mutations.py           MutationService
+│  ├─ copying.py             CopyService
 │  ├─ operations.py          OperationsService
 │  └─ errors.py              PartialFailure
 ├─ domain/
@@ -99,6 +101,7 @@ classDiagram
         +SearchService search
         +MutationService mutations
         +OperationsService operations
+        +CopyService copying
         +build(bridge, max_text_chars)$ ServiceContainer
     }
     class BaseService {
@@ -111,6 +114,7 @@ classDiagram
     class SearchService
     class MutationService
     class OperationsService
+    class CopyService
     class OneNoteBridge {
         +int timeout_seconds
         +call(operation, params) dict
@@ -120,10 +124,15 @@ classDiagram
         +require_write()
         +require_delete(permanently)
         +require_experimental_move()
+        +require_experimental_copy()
+        +require_reconstructive_move_page()
         +require_raw_xml()
     }
     class SearchBudget {
         +current()$ SearchBudget
+    }
+    class CopyBudget {
+        +current()$ CopyBudget
     }
     class PartialFailure
     class OneNoteBridgeError
@@ -133,11 +142,13 @@ classDiagram
     BaseService <|-- SearchService
     BaseService <|-- MutationService
     BaseService <|-- OperationsService
+    BaseService <|-- CopyService
     ServiceContainer *-- HierarchyService
     ServiceContainer *-- PageService
     ServiceContainer *-- SearchService
     ServiceContainer *-- MutationService
     ServiceContainer *-- OperationsService
+    ServiceContainer *-- CopyService
     PageService --> HierarchyService
     SearchService --> HierarchyService
     SearchService --> PageService
@@ -145,30 +156,38 @@ classDiagram
     MutationService --> PageService
     OperationsService --> HierarchyService
     OperationsService --> MutationService
+    CopyService --> HierarchyService
+    CopyService --> PageService
+    CopyService --> MutationService
     BaseService --> OneNoteBridge
     MutationService ..> MutationPolicy
     OperationsService ..> MutationPolicy
     SearchService ..> SearchBudget
+    CopyService ..> MutationPolicy
+    CopyService ..> CopyBudget
+    CopyService ..> PartialFailure : raises
     MutationService ..> PartialFailure : raises
     OneNoteBridge ..> OneNoteBridgeError : raises
 ```
 
 | 类 | 所在模块 | 职责 |
 | --- | --- | --- |
-| `ServiceContainer` | `services.container` | 构造并持有共享 bridge 上的五个 service；表达显式依赖。 |
+| `ServiceContainer` | `services.container` | 构造并持有共享 bridge 上的六个 service；表达显式依赖。 |
 | `BaseService` | `services.base` | 提供 bridge 错误归一化和 enum 校验。 |
 | `HierarchyService` | `services.hierarchy` | 获取 typed snapshot，完成 List/Get/Query/Path/Tree、ID/路径解析、层级更新 XML。 |
 | `PageService` | `services.pages` | 读取 Page XML/text/object/binary，确认 Page，计算内容摘要。 |
 | `SearchService` | `services.search` | 执行有显式 scope 和硬预算的 local scan 或 OneNote index 搜索。 |
 | `MutationService` | `services.mutations` | typed 创建、修改、删除；策略检查、乐观确认和操作后回读均在此。 |
+| `CopyService` | `services.copying` | 无状态 Copy 计划、四层递归复制、Page XML 保真报告和重建式 Move 删除门。 |
 | `OperationsService` | `services.operations` | 特殊目录、超链接、父级、导出、导航、同步、关闭及高级应用操作。 |
 | `MutationPolicy` | `policy` | 从环境变量生成不可变权限快照。 |
 | `SearchBudget` | `policy` | 从环境变量生成不可变搜索预算。 |
+| `CopyBudget` | `policy` | 限制 Copy 的对象/Page 数、完整 XML 字节和计划/执行时间。 |
 | `OneNoteBridge` | `bridge` | 通过临时 JSON 与固定 PowerShell 脚本执行白名单 COM 操作。 |
 | `PartialFailure` | `services.errors` | 携带非原子多步 mutation 已完成步骤。 |
 | `OneNoteBridgeError` | `bridge` | 表达 PowerShell、COM、超时和响应错误。 |
 
-`ServiceContainer.build()` 的创建顺序体现了依赖：先 `HierarchyService`，再 `PageService`，随后 `SearchService` 和 `MutationService`，最后创建依赖 mutation 的 `OperationsService`。
+`ServiceContainer.build()` 的创建顺序体现了依赖：先 `HierarchyService`，再 `PageService`，随后 `SearchService` 和 `MutationService`，最后创建依赖 mutation 的 `OperationsService` 与 `CopyService`。
 
 ### 3.2 领域类
 
@@ -275,8 +294,9 @@ classDiagram
 | `tools.hierarchy` | 11 | hierarchy |
 | `tools.pages` | 6 | pages、search |
 | `tools.mutations` | 16 | mutations |
+| `tools.copying` | 7 | copying |
 | `tools.operations` | 7 | operations |
-| 合计 | 43 | — |
+| 合计 | 50 | — |
 
 `tools.advanced` 另有 7 个开发 profile 工具，仅当进程启动时 `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 才注册。注册并不代表取得写权限；service 仍会再次执行 write/delete/raw policy。
 

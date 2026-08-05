@@ -6,7 +6,8 @@
 
 | ID | 待办 | 状态 | 优先级 | 说明 |
 | --- | --- | --- | --- | --- |
-| 001 | [本地程序化 OneNote 隔离验证 Runner](001_programmatic_isolated_mutation_runner.md) | 待办 | P1 | 用用户手动启动的本地 Runner 代替逐步手工调用 MCP tools。 |
+| 001 | [本地程序化 OneNote 隔离验证 Runner](001_programmatic_isolated_mutation_runner.md) | 进行中 | P1 | Runner 与文档已实现，等待专用 Notebook 实测和用户确认。 |
+| 002 | [P2 四层 Copy 与 Page 重建式 Move](002_p2_copy_and_reconstructive_page_move.md) | 进行中 | P2 | 实验实现与具名 Runner 场景已落地，等待真实 OneNote 分阶段验证。 |
 
 ## 文件命名
 

@@ -117,5 +117,6 @@ Page 不公开 `name`，统一使用 `title`：
 | Metadata Query、Path、Tree、Page 缩进树 | P1 已实现 |
 | SectionGroup/Section Rename、Page Reorder | P1 已实现，默认关闭写入 |
 | Section 同 Notebook Move | P1 实验实现；真实 COM 隔离验证前由独立开关禁用 |
+| 四层 Copy、Page 重建式 Move | P2 实验实现；Copy 允许显式有损，Move 仅在保真验证通过后回收源；真实场景确认前独立开关禁用 |
 | Notebook/Section/Page Export、导航、Notebook Sync/Close | P1 typed 契约已实现 |
 | Notebook Delete、SectionGroup Export | 不承诺 |

@@ -1,7 +1,7 @@
 # 001：本地程序化 OneNote 隔离验证 Runner
 
 > ID：001
-> 状态：待办
+> 状态：进行中
 > 优先级：P1
 > 类型：开发基础设施
 > 更新日期：2026-08-04
@@ -16,9 +16,12 @@ Runner 不使用 Codex、LLM 或远程服务；Notebook 名称、ID、内容和�
 ## 2. 建议文件边界
 
 ```text
-scripts/
-├─ isolated_validation.py       用户入口、参数解析、步骤编排
-└─ mcp_stdio_client.py          MCP server 生命周期和 call_tool adapter
+tests/manual_isolated/
+├─ run.py                       唯一用户入口
+├─ runner.py                    参数解析、场景状态机和报告
+├─ mcp_stdio_client.py          MCP server 生命周期和 call_tool adapter
+├─ test_runner.py               不接触 OneNote 的纯 mock 测试
+└─ README.md                    手动运行说明
 ```
 
 不要为每个 mutation 创建独立脚本。场景、报告、权限和恢复逻辑集中在一个入口，避免开发工具继续散落。
@@ -27,32 +30,33 @@ scripts/
 
 ```powershell
 # 完全只读：发现目标和检查环境
-uv run python scripts\isolated_validation.py inspect `
+uv run python tests\manual_isolated\run.py inspect `
   --notebook-name "_LOCAL_MCP_ISOLATED_TEST_"
 
 # 准备测试结构；该子命令会自动为 MCP 子进程开启写权限
-uv run python scripts\isolated_validation.py prepare `
-  --notebook-id "<id>"
+uv run python tests\manual_isolated\run.py create `
+  --notebook-name "_LOCAL_MCP_ISOLATED_TEST_" `
+  --run-dir .local-validation\run-001
 
 # 保存 tree、Page XML hash、对象和 onepkg
-uv run python scripts\isolated_validation.py baseline `
+uv run python tests\manual_isolated\run.py baseline `
   --notebook-id "<id>" `
   --output .local-validation\run-001
 
 # 每个场景一次人工命令，自动完成正向、回读和恢复
-uv run python scripts\isolated_validation.py validate rename `
+uv run python tests\manual_isolated\run.py validate rename `
   --run-dir .local-validation\run-001
 
-uv run python scripts\isolated_validation.py validate reorder `
+uv run python tests\manual_isolated\run.py validate reorder `
   --run-dir .local-validation\run-001
 
-uv run python scripts\isolated_validation.py validate move `
+uv run python tests\manual_isolated\run.py validate move `
   --run-dir .local-validation\run-001
 
 # Delete 必须是独立命令和独立进程；只允许非永久删除
-uv run python scripts\isolated_validation.py validate delete `
+uv run python tests\manual_isolated\run.py validate delete `
   --run-dir .local-validation\run-001 `
-  --delete-sandbox-id "<id>"
+  --delete-target-id "<manifest 中的 disposable ID>"
 ```
 
 命令名称应面向用户表达验证意图，不直接暴露 `UpdateHierarchy`、schema enum 等 COM 细节。
@@ -61,10 +65,10 @@ uv run python scripts\isolated_validation.py validate delete `
 
 | 参数 | 默认值 | 语义 |
 | --- | --- | --- |
-| `--notebook-name` | 无 | 仅 inspect 使用；必须解析为唯一 Notebook。 |
-| `--notebook-id` | 无 | mutation/baseline 主键，不接受名称替代。 |
+| `--notebook-name` | create 有隔离默认值 | inspect/create/read 使用；必须精确匹配唯一 Notebook。validate 可用它交叉检查 manifest。 |
+| `--notebook-id` | 无 | baseline/read 可直接指定；mutation 主键从 run manifest 读取，不再按名称解析。 |
 | `--output/--run-dir` | `.local-validation/<timestamp>` | JSON、JSONL、XML hash、onepkg 和日志目录。 |
-| `--delete-sandbox-id` | 无 | Delete 场景的目标容器 ID；属于目标约束，不是授权开关。 |
+| `--delete-target-id` | 无 | Delete 场景必填；只接受 manifest 中记录且当前仍位于 Delete-Sandbox 下的 disposable ID。 |
 | `--timeout` | `180` | 单个 MCP tool 超时秒数。 |
 | `--dry-run` | `false` | 只输出计划、目标和待调用工具；不启动 MCP mutation。 |
 | `--json` | `false` | stdout 只输出稳定 JSON，方便归档。 |
@@ -78,7 +82,7 @@ Runner 根据用户选择的子命令自动为 MCP 子进程构造最小权限 e
 | 场景 | WRITES | DELETES | PERMANENT | EXPERIMENTAL_MOVE | RAW_XML |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `inspect/baseline/report` | false | false | false | false | false |
-| `prepare/rename/reorder` | true | false | false | false | false |
+| `create/rename/reorder` | true | false | false | false | false |
 | `move` | true | false | false | true | false |
 | `delete` | false | true | false | false | false |
 
@@ -211,17 +215,17 @@ preflight
 
 ## 11. 实现任务清单
 
-- [ ] 实现 stdio MCP client adapter 和统一 envelope 解析；
-- [ ] 实现 tool allowlist 与场景权限矩阵；
-- [ ] 实现 `inspect` 和 `baseline` 只读命令；
-- [ ] 实现 `prepare`，支持幂等复用和重复检测；
-- [ ] 实现 Rename 正向/恢复场景；
-- [ ] 实现 Reorder 正向/恢复场景；
-- [ ] 实现 Move 正向/恢复场景；
-- [ ] 实现独立非永久 Delete 场景；
-- [ ] 实现 JSONL 审计、摘要和 Markdown report；
-- [ ] 为参数、状态机和失败恢复编写纯 mock 测试；
-- [ ] 在文档中明确真实 COM 验证只能由用户手动运行；
+- [x] 实现 stdio MCP client adapter 和统一 envelope 解析；
+- [x] 实现 tool allowlist 与场景权限矩阵；
+- [x] 实现 `inspect` 和 `baseline` 只读命令；
+- [x] 实现 `create`，支持幂等复用和重复检测；
+- [x] 实现 Rename 正向/恢复场景；
+- [x] 实现 Reorder 正向/恢复场景；
+- [x] 实现 Move 正向/恢复场景；
+- [x] 实现独立非永久 Delete 场景；
+- [x] 实现 JSONL 审计、摘要和 Markdown report；
+- [x] 为参数、权限和快照比较编写纯 mock 测试；
+- [x] 在文档中明确真实 COM 验证只能由用户手动运行；
 - [ ] 完成一次专用 Notebook 实测后记录 OneNote/Office/CLI 版本。
 
 ## 12. 完成定义

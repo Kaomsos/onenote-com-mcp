@@ -3,7 +3,9 @@
 > 本文只定义用户显式触发的隔离流程。CI、hook、后台 Agent 或默认测试不得自动执行。
 > 真实验证对象必须是专用、无业务数据、可丢弃的本地 Notebook。
 
-当前可由用户手动逐项调用 MCP，也可按 [Codex CLI 间接调用流程](codex_cli_mcp_validation.md) 启动一次性非交互编排。两种方式都必须遵守本页的 ID 确认、权限隔离、回读和恢复要求。更可控的本地程序化 runner 尚在规划，见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
+推荐由用户按 [隔离手动 Smoke Test Runner](../../tests/manual_isolated/README.md) 显式运行本地程序化场景。Runner 自动完成最小权限子进程、ID 确认、回读、摘要、恢复和报告；本页的手工 tool 调用保留为故障排查后备方式。也可按 [Codex CLI 间接调用流程](codex_cli_mcp_validation.md) 启动一次性非交互编排。所有方式都必须遵守本页的隔离边界；实现进度见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
+
+P2 Copy 与 Page 重建式 Move 只能使用 Runner 中各自的具名场景；精确命令、权限矩阵、目标清理和 Notebook 残留规则见 [tests/manual_isolated/README.md](../../tests/manual_isolated/README.md)，进度见 [TODO 002](../todo/002_p2_copy_and_reconstructive_page_move.md)。不得把本页的 raw/manual 片段组合成另一个隐式 Copy 入口。
 
 ## 1. 目标
 
@@ -37,7 +39,7 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
 
 ## 3. 独立进程配置
 
-复制一份只用于该 Notebook 的 MCP 配置并重启独立 server 进程：
+使用推荐 Runner 时无需修改任何 MCP 配置；它会为每个场景启动独立 server、注入静态最小权限并用 `health_check` 核验。仅在使用后文手工 tool 调用排障时，才复制一份只用于该 Notebook 的 MCP 配置并重启独立 server 进程：
 
 ```toml
 [mcp_servers.local-onenote-isolated.env]
@@ -139,6 +141,21 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 
 ## 10. 自动化边界
 
+### 仓库开发规则
+
+凡真实执行时需要 mutation policy 权限的 tool，包括 Write、Delete、Permanent Delete、Experimental Mutation、Raw XML 以及未来新增的非只读权限，都必须采用本页这种半自动化手动验证：
+
+1. 自动化 pytest 只允许 mock/纯合同测试，不能访问真实 OneNote；
+2. 真实场景统一放在 [`tests/manual_isolated/`](../../tests/manual_isolated/README.md)，通过一个总入口由用户显式选择单个场景；
+3. Runner 为独立 MCP 子进程推导静态最小权限，并在调用目标 tool 前用 `health_check` 精确核验；
+4. 使用专用可丢弃 Notebook、精确 ID、最新确认字段和 before/after 证据；可恢复操作还必须执行恢复与 restored 回读；
+5. 不可恢复操作只能命中 manifest 白名单中的 disposable 对象，并在报告中明确最终状态和人工处理方式；
+6. 新增或修改非只读 tool 时，必须同步新增/更新对应 manual scenario 和使用命令；用户完成隔离实测前，不得声明真实后端验证完成。
+
+该规则不授权自动运行 mutation，也不允许用普通集成测试、临时脚本或直接手调 tool 绕过 Runner 的权限矩阵、身份检查和证据链。
+
+### 默认测试边界
+
 仓库中的 `write_contract` pytest 只使用 mock，不接触 OneNote；可在明确授权后单独运行：
 
 ```powershell
@@ -147,4 +164,4 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 
 真实 COM mutation 永远不能进入默认 CI、pre-commit 或 smoke test。`write_contract` 仅是 mock 合同测试；真实隔离验证必须由用户在终端明确启动。
 
-Codex CLI 间接调用和未来程序化 runner 都不是默认自动化：前者要求用户显式运行带阶段工具白名单的 `codex exec`；后者以用户手动运行具体 mutation 子命令作为授权，并根据场景自动为单次 MCP 子进程开启最小必要权限，不再要求额外的权限开关或二次确认。永久删除和 raw XML 始终保持关闭。
+Codex CLI 间接调用和本地程序化 Runner 都不是默认自动化：前者要求用户显式运行带阶段工具白名单的 `codex exec`；后者以用户手动运行具体 mutation 子命令作为授权，并根据场景自动为单次 MCP 子进程开启最小必要权限，不再要求额外的权限开关或二次确认。当前通用隔离 Runner 中永久删除和 raw XML 始终保持关闭；将来若开发相应 tool，只能新增权限更窄、目标约束更强的独立手动场景，不能扩大现有场景权限。

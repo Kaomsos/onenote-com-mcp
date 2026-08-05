@@ -61,7 +61,9 @@ Add this to your `%APPDATA%\Claude\claude_desktop_config.json`:
         "LOCAL_ONENOTE_MCP_TIMEOUT": "90",
         "LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS": "60000",
         "LOCAL_ONENOTE_ENABLE_WRITES": "false",
-        "LOCAL_ONENOTE_ENABLE_DELETES": "false"
+        "LOCAL_ONENOTE_ENABLE_DELETES": "false",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY": "false",
+        "LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE": "false"
       }
     }
   }
@@ -81,6 +83,8 @@ LOCAL_ONENOTE_MCP_TIMEOUT = "90"
 LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS = "60000"
 LOCAL_ONENOTE_ENABLE_WRITES = "false"
 LOCAL_ONENOTE_ENABLE_DELETES = "false"
+LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY = "false"
+LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE = "false"
 ```
 
 *Restart your MCP client. Upon first execution, the launcher automatically creates a local Python virtual environment, installs the required packages, and hosts the stdio channel.*
@@ -170,7 +174,7 @@ LOCAL_ONENOTE_MARKDIG_DLL = "C:\\path\\to\\Markdig.Signed.dll"
 
 ## API & Tool Directory
 
-The default profile exposes typed P0/P1 tools grouped into four logical categories. The complete parameter and return contract is in [`docs/design/tool_contracts.md`](docs/design/tool_contracts.md); the static fields are in [`docs/design/object_model.md`](docs/design/object_model.md).
+The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental tools. The complete parameter and return contract is in [`docs/design/tool_contracts.md`](docs/design/tool_contracts.md); the static fields are in [`docs/design/object_model.md`](docs/design/object_model.md).
 
 ### 1. Discovery & Content Inspection
 * `health_check`: Get server version, python location, and active features.
@@ -200,6 +204,15 @@ The default profile exposes typed P0/P1 tools grouped into four logical categori
 * Notebook deletion is not supported.
 * Raw hierarchy/page XML mutations and legacy generic destructive tools are not registered by default. They require an explicit local development profile and still cannot bypass write/delete policy.
 
+### 5. Experimental Copy & Reconstructive Page Move
+
+* `plan_copy` plus typed `copy_page` / `copy_section` / `copy_section_group` / `copy_notebook` use a content-aware, stale-plan digest before any mutation.
+* Page Copy always includes the complete indentation subtree. Copy never overwrites, merges, or auto-renames a conflicting target.
+* Unknown Page XML roots are omitted; an unknown descendant causes its containing top-level content block to be omitted. Both cases are returned as structured Copy issues rather than silently passed through.
+* `plan_reconstructive_move_page` / `reconstructive_move_page` create new Page IDs and recycle the source only after the defined content and topology checks pass.
+* These tools remain disabled unless `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true`; reconstructive Move additionally requires Deletes and `LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE=true`.
+* Real OneNote fidelity is not yet confirmed. Unverified rich-content types are reported and prevent source deletion; use the named scenarios in [`tests/manual_isolated/README.md`](tests/manual_isolated/README.md).
+
 > **Identifier Resolution Protocol:**
 > `resolve_identifier` and the compatible read-only hierarchy listing try identifiers in this priority:
 > 1. Exact OneNote Object GUID (Recommended for automation)
@@ -220,6 +233,9 @@ uv run python scripts\smoke_mcp.py
 
 # Mutation validation is intentionally manual and isolated:
 # docs/dev/isolated_mutation_validation.md
+
+# Recommended programmatic manual runner (never invoked by pytest/CI):
+.venv\Scripts\python.exe tests\manual_isolated\run.py --help
 ```
 
 ---
@@ -249,4 +265,4 @@ Here is a typical markdown format that can be generated dynamically:
 
 ## Limits & Boundaries
 
-This server relies on the Windows COM API and is restricted to single-user, Windows-native environments. Section Move remains experimental until validated against the installed OneNote build in a disposable notebook. Page body replacement is multi-step and non-atomic. Writes and deletes remain disabled unless explicitly enabled in the server environment.
+This server relies on the Windows COM API and is restricted to single-user, Windows-native environments. Section Move, four-layer Copy, and reconstructive Page Move remain experimental until validated against the installed OneNote build in a disposable notebook. Reconstructive Move changes Page IDs and cannot preserve external inbound links. Page body replacement and recursive Copy/Move are multi-step and non-atomic. Writes and deletes remain disabled unless explicitly enabled in the server environment.
