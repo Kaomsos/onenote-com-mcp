@@ -4,7 +4,7 @@
 > 状态：进行中
 > 优先级：P1
 > 类型：开发基础设施
-> 更新日期：2026-08-04
+> 更新日期：2026-08-05
 > 触发边界：只能由用户在终端显式运行，不进入 CI、hook、自动化或默认测试
 
 ## 1. 目标
@@ -18,9 +18,10 @@ Runner 不使用 Codex、LLM 或远程服务；Notebook 名称、ID、内容和�
 ```text
 tests/manual_isolated/
 ├─ run.py                       唯一用户入口
-├─ runner.py                    参数解析、场景状态机和报告
+├─ runner.py                    共享模型、快照/manifest 原语和通用 CLI 边界
 ├─ mcp_stdio_client.py          MCP server 生命周期和 call_tool adapter
-├─ test_runner.py               不接触 OneNote 的纯 mock 测试
+├─ scenarios/                   全部命名场景、策略、参数注册、分发和报告
+├─ tests/                       按主题拆分、不接触 OneNote 的纯测试
 └─ README.md                    手动运行说明
 ```
 

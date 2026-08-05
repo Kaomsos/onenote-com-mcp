@@ -241,7 +241,7 @@ Copy/重建式 Move 的 mutation envelope 无论成功还是返回结构化 `par
 ## 5. 开发者自检（不访问 OneNote）
 
 ```powershell
-.venv\Scripts\python.exe -B -m pytest tests\manual_isolated\test_runner.py -p no:cacheprovider
+.venv\Scripts\python.exe -B -m pytest tests\manual_isolated\tests -p no:cacheprovider
 ```
 
 这些测试只验证参数、权限矩阵、日志脱敏和纯数据比较；不会启动 MCP 子进程。
