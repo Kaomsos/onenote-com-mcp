@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -116,6 +116,7 @@ def build_server_env(
     policy: ScenarioPolicy,
     temp_dir: Path,
     timeout_seconds: int = 180,
+    bridge_audit_path: Path | None = None,
 ) -> dict[str, str]:
     """Build a complete child env, overriding every mutation switch exactly."""
 
@@ -128,6 +129,10 @@ def build_server_env(
     env["TEMP"] = str(temp_dir.resolve())
     env["TMP"] = str(temp_dir.resolve())
     env["LOCAL_ONENOTE_MCP_TIMEOUT"] = str(timeout_seconds)
+    if bridge_audit_path is not None:
+        env["LOCAL_ONENOTE_BRIDGE_AUDIT_PATH"] = str(bridge_audit_path.resolve())
+    else:
+        env.pop("LOCAL_ONENOTE_BRIDGE_AUDIT_PATH", None)
     return env
 
 
@@ -212,6 +217,7 @@ class MCPStdioClient:
         self.timeout_seconds = timeout_seconds
         self._stack = AsyncExitStack()
         self._session: ClientSession | None = None
+        self.process_started = False
         self.available_tools: set[str] = set()
         self.health_result: dict[str, Any] | None = None
 
@@ -228,6 +234,7 @@ class MCPStdioClient:
                     self.policy,
                     self.run_dir / "temp",
                     self.timeout_seconds,
+                    self.run_dir / "bridge-calls.jsonl",
                 ),
                 encoding="utf-8",
                 encoding_error_handler="replace",
@@ -235,6 +242,7 @@ class MCPStdioClient:
             read_stream, write_stream = await self._stack.enter_async_context(
                 stdio_client(parameters, errlog=stderr_file)
             )
+            self.process_started = True
             self._session = await self._stack.enter_async_context(ClientSession(read_stream, write_stream))
             await asyncio.wait_for(self._session.initialize(), timeout=self.timeout_seconds)
             listed = await asyncio.wait_for(self._session.list_tools(), timeout=self.timeout_seconds)
@@ -336,3 +344,43 @@ class MCPStdioClient:
     def _append_audit(self, record: dict[str, Any]) -> None:
         with (self.run_dir / "calls.jsonl").open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+@asynccontextmanager
+async def scenario_client(
+    existing: MCPStdioClient | None,
+    *,
+    policy: ScenarioPolicy,
+    allowed_tools: set[str],
+    run_dir: Path,
+    timeout_seconds: int,
+    client_factory: type[MCPStdioClient] = MCPStdioClient,
+):
+    """Reuse the one scenario process without allowing policy/tool expansion."""
+
+    if existing is not None:
+        missing = (set(allowed_tools) | {"health_check"}) - existing.allowed_tools
+        if missing:
+            raise ClientFailure(
+                "Existing scenario client is missing required tools: "
+                + ", ".join(sorted(missing))
+            )
+        expected = policy.as_dict()
+        actual = existing.policy.as_dict()
+        expanded = sorted(name for name, required in expected.items() if required and not actual[name])
+        if expanded:
+            raise ClientFailure(
+                "Existing scenario client policy cannot satisfy required permissions: "
+                + ", ".join(expanded)
+            )
+        if existing.timeout_seconds != timeout_seconds:
+            raise ClientFailure("Existing scenario client timeout does not match the scenario contract.")
+        yield existing
+        return
+    async with client_factory(
+        policy=policy,
+        allowed_tools=allowed_tools,
+        run_dir=run_dir,
+        timeout_seconds=timeout_seconds,
+    ) as created:
+        yield created

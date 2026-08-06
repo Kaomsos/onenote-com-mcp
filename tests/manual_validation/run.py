@@ -1,4 +1,4 @@
-"""Path-friendly command entry point; importing it has no OneNote side effects."""
+"""HUMAN-GATED scenario entry point; importing it never touches OneNote."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import sys
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from manual_isolated.runner import main
+    from manual_validation.runner import main
 else:
     from .runner import main
 

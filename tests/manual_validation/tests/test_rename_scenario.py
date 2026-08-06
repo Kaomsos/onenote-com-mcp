@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.manual_isolated.runner import InvariantFailure, RuntimeOptions
-from tests.manual_isolated.scenarios import rename as rename_scenario
-from tests.manual_isolated.scenarios.rename import run_rename
+from tests.manual_validation.runner import InvariantFailure, RuntimeOptions
+from tests.manual_validation.scenarios import rename as rename_scenario
+from tests.manual_validation.scenarios.rename import run_rename
 
 def test_rename_attempts_restore_before_reporting_invariant_failure(monkeypatch, tmp_path) -> None:
     target = {

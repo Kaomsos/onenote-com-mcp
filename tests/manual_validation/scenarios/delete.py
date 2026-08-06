@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from ..mcp_stdio_client import DELETE_POLICY, MCPStdioClient
+from ..mcp_stdio_client import DELETE_POLICY, MCPStdioClient, scenario_client
 from ..runner import (
     InvariantFailure,
     RunnerFailure,
@@ -30,6 +30,8 @@ async def run_delete(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
+    *,
+    client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     delete_sandbox = resolve_manifest_item(manifest, "delete_sandbox")
@@ -39,11 +41,13 @@ async def run_delete(
         allowed_text = ", ".join(sorted(allowed))
         raise RunnerFailure(f"Delete target is not manifest-allowlisted. Allowed IDs: {allowed_text}")
     out = scenario_dir(options.run_dir, "delete")
-    async with MCPStdioClient(
+    async with scenario_client(
+        client,
         policy=DELETE_POLICY,
         allowed_tools=DELETE_TOOLS,
         run_dir=out,
         timeout_seconds=options.timeout,
+        client_factory=MCPStdioClient,
     ) as client:
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)
@@ -98,7 +102,10 @@ async def run_delete(
             raise InvariantFailure("Delete target remains visible without an is_in_recycle_bin marker.")
         restoration = {
             "status": "not_attempted",
-            "reason": "The typed MCP profile has no recycle-bin restore tool. Re-run create to replenish disposable fixtures.",
+            "reason": (
+                "The typed MCP profile has no recycle-bin restore tool. "
+                "A later scenario command creates its own fresh disposable fixture."
+            ),
             "target_id": current["id"],
         }
         write_json(out / "restored.json", restoration)
@@ -109,7 +116,7 @@ async def run_delete(
             "target_key": allowed[current["id"]],
             "permanently": False,
             "restored": False,
-            "replenish_command": f".venv\\Scripts\\python.exe tests\\manual_isolated\\run.py create --notebook-name {display_name(manifest['notebook'])!r} --run-dir {str(options.run_dir)!r}",
+            "remaining_state": "This run's disposable group remains in the recycle bin.",
         }
         write_json(out / "result.json", result)
         render_report(options.run_dir)

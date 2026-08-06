@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.manual_isolated.mcp_stdio_client import (
+from tests.manual_validation.mcp_stdio_client import (
     ClientFailure,
     COPY_NO_DELETE_POLICY,
     COPY_POLICY,
@@ -22,8 +22,57 @@ from tests.manual_isolated.mcp_stdio_client import (
     build_server_env,
     is_mutation_tool,
     parse_tool_result,
+    scenario_client,
     summarize,
 )
+
+
+def test_scenario_client_reuses_existing_process_without_factory(tmp_path) -> None:
+    existing = MCPStdioClient(
+        policy=WRITE_POLICY,
+        allowed_tools={"create_section", "rename_section"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+    )
+
+    class ForbiddenFactory:
+        def __init__(self, **_kwargs):
+            raise AssertionError("existing scenario client must be reused")
+
+    async def exercise():
+        async with scenario_client(
+            existing,
+            policy=WRITE_POLICY,
+            allowed_tools={"rename_section"},
+            run_dir=tmp_path,
+            timeout_seconds=10,
+            client_factory=ForbiddenFactory,
+        ) as selected:
+            assert selected is existing
+
+    asyncio.run(exercise())
+
+
+def test_scenario_client_rejects_runtime_permission_expansion(tmp_path) -> None:
+    existing = MCPStdioClient(
+        policy=WRITE_POLICY,
+        allowed_tools={"rename_section"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+    )
+
+    async def exercise():
+        async with scenario_client(
+            existing,
+            policy=MOVE_POLICY,
+            allowed_tools={"rename_section"},
+            run_dir=tmp_path,
+            timeout_seconds=10,
+        ):
+            pass
+
+    with pytest.raises(ClientFailure, match="cannot satisfy required permissions"):
+        asyncio.run(exercise())
 
 def test_static_policy_matrix_is_minimal() -> None:
     assert READ_ONLY_POLICY.as_dict() == {
@@ -62,7 +111,8 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
         monkeypatch.setenv(env_name, "true")
     for env_name, _value in COPY_BUDGET_ENV.values():
         monkeypatch.setenv(env_name, "999999999")
-    env = build_server_env(DELETE_POLICY, tmp_path / "temp", 1_800)
+    audit_path = tmp_path / "audit" / "bridge.jsonl"
+    env = build_server_env(DELETE_POLICY, tmp_path / "temp", 1_800, audit_path)
     assert env["LOCAL_ONENOTE_ENABLE_WRITES"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_DELETES"] == "true"
     assert env["LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES"] == "false"
@@ -72,8 +122,15 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
     assert env["LOCAL_ONENOTE_ENABLE_RAW_XML"] == "false"
     assert env["TEMP"] == env["TMP"]
     assert env["LOCAL_ONENOTE_MCP_TIMEOUT"] == "1800"
+    assert env["LOCAL_ONENOTE_BRIDGE_AUDIT_PATH"] == str(audit_path.resolve())
     for env_name, value in COPY_BUDGET_ENV.values():
         assert env[env_name] == str(value)
+
+
+def test_bridge_audit_path_cannot_leak_from_parent_environment(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("LOCAL_ONENOTE_BRIDGE_AUDIT_PATH", "untrusted-parent-path")
+    env = build_server_env(READ_ONLY_POLICY, tmp_path / "temp")
+    assert "LOCAL_ONENOTE_BRIDGE_AUDIT_PATH" not in env
 
 def test_non_read_only_tool_classification_never_retries_publish_or_copy() -> None:
     assert is_mutation_tool("publish_object") is True

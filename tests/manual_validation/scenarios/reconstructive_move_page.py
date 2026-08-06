@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from ..mcp_stdio_client import MCPStdioClient, RECONSTRUCTIVE_MOVE_PAGE_POLICY
+from ..mcp_stdio_client import (
+    MCPStdioClient,
+    RECONSTRUCTIVE_MOVE_PAGE_POLICY,
+    scenario_client,
+)
 from ..runner import (
     InvariantFailure,
     RunnerFailure,
@@ -33,17 +37,21 @@ async def run_reconstructive_move_page(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
+    *,
+    client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     source = resolve_manifest_item(manifest, "disposable_page")
     destination = resolve_manifest_item(manifest, "move_source")
     destination_title = f"Moved-Disposable-{timestamp()}"
     out = scenario_dir(options.run_dir, "reconstructive-move-page")
-    async with MCPStdioClient(
+    async with scenario_client(
+        client,
         policy=RECONSTRUCTIVE_MOVE_PAGE_POLICY,
         allowed_tools=RECONSTRUCTIVE_MOVE_PAGE_TOOLS,
         run_dir=out,
         timeout_seconds=options.timeout,
+        client_factory=MCPStdioClient,
     ) as client:
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)

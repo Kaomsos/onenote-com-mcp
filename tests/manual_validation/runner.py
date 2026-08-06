@@ -58,10 +58,6 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def default_run_dir() -> Path:
-    return Path(".local-validation") / timestamp()
-
-
 def installed_runner_version() -> str:
     try:
         return package_version("local-onenote-mcp")
@@ -306,22 +302,22 @@ def dry_run_result(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="User-triggered isolated OneNote MCP manual smoke tests.",
+        description=(
+            "HUMAN-GATED isolated OneNote mutation validation. Every command is a "
+            "complete fresh-Notebook least-privilege scenario suite; Agents/CI must not run it."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     def runtime_flags(
         command: argparse.ArgumentParser,
         *,
-        run_dir_required: bool = False,
         timeout_default: int = 180,
     ) -> None:
         command.add_argument(
             "--run-dir",
-            "--output",
             type=Path,
-            required=run_dir_required,
-            help="Artifact directory; required for validation scenarios.",
+            help="Fresh artifact directory; defaults to .local-validation/run-<UTC timestamp>.",
         )
         command.add_argument(
             "--timeout",

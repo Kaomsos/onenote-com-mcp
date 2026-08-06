@@ -11,6 +11,7 @@ from ..mcp_stdio_client import (
     COPY_POLICY,
     ClientFailure,
     MCPStdioClient,
+    scenario_client,
 )
 from ..runner import (
     InvariantFailure,
@@ -233,17 +234,21 @@ async def run_copy(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
+    *,
+    client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     spec = copy_spec(args.scenario, manifest, options.run_dir)
     if args.scenario == "copy-notebook":
         Path(spec["destination_base_folder"]).mkdir(parents=True, exist_ok=True)
     out = scenario_dir(options.run_dir, args.scenario)
-    async with MCPStdioClient(
+    async with scenario_client(
+        client,
         policy=spec["policy"],
         allowed_tools=spec["tools"],
         run_dir=out,
         timeout_seconds=options.timeout,
+        client_factory=MCPStdioClient,
     ) as client:
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)

@@ -7,17 +7,17 @@ import asyncio
 import pytest
 
 from local_onenote_mcp.page import image_dimensions
-from tests.manual_isolated import runner
-from tests.manual_isolated.mcp_stdio_client import ClientFailure
-from tests.manual_isolated.runner import InvariantFailure
-from tests.manual_isolated.scenarios.copy import (
+from tests.manual_validation import runner
+from tests.manual_validation.mcp_stdio_client import ClientFailure
+from tests.manual_validation.runner import InvariantFailure
+from tests.manual_validation.scenarios.copy import (
     call_with_result_evidence,
     cleanup_copy,
     copy_spec,
 )
-from tests.manual_isolated.scenarios.create import ensure_copy_rich_fixture
-from tests.manual_isolated.scenarios._config import COPY_FIXTURE_MARKER
-from tests.manual_isolated.scenarios.copy_invariants import (
+from tests.manual_validation.scenarios.create import ensure_copy_rich_fixture
+from tests.manual_validation.scenarios._config import COPY_FIXTURE_MARKER
+from tests.manual_validation.scenarios.copy_invariants import (
     assert_copy_fixture_capabilities,
     assert_copy_mapping,
 )

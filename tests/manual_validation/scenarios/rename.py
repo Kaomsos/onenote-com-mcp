@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from ..mcp_stdio_client import ClientFailure, MCPStdioClient, WRITE_POLICY
+from ..mcp_stdio_client import ClientFailure, MCPStdioClient, WRITE_POLICY, scenario_client
 from ..runner import (
     InvariantFailure,
     RestoreFailure,
@@ -30,6 +30,8 @@ async def run_rename(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
+    *,
+    client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
     target_key = args.target
     target = resolve_manifest_item(manifest, target_key)
@@ -40,11 +42,13 @@ async def run_rename(
     id_key = "section_id" if resource_type == "section" else "section_group_id"
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     out = scenario_dir(options.run_dir, "rename")
-    async with MCPStdioClient(
+    async with scenario_client(
+        client,
         policy=WRITE_POLICY,
         allowed_tools=RENAME_TOOLS,
         run_dir=out,
         timeout_seconds=options.timeout,
+        client_factory=MCPStdioClient,
     ) as client:
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)

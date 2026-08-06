@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tests.manual_isolated import runner
-from tests.manual_isolated.runner import (
+from tests.manual_validation import runner
+from tests.manual_validation.runner import (
     assert_valid_page_tree,
     comparable_snapshot,
     is_descendant_of,

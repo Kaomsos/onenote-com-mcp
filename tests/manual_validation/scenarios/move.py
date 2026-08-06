@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from ..mcp_stdio_client import ClientFailure, MCPStdioClient, MOVE_POLICY
+from ..mcp_stdio_client import ClientFailure, MCPStdioClient, MOVE_POLICY, scenario_client
 from ..runner import (
     InvariantFailure,
     RestoreFailure,
@@ -30,17 +30,21 @@ async def run_move(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
+    *,
+    client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     target = resolve_manifest_item(manifest, "move_source")
     source = resolve_manifest_item(manifest, "group_a")
     destination = resolve_manifest_item(manifest, "group_b")
     out = scenario_dir(options.run_dir, "move")
-    async with MCPStdioClient(
+    async with scenario_client(
+        client,
         policy=MOVE_POLICY,
         allowed_tools=MOVE_TOOLS,
         run_dir=out,
         timeout_seconds=options.timeout,
+        client_factory=MCPStdioClient,
     ) as client:
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)

@@ -1,6 +1,13 @@
 """Internal static command policies and tool allowlists."""
 
 DEFAULT_NOTEBOOK_NAME = "__LOCAL_ONENOTE_MCP_ISOLATED__"
+ISOLATED_SCENARIO_NOTEBOOK_PREFIX = "__LOCAL_MCP_TEST_ISOLATED__"
+PRESET_STRUCTURE = (
+    "Group-A/Move-Source/{Parent[rich text+table+image],Child,Sibling}",
+    "Group-B",
+    "Delete-Sandbox/Disposable-Group",
+    "Delete-Sandbox/Disposable-Section/Disposable-Page",
+)
 COPY_FIXTURE_MARKER = "LOCAL_ONENOTE_MCP_COPY_FIXTURE_V1"
 COPY_FIXTURE_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -42,6 +49,7 @@ COPY_TOOLS = READ_TOOLS | {
     "delete_section_group",
 }
 COPY_NOTEBOOK_TOOLS = READ_TOOLS | {"plan_copy", "copy_notebook", "close_notebook"}
+CLOSE_NOTEBOOK_TOOLS = {"health_check", "get_notebook", "close_notebook"}
 RECONSTRUCTIVE_MOVE_PAGE_TOOLS = READ_TOOLS | {
     "plan_reconstructive_move_page",
     "reconstructive_move_page",

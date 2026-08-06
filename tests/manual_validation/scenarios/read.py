@@ -66,7 +66,7 @@ async def run_read(args: argparse.Namespace, options: RuntimeOptions) -> dict[st
                     "schema_version": 1,
                     "run_id": options.run_dir.name,
                     "created_at": utc_now(),
-                    "runner": "tests/manual_isolated/run.py",
+                    "runner": "tests/manual_validation/run.py",
                     "local_onenote_mcp_version": installed_runner_version(),
                     "python": sys.version,
                     "platform": platform.platform(),

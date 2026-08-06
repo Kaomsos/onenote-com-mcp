@@ -31,6 +31,20 @@ def render_report(run_dir: Path) -> Path:
         "",
     ]
     copy_fixture = manifest.get("copy_fixture")
+    scenario_spec = manifest.get("scenario_spec")
+    if isinstance(scenario_spec, dict):
+        fixture_profile = scenario_spec.get("fixture_profile", {})
+        lines.extend(
+            [
+                "## Scenario contract",
+                "",
+                f"- Scenario: `{scenario_spec.get('scenario', '')}`",
+                f"- Fixture profile: `{fixture_profile.get('name', '')}`",
+                f"- MCP process maximum: `{manifest.get('mcp_process_contract', {}).get('maximum_starts', '')}`",
+                f"- Tool allowlist: `{', '.join(scenario_spec.get('tool_allowlist', []))}`",
+                "",
+            ]
+        )
     if isinstance(copy_fixture, dict):
         lines.extend(
             [
@@ -93,11 +107,60 @@ def render_report(run_dir: Path) -> Path:
                 lines.extend([f"Error: {result['error']}", ""])
     if not found:
         lines.extend(["No mutation scenario has completed yet.", ""])
+    lifecycle_path = run_dir / "lifecycle.json"
+    failure_path = run_dir / "run-failure.json"
+    if lifecycle_path.exists():
+        lifecycle = read_json(lifecycle_path)
+        lines.extend(
+            [
+                "## Isolated run lifecycle",
+                "",
+                f"- Mode: `{lifecycle.get('mode', 'unknown')}`",
+                f"- Status: `{lifecycle.get('status', 'unknown')}`",
+                f"- Source closed: `{lifecycle.get('closed', False)}`",
+                f"- Filesystem deleted: `{lifecycle.get('filesystem_deleted', False)}`",
+                f"- Preserved paths: `{', '.join(lifecycle.get('preserved_paths', []))}`",
+                "",
+            ]
+        )
+    if failure_path.exists():
+        failure = read_json(failure_path)
+        lines.extend(
+            [
+                "## Isolated run failure",
+                "",
+                f"- Failed step: `{failure.get('failed_step', 'unknown')}`",
+                f"- Finalization attempted: `{failure.get('finalization_attempted', False)}`",
+                f"- Remaining state: {failure.get('remaining_state', '')}",
+                "",
+            ]
+        )
+    metrics_path = run_dir / "run-metrics.json"
+    if metrics_path.exists():
+        metrics = read_json(metrics_path)
+        phases = metrics.get("phases_seconds", {})
+        bridge_calls = metrics.get("observed_bridge_calls", {})
+        lines.extend(
+            [
+                "## Process and timing evidence",
+                "",
+                f"- Architecture: `{metrics.get('architecture', '')}`",
+                f"- MCP starts: `{metrics.get('observed_mcp_process_starts', '')}`",
+                f"- MCP tool calls: `{metrics.get('observed_mcp_tool_calls', '')}`",
+                f"- Bridge calls: `{bridge_calls.get('total', '')}` "
+                f"(scenario `{bridge_calls.get('scenario_mcp', '')}`, "
+                f"lifecycle `{bridge_calls.get('lifecycle_wrapper', '')}`)",
+                f"- Legacy expected MCP starts: `{metrics.get('legacy_expected_mcp_process_starts', '')}`",
+                f"- Scenario process seconds: `{phases.get('scenario_process', 'n/a')}`",
+                f"- Total seconds: `{phases.get('total', phases.get('total_at_process_exit', 'n/a'))}`",
+                "",
+            ]
+        )
     lines.extend(
         [
             "## Safety boundary",
             "",
-            "Each command started its own MCP process with a static minimal policy. Permanent delete and raw XML remained disabled. Delete fixtures are not automatically restored because the typed tool profile has no recycle-bin restore operation.",
+            "Each named scenario is a complete isolated run: the narrow lifecycle wrapper creates and lease-binds a fresh source Notebook, then exactly one scenario-scoped least-privilege MCP process creates the minimal fixture and performs mutation/evidence/restore work. The wrapper closes only the exact leased source after success unless keep-notebook was selected. Permanent OneNote delete and raw XML remain disabled. Local Notebook directories are never deleted.",
             "",
         ]
     )

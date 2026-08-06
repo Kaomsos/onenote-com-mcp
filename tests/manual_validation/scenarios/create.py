@@ -40,6 +40,7 @@ from ._config import (
     COPY_FIXTURE_MARKER,
     COPY_FIXTURE_PNG,
     CREATE_TOOLS,
+    PRESET_STRUCTURE,
 )
 from .report import render_report
 
@@ -214,20 +215,29 @@ async def ensure_copy_rich_fixture(
     }
     return current, evidence
 
-def new_manifest(run_dir: Path, notebook: dict[str, Any], structure: dict[str, Any]) -> dict[str, Any]:
+def new_manifest(
+    run_dir: Path,
+    notebook: dict[str, Any],
+    structure: dict[str, Any],
+    *,
+    notebook_path: str | None = None,
+) -> dict[str, Any]:
+    disposable_targets = {
+        "notebook_copy_root": str((run_dir / "notebook-copies").resolve()),
+    }
+    if notebook_path:
+        disposable_targets["source_notebook_path"] = str(Path(notebook_path).resolve())
     return {
         "schema_version": 1,
         "run_id": run_dir.name,
         "created_at": utc_now(),
-        "runner": "tests/manual_isolated/run.py",
+        "runner": "tests/manual_validation/run.py",
         "local_onenote_mcp_version": installed_runner_version(),
         "python": sys.version,
         "platform": platform.platform(),
         "notebook": stable_item(notebook),
         "structure": {key: stable_item(value) for key, value in structure.items()},
-        "disposable_targets": {
-            "notebook_copy_root": str((run_dir / "notebook-copies").resolve()),
-        },
+        "disposable_targets": disposable_targets,
         "scenario_policies": {
             "inspect_read_report": READ_ONLY_POLICY.as_dict(),
             "create_rename_reorder": WRITE_POLICY.as_dict(),
@@ -248,12 +258,7 @@ def new_manifest(run_dir: Path, notebook: dict[str, Any], structure: dict[str, A
 async def run_create(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
     if options.dry_run:
         result = dry_run_result("create", WRITE_POLICY, CREATE_TOOLS, args.notebook_name, options)
-        result["planned_structure"] = [
-            "Group-A/Move-Source/{Parent[rich text+table+image],Child,Sibling}",
-            "Group-B",
-            "Delete-Sandbox/Disposable-Group",
-            "Delete-Sandbox/Disposable-Section/Disposable-Page",
-        ]
+        result["planned_structure"] = list(PRESET_STRUCTURE)
         return result
     async with MCPStdioClient(
         policy=WRITE_POLICY,
@@ -264,12 +269,18 @@ async def run_create(args: argparse.Namespace, options: RuntimeOptions) -> dict[
         listed = await client.call_tool("list_notebooks", {})
         notebook = exactly_one(listed.get("notebooks", []), args.notebook_name, "notebook")
         created_notebook = notebook is None
+        if notebook is not None and bool(getattr(args, "require_new", False)):
+            raise RunnerFailure(
+                "Isolated scenario requires a fresh Notebook, but an exact-name Notebook already exists."
+            )
+        notebook_path: str | None = None
         if notebook is None:
             created = await client.call_tool(
                 "create_notebook",
                 {"name_or_path": args.notebook_name, "base_folder": args.base_folder},
             )
             notebook = created["item"]
+            notebook_path = str(created.get("path") or "") or None
 
         group_a = await ensure_group(client, notebook["id"], "Group-A")
         group_b = await ensure_group(client, notebook["id"], "Group-B")
@@ -304,7 +315,12 @@ async def run_create(args: argparse.Namespace, options: RuntimeOptions) -> dict[
             "disposable_section": disposable_section,
             "disposable_page": disposable_page,
         }
-        manifest = new_manifest(options.run_dir, notebook, structure)
+        manifest = new_manifest(
+            options.run_dir,
+            notebook,
+            structure,
+            notebook_path=notebook_path,
+        )
         manifest["copy_fixture"] = copy_fixture
         write_json(manifest_path(options.run_dir), manifest)
         write_json(options.run_dir / "prepared.json", snapshot)
