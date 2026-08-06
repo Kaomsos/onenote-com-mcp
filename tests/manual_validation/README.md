@@ -1,7 +1,7 @@
 # OneNote Manual Validation — HUMAN-GATED / ISOLATED / LEAST-PRIVILEGE
 
 > [!CAUTION]
-> 本目录只承载由用户本人显式启动的真实 OneNote mutation 验证。Agent、CI、pytest、hook、安装脚本、timer、watcher、前台或后台任务不得执行真实 scenario。每次运行必须创建全新隔离 Notebook，并使用 scenario 级静态最小权限。另见醒目的 [GATED.md](GATED.md)。
+> 本目录只承载由用户本人显式启动的真实 OneNote mutation 验证。Agent、CI、pytest、hook、安装脚本、timer、watcher、前台或后台任务不得执行真实 scenario。每次运行必须创建全新隔离 Notebook，并使用 scenario 级静态最小权限。智能体的强制行动边界见本目录的 [AGENTS.md](AGENTS.md)。
 
 ## 公开接口：扁平 Scenario 与特殊 `all`
 

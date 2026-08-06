@@ -77,7 +77,7 @@ Fixture profile 必须声明预期结构、内容能力、manifest keys、创建
 
 MCP 进程启动后 policy 不得动态扩大；`health_check` 必须精确返回预期 policy、timeout 和 Copy budget。该模型是“单 scenario 闭环最小权限”，不是所有 scenario 的全局权限并集。
 
-该权限模型已经取代 fixture、mutation、close 分阶段 MCP 进程模型，并已同步更新 `AGENTS.md`、`tests/manual_validation/GATED.md`、README 和合同测试。真实运行前仍必须由用户审查 dry-run；不得用 mock 耗时制造性能优化结果。
+该权限模型已经取代 fixture、mutation、close 分阶段 MCP 进程模型，并已同步更新根目录 `AGENTS.md`、`tests/manual_validation/AGENTS.md`、README 和合同测试。真实运行前仍必须由用户审查 dry-run；不得用 mock 耗时制造性能优化结果。
 
 ## Notebook Lifecycle Wrapper
 
