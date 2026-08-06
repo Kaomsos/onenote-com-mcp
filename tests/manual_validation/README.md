@@ -3,9 +3,9 @@
 > [!CAUTION]
 > 本目录只承载由用户本人显式启动的真实 OneNote mutation 验证。Agent、CI、pytest、hook、安装脚本、timer、watcher、前台或后台任务不得执行真实 scenario。每次运行必须创建全新隔离 Notebook，并使用 scenario 级静态最小权限。另见醒目的 [GATED.md](GATED.md)。
 
-## 唯一公开接口：扁平 Scenario
+## 公开接口：扁平 Scenario 与特殊 `all`
 
-`run.py` 后只能直接接一个具名 scenario。没有 `validate` 分组，也没有公开的 `inspect`、`read`、`report`、`suite` 或其他辅助 action。`create` 是正式的 fixture-only scenario：
+`run.py` 后通常直接接一个具名 scenario。没有 `validate` 分组，也没有公开的 `inspect`、`read`、`report`、`suite` 或其他辅助 action。`create` 是正式的 fixture-only scenario：
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py rename
@@ -20,6 +20,16 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py reconstructive-move-page
 ```
 
+唯一特殊入口 `all` 会按显式测试注册表的顺序串行启动其中的 scenario：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py all
+```
+
+唯一注册表对象位于 `scenarios/common/registry.py` 的 `SCENARIO_REGISTRY`。每个场景类使用 `@SCENARIO_REGISTRY.register` wrapper；`scenarios/__init__.py` 按审查后的固定顺序导入所有公开场景，导入时自动完成实例注册。Registry 本身不再导入具体场景，也不维护第二份构造列表。新增公开 scenario 不会自动进入 `all`：探索性或仅用于某次隔离验证的类保持 `registered_for_all = False`；只有经过稳定性和权限审查并显式改为 `True`，才会被批量执行。
+
+`all` 本身不是 scenario，不创建共享 Notebook 或共享证据目录，也不接受 `--run-dir`、`--notebook-name` 或 `--keep-notebook`。每个已注册子命令仍创建自己的默认 Notebook 和 `.local-validation\run-<TIMESTAMP>`，使用自己的 MCP 子进程、最小权限、报告与关闭/失败保留语义。一个 scenario 失败后，`all` 会显示其错误并继续后续已注册 scenario，最终返回第一个失败的非零退出码。
+
 每个命令本身就是一次完整的隔离闭环，只运行所选 scenario：
 
 ```text
@@ -30,7 +40,7 @@ create fresh isolated Notebook through the narrow lifecycle wrapper
 → close the exact leased source Notebook（默认）或 keep open
 ```
 
-内部 `create.py`、`report.py` 以及非公开诊断库不能被直接调用或组合成另一个隐式入口；公开的 `create` 仍只通过统一 parser 作为完整 scenario 运行。
+内部 scenario 类、`scenarios/common/report.py` 以及其他共享库不能被直接调用或组合成另一个隐式入口；公开的 `create` 仍只通过统一 parser 作为完整 scenario 运行。
 
 `create` scenario 按以下预设结构创建隔离 Notebook，不执行额外 mutation：
 
@@ -63,7 +73,24 @@ Delete-Sandbox
 .venv\Scripts\python.exe tests\manual_validation\run.py rename
 ```
 
-若要验证多个 scenario，用户分别运行多条命令。每条命令都会创建自己的全新 Notebook 和证据目录，没有跨命令前置依赖。
+若要验证多个 scenario，可分别运行多条命令，也可由用户本人显式运行 `all` 来执行注册的稳定测试集合。两种方式都会让每个 scenario 创建自己的全新 Notebook 和证据目录，没有跨命令前置依赖。
+
+### `all` 参数与输出
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py all `
+  [--timeout <seconds>] `
+  [--dry-run] `
+  [--json] `
+  [--verbosity quiet|normal|verbose]
+```
+
+- 默认 `quiet`：只输出每个场景的开始、PASS/FAIL、总进度，以及失败场景的 stdout/stderr。
+- `normal`：额外输出每个成功场景的结果；检查全部 dry-run 计划时建议使用 `all --dry-run --verbosity normal`。
+- `verbose`：在 `normal` 基础上输出每个子进程命令及成功场景的 stderr。
+- `--dry-run`、`--json` 和显式 `--timeout` 原样传给每个 scenario；`--json` 时聚合进度使用 JSON Lines。
+- 未指定 `--timeout` 时保留各 scenario 自己的默认值（普通场景 180 秒，Copy/重建式 Move 1800 秒）。
+- `all` 没有自己的 `run-dir`，因此不支持 `--run-dir`；它也不会把多个场景放进同一目录。
 
 ## 参数与生命周期
 
@@ -89,9 +116,13 @@ Delete-Sandbox
 
 ## Isolated、单进程与最小权限边界
 
+`scenarios/` 根目录中的每个可执行模块只提供一个具名 `Scenario` 子类；四个 Copy 入口分别位于 `copy_page.py`、`copy_section.py`、`copy_section_group.py` 和 `copy_notebook.py`，并共享基础设施 `copy_scenario_base.py`。根目录的 `base.py` 和 `__init__.py` 明确属于基础设施。类统一声明名称、help、默认 timeout、scenario 专属参数、manifest 参数准备、执行器和 `registered_for_all`，并通过 registry wrapper 注册。`scenarios/__init__.py` 是公开场景导入顺序的唯一清单，`SCENARIO_REGISTRY` 则是 parser、dispatch 和 `all` 的共同权威对象。
+
+不代表单个 scenario 的依赖统一放在 `scenarios/common/`，包括 registry、闭环 orchestrator、静态 spec、fixture builders、fixture 编排、报告、Copy runtime 与 invariants。根目录因此不会混入名称看似 scenario、实际却只是共享函数的模块。
+
 每个 scenario 都在本次新建的 disposable Notebook 中运行，并最多启动一个 MCP 子进程。源 Notebook 的 create/get/close 由窄 lifecycle wrapper 完成；wrapper 不提供 Section、Page 或内容写入能力。创建后立即写入 `lifecycle-lease.json`，绑定本次 run 的精确 Notebook ID、名称和本地路径。
 
-唯一 MCP 子进程同时完成该 scenario 的最小 fixture、所选 mutation、before/after/restored 回读和契约内 restore/cleanup。它启动时使用 `scenarios/specs.py` 中固定的完整闭包 policy 和 tool allowlist，并在 fixture 创建前用 `health_check` 精确核对 policy、timeout 和 Copy budget；启动后不得扩权。Runner 不使用所有 scenario 的权限并集。
+唯一 MCP 子进程同时完成该 scenario 的最小 fixture、所选 mutation、before/after/restored 回读和契约内 restore/cleanup。它启动时使用 `scenarios/common/specs.py` 中固定的完整闭包 policy 和 tool allowlist，并在 fixture 创建前用 `health_check` 精确核对 policy、timeout 和 Copy budget；启动后不得扩权。Runner 不使用所有 scenario 的权限并集。
 
 | Scenario | Fixture 与权限限制 |
 | --- | --- |

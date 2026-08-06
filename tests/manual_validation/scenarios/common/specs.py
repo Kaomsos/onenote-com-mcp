@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..mcp_stdio_client import (
+from ...mcp_stdio_client import (
     COPY_NO_DELETE_POLICY,
     COPY_POLICY,
     MOVE_POLICY,
@@ -13,7 +13,7 @@ from ..mcp_stdio_client import (
     ScenarioPolicy,
     WRITE_POLICY,
 )
-from ._config import (
+from .config import (
     COPY_NOTEBOOK_TOOLS,
     COPY_TOOLS,
     CREATE_TOOLS,
@@ -231,7 +231,6 @@ SCENARIO_SPECS = {
         frozenset(RECONSTRUCTIVE_MOVE_PAGE_TOOLS | {"create_section", "create_page"}),
     ),
 }
-
 
 def get_scenario_spec(name: str) -> ScenarioSpec:
     try:

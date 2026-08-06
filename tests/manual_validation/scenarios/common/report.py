@@ -1,4 +1,4 @@
-"""Local artifact report generation scenario."""
+"""Shared local-artifact report generation."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from ..runner import (
+from ...test_utils import (
     load_manifest,
     manifest_path,
     read_json,

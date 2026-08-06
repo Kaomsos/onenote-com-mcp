@@ -10,16 +10,25 @@ import re
 
 import pytest
 
-from tests.manual_validation import runner
+from tests.manual_validation import runtime, test_utils
 from tests.manual_validation.mcp_stdio_client import ClientFailure
-from tests.manual_validation.runner import RuntimeOptions, main
-from tests.manual_validation.scenarios import validation
-from tests.manual_validation.scenarios import fixtures as fixture_module
-from tests.manual_validation.scenarios.fixtures import _validate_fixture_snapshot
-from tests.manual_validation.scenarios.specs import SCENARIO_SPECS
+from tests.manual_validation.runner import build_parser, main
+from tests.manual_validation.runtime import RuntimeOptions
+from tests.manual_validation.scenarios.common import orchestrator as validation
+from tests.manual_validation.scenarios.common import fixtures as fixture_module
+from tests.manual_validation.scenarios.common.fixtures import _validate_fixture_snapshot
+from tests.manual_validation.scenarios.base import Scenario
+from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
+from tests.manual_validation.scenarios.common.specs import SCENARIO_SPECS
 
 
 SCENARIOS = validation.PUBLIC_SCENARIOS
+
+
+def test_public_scenarios_are_class_managed_and_spec_backed() -> None:
+    assert SCENARIO_REGISTRY.public_names == SCENARIOS
+    assert all(isinstance(scenario, Scenario) for scenario in SCENARIO_REGISTRY.values())
+    assert [scenario.spec.name for scenario in SCENARIO_REGISTRY.values()] == list(SCENARIOS)
 
 
 def _args(run_dir: Path, scenario: str, *, keep: bool = False) -> argparse.Namespace:
@@ -157,7 +166,7 @@ def test_fixture_validator_proves_page_tree_topology() -> None:
     assert "Page levels and derived parent relationships match the profile" in checks
 
     items[2]["parent_page_id"] = "wrong"
-    with pytest.raises(runner.InvariantFailure, match="topology"):
+    with pytest.raises(runtime.InvariantFailure, match="topology"):
         _validate_fixture_snapshot("reorder", {"items": items}, structure, None)
 
 
@@ -172,7 +181,7 @@ def test_fixture_validator_rejects_delete_target_outside_sandbox() -> None:
             {"id": "target", "resource_type": "section_group", "parent_id": "other"},
         ]
     }
-    with pytest.raises(runner.InvariantFailure, match="Delete-Sandbox"):
+    with pytest.raises(runtime.InvariantFailure, match="Delete-Sandbox"):
         _validate_fixture_snapshot("delete", snapshot, structure, None)
 
 
@@ -205,7 +214,7 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
     args = argparse.Namespace(scenario="delete")
     options = RuntimeOptions(tmp_path, 180, False, False)
 
-    with pytest.raises(runner.InvariantFailure, match="Delete-Sandbox"):
+    with pytest.raises(runtime.InvariantFailure, match="Delete-Sandbox"):
         asyncio.run(
             fixture_module.prepare_scenario_fixture(
                 args,
@@ -217,8 +226,8 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
             )
         )
 
-    assert runner.read_json(tmp_path / "manifest.json")["fixture_validation"]["status"] == "failed"
-    assert runner.read_json(tmp_path / "fixture-result.json")["validation"]["passed"] is False
+    assert test_utils.read_json(tmp_path / "manifest.json")["fixture_validation"]["status"] == "failed"
+    assert test_utils.read_json(tmp_path / "fixture-result.json")["validation"]["passed"] is False
     assert (tmp_path / "prepared.json").exists()
 
 
@@ -256,14 +265,14 @@ def test_keep_dry_run_omits_close(capsys, tmp_path) -> None:
     assert not run_dir.exists()
 
 
-def test_cli_exposes_only_flat_scenarios() -> None:
-    parser = runner.build_parser()
+def test_cli_exposes_flat_scenarios_and_special_all_entry() -> None:
+    parser = build_parser()
     choices = next(
         action.choices
         for action in parser._actions
         if isinstance(action, argparse._SubParsersAction)
     )
-    assert set(choices) == set(SCENARIOS)
+    assert set(choices) == {*SCENARIOS, "all"}
     for removed in ("validate", "inspect", "read", "baseline", "report", "suite"):
         assert removed not in choices
 
@@ -287,11 +296,11 @@ class FakeLifecycle:
             "expected_name": name,
             "expected_local_path": str(path),
         }
-        runner.write_json(self.lease_path, {"schema_version": 1, **lease})
+        test_utils.write_json(self.lease_path, {"schema_version": 1, **lease})
         return {"id": "notebook-id", "name": name}, lease
 
     def get_exact_notebook(self, lease=None):
-        lease = lease or runner.read_json(self.lease_path)
+        lease = lease or test_utils.read_json(self.lease_path)
         return {"id": lease["notebook_id"], "name": lease["expected_name"]}
 
     def close_exact_notebook(self):
@@ -327,7 +336,7 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
         assert spec is SCENARIO_SPECS[args.scenario]
         calls.append("fixture")
         manifest = _manifest(options.run_dir, args.notebook_name)
-        runner.write_json(options.run_dir / "manifest.json", manifest)
+        test_utils.write_json(options.run_dir / "manifest.json", manifest)
         return manifest, {"profile": spec.fixture.name}
 
     def fake_report(run_dir):
@@ -344,14 +353,21 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
     _install_orchestration_fakes(monkeypatch, calls)
 
     if scenario != "create":
-        async def fake_scenario(args, _options, _manifest_value, *, client=None):
+        async def fake_scenario(
+            args,
+            _options,
+            _manifest_value,
+            *,
+            client=None,
+            fixture_result=None,
+        ):
             assert client is FakeMCP.active
             calls.append(args.scenario)
             if args.scenario == "delete":
                 assert args.delete_target_id == "disposable-group"
             return {"scenario": args.scenario, "status": "passed"}
 
-        monkeypatch.setitem(validation.MUTATION_SCENARIO_RUNNERS, scenario, fake_scenario)
+        monkeypatch.setattr(SCENARIO_REGISTRY.get(scenario), "execute", fake_scenario)
 
     result = asyncio.run(
         validation.run_validate(
@@ -380,15 +396,15 @@ def test_failure_preserves_open_and_stops_before_report(monkeypatch, tmp_path) -
 
     async def failing(*_args, **_kwargs):
         calls.append("rename")
-        raise runner.InvariantFailure("scenario mismatch")
+        raise runtime.InvariantFailure("scenario mismatch")
 
-    monkeypatch.setitem(validation.MUTATION_SCENARIO_RUNNERS, "rename", failing)
+    monkeypatch.setattr(SCENARIO_REGISTRY.get("rename"), "execute", failing)
     args = _args(tmp_path / "run", "rename")
-    with pytest.raises(runner.InvariantFailure):
+    with pytest.raises(runtime.InvariantFailure):
         asyncio.run(validation.run_validate(args, RuntimeOptions(args.run_dir, 180, False, False)))
     assert calls == ["fixture", "rename"]
     assert FakeLifecycle.instances[0].closed is False
-    state = runner.read_json(args.run_dir / "run-state.json")
+    state = test_utils.read_json(args.run_dir / "run-state.json")
     assert state["current_step"] == "rename"
     assert state["finalization_started"] is False
 
@@ -398,15 +414,15 @@ def test_restore_failure_never_enters_source_finalization(monkeypatch, tmp_path)
     _install_orchestration_fakes(monkeypatch, calls)
 
     async def restore_failed(*_args, **_kwargs):
-        raise runner.RestoreFailure("restored snapshot mismatch")
+        raise runtime.RestoreFailure("restored snapshot mismatch")
 
-    monkeypatch.setitem(validation.MUTATION_SCENARIO_RUNNERS, "rename", restore_failed)
+    monkeypatch.setattr(SCENARIO_REGISTRY.get("rename"), "execute", restore_failed)
     args = _args(tmp_path / "run", "rename")
-    with pytest.raises(runner.RestoreFailure, match="snapshot mismatch"):
+    with pytest.raises(runtime.RestoreFailure, match="snapshot mismatch"):
         asyncio.run(validation.run_validate(args, RuntimeOptions(args.run_dir, 180, False, False)))
 
     assert FakeLifecycle.instances[0].closed is False
-    state = runner.read_json(args.run_dir / "run-state.json")
+    state = test_utils.read_json(args.run_dir / "run-state.json")
     assert state["finalization_started"] is False
 
 
@@ -414,34 +430,41 @@ def test_copy_only_records_cleanup_and_never_closes(monkeypatch, tmp_path) -> No
     calls: list[str] = []
     _install_orchestration_fakes(monkeypatch, calls)
 
-    async def copy_only(args, options, _manifest_value, *, client=None):
+    async def copy_only(
+        args,
+        options,
+        _manifest_value,
+        *,
+        client=None,
+        fixture_result=None,
+    ):
         assert client is FakeMCP.active
         partial = {
             "outcome": "copy_only",
             "created_ids": ["copied-page"],
             "id_map": {"disposable-page": "copied-page"},
         }
-        runner.write_json(
-            runner.scenario_dir(options.run_dir, args.scenario) / "copy-result.json",
+        test_utils.write_json(
+            test_utils.scenario_dir(options.run_dir, args.scenario) / "copy-result.json",
             partial,
         )
         raise ClientFailure("copy_only", envelope=partial)
 
-    monkeypatch.setitem(
-        validation.MUTATION_SCENARIO_RUNNERS, "reconstructive-move-page", copy_only
+    monkeypatch.setattr(
+        SCENARIO_REGISTRY.get("reconstructive-move-page"), "execute", copy_only
     )
     args = _args(tmp_path / "run", "reconstructive-move-page")
     with pytest.raises(ClientFailure, match="copy_only"):
         asyncio.run(validation.run_validate(args, RuntimeOptions(args.run_dir, 1_800, False, False)))
-    validation.record_failure(args, "copy_only", runner.EXIT_MCP)
+    validation.record_failure(args, "copy_only", runtime.EXIT_MCP)
 
     assert FakeLifecycle.instances[0].closed is False
-    failure = runner.read_json(
+    failure = test_utils.read_json(
         args.run_dir / "scenarios" / args.scenario / "failure.json"
     )
     assert failure["status"] == "needs_manual_cleanup"
     assert failure["created_ids"] == ["copied-page"]
-    state = runner.read_json(args.run_dir / "run-state.json")
+    state = test_utils.read_json(args.run_dir / "run-state.json")
     assert state["status"] == "failed_preserved_open"
     assert state["failed_step"] == "reconstructive-move-page"
 
@@ -471,8 +494,8 @@ def test_copy_notebook_finalization_closes_source_lease_and_preserves_both_paths
     manifest = _manifest(run_dir)
     copy_path = (run_dir / "notebook-copies" / "Copy").resolve()
     copy_path.mkdir(parents=True)
-    runner.write_json(
-        runner.scenario_dir(run_dir, "copy-notebook") / "restored.json",
+    test_utils.write_json(
+        test_utils.scenario_dir(run_dir, "copy-notebook") / "restored.json",
         {"target_path": str(copy_path)},
     )
 

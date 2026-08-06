@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from tests.manual_validation.lifecycle import NotebookLifecycleWrapper
-from tests.manual_validation.runner import RestoreFailure, read_json, write_json
+from tests.manual_validation.runtime import RestoreFailure
+from tests.manual_validation.test_utils import read_json, write_json
 
 
 class FakeBridge:

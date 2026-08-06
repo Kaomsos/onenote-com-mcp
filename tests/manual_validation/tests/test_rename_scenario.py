@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.manual_validation.runner import InvariantFailure, RuntimeOptions
+from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
 from tests.manual_validation.scenarios import rename as rename_scenario
-from tests.manual_validation.scenarios.rename import run_rename
+from tests.manual_validation.scenarios.rename import RenameScenario
 
 def test_rename_attempts_restore_before_reporting_invariant_failure(monkeypatch, tmp_path) -> None:
     target = {
@@ -60,7 +60,15 @@ def test_rename_attempts_restore_before_reporting_invariant_failure(monkeypatch,
     args = SimpleNamespace(target="move_source", new_name=None, notebook_name=None)
     options = RuntimeOptions(tmp_path, 10, False, False)
     with pytest.raises(InvariantFailure):
-        asyncio.run(run_rename(args, options, manifest))
+        asyncio.run(
+            RenameScenario().execute(
+                args,
+                options,
+                manifest,
+                    client=None,
+                fixture_result={},
+            )
+        )
     assert [call[1]["new_name"] for call in FakeClient.calls] == [
         "Move-Source-Smoke-Renamed",
         "Move-Source",

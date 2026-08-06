@@ -1,11 +1,12 @@
-"""Independent Copy subtree and fixture invariant checks."""
+"""Shared Copy subtree and fixture invariant checks."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..runner import InvariantFailure, display_name
-from ._config import AUTOMATED_COPY_CAPABILITIES
+from ...runtime import InvariantFailure
+from ...test_utils import display_name
+from .config import AUTOMATED_COPY_CAPABILITIES
 
 def expected_copy_source_items(
     snapshot: dict[str, Any],

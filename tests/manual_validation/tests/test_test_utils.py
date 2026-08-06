@@ -1,13 +1,14 @@
-"""Pure snapshot and hierarchy invariant tests."""
+"""Pure snapshot and hierarchy invariant utility tests."""
 
 from __future__ import annotations
 
-from tests.manual_validation import runner
-from tests.manual_validation.runner import (
+from tests.manual_validation import test_utils
+from tests.manual_validation.test_utils import (
     assert_valid_page_tree,
     comparable_snapshot,
     is_descendant_of,
 )
+
 
 def test_snapshot_comparison_ignores_capture_time_and_item_order() -> None:
     first = {
@@ -19,6 +20,7 @@ def test_snapshot_comparison_ignores_capture_time_and_item_order() -> None:
     }
     second = {**first, "captured_at": "after", "items": list(reversed(first["items"]))}
     assert comparable_snapshot(first) == comparable_snapshot(second)
+
 
 def test_page_tree_and_delete_sandbox_ancestry_checks() -> None:
     snapshot = {
@@ -46,7 +48,7 @@ def test_page_tree_and_delete_sandbox_ancestry_checks() -> None:
         ]
     }
     assert_valid_page_tree(snapshot, "section")
-    assert runner.page_topology(snapshot, "section") == [
+    assert test_utils.page_topology(snapshot, "section") == [
         ("parent", "section", 0, 1, None),
         ("child", "section", 1, 2, "parent"),
     ]

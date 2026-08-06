@@ -1,4 +1,4 @@
-"""Self-contained fresh-Notebook suites for each named mutation scenario."""
+"""Shared lifecycle orchestration for self-contained scenario suites."""
 
 from __future__ import annotations
 
@@ -8,17 +8,14 @@ import re
 import time
 from typing import Any
 
-from ..mcp_stdio_client import (
+from ...mcp_stdio_client import (
     COPY_BUDGET_ENV,
     MCPStdioClient,
     ScenarioPolicy,
 )
-from ..lifecycle import NotebookLifecycleWrapper
-from ..runner import (
-    EXIT_RESTORE,
-    RestoreFailure,
-    RunnerFailure,
-    RuntimeOptions,
+from ...lifecycle import NotebookLifecycleWrapper
+from ...runtime import EXIT_RESTORE, RestoreFailure, RunnerFailure, RuntimeOptions
+from ...test_utils import (
     load_manifest,
     read_json,
     resolve_manifest_item,
@@ -26,29 +23,13 @@ from ..runner import (
     utc_now,
     write_json,
 )
-from .copy import run_copy
-from .delete import run_delete
 from .fixtures import prepare_scenario_fixture
-from .move import run_move
-from .reconstructive_move_page import run_reconstructive_move_page
-from .rename import run_rename
-from .reorder import run_reorder
 from .report import render_report
-from .specs import SCENARIO_SPECS, get_scenario_spec
+from .specs import SCENARIO_SPECS
+from .registry import SCENARIO_REGISTRY
 
 
-MUTATION_SCENARIO_RUNNERS = {
-    "rename": run_rename,
-    "reorder": run_reorder,
-    "move": run_move,
-    "delete": run_delete,
-    "copy-page": run_copy,
-    "copy-section": run_copy,
-    "copy-section-group": run_copy,
-    "copy-notebook": run_copy,
-    "reconstructive-move-page": run_reconstructive_move_page,
-}
-PUBLIC_SCENARIOS = tuple(SCENARIO_SPECS)
+PUBLIC_SCENARIOS = SCENARIO_REGISTRY.public_names
 
 # Compatibility view for callers that inspect the static policy table.  Each
 # entry is the complete fixture + mutation closure for one scenario process.
@@ -91,7 +72,7 @@ def _step(
 
 
 def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
-    spec = get_scenario_spec(args.scenario)
+    spec = SCENARIO_REGISTRY.get(args.scenario).spec
     steps: list[dict[str, Any]] = [
         {
             "step": "create-source-notebook",
@@ -271,7 +252,8 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     state = _initial_state(args, options)
     state_path = options.run_dir / "run-state.json"
     write_json(state_path, state)
-    spec = get_scenario_spec(args.scenario)
+    scenario = SCENARIO_REGISTRY.get(args.scenario)
+    spec = scenario.spec
     metrics_path = options.run_dir / "run-metrics.json"
     metrics: dict[str, Any] = {
         "schema_version": 1,
@@ -337,23 +319,14 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 {"step": "prepare-fixture", "result": fixture_result}
             )
             write_json(state_path, state)
-            if args.scenario == "create":
-                scenario_result = {
-                    "scenario": "create",
-                    "status": "passed",
-                    "fixture": fixture_result,
-                }
-            else:
-                if args.scenario == "delete":
-                    args.delete_target_id = resolve_manifest_item(
-                        manifest, "disposable_group"
-                    )["id"]
-                scenario_result = await MUTATION_SCENARIO_RUNNERS[args.scenario](
-                    args,
-                    options,
-                    manifest,
-                    client=client,
-                )
+            scenario.prepare_arguments(args, manifest)
+            scenario_result = await scenario.execute(
+                args,
+                options,
+                manifest,
+                client=client,
+                fixture_result=fixture_result,
+            )
     finally:
         metrics["observed_mcp_process_starts"] = int(
             entered_client or getattr(client_handle, "process_started", False)
@@ -566,7 +539,6 @@ def record_failure(args: argparse.Namespace, message: str, exit_code: int) -> No
 
 
 __all__ = [
-    "MUTATION_SCENARIO_RUNNERS",
     "PUBLIC_SCENARIOS",
     "SCENARIO_POLICIES",
     "finalize_notebook",

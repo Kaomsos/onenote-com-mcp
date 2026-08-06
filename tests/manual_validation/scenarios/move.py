@@ -6,11 +6,8 @@ import argparse
 from typing import Any
 
 from ..mcp_stdio_client import ClientFailure, MCPStdioClient, MOVE_POLICY, scenario_client
-from ..runner import (
-    InvariantFailure,
-    RestoreFailure,
-    RunnerFailure,
-    RuntimeOptions,
+from ..runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
+from ..test_utils import (
     assert_restored,
     capture_snapshot,
     display_name,
@@ -22,11 +19,13 @@ from ..runner import (
     validate_manifest_notebook,
     write_json,
 )
-from ._config import MOVE_TOOLS
-from .report import render_report
+from .base import Scenario
+from .common.registry import SCENARIO_REGISTRY
+from .common.config import MOVE_TOOLS
+from .common.report import render_report
 
 
-async def run_move(
+async def _execute_move(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
@@ -110,3 +109,21 @@ async def run_move(
         write_json(out / "result.json", result)
         render_report(options.run_dir)
         return result
+
+
+@SCENARIO_REGISTRY.register
+class MoveScenario(Scenario):
+    name = "move"
+    help_text = "GATED: create, move/restore, report, then close or keep."
+    registered_for_all = True
+
+    async def execute(
+        self,
+        args: argparse.Namespace,
+        options: RuntimeOptions,
+        manifest: dict[str, Any],
+        *,
+        client: MCPStdioClient | None,
+        fixture_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await _execute_move(args, options, manifest, client=client)

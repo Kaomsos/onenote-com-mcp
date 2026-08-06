@@ -6,11 +6,8 @@ import argparse
 from typing import Any
 
 from ..mcp_stdio_client import ClientFailure, MCPStdioClient, WRITE_POLICY, scenario_client
-from ..runner import (
-    InvariantFailure,
-    RestoreFailure,
-    RunnerFailure,
-    RuntimeOptions,
+from ..runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
+from ..test_utils import (
     assert_restored,
     assert_valid_page_tree,
     capture_snapshot,
@@ -22,8 +19,10 @@ from ..runner import (
     validate_manifest_notebook,
     write_json,
 )
-from ._config import REORDER_TOOLS
-from .report import render_report
+from .base import Scenario
+from .common.registry import SCENARIO_REGISTRY
+from .common.config import REORDER_TOOLS
+from .common.report import render_report
 
 
 def page_predecessor(pages: list[dict[str, Any]], page_id: str) -> str:
@@ -33,7 +32,7 @@ def page_predecessor(pages: list[dict[str, Any]], page_id: str) -> str:
     return "" if index == 0 else str(pages[index - 1]["id"])
 
 
-async def run_reorder(
+async def _execute_reorder(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
@@ -130,3 +129,24 @@ async def run_reorder(
         write_json(out / "result.json", result)
         render_report(options.run_dir)
         return result
+
+
+@SCENARIO_REGISTRY.register
+class ReorderScenario(Scenario):
+    name = "reorder"
+    help_text = "GATED: create, reorder/restore, report, then close or keep."
+    registered_for_all = True
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--page-level", type=int, default=2)
+
+    async def execute(
+        self,
+        args: argparse.Namespace,
+        options: RuntimeOptions,
+        manifest: dict[str, Any],
+        *,
+        client: MCPStdioClient | None,
+        fixture_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await _execute_reorder(args, options, manifest, client=client)

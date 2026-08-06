@@ -11,7 +11,8 @@ from local_onenote_mcp.constants import CREATE_FILE_TYPES
 from local_onenote_mcp.hierarchy import display_name
 from local_onenote_mcp.services.hierarchy import HierarchyService
 
-from .runner import RestoreFailure, RunnerFailure, read_json, stable_item, utc_now, write_json
+from .runtime import RestoreFailure, RunnerFailure
+from .test_utils import read_json, stable_item, utc_now, write_json
 
 
 class NotebookLifecycleWrapper:

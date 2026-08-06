@@ -7,17 +7,17 @@ import asyncio
 import pytest
 
 from local_onenote_mcp.page import image_dimensions
-from tests.manual_validation import runner
+from tests.manual_validation import test_utils
 from tests.manual_validation.mcp_stdio_client import ClientFailure
-from tests.manual_validation.runner import InvariantFailure
-from tests.manual_validation.scenarios.copy import (
+from tests.manual_validation.runtime import InvariantFailure, RunnerFailure
+from tests.manual_validation.scenarios.common.copy_runtime import (
     call_with_result_evidence,
     cleanup_copy,
     copy_spec,
 )
-from tests.manual_validation.scenarios.create import ensure_copy_rich_fixture
-from tests.manual_validation.scenarios._config import COPY_FIXTURE_MARKER
-from tests.manual_validation.scenarios.copy_invariants import (
+from tests.manual_validation.scenarios.common.fixture_builders import ensure_copy_rich_fixture
+from tests.manual_validation.scenarios.common.config import COPY_FIXTURE_MARKER
+from tests.manual_validation.scenarios.common.copy_invariants import (
     assert_copy_fixture_capabilities,
     assert_copy_mapping,
 )
@@ -46,7 +46,7 @@ def test_result_evidence_is_written_for_structured_partial_failure(tmp_path) -> 
             )
         )
 
-    assert runner.read_json(evidence) == partial
+    assert test_utils.read_json(evidence) == partial
 
 def test_notebook_copy_requires_exact_manifest_allowlisted_root(tmp_path) -> None:
     manifest = {
@@ -58,7 +58,7 @@ def test_notebook_copy_requires_exact_manifest_allowlisted_root(tmp_path) -> Non
         },
     }
 
-    with pytest.raises(runner.RunnerFailure, match="exact disposable Notebook Copy root"):
+    with pytest.raises(RunnerFailure, match="exact disposable Notebook Copy root"):
         copy_spec("copy-notebook", manifest, tmp_path / "run")
 
 def test_copy_cleanup_uses_exact_ids_leaf_to_root_with_fresh_reads() -> None:

@@ -6,11 +6,8 @@ import argparse
 from typing import Any
 
 from ..mcp_stdio_client import ClientFailure, MCPStdioClient, WRITE_POLICY, scenario_client
-from ..runner import (
-    InvariantFailure,
-    RestoreFailure,
-    RunnerFailure,
-    RuntimeOptions,
+from ..runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
+from ..test_utils import (
     assert_restored,
     capture_snapshot,
     display_name,
@@ -22,11 +19,13 @@ from ..runner import (
     validate_manifest_notebook,
     write_json,
 )
-from ._config import RENAME_TOOLS
-from .report import render_report
+from .base import Scenario
+from .common.registry import SCENARIO_REGISTRY
+from .common.config import RENAME_TOOLS
+from .common.report import render_report
 
 
-async def run_rename(
+async def _execute_rename(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
@@ -119,3 +118,29 @@ async def run_rename(
         write_json(out / "result.json", result)
         render_report(options.run_dir)
         return result
+
+
+@SCENARIO_REGISTRY.register
+class RenameScenario(Scenario):
+    name = "rename"
+    help_text = "GATED: create, rename/restore, report, then close or keep."
+    registered_for_all = True
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "--target",
+            choices=["group_a", "group_b", "move_source"],
+            default="move_source",
+        )
+        parser.add_argument("--new-name")
+
+    async def execute(
+        self,
+        args: argparse.Namespace,
+        options: RuntimeOptions,
+        manifest: dict[str, Any],
+        *,
+        client: MCPStdioClient | None,
+        fixture_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await _execute_rename(args, options, manifest, client=client)

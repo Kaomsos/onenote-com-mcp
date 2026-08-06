@@ -7,15 +7,16 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from tests.manual_validation import runner
-from tests.manual_validation.runner import EXIT_MCP, build_parser, main
-from tests.manual_validation.scenarios.report import run_report
-from tests.manual_validation.scenarios.validation import record_failure
+from tests.manual_validation import test_utils
+from tests.manual_validation.runner import build_parser, main
+from tests.manual_validation.runtime import EXIT_MCP
+from tests.manual_validation.scenarios.common.report import run_report
+from tests.manual_validation.scenarios.common.orchestrator import record_failure
 
 def test_failure_handoff_surfaces_partial_copy_targets(tmp_path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    runner.write_json(
+    test_utils.write_json(
         run_dir / "manifest.json",
         {
             "schema_version": 1,
@@ -23,8 +24,8 @@ def test_failure_handoff_surfaces_partial_copy_targets(tmp_path) -> None:
             "structure": {"parent_page": {"id": "old-page", "resource_type": "page"}},
         },
     )
-    out = runner.scenario_dir(run_dir, "copy-page")
-    runner.write_json(
+    out = test_utils.scenario_dir(run_dir, "copy-page")
+    test_utils.write_json(
         out / "copy-result.json",
         {
             "ok": False,
@@ -43,7 +44,7 @@ def test_failure_handoff_surfaces_partial_copy_targets(tmp_path) -> None:
 
     record_failure(args, "copy only", EXIT_MCP)
 
-    failure = runner.read_json(out / "failure.json")
+    failure = test_utils.read_json(out / "failure.json")
     assert failure["status"] == "needs_manual_cleanup"
     assert failure["last_successful_step"] == "execute_mutation"
     assert failure["created_ids"] == ["new-page"]
@@ -147,18 +148,18 @@ def test_internal_report_records_manual_environment_without_mcp(tmp_path) -> Non
     )
     scenario = run_dir / "scenarios" / "copy-page"
     scenario.mkdir(parents=True)
-    runner.write_json(
+    test_utils.write_json(
         scenario / "plan.json",
         {
             "content_capabilities": ["Image", "Outline", "RichText", "Table"],
             "copyability": {"lossless_candidate": False},
         },
     )
-    runner.write_json(
+    test_utils.write_json(
         scenario / "copy-result.json",
         {"copy_report": {"verified": True, "lossless": False}},
     )
-    runner.write_json(
+    test_utils.write_json(
         scenario / "result.json",
         {"scenario": "copy-page", "status": "passed", "target_id": "new-page", "restored": True},
     )

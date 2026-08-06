@@ -1,21 +1,22 @@
-"""Fixture-only create scenario."""
+"""Infrastructure base for the four independently registered Copy scenarios."""
 
 from __future__ import annotations
 
 import argparse
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from ..mcp_stdio_client import MCPStdioClient
 from ..runtime import RuntimeOptions
 from .base import Scenario
-from .common.registry import SCENARIO_REGISTRY
 
 
-@SCENARIO_REGISTRY.register
-class CreateScenario(Scenario):
-    name = "create"
-    help_text = "GATED: create the preset isolated Notebook fixture, report, then close or keep."
+CopyExecutor = Callable[..., Awaitable[dict[str, Any]]]
+
+
+class CopyScenario(Scenario):
+    timeout_default = 1_800
     registered_for_all = True
+    execute_copy: CopyExecutor
 
     async def execute(
         self,
@@ -26,11 +27,7 @@ class CreateScenario(Scenario):
         client: MCPStdioClient | None,
         fixture_result: dict[str, Any],
     ) -> dict[str, Any]:
-        return {
-            "scenario": self.name,
-            "status": "passed",
-            "fixture": fixture_result,
-        }
+        return await self.execute_copy(args, options, manifest, client=client)
 
 
-__all__ = ["CreateScenario"]
+__all__ = ["CopyScenario"]

@@ -1,4 +1,4 @@
-"""Page, section, section-group, and notebook copy scenarios."""
+"""Shared execution primitives for Page, Section, Group, and Notebook Copy."""
 
 from __future__ import annotations
 
@@ -6,18 +6,15 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from ..mcp_stdio_client import (
+from ...mcp_stdio_client import (
     COPY_NO_DELETE_POLICY,
     COPY_POLICY,
     ClientFailure,
     MCPStdioClient,
     scenario_client,
 )
-from ..runner import (
-    InvariantFailure,
-    RestoreFailure,
-    RunnerFailure,
-    RuntimeOptions,
+from ...runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
+from ...test_utils import (
     assert_restored,
     capture_snapshot,
     display_name,
@@ -29,7 +26,7 @@ from ..runner import (
     validate_manifest_notebook,
     write_json,
 )
-from ._config import COPY_NOTEBOOK_TOOLS, COPY_TOOLS
+from .config import COPY_NOTEBOOK_TOOLS, COPY_TOOLS
 from .copy_invariants import assert_copy_fixture_capabilities, assert_copy_mapping
 from .report import render_report
 
@@ -230,7 +227,7 @@ async def call_with_result_evidence(
     return result
 
 
-async def run_copy(
+async def execute_copy(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
@@ -349,3 +346,12 @@ async def run_copy(
         write_json(out / "result.json", result)
         render_report(options.run_dir)
         return result
+
+
+__all__ = [
+    "call_with_result_evidence",
+    "cleanup_copy",
+    "copy_execute_arguments",
+    "copy_spec",
+    "execute_copy",
+]

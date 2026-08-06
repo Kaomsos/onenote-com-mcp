@@ -6,10 +6,8 @@ import argparse
 from typing import Any
 
 from ..mcp_stdio_client import DELETE_POLICY, MCPStdioClient, scenario_client
-from ..runner import (
-    InvariantFailure,
-    RunnerFailure,
-    RuntimeOptions,
+from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
+from ..test_utils import (
     capture_snapshot,
     display_name,
     find_snapshot_item,
@@ -22,11 +20,13 @@ from ..runner import (
     validate_manifest_notebook,
     write_json,
 )
-from ._config import DELETE_TOOLS
-from .report import render_report
+from .base import Scenario
+from .common.registry import SCENARIO_REGISTRY
+from .common.config import DELETE_TOOLS
+from .common.report import render_report
 
 
-async def run_delete(
+async def _execute_delete(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
@@ -121,3 +121,30 @@ async def run_delete(
         write_json(out / "result.json", result)
         render_report(options.run_dir)
         return result
+
+
+@SCENARIO_REGISTRY.register
+class DeleteScenario(Scenario):
+    name = "delete"
+    help_text = (
+        "GATED: create, non-permanently delete the disposable group, report, then close or keep."
+    )
+    registered_for_all = True
+
+    def prepare_arguments(
+        self,
+        args: argparse.Namespace,
+        manifest: dict[str, Any],
+    ) -> None:
+        args.delete_target_id = resolve_manifest_item(manifest, "disposable_group")["id"]
+
+    async def execute(
+        self,
+        args: argparse.Namespace,
+        options: RuntimeOptions,
+        manifest: dict[str, Any],
+        *,
+        client: MCPStdioClient | None,
+        fixture_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await _execute_delete(args, options, manifest, client=client)

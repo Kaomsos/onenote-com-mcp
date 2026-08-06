@@ -11,7 +11,7 @@
 
 通过唯一入口 `tests/manual_validation/run.py` 自动完成真实 OneNote mutation 的隔离准备、最小权限 MCP 调用、精确 ID/确认字段、before/after/restore 证据和报告。
 
-每个扁平的 `run.py <scenario>` 自身就是一次完整 suite：创建全新 disposable Notebook、准备 fixture、只运行所选 scenario、生成报告，然后默认关闭源 Notebook或按 `--keep-notebook` 保持打开。`create` 是正式的 fixture-only scenario；`validate` 和诊断辅助 action 均不公开。不存在额外的聚合或 batch `suite` 命令。多个 scenario 由用户分别启动，每次使用新的 Notebook 和证据目录。
+每个扁平的 `run.py <scenario>` 自身就是一次完整 suite：创建全新 disposable Notebook、准备 fixture、只运行所选 scenario、生成报告，然后默认关闭源 Notebook或按 `--keep-notebook` 保持打开。`create` 是正式的 fixture-only scenario；`validate` 和诊断辅助 action 均不公开。特殊 `run.py all` 只负责串行启动显式注册的稳定测试 scenario，不拥有共享 run-dir、Notebook、MCP、权限或 lifecycle；未来新增的探索性/验证性 scenario 默认不注册，用户仍可单独启动。
 
 Runner 不使用 Codex、LLM 或远程服务，但会执行真实 OneNote COM mutation，因此 Agent、pytest、CI、hook、timer、watcher 和后台任务不得运行真实命令。Agent 只能修改实现、运行纯合同测试并把命令交给用户。
 
@@ -20,15 +20,21 @@ Runner 不使用 Codex、LLM 或远程服务，但会执行真实 OneNote COM mu
 ```text
 tests/manual_validation/
 ├─ run.py                 唯一用户入口
-├─ runner.py              共享模型、快照和 CLI 边界
+├─ runner.py              仅 CLI 启动、分发和顶层错误处理
+├─ runtime.py             共享 exit code、异常和 runtime options
+├─ test_utils.py          快照、manifest、证据和不变量工具
+├─ all_scenarios.py       特殊 all 串行子进程编排
 ├─ mcp_stdio_client.py    MCP 生命周期与 call_tool adapter
 ├─ lifecycle.py           仅源 Notebook create/get/close 与精确 lease
-├─ scenarios/             具名场景、权限、闭环编排与报告
+├─ scenarios/
+│  ├─ base.py             Scenario 类合同与统一 CLI/lifecycle 参数
+│  ├─ <scenario>.py       每个可执行模块恰好一个具名 Scenario 子类
+│  └─ common/             registry、orchestrator、spec、fixture、报告与 Copy 等共享依赖
 ├─ tests/                 不访问 OneNote 的合同测试
 └─ README.md              权威使用说明
 ```
 
-不要为 mutation 创建独立脚本，也不要新增一次运行多个 mutation scenario 的入口。
+不要为 mutation 创建独立脚本；`all` 是唯一允许的一次运行多个 mutation scenario 的入口，并且只能串行调用完整的独立场景命令。
 
 ## 当前 CLI 契约
 
@@ -43,6 +49,8 @@ tests/manual_validation/
 ```
 
 当前 scenario：`create`、`rename`、`reorder`、`move`、`delete`、`copy-page`、`copy-section`、`copy-section-group`、`copy-notebook`、`reconstructive-move-page`。
+
+特殊批量入口：`run.py all [--timeout <seconds>] [--dry-run] [--json] [--verbosity quiet|normal|verbose]`。它只读取 `SCENARIO_REGISTRY` 中 `registered_for_all=True` 的类实例，不支持 `--run-dir`，默认 quiet，仅输出进度、错误和失败。
 
 - 默认 Notebook：`__LOCAL_MCP_TEST_ISOLATED__<UTC_TIMESTAMP>`。
 - 默认目录：`.local-validation\run-<同一 UTC_TIMESTAMP>`。
@@ -72,6 +80,8 @@ tests/manual_validation/
 - [x] 重建式 Move 严格失败门禁与失败交接；
 - [x] Agent/CI/hook/timer/watcher 禁令；
 - [x] 不访问 OneNote 的合同测试覆盖默认值、run-dir、同名冲突、顺序、失败停止、close/keep 与严格 `copy_only`。
+- [x] `runner.py` 启动职责与 runtime/test utils 分离，`all` 串行入口覆盖 quiet、verbosity、失败继续和参数透传合同。
+- [x] 可执行 scenario 类化；`scenarios/__init__.py` 导入公开类并触发 wrapper 注册，parser、dispatch、静态 spec 与 `all` 资格由单一 `SCENARIO_REGISTRY` 对象管理；未注册的验证性 scenario 不会进入 `all`。
 
 ## 待用户验收
 

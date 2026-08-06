@@ -10,10 +10,8 @@ from ..mcp_stdio_client import (
     RECONSTRUCTIVE_MOVE_PAGE_POLICY,
     scenario_client,
 )
-from ..runner import (
-    InvariantFailure,
-    RunnerFailure,
-    RuntimeOptions,
+from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
+from ..test_utils import (
     capture_snapshot,
     display_name,
     find_snapshot_item,
@@ -27,13 +25,15 @@ from ..runner import (
     validate_manifest_notebook,
     write_json,
 )
-from .copy import call_with_result_evidence
-from ._config import RECONSTRUCTIVE_MOVE_PAGE_TOOLS
-from .copy_invariants import assert_copy_mapping, expected_copy_source_items
-from .report import render_report
+from .base import Scenario
+from .common.registry import SCENARIO_REGISTRY
+from .common.config import RECONSTRUCTIVE_MOVE_PAGE_TOOLS
+from .common.copy_invariants import assert_copy_mapping, expected_copy_source_items
+from .common.copy_runtime import call_with_result_evidence
+from .common.report import render_report
 
 
-async def run_reconstructive_move_page(
+async def _execute_reconstructive_move_page(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
@@ -146,3 +146,25 @@ async def run_reconstructive_move_page(
         write_json(out / "result.json", result)
         render_report(options.run_dir)
         return result
+
+
+@SCENARIO_REGISTRY.register
+class ReconstructiveMovePageScenario(Scenario):
+    name = "reconstructive-move-page"
+    help_text = (
+        "GATED: create, strictly move the disposable Page by verified Copy plus source "
+        "recycle, report, then close or keep."
+    )
+    timeout_default = 1_800
+    registered_for_all = True
+
+    async def execute(
+        self,
+        args: argparse.Namespace,
+        options: RuntimeOptions,
+        manifest: dict[str, Any],
+        *,
+        client: MCPStdioClient | None,
+        fixture_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await _execute_reconstructive_move_page(args, options, manifest, client=client)

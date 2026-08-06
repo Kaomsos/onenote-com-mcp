@@ -246,8 +246,12 @@ uv run python scripts\smoke_mcp.py
 # The fixture-only create scenario builds the complete preset isolated tree:
 .venv\Scripts\python.exe tests\manual_validation\run.py create --keep-notebook
 
-# Choose another top-level scenario for another validation. Each command creates
-# its own fresh Notebook; reconstructive-move-page remains a strict safety gate.
+# Review every explicitly registered test-scenario plan serially. Exploratory
+# validation scenarios are excluded until registered; all owns no shared run-dir:
+.venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run --verbosity normal
+
+# The user may remove --dry-run to run every isolated scenario serially. Each
+# child creates its own Notebook/run-dir; reconstructive-move-page remains strict.
 ```
 
 ---

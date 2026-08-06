@@ -155,7 +155,7 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 凡真实执行时需要 mutation policy 权限的 tool，包括 Write、Delete、Permanent Delete、Experimental Mutation、Raw XML 以及未来新增的非只读权限，都必须采用本页这种半自动化手动验证：
 
 1. 自动化 pytest 只允许 mock/纯合同测试，不能访问真实 OneNote；
-2. 真实场景统一放在 [`tests/manual_validation/`](../../tests/manual_validation/README.md)，通过一个总入口由用户显式选择顶层场景；每个 `run.py <scenario>` 自身包含 lifecycle create、该场景最小 fixture、mutation、report 与 close/keep；不得公开辅助 action，也不得增加聚合或 batch 入口；
+2. 真实场景统一放在 [`tests/manual_validation/`](../../tests/manual_validation/README.md)，通过一个总入口由用户显式选择顶层场景；每个 `run.py <scenario>` 自身包含 lifecycle create、该场景最小 fixture、mutation、report 与 close/keep；不得公开辅助 action。唯一批处理例外是用户显式运行的 `run.py all`，它只能串行启动显式注册的稳定测试 scenario，不得共享 run-dir、Notebook、MCP、权限或 lifecycle；新增的探索性/验证性 scenario 默认不得进入该注册表；
 3. 每个 scenario 最多启动一个 MCP 子进程。Runner 为其推导覆盖 fixture、mutation、evidence 与 restore/cleanup 的静态最小权限闭包，并在 fixture 前用 `health_check` 精确核验；源 Notebook 生命周期只能通过精确 lease 约束的窄 wrapper 操作；
 4. 使用专用可丢弃 Notebook、精确 ID、最新确认字段和 before/after 证据；可恢复操作还必须执行恢复与 restored 回读；
 5. 不可恢复操作只能命中 manifest 白名单中的 disposable 对象，并在报告中明确最终状态和人工处理方式；
