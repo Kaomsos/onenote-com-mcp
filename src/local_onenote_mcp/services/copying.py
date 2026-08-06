@@ -406,7 +406,9 @@ class CopyService(BaseService):
 
     @staticmethod
     def _created_item(result: dict[str, Any]) -> dict[str, Any]:
-        for key in ("item", "section_group", "section", "page"):
+        # create_page returns both the new Page and its parent Section.  The
+        # created resource must win over contextual parent objects.
+        for key in ("item", "page", "section", "section_group"):
             value = result.get(key)
             if isinstance(value, dict):
                 return value
@@ -652,6 +654,9 @@ class CopyService(BaseService):
             combined_ids = [item["target_id"] for item in created]
             combined_ids.extend(str(value) for value in details.get("created_ids", []))
             details["created_ids"] = list(dict.fromkeys(combined_ids))
+            if details["created_ids"]:
+                details.setdefault("outcome", "copy_unverified")
+                details.setdefault("source_deleted", False)
             nested_steps = details.get("completed_steps", [])
             details["completed_steps"] = [*completed_steps, *nested_steps]
             details.setdefault("id_map", dict(id_map))
@@ -664,7 +669,9 @@ class CopyService(BaseService):
                 raise PartialFailure(
                     str(exc),
                     partial=True,
+                    outcome="copy_unverified",
                     source_untouched=True,
+                    source_deleted=False,
                     created_ids=[item["target_id"] for item in created],
                     id_map=id_map,
                     completed_steps=completed_steps,

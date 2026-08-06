@@ -754,9 +754,19 @@ def test_partial_create_reports_created_ids_without_rollback(monkeypatch):
         server.services.copying._execute_copy(plan)
 
     assert caught.value.details["source_untouched"] is True
+    assert caught.value.details["source_deleted"] is False
+    assert caught.value.details["outcome"] == "copy_unverified"
     assert caught.value.details["created_ids"] == ["new-parent", "new-child"]
     assert caught.value.details["id_map"] == {"parent": "new-parent"}
     assert caught.value.details["failed_step"] == "initialize_created_page"
+
+
+def test_created_page_wins_over_contextual_parent_section():
+    result = {
+        "page": {"id": "new-page", "resource_type": "page"},
+        "section": {"id": "parent-section", "resource_type": "section"},
+    }
+    assert server.services.copying._created_item(result)["id"] == "new-page"
 
 
 def test_execute_budget_is_checked_before_first_mutation(monkeypatch):
