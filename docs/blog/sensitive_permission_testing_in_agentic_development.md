@@ -20,9 +20,9 @@
 
 ### 门控式实后端验证
 
-为了补上真实后端证据，项目在 `tests/manual_isolated/` 中建立了一个统一 runner。真实 mutation 不会由 pytest、CI、hook、安装脚本、import 或后台 Agent 自动执行；用户必须在终端明确选择 `rename`、`move`、`copy-page` 或 `reconstructive-move-page` 等单个具名场景。运行这条命令本身就是对该场景的一次授权，不再要求用户逐步点击确认。
+为了补上真实后端证据，项目在 `tests/manual_validation/` 中建立了一个统一 runner。真实 mutation 不会由 pytest、CI、hook、安装脚本、import 或前台/后台 Agent 执行；用户必须本人在终端明确选择 `create`、`rename`、`move` 等具名场景。每个扁平的 `run.py <scenario>` 本身都是完整隔离闭环，会创建全新 Notebook、准备 fixture、运行所选场景（`create` 仅保留预设 fixture）、报告并关闭或保留 Notebook；`validate` 和诊断辅助 action 均不是公开入口。运行这条命令本身就是对该场景的一次授权，不再要求用户逐步点击确认；Agent 只能准备代码、运行纯合同测试并把命令交给用户。
 
-授权之后，runner 并不会给 Agent 或测试进程开放笼统的“完整权限”。它会根据场景生成一份静态权限矩阵，启动独立 MCP 子进程，并在第一次 mutation 前通过 `health_check` 核对每个权限位。永久删除和 Raw XML 始终关闭；Copy、Delete 和重建式 Move 只在对应场景中启用。目标则被限制在一个无业务数据、无唯一副本的专用 Notebook 中，后续操作使用 manifest 记录的精确 ID，而不是可能产生歧义的名称或路径。
+授权之后，runner 不会给任何 Agent 或测试进程开放笼统的“完整权限”。每个 scenario 最多启动一个 MCP 子进程，其静态权限与 tool allowlist 只覆盖该场景的最小 fixture、mutation、证据读取和 restore/cleanup 闭包，并在 fixture 前通过 `health_check` 核对每个权限位；不同场景之间不使用权限并集。源 Notebook create/get/close 由只暴露生命周期操作的窄 wrapper 完成，并通过 lifecycle lease 绑定精确 ID、名称和本地路径。永久 OneNote Delete 和 Raw XML 始终关闭；Copy、Delete 和重建式 Move 只在对应具名场景启用。
 
 真正的执行过程仍然是自动化的：runner 采集 before 快照，调用一次 mutation，回读 after 状态，验证对象 ID、父子关系、页面顺序和内容摘要，然后对可恢复操作执行恢复或清理并生成 restored 证据。非幂等 mutation 不自动重试；如果 Copy 只完成了一部分，报告会保留 `created_ids`、`id_map` 和剩余状态，让用户基于证据处理，而不是让 Agent 猜测性地再次修改数据。
 

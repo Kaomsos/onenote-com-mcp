@@ -20,8 +20,8 @@ Copy 允许尽力保留并显式报告不支持或尚未实测的内容。重建
 - 7 个 plan/execute 工具、无状态 `plan_digest`、Copy 预算、独立策略开关和部分失败返回已实现；
 - Page XML 转换器会去除源身份/时钟/路径状态、保留稳定根属性与 PageSettings、改写复制范围内的已识别 ID 引用；未知根节点或未知后代节点会使所属顶层内容块整体省略并生成结构化 issue；
 - 四层递归创建、Page 顺序/相对层级恢复、内容回读比较和 Move 叶到根回收已实现；
-- 自动测试覆盖四层执行、计划过期、预算、权限、未知 XML、二进制 hash、链接改写、部分失败和回收站门；`tests/manual_isolated/run.py` 的五个显式场景已实现，`create` 会幂等准备富文本、表格、图片 fixture，并在 manifest 中列出附件/墨迹/媒体的人工准备要求；Runner 会独立重算 `id_map`/拓扑并持久化成功或部分失败 envelope；
-- 尚未执行真实 OneNote Copy/Move 场景，因此富内容类型的保真 allowlist 仍为空，P2 不能标记完成。
+- 自动测试覆盖四层执行、计划过期、预算、权限、未知 XML、二进制 hash、链接改写、部分失败和回收站门；`tests/manual_validation/run.py` 的五个扁平显式场景已实现，每个场景会在其唯一 MCP 进程内准备自身最小的富文本、表格、图片 fixture，并在 manifest 中列出附件/墨迹/媒体的人工准备要求；Runner 会独立重算 `id_map`/拓扑并持久化成功或部分失败 envelope；
+- 用户已执行真实 `reconstructive-move-page`：首轮严格路径安全失败并定位到 Copy 执行器错误选择父 Section 而非新 Page 的 bug；修复后复跑成功创建并回读新 Page，但因 `Outline` 尚未进入真实保真 allowlist而按设计返回 `copy_only`，源 Page 未删除且现场完整保留。其他四个 Copy 场景和富内容保真 allowlist 仍未完成真实确认，因此 P2 不能标记完成。
 
 ## 发布门
 

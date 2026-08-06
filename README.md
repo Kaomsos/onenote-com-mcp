@@ -211,7 +211,7 @@ The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental 
 * Unknown Page XML roots are omitted; an unknown descendant causes its containing top-level content block to be omitted. Both cases are returned as structured Copy issues rather than silently passed through.
 * `plan_reconstructive_move_page` / `reconstructive_move_page` create new Page IDs and recycle the source only after the defined content and topology checks pass.
 * These tools remain disabled unless `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true`; reconstructive Move additionally requires Deletes and `LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE=true`.
-* Real OneNote fidelity is not yet confirmed. Unverified rich-content types are reported and prevent source deletion; use the named scenarios in [`tests/manual_isolated/README.md`](tests/manual_isolated/README.md).
+* Real OneNote fidelity is not yet confirmed. Unverified rich-content types are reported and prevent source deletion; use the human-gated named scenarios in [`tests/manual_validation/README.md`](tests/manual_validation/README.md).
 
 > **Identifier Resolution Protocol:**
 > `resolve_identifier` and the compatible read-only hierarchy listing try identifiers in this priority:
@@ -234,8 +234,20 @@ uv run python scripts\smoke_mcp.py
 # Mutation validation is intentionally manual and isolated:
 # docs/dev/isolated_mutation_validation.md
 
-# Recommended programmatic manual runner (never invoked by pytest/CI):
-.venv\Scripts\python.exe tests\manual_isolated\run.py --help
+# Every named scenario is a complete isolated suite. This dry-run must be
+# reviewed by the user and does not access OneNote. It shows the scenario's
+# minimal fixture, full static policy/tool allowlist, one-process budget, and
+# exact lifecycle lease contract:
+.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run
+
+# Only the user may explicitly start the corresponding real scenario suite:
+.venv\Scripts\python.exe tests\manual_validation\run.py rename
+
+# The fixture-only create scenario builds the complete preset isolated tree:
+.venv\Scripts\python.exe tests\manual_validation\run.py create --keep-notebook
+
+# Choose another top-level scenario for another validation. Each command creates
+# its own fresh Notebook; reconstructive-move-page remains a strict safety gate.
 ```
 
 ---

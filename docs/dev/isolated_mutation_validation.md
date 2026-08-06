@@ -1,11 +1,11 @@
 # OneNote mutation 隔离验证流程
 
-> 本文只定义用户显式触发的隔离流程。CI、hook、后台 Agent 或默认测试不得自动执行。
+> 本文只定义用户本人在终端显式触发的隔离流程。CI、hook、前台/后台 Agent 或默认测试不得执行。
 > 真实验证对象必须是专用、无业务数据、可丢弃的本地 Notebook。
 
-推荐由用户按 [隔离手动 Smoke Test Runner](../../tests/manual_isolated/README.md) 显式运行本地程序化场景。Runner 自动完成最小权限子进程、ID 确认、回读、摘要、恢复和报告；本页的手工 tool 调用保留为故障排查后备方式。也可按 [Codex CLI 间接调用流程](codex_cli_mcp_validation.md) 启动一次性非交互编排。所有方式都必须遵守本页的隔离边界；实现进度见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
+推荐由用户按 [Human-gated Manual Validation Runner](../../tests/manual_validation/README.md) 显式运行一个扁平的 `run.py <scenario>`。每个 scenario 本身就是完整隔离 suite：一个用户命令创建全新 Notebook、准备 fixture、运行所选 mutation（fixture-only 的 `create` 除外）、生成报告并按选项关闭或保留 Notebook。`validate`、`inspect`、`read`、`report` 和聚合 `suite` 均不是公开 action；本页的手工 tool 调用只保留为故障排查说明，不构成可执行入口。Agent 不得通过 Codex CLI、shell 或 MCP 代用户执行真实 mutation；历史 Codex CLI 编排记录见 [已停用流程](codex_cli_mcp_validation.md)。实现进度见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
 
-P2 Copy 与 Page 重建式 Move 只能使用 Runner 中各自的具名场景；精确命令、权限矩阵、目标清理和 Notebook 残留规则见 [tests/manual_isolated/README.md](../../tests/manual_isolated/README.md)，进度见 [TODO 002](../todo/002_p2_copy_and_reconstructive_page_move.md)。不得把本页的 raw/manual 片段组合成另一个隐式 Copy 入口。
+P2 Copy 与 Page 重建式 Move 只能使用 Runner 中各自的具名场景；精确命令、权限矩阵、目标清理和 Notebook 残留规则见 [tests/manual_validation/README.md](../../tests/manual_validation/README.md)，进度见 [TODO 002](../todo/002_p2_copy_and_reconstructive_page_move.md)。不得把本页的 raw/manual 片段组合成另一个隐式 Copy 入口。
 
 ## 1. 目标
 
@@ -18,7 +18,16 @@ P2 Copy 与 Page 重建式 Move 只能使用 Runner 中各自的具名场景；�
 
 其中 `move_section` 在完成本流程前必须保持实验状态。永久删除不属于本流程。
 
-## 2. 人工准备
+## 2. 具名 Scenario 自动准备与人工后备
+
+推荐流程无需在 OneNote UI 中预先创建结构：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run
+.venv\Scripts\python.exe tests\manual_validation\run.py rename
+```
+
+第一条只展示计划；第二条必须由用户本人明确运行。把 `rename` 替换为另一个顶层 scenario 即可验证其他行为；每条命令都独立创建 Notebook，不依赖上一条。默认 Notebook 名称为 `__LOCAL_MCP_TEST_ISOLATED__<TIMESTAMP>`，默认证据目录为 `.local-validation\run-<同一 TIMESTAMP>`。只有在 scenario 失败后排障或专门验证附件、墨迹、媒体等没有稳定 typed 创建工具的内容时，才需要下面的 UI 人工准备。
 
 在 OneNote UI 中手工创建仅用于测试的 Notebook：
 
@@ -39,7 +48,7 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
 
 ## 3. 独立进程配置
 
-使用推荐 Runner 时无需修改任何 MCP 配置；它会为每个场景启动独立 server、注入静态最小权限并用 `health_check` 核验。仅在使用后文手工 tool 调用排障时，才复制一份只用于该 Notebook 的 MCP 配置并重启独立 server 进程：
+使用推荐 Runner 时无需修改任何 MCP 配置；每条场景命令最多启动一个独立 server。源 Notebook create/get/close 由 lease 约束的窄 lifecycle wrapper 完成；该场景唯一的 MCP 进程使用固定的 fixture + mutation + evidence + restore/cleanup 最小权限闭包，并在 fixture 前用 `health_check` 核验。仅在使用后文手工 tool 调用排障时，才复制一份只用于该 Notebook 的 MCP 配置并重启独立 server 进程：
 
 ```toml
 [mcp_servers.local-onenote-isolated.env]
@@ -136,7 +145,7 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 
 1. 关闭独立 MCP server，移除全部 enable 环境变量；
 2. 用普通只读 profile 再次运行 `health_check`，确认写、删、实验 Move、raw XML 全部为 `false`；
-3. 在 OneNote UI 中人工关闭并清理隔离 Notebook；Notebook Delete 不由本 MCP 提供；
+3. 分场景后备流程需在 OneNote UI 中人工关闭并清理隔离 Notebook；默认具名 scenario suite 只在当前场景通过并生成报告后用 typed `close_notebook` 回读确认，不删除本地 Notebook 目录。中途失败或使用 `--keep-notebook` 时源 Notebook 保持打开；
 4. 若任一步发生 ID 变化、内容摘要变化、重复 Section/Page 或恢复失败，保留隔离 Notebook，不继续后续 mutation，并记录 OneNote 版本、Office channel 和操作前后快照。
 
 ## 10. 自动化边界
@@ -146,8 +155,8 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 凡真实执行时需要 mutation policy 权限的 tool，包括 Write、Delete、Permanent Delete、Experimental Mutation、Raw XML 以及未来新增的非只读权限，都必须采用本页这种半自动化手动验证：
 
 1. 自动化 pytest 只允许 mock/纯合同测试，不能访问真实 OneNote；
-2. 真实场景统一放在 [`tests/manual_isolated/`](../../tests/manual_isolated/README.md)，通过一个总入口由用户显式选择单个场景；
-3. Runner 为独立 MCP 子进程推导静态最小权限，并在调用目标 tool 前用 `health_check` 精确核验；
+2. 真实场景统一放在 [`tests/manual_validation/`](../../tests/manual_validation/README.md)，通过一个总入口由用户显式选择顶层场景；每个 `run.py <scenario>` 自身包含 lifecycle create、该场景最小 fixture、mutation、report 与 close/keep；不得公开辅助 action，也不得增加聚合或 batch 入口；
+3. 每个 scenario 最多启动一个 MCP 子进程。Runner 为其推导覆盖 fixture、mutation、evidence 与 restore/cleanup 的静态最小权限闭包，并在 fixture 前用 `health_check` 精确核验；源 Notebook 生命周期只能通过精确 lease 约束的窄 wrapper 操作；
 4. 使用专用可丢弃 Notebook、精确 ID、最新确认字段和 before/after 证据；可恢复操作还必须执行恢复与 restored 回读；
 5. 不可恢复操作只能命中 manifest 白名单中的 disposable 对象，并在报告中明确最终状态和人工处理方式；
 6. 新增或修改非只读 tool 时，必须同步新增/更新对应 manual scenario 和使用命令；用户完成隔离实测前，不得声明真实后端验证完成。
@@ -164,4 +173,4 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 
 真实 COM mutation 永远不能进入默认 CI、pre-commit 或 smoke test。`write_contract` 仅是 mock 合同测试；真实隔离验证必须由用户在终端明确启动。
 
-Codex CLI 间接调用和本地程序化 Runner 都不是默认自动化：前者要求用户显式运行带阶段工具白名单的 `codex exec`；后者以用户手动运行具体 mutation 子命令作为授权，并根据场景自动为单次 MCP 子进程开启最小必要权限，不再要求额外的权限开关或二次确认。当前通用隔离 Runner 中永久删除和 raw XML 始终保持关闭；将来若开发相应 tool，只能新增权限更窄、目标约束更强的独立手动场景，不能扩大现有场景权限。
+本地程序化 Runner 不是默认自动化：只有用户本人手动运行具体 `run.py <scenario>` 才构成授权；Agent 只能修改 runner、运行不接触 OneNote 的合同测试或把命令交给用户，不能代为执行。Runner 为该场景唯一的 MCP 子进程开启完整闭环所需的静态最小权限，不要求额外权限开关或二次确认，也不跨场景合并权限。当前通用隔离 Runner 中永久 OneNote Delete 和 raw XML 始终关闭；所有 scenario suite 都不删除本地 Notebook 文件。将来若开发相应 tool，只能新增权限更窄、目标约束更强的独立手动场景，不能扩大现有场景权限。

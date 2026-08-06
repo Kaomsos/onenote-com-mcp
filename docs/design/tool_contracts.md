@@ -132,7 +132,7 @@ Page Copy 始终包含完整子树。名称冲突按直属子项 case-insensitiv
 
 Move 删除阶段的部分失败分别返回 `attempted_source_ids`、已确认带回收站标记的 `recycled_source_ids/deleted_source_ids`、状态未知的 `unverified_source_ids` 和尚未完成步骤的 `remaining_source_ids`；未通过回读验证的 ID 不得计入已回收列表。
 
-当前候选 XML 内容会尽力保留；能力清单除 Outline/Image/附件/墨迹/媒体对象外，还单独识别 `RichText/Table/List/Tag/MeetingInfo`。真实隔离验证尚未确认的类型产生 `content_type_unverified`，使 `lossless=false` 并阻止 Move 删除源。已知顶层内容块内只要出现不在 OneNote 2013 静态节点 allowlist 的后代节点，整个顶层块即省略并返回 `unsupported_nested_page_node`，不会静默透传未来扩展。验证流程见 `tests/manual_isolated/README.md`。
+当前候选 XML 内容会尽力保留；能力清单除 Outline/Image/附件/墨迹/媒体对象外，还单独识别 `RichText/Table/List/Tag/MeetingInfo`。真实隔离验证尚未确认的类型产生 `content_type_unverified`，使 `lossless=false` 并阻止 Move 删除源。已知顶层内容块内只要出现不在 OneNote 2013 静态节点 allowlist 的后代节点，整个顶层块即省略并返回 `unsupported_nested_page_node`，不会静默透传未来扩展。验证流程见 `tests/manual_validation/README.md`。
 
 ## 8. Export、导航、同步与关闭
 
