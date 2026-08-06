@@ -12,7 +12,9 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -177,8 +179,11 @@ class OneNoteBridge:
     """Execute fixed OneNote COM operations through a local PowerShell bridge."""
 
     timeout_seconds: int = 90
+    audit_path: Path | None = None
 
     def call(self, operation: str, **params: Any) -> dict[str, Any]:
+        started = time.perf_counter()
+        succeeded = False
         request = {"operation": operation, "params": params}
         req_path = self._write_temp_json(request)
         resp_path = self._reserve_temp_path()
@@ -208,6 +213,7 @@ class OneNoteBridge:
                     hresult=err.get("hresult"),
                 )
             data = response.get("data")
+            succeeded = True
             return data if isinstance(data, dict) else {"value": data}
         except subprocess.TimeoutExpired as exc:
             raise OneNoteBridgeError(
@@ -216,6 +222,38 @@ class OneNoteBridge:
         finally:
             self._remove_quietly(req_path)
             self._remove_quietly(resp_path)
+            self._append_audit(
+                operation,
+                succeeded=succeeded,
+                elapsed_seconds=round(time.perf_counter() - started, 6),
+            )
+
+    def _append_audit(
+        self,
+        operation: str,
+        *,
+        succeeded: bool,
+        elapsed_seconds: float,
+    ) -> None:
+        """Append content-free bridge-call evidence when a run-scoped path is configured."""
+
+        configured = self.audit_path or os.environ.get("LOCAL_ONENOTE_BRIDGE_AUDIT_PATH")
+        if not configured:
+            return
+        try:
+            path = Path(configured)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record = {
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "elapsed_seconds": elapsed_seconds,
+                "ok": succeeded,
+                "operation": operation,
+            }
+            with path.open("a", encoding="utf-8", newline="\n") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError:
+            # Evidence logging must never change the bridge operation's outcome.
+            pass
 
     @staticmethod
     def _write_temp_json(payload: dict[str, Any]) -> Path:
