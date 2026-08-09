@@ -9,6 +9,7 @@
 | 001 | [本地程序化 OneNote 隔离验证 Runner](001_programmatic_isolated_mutation_runner.md) | 进行中 | P1 | 扁平 scenario 唯一入口、单命令隔离闭环、gated 最小权限与保留式生命周期已实现，等待用户本人实测。 |
 | 002 | [P2 四层 Copy 与 Page 重建式 Move](002_p2_copy_and_reconstructive_page_move.md) | 进行中 | P2 | 实验实现与具名 Runner 场景已落地，等待真实 OneNote 分阶段验证。 |
 | 003 | [Scenario 独立 Fixture 与单 MCP 进程闭环](003_scenario_scoped_mcp_and_fixtures.md) | 已完成 | P2 | 单 MCP/最小 fixture 架构、性能实测和修复后的严格 `copy_only` 安全门均已验证。 |
+| 004 | [交互式 Copy/Move 未验证内容保真验收](004_interactive_copy_move_content_fidelity_validation.md) | 待办 | P2 | 由用户在隔离 fixture Page 中加入附件、墨迹、媒体和会议详情，分离完成 Copy 取证与严格 Move 发布门。 |
 
 ## 文件命名
 
