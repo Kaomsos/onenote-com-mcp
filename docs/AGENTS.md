@@ -1,11 +1,11 @@
 # 文档指令
 
-这些规则适用于整个 `docs/`。更具体的 [`todo/AGENTS.md`](todo/AGENTS.md) 会追加 TODO 治理规则。
+这些规则适用于整个 `docs/`。更具体的 [`lesson/AGENTS.md`](lesson/AGENTS.md) 和 [`todo/AGENTS.md`](todo/AGENTS.md) 会追加各自的治理规则。
 
 ## 先查看文档地图
 
 - 添加、移动或大幅改写文档前，先阅读 [`README.md`](README.md)。
-- 当前架构和公开契约放在 `design/`，开发与验证流程放在 `dev/`，带有明确时间范围的评估放在 `overview/`，面向公众的工程叙述放在 `blog/`，项目跟踪放在 `todo/`。
+- 当前架构和公开契约放在 `design/`，开发与验证流程放在 `dev/`，带证据边界的可复用工程经验放在 `lesson/`，带有明确时间范围的评估放在 `overview/`，面向公众的工程叙述放在 `blog/`，项目跟踪放在 `todo/`。
 - 不要为同一权威内容创建相互竞争的文档。应链接到 canonical source，而不是复制其内容。
 
 ## 编写与维护规则
@@ -16,6 +16,7 @@
 - 当某个文档目录需要入口或索引时，新增或维护目录级 `README.md`。
 - 除非任务明确要求翻译或调整术语，否则保留目标文档现有的语言和术语体系。
 - 绝不能仅凭 mock、dry-run 输出或智能体推断就声称真实 OneNote scenario 已通过。只有用户确认的证据才能记为真实后端结果。
+- Lesson 只解释已观察到的限制、推理和设计影响，不得取代 `design/` 中的当前契约或 `dev/` 中的操作步骤；行为变化时应更新 canonical 文档，并从 Lesson 链接过去。
 
 ## 审查清单
 
@@ -23,3 +24,4 @@
 - 搜索过期路径、已改名命令、废弃默认值和相互冲突的说明。
 - 结构或 CLI 变化后，检查链接和代码示例。
 - 如果 TODO 元数据发生变化，还必须遵循 `docs/todo/AGENTS.md`。
+- 新增或修改 Lesson 时，还必须遵循 `docs/lesson/AGENTS.md` 并同步其目录索引。

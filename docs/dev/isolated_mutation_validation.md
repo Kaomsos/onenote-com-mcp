@@ -145,8 +145,10 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 
 1. 关闭独立 MCP server，移除全部 enable 环境变量；
 2. 用普通只读 profile 再次运行 `health_check`，确认写、删、实验 Move、raw XML 全部为 `false`；
-3. 分场景后备流程需在 OneNote UI 中人工关闭并清理隔离 Notebook；默认具名 scenario suite 只在当前场景通过并生成报告后用 typed `close_notebook` 回读确认，不删除本地 Notebook 目录。中途失败或使用 `--keep-notebook` 时源 Notebook 保持打开；
+3. 分场景后备流程需在 OneNote UI 中人工关闭并清理隔离 Notebook；默认具名 scenario suite 只在当前场景通过并生成报告后用 typed `close_notebook` 回读确认，不删除本地 Notebook 目录。中途失败、使用 `--keep-notebook`，或在任一具名 scenario 中显式使用 `--keep-worksite` 时源 Notebook 保持打开；`--keep-worksite` 还会在该 action 的 after/read-back 通过后跳过适用的 restore/cleanup，并在 `worksite.json` 中记录精确 ID 和人工清理步骤；特殊入口 `all` 不接受也不透传该选项；
 4. 若任一步发生 ID 变化、内容摘要变化、重复 Section/Page 或恢复失败，保留隔离 Notebook，不继续后续 mutation，并记录 OneNote 版本、Office channel 和操作前后快照。
+
+重建式 Page Move 对源子树只使用 `DeleteHierarchy(permanently=false)`。生产删除服务会有界回读每个精确源 Page ID，并拒绝仍留在活动 hierarchy 的对象；manual scenario 的 `after.json` 再确认整棵源子树均已从活动树消失。`is_in_recycle_bin=true` 若能通过 COM 取得，会记录为额外诊断证据；COM 不暴露回收站旧 ID 时不再令验收失败。用户仍应在 OneNote UI 的“已删除的笔记”中人工检查或清理现场，但该 UI/COM 回收站可见性不属于自动成功关口。背景与适用边界见 [`lesson/onenote_com_recycle_bin_visibility.md`](../lesson/onenote_com_recycle_bin_visibility.md)。
 
 ## 10. 自动化边界
 
@@ -157,7 +159,7 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 1. 自动化 pytest 只允许 mock/纯合同测试，不能访问真实 OneNote；
 2. 真实场景统一放在 [`tests/manual_validation/`](../../tests/manual_validation/README.md)，通过一个总入口由用户显式选择顶层场景；每个 `run.py <scenario>` 自身包含 lifecycle create、该场景最小 fixture、mutation、report 与 close/keep；不得公开辅助 action。唯一批处理例外是用户显式运行的 `run.py all`，它只能串行启动显式注册的稳定测试 scenario，不得共享 run-dir、Notebook、MCP、权限或 lifecycle；新增的探索性/验证性 scenario 默认不得进入该注册表；
 3. 每个 scenario 最多启动一个 MCP 子进程。Runner 为其推导覆盖 fixture、mutation、evidence 与 restore/cleanup 的静态最小权限闭包，并在 fixture 前用 `health_check` 精确核验；源 Notebook 生命周期只能通过精确 lease 约束的窄 wrapper 操作；
-4. 使用专用可丢弃 Notebook、精确 ID、最新确认字段和 before/after 证据；可恢复操作还必须执行恢复与 restored 回读；
+4. 使用专用可丢弃 Notebook、精确 ID、最新确认字段和 before/after 证据；可恢复操作默认执行恢复与 restored 回读。所有具名 scenario 都提供显式 `--keep-worksite` 人工验收模式，用于保留各自动验证通过的动作现场，并必须写入带精确目标 ID 和清理说明的 `worksite.json`；该模式不得扩权；
 5. 不可恢复操作只能命中 manifest 白名单中的 disposable 对象，并在报告中明确最终状态和人工处理方式；
 6. 新增或修改非只读 tool 时，必须同步新增/更新对应 manual scenario 和使用命令；用户完成隔离实测前，不得声明真实后端验证完成。
 

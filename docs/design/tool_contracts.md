@@ -1,10 +1,10 @@
 # MCP 工具参数与返回格式（P0/P1 + P2 实验实现）
 
 > 状态：默认工具 profile 的权威契约  
-> 更新日期：2026-08-05
+> 更新日期：2026-08-09
 > ID 参数均指 OneNote COM 对象 ID，除 `resolve_identifier` 和兼容只读 `list_hierarchy.start_identifier` 外不接受名称或路径。
 
-默认 profile 共 50 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。P2 Copy/重建式 Move 已注册但由默认关闭的独立策略保护，尚不能视为真实 OneNote 已验证能力。
+默认 profile 共 50 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。P2 Copy/重建式 Move 已注册但由默认关闭的独立策略保护；只有下文列入 validated allowlist 的 Page 内容类型具有真实 OneNote 隔离证据，工具整体仍保持实验状态。
 
 ## 1. 通用返回 envelope
 
@@ -84,7 +84,7 @@
 | `add_image_to_page` | `page_id`, `image_path`, `expected_title`, `expected_section_id`, `expected_modified=null`, `image_format=""`, `x=36`, `y=120`, `width=null`, `height=null` | `item`, `image_path`, 实际 `width/height`；验证内容摘要变化。 |
 | `replace_page_body` | `page_id`, `content`, `expected_title`, `expected_section_id`, `expected_modified=null`, `title=null`, `content_format="plain"` | `item`, `deleted_objects`, `replaced`, `partial`；非原子。 |
 
-`content_format` 取 `plain/html/markdown`；`new_page_style` 取 `default/blank_with_title/blank_no_title`。Markdown 富转换依赖可选 OneMore，缺失时按现有转换器边界处理。
+`content_format` 取 `plain/html/markdown`；`new_page_style` 取 `default/blank_with_title/blank_no_title`。Markdown 富转换依赖可选 OneMore，缺失时按现有转换器边界处理。受限 HTML 还支持原生扁平列表：`ol/ul` 与 `li`；`li data-tag="to-do"`、`li data-tag="to-do:completed"` 分别生成未完成/已完成的原生 OneNote To Do 标签。嵌套列表及未知 `data-tag` fail closed，不开放 raw XML。
 
 ## 5. Rename、Reorder 与实验 Move
 
@@ -130,9 +130,20 @@ Page Copy 始终包含完整子树。名称冲突按直属子项 case-insensitiv
 
 递归容器按源 hierarchy snapshot 的确定性深度优先顺序创建。Page 的顺序和相对 `page_level` 必须回读验证；Section/SectionGroup 没有稳定 COM 顺序字段，因此只承诺并验证父子结构，不声明容器顺序保真。Notebook 名称冲突只在解析后的目标 `destination_base_folder/name` 路径上判断，不因其他目录存在同名已打开 Notebook 而误拒绝。
 
-Move 删除阶段的部分失败分别返回 `attempted_source_ids`、已确认带回收站标记的 `recycled_source_ids/deleted_source_ids`、状态未知的 `unverified_source_ids` 和尚未完成步骤的 `remaining_source_ids`；未通过回读验证的 ID 不得计入已回收列表。
+Move 删除阶段的部分失败分别返回 `attempted_source_ids`、已从活动树移除的 `deleted_source_ids`、其中带回收站标记的 `recycled_source_ids`、未暴露回收站元数据的 `recycle_unverified_source_ids` 和尚未完成步骤的 `remaining_source_ids`。只有 `deleted_source_ids` 参与源删除完成判断，未取得标记的 ID 不得计入 `recycled_source_ids`。
 
-当前候选 XML 内容会尽力保留；能力清单除 Outline/Image/附件/墨迹/媒体对象外，还单独识别 `RichText/Table/List/Tag/MeetingInfo`。真实隔离验证尚未确认的类型产生 `content_type_unverified`，使 `lossless=false` 并阻止 Move 删除源。已知顶层内容块内只要出现不在 OneNote 2013 静态节点 allowlist 的后代节点，整个顶层块即省略并返回 `unsupported_nested_page_node`，不会静默透传未来扩展。验证流程见 `tests/manual_validation/README.md`。
+当前候选 XML 内容会尽力保留；能力清单除 Outline/Image/附件/墨迹/媒体对象外，还单独识别 `RichText/Table/List/Tag/MeetingInfo`。基于用户确认的隔离真实后端证据，`Outline/Image/RichText/Table/List/Tag` 已进入保真 allowlist；其余尚未确认的类型产生 `content_type_unverified`，使 `lossless=false` 并阻止 Move 删除源。已知顶层内容块内只要出现不在 OneNote 2013 静态节点 allowlist 的后代节点，整个顶层块即省略并返回 `unsupported_nested_page_node`，不会静默透传未来扩展。
+
+Page 回读采用按页面内容组合选择的分层验收：
+
+- `strict_canonical`：不含 List/Tag，或把 List/Tag 与 Table/Image/MeetingInfo 等其他结构混在同一 Page 时使用。它要求 canonical XML、可见文本、内容对象计数和二进制 hash 全部相等。
+- `semantic_list_tag`：Page 的能力集合限于 `Outline/RichText/List/Tag` 且实际出现 List 或 Tag 时使用。它要求可见文本、二进制 hash，以及列表种类、标签类型、完成状态的语义投影相等；canonical XML 和对象计数仍记录为诊断，但不作为接受条件。
+
+这个分层是 OneNote COM 复制语义的一部分，而不只是测试便利：`UpdatePageContent` 会重新生成或规范化 `TagDef` index、列表序号状态、对象 ID、Outline/OE 分块和部分属性，因此视觉及行为完全相同的 List/Tag 页面可能无法 canonical 相等。若对所有内容统一使用严格 XML，会把成功复制误报为失败；若对整页统一放宽，又可能掩盖 Table/Image 等稳定结构的真实丢失。把两类内容放在独立 Page，并逐页选择验收 tier，可以同时保留稳定类型的强门禁和 List/Tag 的 COM 等价性。
+
+`List/Tag` 已是 validated/lossless 类型；“语义 tier”描述的是证明保真的方法，不代表它仍未验证。只要每页按其 tier 等价且拓扑回读通过，Copy 可报告 `lossless=true`；重建式 Move 仍要求整棵子树每页通过且源快照未变化，才允许回收源 Page。四个 Copy scenario 与 `reconstructive-move-page` 都自动创建严格父 Page 和 List/Tag 语义子 Page，以在每个容器层级重复验证同一合同。`MeetingInfo` 暂不属于验证范围。验证流程见 `tests/manual_validation/README.md`。
+
+重建式 Move 对每个源 Page 调用 `DeleteHierarchy(permanently=false)`。通用删除服务会有界回读：对象必须从活动 hierarchy 消失，或者明确回读为 `is_in_recycle_bin=true`；若仍处于活动树则失败。全部源 Page 通过这一关口后，Move 可成功，manual scenario 还会以 after snapshot 独立确认整棵源子树不再活动。COM 是否再次暴露旧 ID 及其回收站标记不是验收条件，因为实际 OneNote UI 可能已在“已删除的笔记”中显示页面，而 COM hierarchy 仍不返回对应对象。返回中的 `recycle_bin_verification=verified|not_required_com_unavailable`、`recycled_source_ids` 和 `recycle_unverified_source_ids` 只表达诊断置信度，不改变非永久删除与活动树缺失的成功语义。该限制的观察证据、错误验收模型和可复用结论见 [`lesson/onenote_com_recycle_bin_visibility.md`](../lesson/onenote_com_recycle_bin_visibility.md)。
 
 ## 8. Export、导航、同步与关闭
 

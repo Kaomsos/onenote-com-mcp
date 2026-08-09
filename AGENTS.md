@@ -10,6 +10,7 @@ Local OneNote MCP 是面向 Microsoft OneNote Desktop、仅支持 Windows 且 lo
 - [`tests/`](tests/AGENTS.md)：不得修改真实 OneNote 环境的确定性自动化测试；
 - [`tests/manual_validation/`](tests/manual_validation/AGENTS.md)：具有更严格隔离和权限规则、由人工把关的真实后端验证；
 - [`docs/`](docs/AGENTS.md)：文档归属、权威来源和链接维护；
+- [`docs/lesson/`](docs/lesson/AGENTS.md)：带证据边界的工程经验、平台限制和 canonical 文档链接；
 - [`docs/todo/`](docs/todo/AGENTS.md)：不可变 TODO ID、状态证据和索引同步。
 
 更具体的 `AGENTS.md` 会增加目录局部规则。它们可以细化工作流，但绝不能放宽本文件中的安全门限。

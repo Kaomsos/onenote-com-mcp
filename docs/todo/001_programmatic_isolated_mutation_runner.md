@@ -4,7 +4,7 @@
 > 状态：进行中
 > 优先级：P1
 > 类型：开发基础设施
-> 更新日期：2026-08-06
+> 更新日期：2026-08-09
 > 触发边界：只能由用户在终端显式运行，不进入 CI、hook、自动化或默认测试
 
 ## 目标
@@ -43,6 +43,7 @@ tests/manual_validation/
   [--notebook-name <name>] `
   [--run-dir <path>] `
   [--keep-notebook] `
+  [--keep-worksite] `
   [--timeout <seconds>] `
   [--dry-run] `
   [--json]
@@ -58,6 +59,7 @@ tests/manual_validation/
 - 命令顺序是 `lifecycle create → 唯一 MCP 内的场景 fixture + 当前 scenario → report → lifecycle close/keep`；`create` scenario 在唯一 MCP 内只执行一次完整预设 fixture，不执行额外 mutation。
 - `delete` 自动选择本次 manifest 中的 `disposable_group`，不接受外部目标 ID。
 - 默认 close 只关闭 Notebook；源与 Copy 文件夹始终保留，不实现自动文件删除。
+- `--keep-worksite` 适用于全部具名 scenario：成功 after/read-back 后保留该 action 的现场、记录 `worksite.json`、精确目标 ID 和人工清理说明，并隐含保持源 Notebook 打开；可恢复 action 默认仍 restore/cleanup，`all` 不接受也不透传该参数。
 - 任一步失败立即停止，源 Notebook 保持打开；close 失败作为恢复失败处理。
 - `reconstructive-move-page` 始终严格运行。空保真 allowlist 导致的 `copy_only`、源未删除或保真门失败必须非零退出，不得跳过或降级。
 
@@ -76,6 +78,7 @@ tests/manual_validation/
 - [x] 每个扁平 `run.py <scenario>` 自动创建全新 Notebook 和 fixture；
 - [x] dry-run 无目录、无 MCP、无 OneNote，并展示完整闭环、权限和 Copy 预算；
 - [x] 默认精确 ID close、`--keep-notebook` 和本地文件永久保留；
+- [x] 所有具名 action 的人工验收支持显式 `--keep-worksite`，默认 restore/cleanup 不变，保留现场时记录精确目标与人工清理要求；
 - [x] Delete 自动绑定 disposable group；
 - [x] 重建式 Move 严格失败门禁与失败交接；
 - [x] Agent/CI/hook/timer/watcher 禁令；

@@ -209,9 +209,10 @@ The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental 
 * `plan_copy` plus typed `copy_page` / `copy_section` / `copy_section_group` / `copy_notebook` use a content-aware, stale-plan digest before any mutation.
 * Page Copy always includes the complete indentation subtree. Copy never overwrites, merges, or auto-renames a conflicting target.
 * Unknown Page XML roots are omitted; an unknown descendant causes its containing top-level content block to be omitted. Both cases are returned as structured Copy issues rather than silently passed through.
-* `plan_reconstructive_move_page` / `reconstructive_move_page` create new Page IDs and recycle the source only after the defined content and topology checks pass.
+* Validated Page content types are `Outline`, `Image`, `RichText`, `Table`, `List`, and `Tag`. Stable rich content uses strict canonical read-back; List/Tag-only pages use a semantic tier that tolerates COM reserialization while still checking visible text, list kind, tag meaning/completion, and binary content.
+* `plan_reconstructive_move_page` / `reconstructive_move_page` create new Page IDs and issue a non-permanent source delete only after the defined content and topology checks pass. Success requires every source Page to disappear from the active hierarchy; COM recycle-bin metadata is reported when available but is not an acceptance gate.
 * These tools remain disabled unless `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true`; reconstructive Move additionally requires Deletes and `LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE=true`.
-* Real OneNote fidelity is not yet confirmed. Unverified rich-content types are reported and prevent source deletion; use the human-gated named scenarios in [`tests/manual_validation/README.md`](tests/manual_validation/README.md).
+* Other content types remain unverified and prevent source deletion; use the human-gated named scenarios in [`tests/manual_validation/README.md`](tests/manual_validation/README.md).
 
 > **Identifier Resolution Protocol:**
 > `resolve_identifier` and the compatible read-only hierarchy listing try identifiers in this priority:
@@ -245,6 +246,11 @@ uv run python scripts\smoke_mcp.py
 
 # The fixture-only create scenario builds the complete preset isolated tree:
 .venv\Scripts\python.exe tests\manual_validation\run.py create --keep-notebook
+
+# Every named action accepts --keep-worksite. It keeps the source Notebook open,
+# preserves that action's verified post-mutation state, and records exact IDs plus
+# manual cleanup guidance. For example, preserve a Page Copy target for UI review:
+.venv\Scripts\python.exe tests\manual_validation\run.py copy-page --keep-worksite
 
 # Review every explicitly registered test-scenario plan serially. Exploratory
 # validation scenarios are excluded until registered; all owns no shared run-dir:
