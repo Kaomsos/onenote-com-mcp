@@ -8,6 +8,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 from pathlib import Path
 from typing import Any
+import xml.etree.ElementTree as ET
 
 from .mcp_stdio_client import COPY_BUDGET_ENV, MCPStdioClient, ScenarioPolicy
 from .runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
@@ -98,6 +99,22 @@ def stable_item(item: dict[str, Any]) -> dict[str, Any]:
     return {field: item.get(field) for field in SNAPSHOT_FIELDS if field in item}
 
 
+def page_content_hash(xml: str) -> str:
+    """Hash Page content while excluding mutable root hierarchy metadata."""
+
+    root = ET.fromstring(xml)
+    for attribute in (
+        "ID",
+        "name",
+        "dateTime",
+        "lastModifiedTime",
+        "pageLevel",
+        "isCurrentlyViewed",
+    ):
+        root.attrib.pop(attribute, None)
+    return hashlib.sha256(ET.tostring(root, encoding="utf-8")).hexdigest()
+
+
 async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str, Any]:
     tree_result = await client.call_tool("get_tree", {"root_id": notebook_id, "max_depth": 8})
     tree = tree_result["tree"]
@@ -112,7 +129,7 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
         page_id = str(page["id"])
         xml_result = await client.call_tool("get_page_xml", {"page_id": page_id, "page_info": "all"})
         xml = str(xml_result["xml"])
-        page_hashes[page_id] = hashlib.sha256(xml.encode("utf-8")).hexdigest()
+        page_hashes[page_id] = page_content_hash(xml)
         objects_result = await client.call_tool("get_page_objects", {"page_id": page_id})
         page_objects[page_id] = [
             {field: obj.get(field) for field in OBJECT_FIELDS if field in obj}
@@ -289,6 +306,7 @@ __all__ = [
     "is_descendant_of",
     "load_manifest",
     "manifest_path",
+    "page_content_hash",
     "page_topology",
     "read_json",
     "resolve_manifest_item",

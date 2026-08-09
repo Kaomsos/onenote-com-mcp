@@ -11,8 +11,8 @@ from .common.registry import SCENARIO_REGISTRY
 class CopySectionGroupScenario(CopyScenario):
     name = "copy-section-group"
     help_text = (
-        "GATED: create, copy the prepared Section Group and clean up the target, "
-        "report, then close or keep."
+        "GATED: create and copy the prepared Section Group; clean up by default or "
+        "preserve the verified worksite for inspection."
     )
 
     execute_copy = staticmethod(execute_copy)

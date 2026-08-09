@@ -142,11 +142,15 @@ def assert_copy_mapping(
             raise InvariantFailure("Copied Page relative order differs from the source subtree.")
 
 
-def assert_copy_fixture_capabilities(planned: dict[str, Any]) -> None:
+def assert_copy_fixture_capabilities(
+    planned: dict[str, Any],
+    required_capabilities: set[str] | None = None,
+) -> None:
     capabilities = set(planned.get("content_capabilities", []))
-    missing = sorted(AUTOMATED_COPY_CAPABILITIES - capabilities)
+    required = AUTOMATED_COPY_CAPABILITIES | (required_capabilities or set())
+    missing = sorted(required - capabilities)
     if missing:
         raise InvariantFailure(
-            "Copy source is missing automated fixture capabilities "
+            "Copy source is missing required fixture capabilities "
             f"{missing}; run the explicit create scenario again before mutation."
         )

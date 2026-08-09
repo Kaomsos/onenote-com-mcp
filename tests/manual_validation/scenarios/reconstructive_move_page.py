@@ -15,20 +15,21 @@ from ..test_utils import (
     capture_snapshot,
     display_name,
     find_snapshot_item,
-    flatten_tree,
     resolve_manifest_item,
     scenario_dir,
     snapshot_ids,
-    stable_item,
     timestamp,
-    utc_now,
     validate_manifest_notebook,
     write_json,
 )
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
 from .common.config import RECONSTRUCTIVE_MOVE_PAGE_TOOLS
-from .common.copy_invariants import assert_copy_mapping, expected_copy_source_items
+from .common.copy_invariants import (
+    assert_copy_fixture_capabilities,
+    assert_copy_mapping,
+    expected_copy_source_items,
+)
 from .common.copy_runtime import call_with_result_evidence
 from .common.report import render_report
 
@@ -67,6 +68,7 @@ async def _execute_reconstructive_move_page(
             },
         )
         write_json(out / "plan.json", planned)
+        assert_copy_fixture_capabilities(planned)
         moved = await call_with_result_evidence(
             client,
             "reconstructive_move_page",
@@ -102,44 +104,42 @@ async def _execute_reconstructive_move_page(
             destination_title,
             moved,
         )
-        recycle_tree = await client.call_tool(
-            "get_tree",
-            {"root_id": notebook_id, "max_depth": 8, "include_recycle_bin": True},
-        )
-        recycle_items = [stable_item(item) for item in flatten_tree(recycle_tree["tree"])]
-        recycled_source_ids = {
-            item["id"]
-            for item in recycle_items
-            if item.get("id") in source_subtree_ids
-            and item.get("is_in_recycle_bin") is True
-        }
-        if recycled_source_ids != source_subtree_ids:
-            raise InvariantFailure(
-                "Reconstructive Move source subtree could not be proven to be in the OneNote recycle bin."
-            )
-        write_json(
-            out / "recycle-bin.json",
-            {
-                "captured_at": utc_now(),
-                "notebook_id": notebook_id,
-                "include_recycle_bin": True,
-                "items": recycle_items,
-            },
-        )
         remaining = {
-            "status": "source_subtree_in_recycle_bin",
+            "status": "source_subtree_removed_nonpermanently",
             "source_id": current["id"],
             "source_ids": sorted(source_subtree_ids),
             "target_id": target_id,
-            "reason": "Typed recycle-bin restore is unavailable; run create to replenish the fixture.",
+            "target_ids": [target_id, *sorted(source_subtree_ids)],
+            "recycle_bin_verification": moved.get(
+                "recycle_bin_verification", "not_reported"
+            ),
+            "recycled_source_ids": moved.get("recycled_source_ids", []),
+            "recycle_unverified_source_ids": moved.get(
+                "recycle_unverified_source_ids", []
+            ),
+            "manual_cleanup_required": True,
+            "cleanup": (
+                "Inspect the active copied target. In OneNote UI, restore or remove any "
+                "disposable source Pages shown in Deleted Notes, then remove the copied target."
+            ),
+            "reason": (
+                "The source subtree is absent from the active hierarchy after non-permanent "
+                "DeleteHierarchy; recycle-bin visibility is not an acceptance requirement."
+            ),
         }
         write_json(out / "restored.json", remaining)
+        keep_worksite = bool(getattr(args, "keep_worksite", False))
+        if keep_worksite:
+            write_json(out / "worksite.json", remaining)
         result = {
             "scenario": "reconstructive-move-page",
             "status": "passed",
             "target_id": current["id"],
             "new_target_id": target_id,
             "restored": False,
+            "worksite_preserved": keep_worksite,
+            "source_deleted_nonpermanently": True,
+            "recycle_bin_verification": remaining["recycle_bin_verification"],
             "remaining_state": remaining,
             "copy_report": moved["copy_report"],
         }
@@ -152,8 +152,8 @@ async def _execute_reconstructive_move_page(
 class ReconstructiveMovePageScenario(Scenario):
     name = "reconstructive-move-page"
     help_text = (
-        "GATED: create, strictly move the disposable Page by verified Copy plus source "
-        "recycle, report, then close or keep."
+        "GATED: create, strictly move the disposable Page by verified Copy plus "
+        "non-permanent source removal, report, then close or keep."
     )
     timeout_default = 1_800
     registered_for_all = True

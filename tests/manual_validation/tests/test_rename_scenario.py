@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
+from tests.manual_validation import test_utils
 from tests.manual_validation.scenarios import rename as rename_scenario
 from tests.manual_validation.scenarios.rename import RenameScenario
 
@@ -73,3 +74,81 @@ def test_rename_attempts_restore_before_reporting_invariant_failure(monkeypatch,
         "Move-Source-Smoke-Renamed",
         "Move-Source",
     ]
+
+
+def test_rename_keep_worksite_skips_restore_and_records_exact_target(monkeypatch, tmp_path) -> None:
+    target = {
+        "resource_type": "section",
+        "id": "section-id",
+        "name": "Move-Source",
+        "path": "Notebook/Group-A/Move-Source",
+        "parent_id": "group-a",
+    }
+    changed = {
+        **target,
+        "name": "Move-Source-Smoke-Renamed",
+        "path": "Notebook/Group-A/Move-Source-Smoke-Renamed",
+    }
+    manifest = {
+        "schema_version": 1,
+        "notebook": {"resource_type": "notebook", "id": "notebook-id", "name": "Notebook"},
+        "structure": {"move_source": target},
+    }
+    before = {
+        "captured_at": "before",
+        "notebook_id": "notebook-id",
+        "items": [target],
+        "page_hashes": {"page": "same-hash"},
+        "page_objects": {"page": []},
+    }
+    after = {**before, "captured_at": "after", "items": [changed]}
+
+    class FakeClient:
+        calls: list[tuple[str, dict]] = []
+
+        def __init__(self, **_: object) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def call_tool(self, name: str, arguments: dict, **_: object) -> dict:
+            self.calls.append((name, arguments))
+            return {"ok": True, "complete": True, "item": changed}
+
+    snapshots = iter([before, after])
+
+    async def fake_snapshot(_client, _notebook_id):
+        return next(snapshots)
+
+    monkeypatch.setattr(rename_scenario, "MCPStdioClient", FakeClient)
+    monkeypatch.setattr(rename_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(rename_scenario, "render_report", lambda _run_dir: None)
+    args = SimpleNamespace(
+        target="move_source",
+        new_name=None,
+        notebook_name=None,
+        keep_worksite=True,
+    )
+
+    result = asyncio.run(
+        RenameScenario().execute(
+            args,
+            RuntimeOptions(tmp_path, 10, False, False),
+            manifest,
+            client=None,
+            fixture_result={},
+        )
+    )
+
+    assert len(FakeClient.calls) == 1
+    assert result["restored"] is False
+    assert result["worksite_preserved"] is True
+    worksite = test_utils.read_json(
+        tmp_path / "scenarios" / "rename" / "worksite.json"
+    )
+    assert worksite["target_ids"] == ["section-id"]
+    assert worksite["manual_cleanup_required"] is True

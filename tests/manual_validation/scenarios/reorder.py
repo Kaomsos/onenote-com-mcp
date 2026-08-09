@@ -94,6 +94,38 @@ async def _execute_reorder(
                 raise InvariantFailure("Reorder changed one or more Page XML hashes.")
         except InvariantFailure as exc:
             validation_error = exc
+        if getattr(args, "keep_worksite", False):
+            worksite = {
+                "status": "preserved_after_reorder",
+                "target_ids": [original["id"]],
+                "target_id": original["id"],
+                "original_after_page_id": original_after,
+                "current_after_page_id": after_target["id"],
+                "original_page_level": original_level,
+                "current_page_level": args.page_level,
+                "verified": validation_error is None,
+                "manual_cleanup_required": True,
+                "cleanup": (
+                    f"Reorder Page {original['id']} after {original_after!r} at level "
+                    f"{original_level} after inspection."
+                ),
+            }
+            write_json(out / "worksite.json", worksite)
+            if validation_error is not None:
+                raise validation_error
+            result = {
+                "scenario": "reorder",
+                "status": "passed",
+                "target_id": original["id"],
+                "temporary_after_page_id": after_target["id"],
+                "temporary_page_level": args.page_level,
+                "restored": False,
+                "worksite_preserved": True,
+                "remaining_state": worksite,
+            }
+            write_json(out / "result.json", result)
+            render_report(options.run_dir)
+            return result
         restore_target = changed or forward.get("item")
         if not isinstance(restore_target, dict):
             raise RestoreFailure("Reorder succeeded but no target identity was available for restoration.")
@@ -125,6 +157,7 @@ async def _execute_reorder(
             "temporary_after_page_id": after_target["id"],
             "temporary_page_level": args.page_level,
             "restored": True,
+            "worksite_preserved": False,
         }
         write_json(out / "result.json", result)
         render_report(options.run_dir)
@@ -134,7 +167,7 @@ async def _execute_reorder(
 @SCENARIO_REGISTRY.register
 class ReorderScenario(Scenario):
     name = "reorder"
-    help_text = "GATED: create, reorder/restore, report, then close or keep."
+    help_text = "GATED: create, reorder/restore or preserve, report, then close or keep."
     registered_for_all = True
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:

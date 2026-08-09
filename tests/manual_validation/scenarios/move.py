@@ -75,6 +75,36 @@ async def _execute_move(
                 raise InvariantFailure("Move changed one or more Page XML hashes.")
         except InvariantFailure as exc:
             validation_error = exc
+        if getattr(args, "keep_worksite", False):
+            worksite = {
+                "status": "preserved_after_move",
+                "target_ids": [current["id"]],
+                "target_id": current["id"],
+                "source_parent_id": source["id"],
+                "current_parent_id": destination["id"],
+                "verified": validation_error is None,
+                "manual_cleanup_required": True,
+                "cleanup": (
+                    f"Move Section {current['id']} back to parent {source['id']} "
+                    "after inspection."
+                ),
+            }
+            write_json(out / "worksite.json", worksite)
+            if validation_error is not None:
+                raise validation_error
+            result = {
+                "scenario": "move",
+                "status": "passed",
+                "target_id": current["id"],
+                "destination_parent_id": destination["id"],
+                "restored": False,
+                "worksite_preserved": True,
+                "remaining_state": worksite,
+                "warning": "This validates one installed OneNote/Office combination, not universal COM behavior.",
+            }
+            write_json(out / "result.json", result)
+            render_report(options.run_dir)
+            return result
         restore_target = moved or forward.get("item")
         if not isinstance(restore_target, dict):
             raise RestoreFailure("Move succeeded but no target identity was available for restoration.")
@@ -104,6 +134,7 @@ async def _execute_move(
             "target_id": current["id"],
             "destination_parent_id": destination["id"],
             "restored": True,
+            "worksite_preserved": False,
             "warning": "This validates one installed OneNote/Office combination, not universal COM behavior.",
         }
         write_json(out / "result.json", result)
@@ -114,7 +145,7 @@ async def _execute_move(
 @SCENARIO_REGISTRY.register
 class MoveScenario(Scenario):
     name = "move"
-    help_text = "GATED: create, move/restore, report, then close or keep."
+    help_text = "GATED: create, move/restore or preserve, report, then close or keep."
     registered_for_all = True
 
     async def execute(

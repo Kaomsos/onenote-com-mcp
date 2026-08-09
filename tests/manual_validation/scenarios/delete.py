@@ -35,8 +35,9 @@ async def _execute_delete(
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     delete_sandbox = resolve_manifest_item(manifest, "delete_sandbox")
-    allowed_keys = {"disposable_group", "disposable_section", "disposable_page"}
-    allowed = {resolve_manifest_item(manifest, key)["id"]: key for key in allowed_keys}
+    target_key = "disposable_group"
+    target = resolve_manifest_item(manifest, target_key)
+    allowed = {target["id"]: target_key}
     if args.delete_target_id not in allowed:
         allowed_text = ", ".join(sorted(allowed))
         raise RunnerFailure(f"Delete target is not manifest-allowlisted. Allowed IDs: {allowed_text}")
@@ -109,6 +110,25 @@ async def _execute_delete(
             "target_id": current["id"],
         }
         write_json(out / "restored.json", restoration)
+        keep_worksite = bool(getattr(args, "keep_worksite", False))
+        worksite = {
+            "status": (
+                "deleted_target_in_recycle_bin"
+                if recycled is not None
+                else "deleted_target_absent_from_active_tree"
+            ),
+            "target_ids": [current["id"]],
+            "target_id": current["id"],
+            "permanently": False,
+            "recycle_bin_verified": recycled is not None,
+            "manual_cleanup_required": True,
+            "cleanup": (
+                f"Restore or remove disposable target {current['id']} from the OneNote "
+                "recycle bin after inspection."
+            ),
+        }
+        if keep_worksite:
+            write_json(out / "worksite.json", worksite)
         result = {
             "scenario": "delete",
             "status": "passed",
@@ -116,7 +136,12 @@ async def _execute_delete(
             "target_key": allowed[current["id"]],
             "permanently": False,
             "restored": False,
-            "remaining_state": "This run's disposable group remains in the recycle bin.",
+            "worksite_preserved": keep_worksite,
+            "remaining_state": (
+                worksite
+                if keep_worksite
+                else "This run's disposable group remains in the recycle bin."
+            ),
         }
         write_json(out / "result.json", result)
         render_report(options.run_dir)

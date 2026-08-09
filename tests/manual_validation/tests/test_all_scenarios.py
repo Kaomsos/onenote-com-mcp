@@ -85,8 +85,11 @@ def test_all_parser_has_no_run_dir_or_scenario_lifecycle_options() -> None:
     assert not hasattr(args, "run_dir")
     assert not hasattr(args, "notebook_name")
     assert not hasattr(args, "keep_notebook")
+    assert not hasattr(args, "keep_worksite")
     with pytest.raises(SystemExit):
         parser.parse_args(["all", "--run-dir", "shared-run"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["all", "--keep-worksite"])
 
 
 def test_all_rejects_non_positive_timeout_without_starting_children(capsys) -> None:

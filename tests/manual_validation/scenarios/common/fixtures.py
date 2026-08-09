@@ -17,6 +17,7 @@ from ...test_utils import (
 )
 from .fixture_builders import (
     enforce_page_position,
+    ensure_copy_list_tag_fixture,
     ensure_copy_rich_fixture,
     ensure_group,
     ensure_page,
@@ -24,6 +25,15 @@ from .fixture_builders import (
     new_manifest,
 )
 from .specs import ScenarioSpec
+
+
+PAGE_COPY_SCENARIOS = {
+    "copy-page",
+    "copy-section",
+    "copy-section-group",
+    "copy-notebook",
+    "reconstructive-move-page",
+}
 
 
 async def _rich_page(
@@ -34,6 +44,56 @@ async def _rich_page(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     page = await ensure_page(client, section["id"], "Rich-Page", f"Copy token: {token}")
     return await ensure_copy_rich_fixture(client, page, options.run_dir)
+
+
+async def _layered_copy_pages(
+    client: MCPStdioClient,
+    section: dict[str, Any],
+    options: RuntimeOptions,
+    token: str,
+    *,
+    parent_title: str = "Rich-Page",
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Create the shared strict parent plus semantic List/Tag child fixture."""
+
+    parent = await ensure_page(
+        client,
+        section["id"],
+        parent_title,
+        f"Copy token: {token}",
+    )
+    parent, copy_fixture = await ensure_copy_rich_fixture(
+        client,
+        parent,
+        options.run_dir,
+    )
+    semantic_page = await ensure_page(
+        client,
+        section["id"],
+        "List-Tag-Page",
+        f"Semantic copy token: {token}",
+    )
+    parent = await enforce_page_position(client, section["id"], parent["id"], "", 1)
+    semantic_page = await enforce_page_position(
+        client,
+        section["id"],
+        semantic_page["id"],
+        parent["id"],
+        2,
+    )
+    semantic_page, semantic_fixture = await ensure_copy_list_tag_fixture(
+        client,
+        semantic_page,
+    )
+    copy_fixture["automated_content"] = [
+        "rich_text",
+        "table",
+        "image",
+        "list",
+        "tag",
+    ]
+    copy_fixture["semantic_page"] = semantic_fixture
+    return parent, semantic_page, copy_fixture
 
 
 def _validate_fixture_snapshot(
@@ -130,7 +190,7 @@ def _validate_fixture_snapshot(
             resolved["parent_page"].get("section_id") == resolved["move_source"]["id"]
             and resolved["move_source"]["id"] != resolved["disposable_section"]["id"],
             "Copy Page fixture source and destination are not isolated Sections.",
-            "rich source Page and destination Section are distinct",
+            "Page Copy source and destination are isolated Sections",
         )
     elif scenario == "copy-section":
         require(
@@ -159,6 +219,19 @@ def _validate_fixture_snapshot(
             "disposable source Page and destination Section are distinct",
         )
 
+    if scenario in PAGE_COPY_SCENARIOS:
+        parent_key = "disposable_page" if scenario == "reconstructive-move-page" else "parent_page"
+        parent = resolved[parent_key]
+        semantic_page = resolved["semantic_page"]
+        require(
+            parent.get("section_id") == semantic_page.get("section_id")
+            and int(parent.get("page_level", 0)) == 1
+            and int(semantic_page.get("page_level", 0)) == 2
+            and semantic_page.get("parent_page_id") == parent["id"],
+            "Layered Copy fixture Page topology is invalid.",
+            "strict parent and semantic child form an isolated two-page subtree",
+        )
+
     if copy_fixture is not None:
         automated = {str(value).casefold() for value in copy_fixture.get("automated_content", [])}
         require(
@@ -166,6 +239,16 @@ def _validate_fixture_snapshot(
             "Rich Copy fixture is missing a required automated content capability.",
             "rich text, table, and image capabilities were created and observed",
         )
+        semantic = copy_fixture.get("semantic_page")
+        if scenario in PAGE_COPY_SCENARIOS:
+            require(
+                isinstance(semantic, dict)
+                and {"List", "Tag"}.issubset(semantic.get("observed_capabilities", []))
+                and semantic.get("observed_counts", {}).get("List") == 3
+                and semantic.get("observed_counts", {}).get("Tag") == 3,
+                "Semantic Copy fixture is missing the three generated List/Tag items.",
+                "semantic child contains three generated mixed List/Tag items",
+            )
     return checks
 
 
@@ -264,43 +347,66 @@ async def prepare_scenario_fixture(
     elif args.scenario == "copy-page":
         source_section = await ensure_section(client, notebook_id, "Source")
         destination = await ensure_section(client, notebook_id, "Destination")
-        page, copy_fixture = await _rich_page(client, source_section, options, token)
+        page, semantic_page, copy_fixture = await _layered_copy_pages(
+            client, source_section, options, token
+        )
         structure.update(
             move_source=source_section,
             parent_page=page,
+            semantic_page=semantic_page,
             disposable_section=destination,
         )
     elif args.scenario == "copy-section":
         source_group = await ensure_group(client, notebook_id, "Source-Group")
         destination = await ensure_group(client, notebook_id, "Group-B")
         source_section = await ensure_section(client, source_group["id"], "Move-Source")
-        page, copy_fixture = await _rich_page(client, source_section, options, token)
+        page, semantic_page, copy_fixture = await _layered_copy_pages(
+            client, source_section, options, token
+        )
         structure.update(
             group_a=source_group,
             group_b=destination,
             move_source=source_section,
             parent_page=page,
+            semantic_page=semantic_page,
         )
     elif args.scenario == "copy-section-group":
         source_group = await ensure_group(client, notebook_id, "Group-A")
         source_section = await ensure_section(client, source_group["id"], "Move-Source")
-        page, copy_fixture = await _rich_page(client, source_section, options, token)
+        page, semantic_page, copy_fixture = await _layered_copy_pages(
+            client, source_section, options, token
+        )
         structure.update(
             group_a=source_group,
             move_source=source_section,
             parent_page=page,
+            semantic_page=semantic_page,
         )
     elif args.scenario == "copy-notebook":
         source_section = await ensure_section(client, notebook_id, "Move-Source")
-        page, copy_fixture = await _rich_page(client, source_section, options, token)
-        structure.update(move_source=source_section, parent_page=page)
+        page, semantic_page, copy_fixture = await _layered_copy_pages(
+            client, source_section, options, token
+        )
+        structure.update(
+            move_source=source_section,
+            parent_page=page,
+            semantic_page=semantic_page,
+        )
     elif args.scenario == "reconstructive-move-page":
         source_section = await ensure_section(client, notebook_id, "Source")
         destination = await ensure_section(client, notebook_id, "Destination")
-        page = await ensure_page(
-            client, source_section["id"], "Disposable-Page", f"Move token: {token}"
+        page, semantic_page, copy_fixture = await _layered_copy_pages(
+            client,
+            source_section,
+            options,
+            token,
+            parent_title="Disposable-Page",
         )
-        structure.update(disposable_page=page, move_source=destination)
+        structure.update(
+            disposable_page=page,
+            semantic_page=semantic_page,
+            move_source=destination,
+        )
     else:
         raise ValueError(f"Unsupported fixture scenario: {args.scenario}")
 

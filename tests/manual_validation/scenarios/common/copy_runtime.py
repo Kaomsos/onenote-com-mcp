@@ -26,21 +26,35 @@ from ...test_utils import (
     validate_manifest_notebook,
     write_json,
 )
-from .config import COPY_NOTEBOOK_TOOLS, COPY_TOOLS
+from .config import (
+    COPY_NOTEBOOK_PRESERVE_TOOLS,
+    COPY_NOTEBOOK_TOOLS,
+    COPY_PRESERVE_TOOLS,
+    COPY_TOOLS,
+    RELAXED_COPY_CAPABILITIES,
+)
 from .copy_invariants import assert_copy_fixture_capabilities, assert_copy_mapping
 from .report import render_report
 
 
-def copy_spec(scenario: str, manifest: dict[str, Any], run_dir: Path) -> dict[str, Any]:
+def copy_spec(
+    scenario: str,
+    manifest: dict[str, Any],
+    run_dir: Path,
+    *,
+    keep_worksite: bool = False,
+) -> dict[str, Any]:
     suffix = timestamp()
+    copy_policy = COPY_NO_DELETE_POLICY if keep_worksite else COPY_POLICY
+    copy_tools = COPY_PRESERVE_TOOLS if keep_worksite else COPY_TOOLS
     if scenario == "copy-page":
         return {
             "source": resolve_manifest_item(manifest, "parent_page"),
             "destination": resolve_manifest_item(manifest, "disposable_section"),
             "destination_name": f"Copy-Parent-{suffix}",
             "tool": "copy_page",
-            "policy": COPY_POLICY,
-            "tools": COPY_TOOLS,
+            "policy": copy_policy,
+            "tools": copy_tools,
         }
     if scenario == "copy-section":
         return {
@@ -48,8 +62,8 @@ def copy_spec(scenario: str, manifest: dict[str, Any], run_dir: Path) -> dict[st
             "destination": resolve_manifest_item(manifest, "group_b"),
             "destination_name": f"Copy-Section-{suffix}",
             "tool": "copy_section",
-            "policy": COPY_POLICY,
-            "tools": COPY_TOOLS,
+            "policy": copy_policy,
+            "tools": copy_tools,
         }
     if scenario == "copy-section-group":
         return {
@@ -57,8 +71,8 @@ def copy_spec(scenario: str, manifest: dict[str, Any], run_dir: Path) -> dict[st
             "destination": manifest["notebook"],
             "destination_name": f"Copy-Group-{suffix}",
             "tool": "copy_section_group",
-            "policy": COPY_POLICY,
-            "tools": COPY_TOOLS,
+            "policy": copy_policy,
+            "tools": copy_tools,
         }
     if scenario == "copy-notebook":
         disposable_targets = manifest.get("disposable_targets")
@@ -75,11 +89,13 @@ def copy_spec(scenario: str, manifest: dict[str, Any], run_dir: Path) -> dict[st
         return {
             "source": manifest["notebook"],
             "destination": None,
-            "destination_name": f"{display_name(manifest['notebook'])}-Copy-{suffix}",
+            "destination_name": f"Copy-Notebook-{suffix}",
             "destination_base_folder": str(expected_root),
             "tool": "copy_notebook",
             "policy": COPY_NO_DELETE_POLICY,
-            "tools": COPY_NOTEBOOK_TOOLS,
+            "tools": (
+                COPY_NOTEBOOK_PRESERVE_TOOLS if keep_worksite else COPY_NOTEBOOK_TOOLS
+            ),
         }
     raise RunnerFailure(f"Unknown Copy scenario: {scenario}")
 
@@ -123,6 +139,109 @@ def copy_execute_arguments(
         "expected_parent_id": source["parent_id"],
         "destination_name": spec["destination_name"],
     }
+
+
+def plan_bound_before_snapshot(
+    before: dict[str, Any],
+    planned: dict[str, Any],
+) -> dict[str, Any]:
+    """Align runner evidence with the source snapshot protected by plan_digest."""
+
+    planned_source = planned.get("source")
+    source_snapshot = planned.get("snapshots", {}).get("source")
+    if not isinstance(planned_source, dict) or not planned_source.get("id"):
+        raise InvariantFailure("Copy plan is missing its typed source snapshot.")
+    if not isinstance(source_snapshot, dict):
+        raise InvariantFailure("Copy plan is missing source snapshot evidence.")
+    planned_resources = source_snapshot.get("resources")
+    planned_page_hashes = source_snapshot.get("page_hashes")
+    if not isinstance(planned_resources, list) or not isinstance(planned_page_hashes, dict):
+        raise InvariantFailure("Copy plan source snapshot is incomplete.")
+
+    before_ids = {
+        str(item["id"])
+        for item in before.get("items", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    planned_by_id = {
+        str(item["id"]): item
+        for item in planned_resources
+        if isinstance(item, dict) and item.get("id")
+    }
+    missing = sorted(set(planned_by_id) - before_ids)
+    if missing:
+        raise InvariantFailure(
+            f"Copy plan source resources are missing from runner before evidence: {missing}"
+        )
+    if str(planned_source["id"]) not in planned_by_id:
+        raise InvariantFailure("Copy plan source root is missing from its resource snapshot.")
+
+    items = []
+    for item in before.get("items", []):
+        planned_item = planned_by_id.get(str(item.get("id", "")))
+        if planned_item is None:
+            items.append(item)
+            continue
+        rebound = dict(item)
+        if "modified" in planned_item:
+            rebound["modified"] = planned_item.get("modified")
+        items.append(rebound)
+
+    return {
+        **before,
+        "items": items,
+        "page_hashes": dict(before.get("page_hashes", {})),
+        "plan_binding": {
+            "source_id": planned_source["id"],
+            "source_snapshot_digest": planned.get("source_snapshot_digest"),
+            "raw_page_hashes": planned_page_hashes,
+        },
+    }
+
+
+async def stable_copy_plan(
+    client: MCPStdioClient,
+    arguments: dict[str, Any],
+    *,
+    attempts_path: Path,
+    plan_path: Path,
+    max_attempts: int = 3,
+) -> dict[str, Any]:
+    """Require two consecutive identical read-only plans before Copy mutation."""
+
+    previous_digest: str | None = None
+    attempts: list[dict[str, Any]] = []
+    for attempt in range(1, max_attempts + 1):
+        planned = await client.call_tool("plan_copy", arguments)
+        write_json(plan_path, planned)
+        digest = str(planned.get("plan_digest", ""))
+        source = planned.get("source", {})
+        attempts.append(
+            {
+                "attempt": attempt,
+                "plan_digest": digest,
+                "source_snapshot_digest": planned.get("source_snapshot_digest"),
+                "source_modified": (
+                    source.get("modified") if isinstance(source, dict) else None
+                ),
+            }
+        )
+        stabilized = bool(digest) and digest == previous_digest
+        write_json(
+            attempts_path,
+            {
+                "maximum_attempts": max_attempts,
+                "stabilized": stabilized,
+                "attempts": attempts,
+            },
+        )
+        if stabilized:
+            return planned
+        previous_digest = digest
+    raise InvariantFailure(
+        "Copy source/destination plan did not stabilize across consecutive read-only "
+        "snapshots; mutation was not attempted."
+    )
 
 
 async def cleanup_copy(
@@ -235,7 +354,13 @@ async def execute_copy(
     client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
-    spec = copy_spec(args.scenario, manifest, options.run_dir)
+    keep_worksite = bool(getattr(args, "keep_worksite", False))
+    spec = copy_spec(
+        args.scenario,
+        manifest,
+        options.run_dir,
+        keep_worksite=keep_worksite,
+    )
     if args.scenario == "copy-notebook":
         Path(spec["destination_base_folder"]).mkdir(parents=True, exist_ok=True)
     out = scenario_dir(options.run_dir, args.scenario)
@@ -249,20 +374,29 @@ async def execute_copy(
     ) as client:
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)
-        current = find_snapshot_item(before, spec["source"]["id"])
-        if current is None:
+        pre_plan_source = find_snapshot_item(before, spec["source"]["id"])
+        if pre_plan_source is None:
             raise RunnerFailure("Manifest Copy source is not active in the current snapshot.")
         plan_arguments = {
-            "source_id": current["id"],
+            "source_id": pre_plan_source["id"],
             "destination_name": spec["destination_name"],
         }
         if spec["destination"] is not None:
             plan_arguments["destination_parent_id"] = spec["destination"]["id"]
         if spec.get("destination_base_folder"):
             plan_arguments["destination_base_folder"] = spec["destination_base_folder"]
-        planned = await client.call_tool("plan_copy", plan_arguments)
-        write_json(out / "plan.json", planned)
-        assert_copy_fixture_capabilities(planned)
+        planned = await stable_copy_plan(
+            client,
+            plan_arguments,
+            attempts_path=out / "plan-attempts.json",
+            plan_path=out / "plan.json",
+        )
+        assert_copy_fixture_capabilities(planned, RELAXED_COPY_CAPABILITIES)
+        before = plan_bound_before_snapshot(before, planned)
+        write_json(out / "before.json", before)
+        if find_snapshot_item(before, str(planned["source"]["id"])) is None:
+            raise InvariantFailure("Plan-bound Copy source is missing from before evidence.")
+        current = dict(planned["source"])
         copied = await call_with_result_evidence(
             client,
             spec["tool"],
@@ -290,27 +424,39 @@ async def execute_copy(
                 spec["destination_name"],
                 copied,
             )
-            closed = await client.call_tool(
-                "close_notebook",
-                {
-                    "notebook_id": target["id"],
-                    "expected_name": display_name(target),
-                    "expected_modified": target.get("modified"),
-                },
-            )
-            remaining = {
-                "status": "closed_not_deleted",
-                "target_id": target["id"],
-                "target_path": actual_target_path,
-                "close_result": closed,
-                "reason": "OneNote COM exposes CloseNotebook, not typed Notebook deletion.",
-            }
-            write_json(out / "restored.json", remaining)
+            if keep_worksite:
+                remaining = {
+                    "status": "preserved_open_for_manual_inspection",
+                    "target_id": target["id"],
+                    "target_ids": list(copied.get("created_ids", [])),
+                    "target_path": actual_target_path,
+                    "manual_cleanup_required": True,
+                    "reason": "--keep-worksite preserved the copied Notebook for UI inspection.",
+                }
+                write_json(out / "worksite.json", remaining)
+            else:
+                closed = await client.call_tool(
+                    "close_notebook",
+                    {
+                        "notebook_id": target["id"],
+                        "expected_name": display_name(target),
+                        "expected_modified": target.get("modified"),
+                    },
+                )
+                remaining = {
+                    "status": "closed_not_deleted",
+                    "target_id": target["id"],
+                    "target_path": actual_target_path,
+                    "close_result": closed,
+                    "reason": "OneNote COM exposes CloseNotebook, not typed Notebook deletion.",
+                }
+                write_json(out / "restored.json", remaining)
             result = {
                 "scenario": args.scenario,
                 "status": "passed",
                 "target_id": target["id"],
                 "restored": False,
+                "worksite_preserved": keep_worksite,
                 "remaining_state": remaining,
                 "copy_report": copied["copy_report"],
             }
@@ -331,6 +477,29 @@ async def execute_copy(
         for source_id, source_hash in before["page_hashes"].items():
             if after["page_hashes"].get(source_id) != source_hash:
                 raise InvariantFailure("Copy changed an existing source Page XML hash.")
+        if keep_worksite:
+            target_ids = list(copied.get("copy_report", {}).get("id_map", {}).values())
+            remaining = {
+                "status": "preserved_active_for_manual_inspection",
+                "target_id": copied.get("item", {}).get("id"),
+                "target_ids": target_ids,
+                "manual_cleanup_required": True,
+                "reason": "--keep-worksite skipped Copy target cleanup after verified read-back.",
+            }
+            write_json(out / "worksite.json", remaining)
+            result = {
+                "scenario": args.scenario,
+                "status": "passed",
+                "target_id": copied.get("item", {}).get("id"),
+                "restored": False,
+                "worksite_preserved": True,
+                "cleanup_deleted_ids": [],
+                "remaining_state": remaining,
+                "copy_report": copied["copy_report"],
+            }
+            write_json(out / "result.json", result)
+            render_report(options.run_dir)
+            return result
         deleted_ids = await cleanup_copy(client, after, copied)
         restored = await capture_snapshot(client, notebook_id)
         write_json(out / "restored.json", restored)
@@ -340,6 +509,7 @@ async def execute_copy(
             "status": "passed",
             "target_id": copied.get("item", {}).get("id"),
             "restored": True,
+            "worksite_preserved": False,
             "cleanup_deleted_ids": deleted_ids,
             "copy_report": copied["copy_report"],
         }

@@ -52,11 +52,26 @@ def render_report(run_dir: Path) -> Path:
                 "",
                 f"- Page ID: `{copy_fixture.get('page_id', '')}`",
                 f"- Automated content: `{', '.join(copy_fixture.get('automated_content', []))}`",
+                "- Validated content types: `"
+                + ", ".join(manifest.get("copy_scenario", {}).get("validated_content_types", []))
+                + "`",
                 f"- Manual content: `{', '.join(copy_fixture.get('manual_content', []))}`",
                 f"- Observed object types: `{', '.join(copy_fixture.get('observed_object_types', []))}`",
                 "",
             ]
         )
+        semantic = copy_fixture.get("semantic_page")
+        if isinstance(semantic, dict):
+            lines.extend(
+                [
+                    f"- Semantic Page ID: `{semantic.get('page_id', '')}`",
+                    "- Semantic capabilities: `"
+                    + ", ".join(semantic.get("observed_capabilities", []))
+                    + "`",
+                    "- Semantic acceptance tier: `semantic_list_tag`",
+                    "",
+                ]
+            )
     lines.extend(["## Scenarios", ""])
     found = False
     scenarios_root = run_dir / "scenarios"
@@ -78,9 +93,21 @@ def render_report(run_dir: Path) -> Path:
                     f"- Status: `{result.get('status', 'unknown')}`",
                     f"- Target ID: `{result.get('target_id', '')}`",
                     f"- Restored: `{result.get('restored', 'n/a')}`",
-                    "",
+                    f"- Worksite preserved: `{result.get('worksite_preserved', False)}`",
                 ]
             )
+            lines.append("")
+            remaining_state = result.get("remaining_state")
+            if isinstance(remaining_state, dict) and remaining_state.get(
+                "manual_cleanup_required"
+            ):
+                lines.extend(
+                    [
+                        f"- Manual cleanup required: `True`",
+                        f"- Preserved target IDs: `{', '.join(remaining_state.get('target_ids', []))}`",
+                        "",
+                    ]
+                )
             plan_path = scenario_path / "plan.json"
             if plan_path.exists():
                 planned = read_json(plan_path)
@@ -101,6 +128,15 @@ def render_report(run_dir: Path) -> Path:
                         f"- Copy outcome: `{copy_result.get('outcome', 'copy')}`",
                     ]
                 )
+                for page_result in copy_report.get("page_results", []):
+                    equivalence = page_result.get("equivalence", {})
+                    lines.append(
+                        "- Page verification: "
+                        f"source `{page_result.get('source_page_id', '')}` → "
+                        f"target `{page_result.get('target_page_id', '')}`, "
+                        f"tier `{equivalence.get('verification_tier', '')}`, "
+                        f"equivalent `{equivalence.get('equivalent', False)}`"
+                    )
             if plan_path.exists() or copy_result_path.exists():
                 lines.append("")
             if result.get("error"):
@@ -160,7 +196,7 @@ def render_report(run_dir: Path) -> Path:
         [
             "## Safety boundary",
             "",
-            "Each named scenario is a complete isolated run: the narrow lifecycle wrapper creates and lease-binds a fresh source Notebook, then exactly one scenario-scoped least-privilege MCP process creates the minimal fixture and performs mutation/evidence/restore work. The wrapper closes only the exact leased source after success unless keep-notebook was selected. Permanent OneNote delete and raw XML remain disabled. Local Notebook directories are never deleted.",
+            "Each named scenario is a complete isolated run: the narrow lifecycle wrapper creates and lease-binds a fresh source Notebook, then exactly one scenario-scoped least-privilege MCP process creates the minimal fixture and performs mutation/evidence/restore work. The wrapper closes only the exact leased source after success unless keep-notebook or keep-worksite was selected. keep-worksite preserves the named action's verified post-mutation state and records exact IDs plus manual cleanup guidance; the special all batch command never forwards it. Permanent OneNote delete and raw XML remain disabled. Local Notebook directories are never deleted.",
             "",
         ]
     )

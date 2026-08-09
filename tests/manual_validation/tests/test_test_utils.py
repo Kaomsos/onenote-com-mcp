@@ -7,6 +7,7 @@ from tests.manual_validation.test_utils import (
     assert_valid_page_tree,
     comparable_snapshot,
     is_descendant_of,
+    page_content_hash,
 )
 
 
@@ -54,3 +55,20 @@ def test_page_tree_and_delete_sandbox_ancestry_checks() -> None:
     ]
     assert is_descendant_of(snapshot, "section", "sandbox") is True
     assert is_descendant_of(snapshot, "section", "unrelated") is False
+
+
+def test_page_content_hash_ignores_root_hierarchy_metadata_but_detects_content_changes() -> None:
+    before = (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
+        'ID="page" name="Sibling" dateTime="before" lastModifiedTime="before" '
+        'pageLevel="1" isCurrentlyViewed="false"><one:Outline><one:OEChildren>'
+        '<one:OE><one:T>same body</one:T></one:OE></one:OEChildren></one:Outline></one:Page>'
+    )
+    reordered = (
+        before.replace('lastModifiedTime="before"', 'lastModifiedTime="after"')
+        .replace('pageLevel="1"', 'pageLevel="2"')
+    )
+    changed_content = reordered.replace("same body", "changed body")
+
+    assert page_content_hash(before) == page_content_hash(reordered)
+    assert page_content_hash(before) != page_content_hash(changed_content)

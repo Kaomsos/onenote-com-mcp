@@ -25,6 +25,11 @@ class Scenario:
     def spec(self) -> ScenarioSpec:
         return get_scenario_spec(self.name)
 
+    def runtime_spec(self, args: argparse.Namespace) -> ScenarioSpec:
+        """Return the fixed scenario spec selected by explicit CLI mode."""
+
+        return self.spec
+
     def register_parser(
         self,
         subparsers: argparse._SubParsersAction,
@@ -37,6 +42,14 @@ class Scenario:
             "--keep-notebook",
             action="store_true",
             help="Leave the fresh isolated source Notebook open after this scenario succeeds.",
+        )
+        parser.add_argument(
+            "--keep-worksite",
+            action="store_true",
+            help=(
+                "Preserve this action's verified post-mutation state for manual inspection, "
+                "leave the isolated source Notebook open, and record exact cleanup IDs."
+            ),
         )
         runtime_flags(parser, timeout_default=self.timeout_default)
 

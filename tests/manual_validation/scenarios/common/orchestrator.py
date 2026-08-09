@@ -31,12 +31,32 @@ from .registry import SCENARIO_REGISTRY
 
 PUBLIC_SCENARIOS = SCENARIO_REGISTRY.public_names
 
+WORKSITE_DRY_RUN_ACTIONS = {
+    "create": "preserve-created-fixture",
+    "rename": "preserve-renamed-target",
+    "reorder": "preserve-reordered-page",
+    "move": "preserve-moved-section",
+    "delete": "preserve-recycle-bin-state",
+    "copy-page": "preserve-active-copy-targets",
+    "copy-section": "preserve-active-copy-targets",
+    "copy-section-group": "preserve-active-copy-targets",
+    "copy-notebook": "preserve-open-copy-notebook",
+    "reconstructive-move-page": "preserve-copy-and-nonpermanently-deleted-source",
+}
+
 # Compatibility view for callers that inspect the static policy table.  Each
 # entry is the complete fixture + mutation closure for one scenario process.
 SCENARIO_POLICIES = {
     name: (spec.policy, set(spec.tool_allowlist), spec.fixture.name)
     for name, spec in SCENARIO_SPECS.items()
 }
+
+
+def _keep_source_notebook(args: argparse.Namespace) -> bool:
+    return bool(
+        getattr(args, "keep_notebook", False)
+        or getattr(args, "keep_worksite", False)
+    )
 
 
 def _validate_notebook_name(name: str) -> None:
@@ -72,7 +92,8 @@ def _step(
 
 
 def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
-    spec = SCENARIO_REGISTRY.get(args.scenario).spec
+    scenario = SCENARIO_REGISTRY.get(args.scenario)
+    spec = scenario.runtime_spec(args)
     steps: list[dict[str, Any]] = [
         {
             "step": "create-source-notebook",
@@ -93,7 +114,7 @@ def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[
             "target": "run-dir evidence",
         },
     ]
-    if not args.keep_notebook:
+    if not _keep_source_notebook(args):
         steps.append(
             {
                 "step": "close-source-notebook",
@@ -102,7 +123,7 @@ def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[
                 "target": "exact lifecycle lease Notebook ID/name/path",
             }
         )
-    return {
+    result = {
         "command": args.scenario,
         "scenario": args.scenario,
         "dry_run": True,
@@ -117,7 +138,7 @@ def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[
         "copy_budget": {
             field: value for field, (_env_name, value) in COPY_BUDGET_ENV.items()
         },
-        "lifecycle": "keep" if args.keep_notebook else "close",
+        "lifecycle": "keep" if _keep_source_notebook(args) else "close",
         "lifecycle_lease": str((options.run_dir.resolve() / "lifecycle-lease.json")),
         "expected_mcp_process_starts": 1,
         "server_started": False,
@@ -127,6 +148,16 @@ def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[
             "result": "source and Copy Notebook directories are always preserved",
         },
     }
+    if hasattr(args, "keep_worksite"):
+        result["worksite"] = {
+            "preserved": bool(args.keep_worksite),
+            "target_cleanup": (
+                WORKSITE_DRY_RUN_ACTIONS[args.scenario]
+                if args.keep_worksite
+                else "default-scenario-finalization"
+            ),
+        }
+    return result
 
 
 def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
@@ -140,7 +171,8 @@ def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[st
         "started_at": utc_now(),
         "notebook_name": args.notebook_name,
         "run_dir": str(options.run_dir.resolve()),
-        "lifecycle": "keep" if args.keep_notebook else "close",
+        "lifecycle": "keep" if _keep_source_notebook(args) else "close",
+        "keep_worksite": bool(getattr(args, "keep_worksite", False)),
         "completed_steps": [],
         "current_step": "create-source-notebook",
         "finalization_started": False,
@@ -152,11 +184,15 @@ def _preserved_notebook_paths(run_dir: Path, manifest: dict[str, Any]) -> list[s
     source_path = manifest.get("disposable_targets", {}).get("source_notebook_path")
     if source_path:
         paths.append(str(source_path))
-    copy_path = scenario_dir(run_dir, "copy-notebook") / "restored.json"
-    if copy_path.exists():
+    copy_dir = scenario_dir(run_dir, "copy-notebook")
+    for evidence_name in ("worksite.json", "restored.json"):
+        copy_path = copy_dir / evidence_name
+        if not copy_path.exists():
+            continue
         target_path = read_json(copy_path).get("target_path")
         if target_path:
             paths.append(str(target_path))
+        break
     return list(dict.fromkeys(paths))
 
 
@@ -204,7 +240,7 @@ async def finalize_notebook(
     lifecycle_path = options.run_dir / "lifecycle.json"
     lifecycle: dict[str, Any] = {
         "started_at": utc_now(),
-        "mode": "keep" if args.keep_notebook else "close",
+        "mode": "keep" if _keep_source_notebook(args) else "close",
         "source_notebook_id": notebook_id,
         "closed": False,
         "preserved_paths": _preserved_notebook_paths(options.run_dir, manifest),
@@ -212,7 +248,7 @@ async def finalize_notebook(
         "status": "running",
     }
     write_json(lifecycle_path, lifecycle)
-    if args.keep_notebook:
+    if _keep_source_notebook(args):
         current = wrapper.get_exact_notebook(lease)
         preserved = {
             "closed": False,
@@ -253,7 +289,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     state_path = options.run_dir / "run-state.json"
     write_json(state_path, state)
     scenario = SCENARIO_REGISTRY.get(args.scenario)
-    spec = scenario.spec
+    spec = scenario.runtime_spec(args)
     metrics_path = options.run_dir / "run-metrics.json"
     metrics: dict[str, Any] = {
         "schema_version": 1,
@@ -350,7 +386,9 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     metrics["phases_seconds"]["report"] = round(time.perf_counter() - phase_started, 6)
     state["completed_steps"].append({"step": "report", "path": str(report_path.resolve())})
     state["current_step"] = (
-        "preserve-source-notebook" if args.keep_notebook else "close-source-notebook"
+        "preserve-source-notebook"
+        if _keep_source_notebook(args)
+        else "close-source-notebook"
     )
     state["finalization_started"] = True
     write_json(state_path, state)
@@ -389,7 +427,9 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     result["ordered_steps"].extend(
         [
             "report",
-            "preserve-source-notebook" if args.keep_notebook else "close-source-notebook",
+            "preserve-source-notebook"
+            if _keep_source_notebook(args)
+            else "close-source-notebook",
         ]
     )
     write_json(options.run_dir / "run-result.json", result)
@@ -474,6 +514,7 @@ def record_failure(args: argparse.Namespace, message: str, exit_code: int) -> No
         needs_manual_cleanup = bool(created_ids) or mutation_result.get("outcome") in {
             "copy_only",
             "copy_unverified",
+            "source_partially_removed",
             "source_partially_recycled",
             "source_recycle_unverified",
             "source_delete_failed",

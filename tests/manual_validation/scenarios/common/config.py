@@ -5,7 +5,15 @@ COPY_FIXTURE_MARKER = "LOCAL_ONENOTE_MCP_COPY_FIXTURE_V1"
 COPY_FIXTURE_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
-AUTOMATED_COPY_CAPABILITIES = {"Image", "Outline", "RichText", "Table"}
+AUTOMATED_COPY_CAPABILITIES = {
+    "Image",
+    "List",
+    "Outline",
+    "RichText",
+    "Table",
+    "Tag",
+}
+RELAXED_COPY_CAPABILITIES = {"List", "Tag"}
 
 READ_TOOLS = {
     "health_check",
@@ -30,7 +38,8 @@ CREATE_TOOLS = READ_TOOLS | {
 RENAME_TOOLS = READ_TOOLS | {"rename_section_group", "rename_section"}
 REORDER_TOOLS = READ_TOOLS | {"reorder_page"}
 MOVE_TOOLS = READ_TOOLS | {"move_section"}
-DELETE_TOOLS = READ_TOOLS | {"delete_section_group", "delete_section", "delete_page"}
+COPY_CLEANUP_TOOLS = {"delete_section_group", "delete_section", "delete_page"}
+DELETE_TOOLS = READ_TOOLS | COPY_CLEANUP_TOOLS
 COPY_TOOLS = READ_TOOLS | {
     "plan_copy",
     "copy_page",
@@ -40,7 +49,9 @@ COPY_TOOLS = READ_TOOLS | {
     "delete_section",
     "delete_section_group",
 }
+COPY_PRESERVE_TOOLS = COPY_TOOLS - COPY_CLEANUP_TOOLS
 COPY_NOTEBOOK_TOOLS = READ_TOOLS | {"plan_copy", "copy_notebook", "close_notebook"}
+COPY_NOTEBOOK_PRESERVE_TOOLS = COPY_NOTEBOOK_TOOLS - {"close_notebook"}
 RECONSTRUCTIVE_MOVE_PAGE_TOOLS = READ_TOOLS | {
     "plan_reconstructive_move_page",
     "reconstructive_move_page",

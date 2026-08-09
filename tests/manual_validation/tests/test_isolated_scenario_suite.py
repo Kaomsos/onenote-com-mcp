@@ -31,6 +31,12 @@ def test_public_scenarios_are_class_managed_and_spec_backed() -> None:
     assert [scenario.spec.name for scenario in SCENARIO_REGISTRY.values()] == list(SCENARIOS)
 
 
+def test_every_copy_scenario_has_a_runtime_executor() -> None:
+    for name in ("copy-page", "copy-section", "copy-section-group", "copy-notebook"):
+        scenario = SCENARIO_REGISTRY.get(name)
+        assert callable(getattr(scenario, "execute_copy", None)), name
+
+
 def _args(run_dir: Path, scenario: str, *, keep: bool = False) -> argparse.Namespace:
     values = {
         "command": scenario,
@@ -110,6 +116,12 @@ def test_fixture_profiles_are_scenario_specific() -> None:
     assert "create_notebook" not in SCENARIO_SPECS["create"].tool_allowlist
     assert "move_section" not in SCENARIO_SPECS["rename"].tool_allowlist
     assert "delete_section_group" not in SCENARIO_SPECS["move"].tool_allowlist
+
+
+def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
+    for name, spec in SCENARIO_SPECS.items():
+        missing = spec.fixture.creation_tools - spec.tool_allowlist
+        assert not missing, f"{name} fixture tools missing from allowlist: {sorted(missing)}"
 
 
 def test_call_metrics_count_only_run_scoped_audit_lines(tmp_path) -> None:
@@ -265,6 +277,44 @@ def test_keep_dry_run_omits_close(capsys, tmp_path) -> None:
     assert not run_dir.exists()
 
 
+def test_keep_worksite_preserves_source_lifecycle_after_copy_success(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[str] = []
+    _install_orchestration_fakes(monkeypatch, calls)
+
+    async def preserved_copy(
+        args,
+        _options,
+        _manifest_value,
+        *,
+        client=None,
+        fixture_result=None,
+    ):
+        assert client is FakeMCP.active
+        assert args.keep_worksite is True
+        return {
+            "scenario": args.scenario,
+            "status": "passed",
+            "worksite_preserved": True,
+        }
+
+    monkeypatch.setattr(SCENARIO_REGISTRY.get("copy-page"), "execute", preserved_copy)
+    args = _args(tmp_path / "run", "copy-page")
+    args.keep_worksite = True
+
+    result = asyncio.run(
+        validation.run_validate(
+            args,
+            RuntimeOptions(args.run_dir, 1_800, False, False),
+        )
+    )
+
+    assert FakeLifecycle.instances[0].closed is False
+    assert result["lifecycle"]["status"] == "preserved_open"
+    assert result["ordered_steps"][-1] == "preserve-source-notebook"
+
+
 def test_cli_exposes_flat_scenarios_and_special_all_entry() -> None:
     parser = build_parser()
     choices = next(
@@ -333,7 +383,7 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
 
     async def fake_fixture(args, options, client, _notebook, _path, spec):
         assert client is FakeMCP.active
-        assert spec is SCENARIO_SPECS[args.scenario]
+        assert spec == SCENARIO_REGISTRY.get(args.scenario).runtime_spec(args)
         calls.append("fixture")
         manifest = _manifest(options.run_dir, args.notebook_name)
         test_utils.write_json(options.run_dir / "manifest.json", manifest)
@@ -517,6 +567,40 @@ def test_copy_notebook_finalization_closes_source_lease_and_preserves_both_paths
     assert copy_path.exists()
     assert "close_notebook" in SCENARIO_SPECS["copy-notebook"].tool_allowlist
     assert "delete_section" not in SCENARIO_SPECS["copy-notebook"].tool_allowlist
+
+
+def test_copy_notebook_keep_worksite_preserves_open_source_and_target_path(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    wrapper = FakeLifecycle(run_dir, timeout_seconds=180)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+    manifest = _manifest(run_dir)
+    copy_path = (run_dir / "notebook-copies" / "Copy").resolve()
+    copy_path.mkdir(parents=True)
+    test_utils.write_json(
+        test_utils.scenario_dir(run_dir, "copy-notebook") / "worksite.json",
+        {
+            "target_path": str(copy_path),
+            "manual_cleanup_required": True,
+        },
+    )
+    args = _args(run_dir, "copy-notebook")
+    args.keep_worksite = True
+
+    result = asyncio.run(
+        validation.finalize_notebook(
+            args,
+            RuntimeOptions(run_dir, 180, False, False),
+            manifest,
+            wrapper=wrapper,
+        )
+    )
+
+    assert wrapper.closed is False
+    assert result["status"] == "preserved_open"
+    assert set(result["preserved_paths"]) == {
+        manifest["disposable_targets"]["source_notebook_path"],
+        str(copy_path),
+    }
 
 
 def test_keep_validates_lease_but_does_not_close(tmp_path) -> None:

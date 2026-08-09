@@ -31,7 +31,7 @@
 - 一个 scenario 最多启动一个 MCP child process。其静态 spec 只能包含该 scenario 的 fixture、mutation、evidence read 和 restore/cleanup 所必需的完整最小权限闭包。
 - Fixture 创建前，通过一次 `health_check` 核对精确的 policy、tool allowlist、timeout 和适用的 Copy budget。绝不能合并不同 scenario 的权限，也不能在启动后扩权。
 - Source Notebook 的 create/get/close 只属于窄 lifecycle wrapper，并受精确 ID/name/path lease 约束。Fixture 创建必须留在 scenario MCP process 内。
-- 使用绑定到 manifest 的精确 ID 和最新 confirmation field。可恢复操作必须 restore 并验证状态；不可恢复操作只能触及 manifest allowlist 中的 disposable target。
+- 使用绑定到 manifest 的精确 ID 和最新 confirmation field。可恢复操作默认必须 restore 并验证状态。每个具名 scenario 都可在用户显式传入 `--keep-worksite` 时，于 after/read-back 验证后跳过其契约内 restore/cleanup 并保留动作现场；本来就不可恢复的 scenario 则保留其既定最终状态。该模式必须保持源 Notebook 打开，在 evidence 中记录全部精确目标 ID 和人工清理要求，且不得由 `all` 透传。不可恢复操作只能触及 manifest allowlist 中的 disposable target。
 - Delete scenario 必须保持非永久删除。绝不能删除本地 Notebook 或 Copy directory。出现 mutation 失败、`copy_only`、restore 失败、fidelity 失败或状态不确定时，应以非零状态退出、保持 source Notebook 打开并保留全部 evidence。
 - 重建式 Move 必须保持严格：`copy_only`、source 未删除或 fidelity gate 失败都不算成功，不得跳过或降级处理。
 
@@ -40,4 +40,5 @@
 - 任何新增或修改的非只读生产 tool，都必须具备具名 scenario、静态 policy/allowlist、隔离 fixture、before/after evidence、失败 handoff，以及 `README.md` 中记录的精确用户命令。
 - CLI、lifecycle、permission、registry 或 evidence 行为变化时，同步维护本文件、manual-validation README、相关开发文档和合同测试。
 - Dry-run 不得创建目录、启动 MCP 或访问 OneNote。它必须展示最终名称和路径、有序阶段、权限、allowlist、budget 及 lifecycle plan。
+- `--keep-worksite` 是所有具名 scenario 的公共、默认关闭选项，但不得属于或由特殊批处理入口 `all` 透传，也不得扩展任何 scenario 的 policy/tool allowlist 或改变失败保留语义。合同测试必须证明默认 restore/cleanup 仍执行、显式保留时跳过适用的 restore/cleanup、写入精确 `worksite.json` 且 source lifecycle 保持 open。
 - 合同测试必须覆盖 parser/registry 行为、最小权限、redaction/content-free audit、lifecycle lease、失败现场保留、严格安全门限，以及 `all` 只运行显式纳入 scenario 的保证。

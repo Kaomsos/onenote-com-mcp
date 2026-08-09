@@ -82,6 +82,12 @@ def _profile(
 
 DELETE_SCENARIO_POLICY = ScenarioPolicy(writes_enabled=True, deletes_enabled=True)
 CREATE_FIXTURE_TOOLS = set(CREATE_TOOLS) - {"create_notebook"}
+LAYERED_PAGE_FIXTURE_TOOLS = {
+    "create_page",
+    "append_to_page",
+    "add_image_to_page",
+    "reorder_page",
+}
 
 SCENARIO_SPECS = {
     "create": ScenarioSpec(
@@ -162,73 +168,120 @@ SCENARIO_SPECS = {
         "copy-page",
         _profile(
             "rich-page-copy",
-            ("Source/Parent[rich text+table+image]", "Destination"),
-            ("move_source", "parent_page", "disposable_section"),
-            {"create_section", "create_page", "append_to_page", "add_image_to_page"},
-            content=("RichText", "Table", "Image", "Outline"),
+            (
+                "Source/Rich-Page[strict rich text+table+image]",
+                "Source/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "Destination",
+            ),
+            ("move_source", "parent_page", "semantic_page", "disposable_section"),
+            {"create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
+            content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
+            checks=(
+                "strict parent uses canonical read-back verification",
+                "semantic child uses List/Tag semantic read-back verification",
+            ),
         ),
         COPY_POLICY,
         frozenset(
             COPY_TOOLS
-            | {"create_section", "create_page", "append_to_page", "add_image_to_page"}
+            | {"create_section"}
+            | LAYERED_PAGE_FIXTURE_TOOLS
         ),
     ),
     "copy-section": ScenarioSpec(
         "copy-section",
         _profile(
             "rich-section-copy",
-            ("Source-Group/Move-Source/Rich-Page", "Group-B"),
-            ("group_a", "group_b", "move_source", "parent_page"),
-            {"create_section_group", "create_section", "create_page", "append_to_page", "add_image_to_page"},
-            content=("RichText", "Table", "Image", "Outline"),
+            (
+                "Source-Group/Move-Source/Rich-Page[strict rich text+table+image]",
+                "Source-Group/Move-Source/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "Group-B",
+            ),
+            ("group_a", "group_b", "move_source", "parent_page", "semantic_page"),
+            {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
+            content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
+            checks=(
+                "strict parent uses canonical read-back verification",
+                "semantic child uses List/Tag semantic read-back verification",
+            ),
         ),
         COPY_POLICY,
         frozenset(
             COPY_TOOLS
-            | {"create_section_group", "create_section", "create_page", "append_to_page", "add_image_to_page"}
+            | {"create_section_group", "create_section"}
+            | LAYERED_PAGE_FIXTURE_TOOLS
         ),
     ),
     "copy-section-group": ScenarioSpec(
         "copy-section-group",
         _profile(
             "rich-group-copy",
-            ("Group-A/Move-Source/Rich-Page",),
-            ("group_a", "move_source", "parent_page"),
-            {"create_section_group", "create_section", "create_page", "append_to_page", "add_image_to_page"},
-            content=("RichText", "Table", "Image", "Outline"),
+            (
+                "Group-A/Move-Source/Rich-Page[strict rich text+table+image]",
+                "Group-A/Move-Source/Rich-Page/List-Tag-Page[semantic list+tag]",
+            ),
+            ("group_a", "move_source", "parent_page", "semantic_page"),
+            {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
+            content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
+            checks=(
+                "strict parent uses canonical read-back verification",
+                "semantic child uses List/Tag semantic read-back verification",
+            ),
         ),
         COPY_POLICY,
         frozenset(
             COPY_TOOLS
-            | {"create_section_group", "create_section", "create_page", "append_to_page", "add_image_to_page"}
+            | {"create_section_group", "create_section"}
+            | LAYERED_PAGE_FIXTURE_TOOLS
         ),
     ),
     "copy-notebook": ScenarioSpec(
         "copy-notebook",
         _profile(
             "rich-notebook-copy",
-            ("Move-Source/Rich-Page", "allowlisted local Copy root"),
-            ("move_source", "parent_page"),
-            {"create_section", "create_page", "append_to_page", "add_image_to_page"},
-            content=("RichText", "Table", "Image", "Outline"),
+            (
+                "Move-Source/Rich-Page[strict rich text+table+image]",
+                "Move-Source/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "allowlisted local Copy root",
+            ),
+            ("move_source", "parent_page", "semantic_page"),
+            {"create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
+            content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
+            checks=(
+                "strict parent uses canonical read-back verification",
+                "semantic child uses List/Tag semantic read-back verification",
+            ),
         ),
         COPY_NO_DELETE_POLICY,
         frozenset(
             COPY_NOTEBOOK_TOOLS
-            | {"create_section", "create_page", "append_to_page", "add_image_to_page"}
+            | {"create_section"}
+            | LAYERED_PAGE_FIXTURE_TOOLS
         ),
     ),
     "reconstructive-move-page": ScenarioSpec(
         "reconstructive-move-page",
         _profile(
             "disposable-page-move",
-            ("Source/Disposable-Page", "Destination"),
-            ("disposable_page", "move_source"),
-            {"create_section", "create_page"},
-            content=("plain_text",),
+            (
+                "Source/Disposable-Page[strict rich text+table+image]",
+                "Source/Disposable-Page/List-Tag-Page[semantic list+tag]",
+                "Destination",
+            ),
+            ("disposable_page", "semantic_page", "move_source"),
+            {"create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
+            content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
+            checks=(
+                "strict parent uses canonical read-back verification",
+                "semantic child uses List/Tag semantic read-back verification",
+            ),
         ),
         RECONSTRUCTIVE_MOVE_PAGE_POLICY,
-        frozenset(RECONSTRUCTIVE_MOVE_PAGE_TOOLS | {"create_section", "create_page"}),
+        frozenset(
+            RECONSTRUCTIVE_MOVE_PAGE_TOOLS
+            | {"create_section"}
+            | LAYERED_PAGE_FIXTURE_TOOLS
+        ),
     ),
 }
 

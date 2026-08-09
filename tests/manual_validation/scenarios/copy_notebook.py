@@ -11,8 +11,8 @@ from .common.registry import SCENARIO_REGISTRY
 class CopyNotebookScenario(CopyScenario):
     name = "copy-notebook"
     help_text = (
-        "GATED: create, copy and close the Notebook while preserving its folder, "
-        "report, then close or keep."
+        "GATED: create and copy the Notebook; close the copy by default or preserve "
+        "both open Notebooks as a verified worksite for inspection."
     )
 
     execute_copy = staticmethod(execute_copy)

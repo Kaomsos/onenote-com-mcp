@@ -7,6 +7,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from tests.manual_validation import test_utils
 from tests.manual_validation.runner import build_parser, main
 from tests.manual_validation.runtime import EXIT_MCP
@@ -76,6 +78,138 @@ def test_p2_scenarios_default_to_copy_execute_timeout() -> None:
     assert move_args.timeout == 1_800
     assert rename_args.timeout == 180
 
+
+def test_keep_worksite_is_available_to_every_named_action_but_not_all() -> None:
+    parser = build_parser()
+    for scenario in (
+        "create",
+        "rename",
+        "reorder",
+        "move",
+        "delete",
+        "copy-page",
+        "copy-section",
+        "copy-section-group",
+        "copy-notebook",
+        "reconstructive-move-page",
+    ):
+        args = parser.parse_args([scenario, "--keep-worksite"])
+        assert args.keep_worksite is True
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["all", "--keep-worksite"])
+
+
+@pytest.mark.parametrize(
+    ("scenario", "expected_cleanup"),
+    [
+        ("create", "preserve-created-fixture"),
+        ("rename", "preserve-renamed-target"),
+        ("reorder", "preserve-reordered-page"),
+        ("move", "preserve-moved-section"),
+        ("delete", "preserve-recycle-bin-state"),
+        ("copy-page", "preserve-active-copy-targets"),
+        ("copy-section", "preserve-active-copy-targets"),
+        ("copy-section-group", "preserve-active-copy-targets"),
+        ("copy-notebook", "preserve-open-copy-notebook"),
+        (
+            "reconstructive-move-page",
+            "preserve-copy-and-nonpermanently-deleted-source",
+        ),
+    ],
+)
+def test_every_named_action_has_a_bounded_keep_worksite_dry_run(
+    scenario, expected_cleanup, tmp_path, capsys
+) -> None:
+    run_dir = tmp_path / scenario
+    assert main(
+        [
+            scenario,
+            "--run-dir",
+            str(run_dir),
+            "--keep-worksite",
+            "--dry-run",
+            "--json",
+        ]
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["lifecycle"] == "keep"
+    assert payload["worksite"] == {
+        "preserved": True,
+        "target_cleanup": expected_cleanup,
+    }
+    assert payload["ordered_steps"][-1]["step"] == "report"
+    assert not run_dir.exists()
+
+
+def test_semantic_content_checkpoint_option_was_removed() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["copy-page", "--verify-semantic-content"])
+
+
+def test_keep_worksite_dry_run_preserves_targets_and_source_notebook(tmp_path, capsys) -> None:
+    run_dir = tmp_path / "run"
+    assert main(
+        [
+            "copy-page",
+            "--run-dir",
+            str(run_dir),
+            "--keep-worksite",
+            "--dry-run",
+            "--json",
+        ]
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["lifecycle"] == "keep"
+    assert payload["worksite"] == {
+        "preserved": True,
+        "target_cleanup": "preserve-active-copy-targets",
+    }
+    assert payload["scenario_spec"]["mutation_policy"]["deletes_enabled"] is False
+    assert not {
+        "delete_page",
+        "delete_section",
+        "delete_section_group",
+    } & set(payload["scenario_spec"]["tool_allowlist"])
+    assert [step["step"] for step in payload["ordered_steps"]] == [
+        "create-source-notebook",
+        "copy-page",
+        "report",
+    ]
+    assert not run_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "copy-page",
+        "copy-section",
+        "copy-section-group",
+        "copy-notebook",
+        "reconstructive-move-page",
+    ],
+)
+def test_page_copy_dry_runs_declare_layered_automatic_fixture(
+    scenario, tmp_path, capsys
+) -> None:
+    run_dir = tmp_path / "run"
+    assert main([scenario, "--run-dir", str(run_dir), "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "human_checkpoint" not in payload
+    assert {"Image", "List", "Outline", "RichText", "Table", "Tag"} <= set(
+        payload["fixture_profile"]["content_capabilities"]
+    )
+    assert any(
+        "List-Tag-Page" in path
+        for path in payload["fixture_profile"]["expected_structure"]
+    )
+    assert "reorder_page" in payload["scenario_spec"]["tool_allowlist"]
+    assert not run_dir.exists()
+
 def test_dry_run_does_not_start_mcp(tmp_path, capsys) -> None:
     exit_code = main(
         [
@@ -136,11 +270,18 @@ def test_internal_report_records_manual_environment_without_mcp(tmp_path) -> Non
   "run_id": "run",
   "notebook": {"id": "notebook-id", "name": "Notebook"},
   "structure": {},
+  "copy_scenario": {
+    "validated_content_types": ["Image", "List", "Outline", "RichText", "Table", "Tag"]
+  },
   "copy_fixture": {
     "page_id": "page-id",
-    "automated_content": ["rich_text", "table", "image"],
+    "automated_content": ["rich_text", "table", "image", "list", "tag"],
     "manual_content": ["file_attachment", "ink", "media"],
-    "observed_object_types": ["Image", "Outline"]
+    "observed_object_types": ["Image", "Outline"],
+    "semantic_page": {
+      "page_id": "semantic-page-id",
+      "observed_capabilities": ["List", "Tag"]
+    }
   }
 }
 """,
@@ -151,17 +292,50 @@ def test_internal_report_records_manual_environment_without_mcp(tmp_path) -> Non
     test_utils.write_json(
         scenario / "plan.json",
         {
-            "content_capabilities": ["Image", "Outline", "RichText", "Table"],
-            "copyability": {"lossless_candidate": False},
+            "content_capabilities": ["Image", "List", "Outline", "RichText", "Table", "Tag"],
+            "copyability": {"lossless_candidate": True},
         },
     )
     test_utils.write_json(
         scenario / "copy-result.json",
-        {"copy_report": {"verified": True, "lossless": False}},
+        {
+            "copy_report": {
+                "verified": True,
+                "lossless": True,
+                "page_results": [
+                    {
+                        "source_page_id": "page-id",
+                        "target_page_id": "strict-target",
+                        "equivalence": {
+                            "verification_tier": "strict_canonical",
+                            "equivalent": True,
+                        },
+                    },
+                    {
+                        "source_page_id": "semantic-page-id",
+                        "target_page_id": "semantic-target",
+                        "equivalence": {
+                            "verification_tier": "semantic_list_tag",
+                            "equivalent": True,
+                        },
+                    },
+                ],
+            }
+        },
     )
     test_utils.write_json(
         scenario / "result.json",
-        {"scenario": "copy-page", "status": "passed", "target_id": "new-page", "restored": True},
+        {
+            "scenario": "copy-page",
+            "status": "passed",
+            "target_id": "new-page",
+            "restored": False,
+            "worksite_preserved": True,
+            "remaining_state": {
+                "manual_cleanup_required": True,
+                "target_ids": ["new-page"],
+            },
+        },
     )
     result = asyncio.run(
         run_report(
@@ -177,6 +351,15 @@ def test_internal_report_records_manual_environment_without_mcp(tmp_path) -> Non
     report = (run_dir / "report.md").read_text(encoding="utf-8")
     assert '"onenote_version": "16.0-test"' in manifest
     assert "OneNote version: `16.0-test`" in report
-    assert "Automated content: `rich_text, table, image`" in report
-    assert "Planned content capabilities: `Image, Outline, RichText, Table`" in report
+    assert "Automated content: `rich_text, table, image, list, tag`" in report
+    assert "Validated content types: `Image, List, Outline, RichText, Table, Tag`" in report
+    assert "Planned content capabilities: `Image, List, Outline, RichText, Table, Tag`" in report
+    assert "Semantic Page ID: `semantic-page-id`" in report
+    assert "Semantic capabilities: `List, Tag`" in report
+    assert "Semantic acceptance tier: `semantic_list_tag`" in report
     assert "Copy verified: `True`" in report
+    assert "tier `strict_canonical`, equivalent `True`" in report
+    assert "tier `semantic_list_tag`, equivalent `True`" in report
+    assert "Worksite preserved: `True`" in report
+    assert "Manual cleanup required: `True`" in report
+    assert "Preserved target IDs: `new-page`" in report

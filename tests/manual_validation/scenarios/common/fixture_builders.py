@@ -9,6 +9,8 @@ import sys
 from typing import Any
 import xml.etree.ElementTree as ET
 
+from local_onenote_mcp.page import text_from_page_xml
+
 from ...mcp_stdio_client import (
     COPY_NO_DELETE_POLICY,
     COPY_POLICY,
@@ -28,8 +30,10 @@ from ...test_utils import (
     write_json,
 )
 from .config import (
+    AUTOMATED_COPY_CAPABILITIES,
     COPY_FIXTURE_MARKER,
     COPY_FIXTURE_PNG,
+    RELAXED_COPY_CAPABILITIES,
 )
 from .lookup import exactly_one
 
@@ -204,6 +208,108 @@ async def ensure_copy_rich_fixture(
     }
     return current, evidence
 
+
+async def ensure_copy_list_tag_fixture(
+    client: MCPStdioClient,
+    page: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Idempotently add three native mixed List/To-Do items without raw XML."""
+
+    page_id = str(page["id"])
+    section_id = str(page["section_id"])
+    fixture_text = ("为", "答复", "3发送")
+    xml = str(
+        (await client.call_tool(
+            "get_page_xml",
+            {"page_id": page_id, "page_info": "all"},
+        ))["xml"]
+    )
+
+    def semantic_counts(value: str) -> tuple[int, int, int]:
+        nodes = list(ET.fromstring(value).iter())
+        return (
+            sum(node.tag.rsplit("}", 1)[-1] == "List" for node in nodes),
+            sum(node.tag.rsplit("}", 1)[-1] == "Tag" for node in nodes),
+            sum(node.tag.rsplit("}", 1)[-1] == "TagDef" for node in nodes),
+        )
+
+    async def current_page() -> dict[str, Any]:
+        listed = await client.call_tool("list_pages", {"section_id": section_id})
+        current = next((item for item in listed.get("pages", []) if item.get("id") == page_id), None)
+        if current is None:
+            raise RunnerFailure(f"List/Tag fixture Page disappeared: {page_id}", EXIT_MCP)
+        return current
+
+    list_count, tag_count, tag_def_count = semantic_counts(xml)
+    visible_text = text_from_page_xml(xml)
+    fixture_complete = (
+        list_count == 3
+        and tag_count == 3
+        and tag_def_count >= 1
+        and all(value in visible_text for value in fixture_text)
+    )
+    if not fixture_complete and (list_count or tag_count or tag_def_count):
+        raise InvariantFailure(
+            "Programmatic List/Tag fixture found partial pre-existing semantic content; "
+            "the fresh Page was not modified further."
+        )
+    if not fixture_complete:
+        current = await current_page()
+        await client.call_tool(
+            "append_to_page",
+            {
+                "page_id": page_id,
+                "content": (
+                    '<ol><li data-tag="to-do:completed">为</li>'
+                    '<li data-tag="to-do">答复</li></ol>'
+                    '<ul><li data-tag="to-do:completed">3发送</li></ul>'
+                ),
+                "content_format": "html",
+                "expected_title": display_name(current),
+                "expected_section_id": section_id,
+                "expected_modified": current.get("modified"),
+                "x": 36.0,
+                "y": 120.0,
+            },
+        )
+
+    final_xml = str(
+        (await client.call_tool(
+            "get_page_xml",
+            {"page_id": page_id, "page_info": "all"},
+        ))["xml"]
+    )
+    list_count, tag_count, tag_def_count = semantic_counts(final_xml)
+    visible_text = text_from_page_xml(final_xml)
+    capabilities = set()
+    if list_count == 3:
+        capabilities.add("List")
+    if tag_count == 3 and tag_def_count >= 1:
+        capabilities.add("Tag")
+    missing = sorted(RELAXED_COPY_CAPABILITIES - capabilities)
+    missing_text = [value for value in fixture_text if value not in visible_text]
+    if missing or missing_text:
+        raise InvariantFailure(
+            "Programmatic List/Tag fixture is incomplete; "
+            f"missing capabilities: {missing}; missing visible text: {missing_text}."
+        )
+    evidence = {
+        "page_id": page_id,
+        "verification_tier": "semantic_list_tag",
+        "generated_content": [
+            {"list": "number", "text": "为", "tag": "to-do", "completed": True},
+            {"list": "number", "text": "答复", "tag": "to-do", "completed": False},
+            {"list": "bullet", "text": "3发送", "tag": "to-do", "completed": True},
+        ],
+        "observed_capabilities": sorted(capabilities),
+        "observed_counts": {
+            "List": list_count,
+            "Tag": tag_count,
+            "TagDef": tag_def_count,
+        },
+    }
+    return await current_page(), evidence
+
 def new_manifest(
     run_dir: Path,
     notebook: dict[str, Any],
@@ -241,5 +347,9 @@ def new_manifest(
             "read_attempts": 2,
             "note": "Only transport failures on read-only calls are retried.",
         },
-        "copy_scenario": {"supported": True, "real_backend_confirmed": False},
+        "copy_scenario": {
+            "supported": True,
+            "real_backend_confirmed": True,
+            "validated_content_types": sorted(AUTOMATED_COPY_CAPABILITIES),
+        },
     }

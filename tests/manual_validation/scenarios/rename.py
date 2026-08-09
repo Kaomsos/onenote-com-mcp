@@ -83,6 +83,37 @@ async def _execute_rename(
                 raise InvariantFailure("Rename changed one or more Page XML hashes.")
         except InvariantFailure as exc:
             validation_error = exc
+        if getattr(args, "keep_worksite", False):
+            worksite = {
+                "status": "preserved_after_rename",
+                "target_ids": [current["id"]],
+                "target_id": current["id"],
+                "original_name": original_name,
+                "current_name": display_name(changed) if changed is not None else new_name,
+                "verified": validation_error is None,
+                "manual_cleanup_required": True,
+                "cleanup": (
+                    f"Rename {resource_type} {current['id']} back to {original_name!r} "
+                    "after inspection."
+                ),
+            }
+            write_json(out / "worksite.json", worksite)
+            if validation_error is not None:
+                raise validation_error
+            result = {
+                "scenario": "rename",
+                "status": "passed",
+                "target_id": current["id"],
+                "original_name": original_name,
+                "temporary_name": new_name,
+                "forward_result": forward.get("item"),
+                "restored": False,
+                "worksite_preserved": True,
+                "remaining_state": worksite,
+            }
+            write_json(out / "result.json", result)
+            render_report(options.run_dir)
+            return result
         restore_target = changed or forward.get("item")
         if not isinstance(restore_target, dict):
             raise RestoreFailure("Rename succeeded but no target identity was available for restoration.")
@@ -114,6 +145,7 @@ async def _execute_rename(
             "temporary_name": new_name,
             "forward_result": forward.get("item"),
             "restored": True,
+            "worksite_preserved": False,
         }
         write_json(out / "result.json", result)
         render_report(options.run_dir)
@@ -123,7 +155,7 @@ async def _execute_rename(
 @SCENARIO_REGISTRY.register
 class RenameScenario(Scenario):
     name = "rename"
-    help_text = "GATED: create, rename/restore, report, then close or keep."
+    help_text = "GATED: create, rename/restore or preserve, report, then close or keep."
     registered_for_all = True
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:

@@ -11,11 +11,10 @@ from .common.registry import SCENARIO_REGISTRY
 class CopyPageScenario(CopyScenario):
     name = "copy-page"
     help_text = (
-        "GATED: create, copy the prepared Page subtree and clean up the target, "
-        "report, then close or keep."
+        "GATED: create and copy the prepared Page subtree; clean up by default or "
+        "preserve the verified worksite for inspection."
     )
 
     execute_copy = staticmethod(execute_copy)
-
 
 __all__ = ["CopyPageScenario"]
