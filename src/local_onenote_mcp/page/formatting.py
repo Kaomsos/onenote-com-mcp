@@ -11,7 +11,7 @@ import winreg
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .models import ContentBlock, TableBlock, TableCell, TextBlock
+from .models import ContentBlock, ListBlock, ListItem, NoteTag, TableBlock, TableCell, TextBlock
 
 
 BLOCK_TAGS = {
@@ -173,9 +173,23 @@ class OneNoteHTMLBlockParser(HTMLParser):
         self._current_cell: InlineHTMLSanitizer | None = None
         self._current_cell_header = False
         self._drop_stack: list[str] = []
+        self._list_tag: str | None = None
+        self._list_items: list[ListItem] = []
+        self._current_list_item: InlineHTMLSanitizer | None = None
+        self._current_list_tag: NoteTag | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if tag in {"ol", "ul"} and not self._table_depth:
+            if self._list_tag is not None:
+                raise ValueError("Nested HTML lists are not supported.")
+            self._flush_text()
+            self._list_tag = tag
+            self._list_items = []
+            return
+        if self._list_tag is not None:
+            self._handle_list_starttag(tag, attrs)
+            return
         if tag == "table":
             if self._table_depth == 0:
                 self._flush_text()
@@ -191,6 +205,18 @@ class OneNoteHTMLBlockParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if tag in {"ol", "ul"} and self._list_tag == tag:
+            self._close_list_item()
+            if self._list_items:
+                self.blocks.append(
+                    ListBlock(ordered=tag == "ol", items=self._list_items)
+                )
+            self._list_tag = None
+            self._list_items = []
+            return
+        if self._list_tag is not None:
+            self._handle_list_endtag(tag)
+            return
         if tag == "table" and self._table_depth:
             self._close_cell()
             self._close_row()
@@ -206,6 +232,10 @@ class OneNoteHTMLBlockParser(HTMLParser):
         self._text.handle_endtag(tag)
 
     def handle_data(self, data: str) -> None:
+        if self._list_tag is not None:
+            if self._current_list_item is not None:
+                self._current_list_item.handle_data(data)
+            return
         if self._table_depth:
             if not self._drop_stack and self._current_cell is not None:
                 self._current_cell.handle_data(data)
@@ -213,8 +243,54 @@ class OneNoteHTMLBlockParser(HTMLParser):
         self._text.handle_data(data)
 
     def get_blocks(self) -> list[ContentBlock]:
+        if self._list_tag is not None:
+            raise ValueError("HTML list is missing its closing tag.")
         self._flush_text()
         return self.blocks
+
+    def _handle_list_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag == "li":
+            self._close_list_item()
+            self._current_list_item = InlineHTMLSanitizer()
+            values = {name.casefold(): value for name, value in attrs if value is not None}
+            tag_value = str(values.get("data-tag", "")).strip().casefold()
+            if tag_value:
+                if tag_value not in {"to-do", "to-do:completed"}:
+                    raise ValueError(
+                        "HTML list data-tag must be 'to-do' or 'to-do:completed'."
+                    )
+                self._current_list_tag = NoteTag(
+                    kind="to-do",
+                    completed=tag_value.endswith(":completed"),
+                )
+            else:
+                self._current_list_tag = None
+            return
+        if self._current_list_item is not None:
+            self._current_list_item.handle_starttag(tag, attrs)
+
+    def _handle_list_endtag(self, tag: str) -> None:
+        if tag == "li":
+            self._close_list_item()
+            return
+        if self._current_list_item is not None:
+            self._current_list_item.handle_endtag(tag)
+
+    def _close_list_item(self) -> None:
+        if self._current_list_item is None:
+            return
+        self._list_items.append(
+            ListItem(
+                html=self._current_list_item.get_html(),
+                tag=self._current_list_tag,
+            )
+        )
+        self._current_list_item = None
+        self._current_list_tag = None
 
     def _handle_table_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in {"script", "style"}:

@@ -1,3 +1,5 @@
+import xml.etree.ElementTree as ET
+
 from local_onenote_mcp.page import formatting
 from local_onenote_mcp.page import (
     build_image_page_update_xml,
@@ -6,6 +8,7 @@ from local_onenote_mcp.page import (
     normalize_content,
     text_from_page_xml,
 )
+from local_onenote_mcp.page.builder import tag_definitions_from_page_xml
 from local_onenote_mcp.page.images import image_dimensions, proportional_dimensions
 
 
@@ -77,6 +80,110 @@ def test_html_table_cells_preserve_inline_formatting():
     assert "<strong>Bold</strong>" in xml
     assert "text-decoration:line-through" in xml
     assert 'href="https://example.com"' in xml
+
+
+def test_html_list_with_todo_tags_becomes_native_onenote_xml():
+    xml = build_page_update_xml(
+        "page-id",
+        content=(
+            '<ol><li data-tag="to-do:completed">为</li>'
+            '<li data-tag="to-do">答复</li>'
+            '<li data-tag="to-do:completed">3发送</li></ol>'
+        ),
+        content_format="html",
+    )
+
+    assert '<one:TagDef index="0" type="0" symbol="3"' in xml
+    assert xml.count('<one:Number numberSequence="0" numberFormat="##."/>') == 3
+    assert xml.count('<one:Tag index="0"') == 3
+    assert xml.count('completed="true"') == 2
+    assert xml.count('completed="false"') == 1
+    assert "<![CDATA[为]]>" in xml
+    assert "<![CDATA[答复]]>" in xml
+    assert "<![CDATA[3发送]]>" in xml
+
+
+def test_tagged_list_item_uses_onenote_oe_schema_order():
+    xml = build_page_update_xml(
+        "page-id",
+        content='<ol><li data-tag="to-do">A</li></ol>',
+        content_format="html",
+    )
+
+    root = ET.fromstring(xml)
+    tagged_item = next(
+        node
+        for node in root.iter()
+        if node.tag.rsplit("}", 1)[-1] == "OE"
+        and any(child.tag.rsplit("}", 1)[-1] == "Tag" for child in node)
+    )
+    assert [child.tag.rsplit("}", 1)[-1] for child in tagged_item] == [
+        "Tag",
+        "List",
+        "T",
+    ]
+
+
+def test_html_list_reuses_existing_todo_tag_definition():
+    existing = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:TagDef index="7" type="0" symbol="3" name="To Do"/>
+    </one:Page>"""
+
+    definitions = tag_definitions_from_page_xml(existing)
+    xml = build_page_update_xml(
+        "page-id",
+        content='<ul><li data-tag="to-do">A</li></ul>',
+        content_format="html",
+        existing_tag_definitions=definitions,
+    )
+
+    assert definitions.by_kind == {"to-do": 7}
+    assert definitions.occupied_indices == {7}
+    assert "<one:TagDef" not in xml
+    assert '<one:Bullet bullet="2"/>' in xml
+    assert '<one:Tag index="7" completed="false" disabled="false"/>' in xml
+
+
+def test_every_native_number_list_has_schema_required_number_format():
+    xml = build_page_update_xml(
+        "page-id",
+        content="<ol><li>A</li><li>B</li></ol>",
+        content_format="html",
+    )
+
+    root = ET.fromstring(xml)
+    numbers = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Number"]
+    assert len(numbers) == 2
+    assert all(node.attrib["numberFormat"] == "##." for node in numbers)
+
+
+def test_html_list_does_not_collide_with_an_unrelated_existing_tag_definition():
+    existing = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:TagDef index="0" type="2" symbol="107" name="Mail"/>
+    </one:Page>"""
+
+    xml = build_page_update_xml(
+        "page-id",
+        content='<ul><li data-tag="to-do">A</li></ul>',
+        content_format="html",
+        existing_tag_definitions=tag_definitions_from_page_xml(existing),
+    )
+
+    assert '<one:TagDef index="1" type="0" symbol="3"' in xml
+    assert '<one:Tag index="1" completed="false" disabled="false"/>' in xml
+
+
+def test_html_list_rejects_unknown_native_tag_kind():
+    try:
+        build_page_update_xml(
+            "page-id",
+            content='<ol><li data-tag="important">A</li></ol>',
+            content_format="html",
+        )
+    except ValueError as exc:
+        assert "data-tag" in str(exc)
+    else:
+        raise AssertionError("unsupported data-tag must fail closed")
 
 
 def test_markdown_content_uses_onemore_markdig_html(monkeypatch):

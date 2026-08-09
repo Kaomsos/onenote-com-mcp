@@ -12,7 +12,13 @@ from urllib.parse import quote
 import xml.etree.ElementTree as ET
 
 from ..constants import ONE_NS
-from .parser import collect_page_objects, local_name, parse_xml, text_from_page_xml
+from .parser import (
+    collect_page_objects,
+    html_fragment_to_text,
+    local_name,
+    parse_xml,
+    text_from_page_xml,
+)
 
 
 ET.register_namespace("one", ONE_NS)
@@ -29,7 +35,12 @@ COPYABLE_CONTENT_ROOTS = {
     "MediaFile",
 }
 SUPPORTING_ROOTS = {"Title", "PageSettings", "QuickStyleDef", "TagDef"}
-VALIDATED_COPY_CONTENT_TYPES: frozenset[str] = frozenset()
+VALIDATED_COPY_CONTENT_TYPES: frozenset[str] = frozenset(
+    {"Image", "List", "Outline", "RichText", "Table", "Tag"}
+)
+STRICT_CANONICAL_VERIFICATION = "strict_canonical"
+SEMANTIC_LIST_TAG_VERIFICATION = "semantic_list_tag"
+SEMANTIC_LIST_TAG_PAGE_TYPES = frozenset({"Outline", "RichText", "List", "Tag"})
 
 # OneNote's COM API does not expose a runtime schema-introspection API.  Keep
 # this list deliberately conservative: a future/extension element must not be
@@ -74,8 +85,15 @@ KNOWN_PAGE_XML_NODES = {
 
 GENERATED_OBJECT_ATTRIBUTES = {"objectID", "callbackID"}
 VOLATILE_ATTRIBUTES = {
+    "author",
+    "authorInitials",
+    "authorResolutionID",
+    "creationTime",
     "dateTime",
     "lastModifiedTime",
+    "lastModifiedBy",
+    "lastModifiedByInitials",
+    "lastModifiedByResolutionID",
     "isCurrentlyViewed",
     "selected",
     "isSelected",
@@ -397,7 +415,65 @@ def page_content_type_counts(xml: str) -> dict[str, int]:
     return {kind: count for kind, count in sorted(counts.items()) if count}
 
 
-def page_equivalence(expected_xml: str, actual_xml: str) -> dict[str, Any]:
+def copy_verification_tier(content_types: Iterable[str]) -> str:
+    """Select the narrowest read-back tier supported by a Page's content."""
+
+    observed = set(content_types)
+    return (
+        SEMANTIC_LIST_TAG_VERIFICATION
+        if {"List", "Tag"}.intersection(observed)
+        and observed.issubset(SEMANTIC_LIST_TAG_PAGE_TYPES)
+        else STRICT_CANONICAL_VERIFICATION
+    )
+
+
+def semantic_list_tag_projection(xml: str) -> list[dict[str, Any]]:
+    """Project List/Tag meaning while ignoring COM-generated indices and layout."""
+
+    root = parse_xml(xml)
+    tag_definitions: dict[str, dict[str, str]] = {}
+    for node in root.iter():
+        if local_name(node.tag) != "TagDef" or "index" not in node.attrib:
+            continue
+        tag_definitions[node.attrib["index"]] = {
+            "type": node.attrib.get("type", ""),
+            "symbol": node.attrib.get("symbol", ""),
+        }
+
+    projection: list[dict[str, Any]] = []
+    for node in root.iter():
+        if local_name(node.tag) != "OE":
+            continue
+        children = list(node)
+        list_node = next((child for child in children if local_name(child.tag) == "List"), None)
+        tag_node = next((child for child in children if local_name(child.tag) == "Tag"), None)
+        if list_node is None and tag_node is None:
+            continue
+        list_kind: str | None = None
+        if list_node is not None and list(list_node):
+            list_kind = local_name(list(list_node)[0].tag).casefold()
+        text = "\n".join(
+            html_fragment_to_text(child.text or "")
+            for child in children
+            if local_name(child.tag) == "T"
+        ).strip()
+        tag: dict[str, Any] | None = None
+        if tag_node is not None:
+            tag = {
+                **tag_definitions.get(tag_node.attrib.get("index", ""), {"type": "", "symbol": ""}),
+                "completed": tag_node.attrib.get("completed", "false").casefold() == "true",
+                "disabled": tag_node.attrib.get("disabled", "false").casefold() == "true",
+            }
+        projection.append({"list_kind": list_kind, "text": text, "tag": tag})
+    return projection
+
+
+def page_equivalence(
+    expected_xml: str,
+    actual_xml: str,
+    *,
+    verification_tier: str = STRICT_CANONICAL_VERIFICATION,
+) -> dict[str, Any]:
     """Return the stable content checks used by Copy and reconstructive Move."""
 
     checks = {
@@ -407,4 +483,19 @@ def page_equivalence(expected_xml: str, actual_xml: str) -> dict[str, Any]:
         == page_content_type_counts(actual_xml),
         "binary_sha256": page_binary_hashes(expected_xml) == page_binary_hashes(actual_xml),
     }
-    return {"equivalent": all(checks.values()), "checks": checks}
+    if verification_tier == STRICT_CANONICAL_VERIFICATION:
+        acceptance_checks = list(checks)
+    elif verification_tier == SEMANTIC_LIST_TAG_VERIFICATION:
+        checks["semantic_list_tag"] = (
+            semantic_list_tag_projection(expected_xml)
+            == semantic_list_tag_projection(actual_xml)
+        )
+        acceptance_checks = ["visible_text", "binary_sha256", "semantic_list_tag"]
+    else:
+        raise ValueError(f"Unsupported Copy verification tier: {verification_tier}")
+    return {
+        "equivalent": all(checks[name] for name in acceptance_checks),
+        "verification_tier": verification_tier,
+        "acceptance_checks": acceptance_checks,
+        "checks": checks,
+    }

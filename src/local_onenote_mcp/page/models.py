@@ -21,4 +21,22 @@ class TableBlock:
     rows: list[list[TableCell]]
 
 
-ContentBlock = TextBlock | TableBlock
+@dataclass
+class NoteTag:
+    kind: str
+    completed: bool = False
+
+
+@dataclass
+class ListItem:
+    html: str
+    tag: NoteTag | None = None
+
+
+@dataclass
+class ListBlock:
+    ordered: bool
+    items: list[ListItem]
+
+
+ContentBlock = TextBlock | TableBlock | ListBlock

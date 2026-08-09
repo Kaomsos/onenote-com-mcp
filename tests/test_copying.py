@@ -6,7 +6,11 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from local_onenote_mcp import server
-from local_onenote_mcp.page import page_equivalence, transform_page_for_copy
+from local_onenote_mcp.page import (
+    copy_verification_tier,
+    page_equivalence,
+    transform_page_for_copy,
+)
 from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.tools.copying import copy_page, plan_copy
 
@@ -258,7 +262,7 @@ def install_recursive_execute_fakes(monkeypatch):
     return state
 
 
-def test_page_copy_transform_strips_ids_rewrites_links_and_reports_unverified_content():
+def test_page_copy_transform_strips_ids_rewrites_links_and_accepts_validated_content():
     source = page_xml(
         "{source-page}",
         "Title",
@@ -280,9 +284,9 @@ def test_page_copy_transform_strips_ids_rewrites_links_and_reports_unverified_co
     assert "%7Btarget-page%7D" in result["xml"]
     assert "outline-id" not in result["xml"]
     assert "semantic-style-id" in result["xml"]
-    assert any(issue["code"] == "content_type_unverified" for issue in result["issues"])
+    assert not any(issue["code"] == "content_type_unverified" for issue in result["issues"])
     assert not any(issue["code"] == "content_object_link_not_rewritable" for issue in result["issues"])
-    assert result["lossless_candidate"] is False
+    assert result["lossless_candidate"] is True
 
 
 def test_transform_rewrites_cross_page_internal_link_and_preserves_external_link():
@@ -387,16 +391,52 @@ def test_transform_builds_safe_title_when_original_title_block_is_unsupported():
 
 
 def test_page_equivalence_ignores_generated_ids_and_clocks():
-    first = page_xml("one", "Title")
+    first = page_xml("one", "Title").replace(
+        "<one:OE>",
+        '<one:OE author="Original" authorInitials="OR" creationTime="before" '
+        'lastModifiedBy="Original" lastModifiedByInitials="OR">',
+        1,
+    )
     first = first.replace('ID="one"', 'ID="one" name="Old" pageLevel="2"')
-    second = page_xml("two", "Title").replace(
-        'ID="two"', 'ID="two" name="New" pageLevel="1"'
-    ).replace('lastModifiedTime="clock"', 'lastModifiedTime="later"')
+    second = (
+        page_xml("two", "Title")
+        .replace(
+            "<one:OE>",
+            '<one:OE author="Copy" authorInitials="CP" creationTime="after" '
+            'lastModifiedBy="Copy" lastModifiedByInitials="CP">',
+            1,
+        )
+        .replace('ID="two"', 'ID="two" name="New" pageLevel="1"')
+        .replace('lastModifiedTime="clock"', 'lastModifiedTime="later"')
+    )
 
     result = page_equivalence(first, second)
 
     assert result["equivalent"] is True
     assert all(result["checks"].values())
+
+
+def test_transform_drops_one_note_generated_authorship_metadata():
+    source = page_xml("source", "Title", "Body").replace(
+        '<one:Outline objectID="outline-id">',
+        '<one:Outline objectID="outline-id" author="Original" authorInitials="OR" '
+        'authorResolutionID="author-id" creationTime="before" '
+        'lastModifiedBy="Original" lastModifiedByInitials="OR" '
+        'lastModifiedByResolutionID="modifier-id">',
+    )
+
+    result = transform_page_for_copy(source, "target", {"source": "target"})
+
+    for attribute in (
+        "author",
+        "authorInitials",
+        "authorResolutionID",
+        "creationTime",
+        "lastModifiedBy",
+        "lastModifiedByInitials",
+        "lastModifiedByResolutionID",
+    ):
+        assert f"{attribute}=" not in result["xml"]
 
 
 def test_page_equivalence_accepts_new_generated_content_object_ids():
@@ -445,12 +485,74 @@ def test_binary_equivalence_hashes_decoded_bytes_and_ignores_line_wrapping():
     assert result["checks"]["canonical_xml"] is True
 
 
-def test_transform_reports_semantic_rich_text_table_and_list_capabilities():
+def test_semantic_list_tag_equivalence_ignores_com_reserialization():
+    expected = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:TagDef index="0" type="0" symbol="3" name="To Do"/>
+    <one:Outline><one:OEChildren>
+      <one:OE><one:List><one:Number numberSequence="0"/></one:List><one:Tag index="0" completed="true" disabled="false"/><one:T>为</one:T></one:OE>
+      <one:OE><one:List><one:Number numberSequence="0"/></one:List><one:Tag index="0" completed="false" disabled="false"/><one:T>答复</one:T></one:OE>
+      <one:OE><one:List><one:Number numberSequence="0"/></one:List><one:Tag index="0" completed="true" disabled="false"/><one:T>3发送</one:T></one:OE>
+    </one:OEChildren></one:Outline></one:Page>"""
+    actual = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="target">
+    <one:TagDef index="6" type="0" symbol="3" name="待办事项" creationTime="later"/>
+    <one:Outline objectID="generated-a"><one:OEChildren>
+      <one:OE objectID="generated-1"><one:List><one:Number numberSequence="4"/></one:List><one:Tag index="6" completed="true" disabled="false" creationTime="later"/><one:T>为</one:T></one:OE>
+    </one:OEChildren></one:Outline>
+    <one:Outline objectID="generated-b"><one:OEChildren>
+      <one:OE><one:List><one:Number numberSequence="4"/></one:List><one:Tag index="6" completed="false" disabled="false"/><one:T>答复</one:T></one:OE>
+      <one:OE><one:List><one:Number numberSequence="4"/></one:List><one:Tag index="6" completed="true" disabled="false"/><one:T>3发送</one:T></one:OE>
+    </one:OEChildren></one:Outline></one:Page>"""
+
+    result = page_equivalence(
+        expected,
+        actual,
+        verification_tier=copy_verification_tier(
+            ["Outline", "RichText", "List", "Tag"]
+        ),
+    )
+
+    assert result["verification_tier"] == "semantic_list_tag"
+    assert result["equivalent"] is True
+    assert result["checks"]["canonical_xml"] is False
+    assert result["checks"]["content_objects"] is False
+    assert result["checks"]["semantic_list_tag"] is True
+    assert result["acceptance_checks"] == [
+        "visible_text",
+        "binary_sha256",
+        "semantic_list_tag",
+    ]
+
+
+def test_semantic_list_tag_equivalence_rejects_changed_completion():
+    expected = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:TagDef index="0" type="0" symbol="3"/><one:Outline><one:OEChildren>
+    <one:OE><one:List><one:Bullet bullet="2"/></one:List><one:Tag index="0" completed="false"/><one:T>A</one:T></one:OE>
+    </one:OEChildren></one:Outline></one:Page>"""
+    actual = expected.replace('completed="false"', 'completed="true"')
+
+    result = page_equivalence(
+        expected,
+        actual,
+        verification_tier="semantic_list_tag",
+    )
+
+    assert result["equivalent"] is False
+    assert result["checks"]["visible_text"] is True
+    assert result["checks"]["semantic_list_tag"] is False
+
+
+def test_strict_copy_verification_remains_default_for_validated_content():
+    assert copy_verification_tier(["Outline", "RichText", "Table", "Image"]) == "strict_canonical"
+    assert copy_verification_tier(["Outline", "List", "Tag", "Table"]) == "strict_canonical"
+
+
+def test_transform_reports_validated_rich_text_table_list_and_tag_capabilities():
     source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
     <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:TagDef index="0" type="0" symbol="3" name="To Do"/>
     <one:Outline objectID="outline"><one:OEChildren>
       <one:OE objectID="rich"><one:T><![CDATA[<strong>Rich</strong>]]></one:T></one:OE>
-      <one:OE><one:List><one:Bullet bullet="2"/></one:List><one:T>Item</one:T></one:OE>
+      <one:OE><one:Tag index="0" completed="false"/><one:List><one:Bullet bullet="2"/></one:List><one:T>Item</one:T></one:OE>
       <one:Table><one:Columns><one:Column index="0" width="100"/></one:Columns>
         <one:Row><one:Cell><one:OEChildren><one:OE><one:T>Cell</one:T></one:OE></one:OEChildren></one:Cell></one:Row>
       </one:Table>
@@ -458,13 +560,28 @@ def test_transform_reports_semantic_rich_text_table_and_list_capabilities():
 
     result = transform_page_for_copy(source, "target", {"p": "target"})
 
-    assert result["content_types"] == ["List", "Outline", "RichText", "Table"]
-    unverified = {
-        issue["content_type"]
-        for issue in result["issues"]
-        if issue["code"] == "content_type_unverified"
-    }
-    assert unverified == {"List", "Outline", "RichText", "Table"}
+    assert result["content_types"] == ["List", "Outline", "RichText", "Table", "Tag"]
+    assert result["lossless_candidate"] is True
+    assert not any(issue["code"] == "content_type_unverified" for issue in result["issues"])
+
+
+def test_default_validated_copy_types_are_lossless_candidates():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:Outline><one:OEChildren>
+      <one:OE><one:T><![CDATA[<strong>Rich</strong>]]></one:T></one:OE>
+      <one:OE><one:Table><one:Columns><one:Column index="0" width="100"/></one:Columns>
+        <one:Row><one:Cell><one:OEChildren><one:OE><one:T>Cell</one:T></one:OE></one:OEChildren></one:Cell></one:Row>
+      </one:Table></one:OE>
+    </one:OEChildren></one:Outline>
+    <one:Image format="png"><one:Data>YWJj</one:Data></one:Image>
+    </one:Page>"""
+
+    result = transform_page_for_copy(source, "target", {"p": "target"})
+
+    assert result["content_types"] == ["Image", "Outline", "RichText", "Table"]
+    assert result["lossless_candidate"] is True
+    assert not any(issue["code"] == "content_type_unverified" for issue in result["issues"])
 
 
 def test_plan_copy_is_stable_and_includes_complete_page_subtree(monkeypatch):
@@ -484,7 +601,7 @@ def test_plan_copy_is_stable_and_includes_complete_page_subtree(monkeypatch):
     assert first["snapshots"]["destination"] == first["destination"]
     assert first["estimated"]["pages"] == 2
     assert first["execute_tool"] == "copy_page"
-    assert first["copyability"]["lossless_candidate"] is False
+    assert first["copyability"]["lossless_candidate"] is True
 
 
 def test_plan_copy_rejects_case_insensitive_direct_name_conflict(monkeypatch):
@@ -1172,7 +1289,10 @@ def test_reconstructive_move_recycles_source_pages_leaf_to_root(monkeypatch):
     )
 
     assert deleted == ["child", "parent"]
+    assert result["source_deleted"] is True
+    assert result["source_deleted_nonpermanently"] is True
     assert result["source_deleted_to_recycle_bin"] is True
+    assert result["recycle_bin_verification"] == "verified"
     assert result["outcome"] == "moved"
 
 
@@ -1219,16 +1339,17 @@ def test_reconstructive_move_reports_verified_and_remaining_ids_on_delete_failur
             destination_title="Moved Parent",
         )
 
-    assert caught.value.details["outcome"] == "source_partially_recycled"
+    assert caught.value.details["outcome"] == "source_partially_removed"
     assert caught.value.details["attempted_source_ids"] == ["child", "parent"]
     assert caught.value.details["recycled_source_ids"] == ["child"]
+    assert caught.value.details["deleted_source_ids"] == ["child"]
     assert caught.value.details["remaining_source_ids"] == ["parent"]
-    assert caught.value.details["unverified_source_ids"] == []
+    assert caught.value.details["recycle_unverified_source_ids"] == []
     assert caught.value.details["created_ids"] == ["new-parent", "new-child"]
 
 
 @pytest.mark.write_contract
-def test_reconstructive_move_does_not_claim_success_without_recycle_bin_evidence(monkeypatch):
+def test_reconstructive_move_accepts_active_absence_without_recycle_metadata(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     state["items"] = [item for item in state["items"] if item["id"] != "child"]
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
@@ -1258,20 +1379,22 @@ def test_reconstructive_move_does_not_claim_success_without_recycle_bin_evidence
         "delete_page",
         lambda *args, **kwargs: {"deleted": True, "final_state": None},
     )
+    result = server.services.copying.reconstructive_move_page(
+        "parent",
+        "destination-section",
+        "Parent",
+        "source-section",
+        plan["plan_digest"],
+        destination_title="Moved Parent",
+    )
 
-    with pytest.raises(PartialFailure) as caught:
-        server.services.copying.reconstructive_move_page(
-            "parent",
-            "destination-section",
-            "Parent",
-            "source-section",
-            plan["plan_digest"],
-            destination_title="Moved Parent",
-        )
-
-    assert caught.value.details["outcome"] == "source_recycle_unverified"
-    assert caught.value.details["source_deleted"] is False
-    assert caught.value.details["attempted_source_ids"] == ["parent"]
-    assert caught.value.details["deleted_source_ids"] == []
-    assert caught.value.details["unverified_source_ids"] == ["parent"]
-    assert caught.value.details["remaining_source_ids"] == []
+    assert result["outcome"] == "moved"
+    assert result["source_deleted"] is True
+    assert result["source_deleted_nonpermanently"] is True
+    assert result["source_deleted_to_recycle_bin"] is None
+    assert result["recycle_bin_verification"] == "not_required_com_unavailable"
+    assert result["attempted_source_ids"] == ["parent"]
+    assert result["deleted_source_ids"] == ["parent"]
+    assert result["recycled_source_ids"] == []
+    assert result["recycle_unverified_source_ids"] == ["parent"]
+    assert any("COM did not expose" in warning for warning in result["warnings"])

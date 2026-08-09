@@ -11,7 +11,12 @@ from typing import Any
 from ..bridge import OneNoteBridge
 from ..constants import SPECIAL_LOCATIONS, XML_SCHEMA_2013
 from ..hierarchy import display_name
-from ..page import collect_page_objects, page_equivalence, transform_page_for_copy
+from ..page import (
+    collect_page_objects,
+    copy_verification_tier,
+    page_equivalence,
+    transform_page_for_copy,
+)
 from ..policy import CopyBudget, MutationPolicy
 from .base import BaseService
 from .errors import PartialFailure
@@ -26,7 +31,6 @@ COPY_EXECUTE_TOOLS = {
     "section_group": "copy_section_group",
     "notebook": "copy_notebook",
 }
-
 
 class CopyService(BaseService):
     def __init__(
@@ -502,12 +506,17 @@ class CopyService(BaseService):
                     force=False,
                 )
                 actual_xml = self.pages.xml(target["id"], "all")
-                equivalence = page_equivalence(transformed["xml"], actual_xml)
+                equivalence = page_equivalence(
+                    transformed["xml"],
+                    actual_xml,
+                    verification_tier=copy_verification_tier(transformed["content_types"]),
+                )
                 page_results.append(
                     {
                         "source_page_id": item["id"],
                         "target_page_id": target["id"],
                         "lossless": transformed["lossless_candidate"] and equivalence["equivalent"],
+                        "content_types": transformed["content_types"],
                         "equivalence": equivalence,
                     }
                 )
@@ -802,8 +811,9 @@ class CopyService(BaseService):
             )
 
         attempted: list[str] = []
+        removed: list[str] = []
         recycled: list[str] = []
-        unverified: list[str] = []
+        recycle_unverified: list[str] = []
         source_pages = [item for item in plan["resources"] if item["resource_type"] == "page"]
         try:
             for page in reversed(source_pages):
@@ -816,26 +826,19 @@ class CopyService(BaseService):
                     page.get("modified"),
                     False,
                 )
+                removed.append(page["id"])
                 final_state = deletion.get("final_state")
-                if not isinstance(final_state, dict) or final_state.get("is_in_recycle_bin") is not True:
-                    unverified.append(page["id"])
-                    raise RuntimeError(
-                        f"Source Page '{page['id']}' was removed from the active tree, but recycle-bin "
-                        "state could not be verified."
-                    )
-                recycled.append(page["id"])
+                if isinstance(final_state, dict) and final_state.get("is_in_recycle_bin") is True:
+                    recycled.append(page["id"])
+                else:
+                    recycle_unverified.append(page["id"])
         except Exception as exc:
             remaining = [
                 page["id"]
                 for page in source_pages
-                if page["id"] not in recycled and page["id"] not in unverified
+                if page["id"] not in removed
             ]
-            if recycled:
-                outcome = "source_partially_recycled"
-            elif unverified:
-                outcome = "source_recycle_unverified"
-            else:
-                outcome = "source_delete_failed"
+            outcome = "source_partially_removed" if removed else "source_delete_failed"
             raise PartialFailure(
                 str(exc),
                 partial=True,
@@ -843,8 +846,8 @@ class CopyService(BaseService):
                 source_deleted=False,
                 attempted_source_ids=attempted,
                 recycled_source_ids=recycled,
-                deleted_source_ids=recycled,
-                unverified_source_ids=unverified,
+                recycle_unverified_source_ids=recycle_unverified,
+                deleted_source_ids=removed,
                 remaining_source_ids=remaining,
                 destination=copied.get("item"),
                 copy_report=report,
@@ -854,13 +857,30 @@ class CopyService(BaseService):
             {
                 "outcome": "moved",
                 "source_deleted": True,
-                "source_deleted_to_recycle_bin": True,
+                "source_deleted_nonpermanently": True,
+                "source_deleted_to_recycle_bin": (
+                    True if len(recycled) == len(source_pages) else None
+                ),
+                "recycle_bin_verification": (
+                    "verified"
+                    if len(recycled) == len(source_pages)
+                    else "not_required_com_unavailable"
+                ),
                 "attempted_source_ids": attempted,
                 "recycled_source_ids": recycled,
-                "deleted_source_ids": recycled,
+                "recycle_unverified_source_ids": recycle_unverified,
+                "deleted_source_ids": removed,
                 "warnings": [
                     *copied.get("warnings", []),
                     "Reconstructive move created new Page IDs; inbound links outside the copied subtree were not scanned.",
+                    *(
+                        [
+                            "OneNote removed one or more source Pages from the active hierarchy after "
+                            "non-permanent DeleteHierarchy, but COM did not expose their recycle-bin metadata."
+                        ]
+                        if recycle_unverified
+                        else []
+                    ),
                 ],
             }
         )

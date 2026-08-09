@@ -17,6 +17,7 @@ from ..page import (
     build_page_update_xml,
     collect_page_objects,
     proportional_dimensions,
+    tag_definitions_from_page_xml,
 )
 from ..policy import MutationPolicy
 from .base import BaseService
@@ -432,8 +433,16 @@ class MutationService(BaseService):
             expected_section_id=expected_section_id,
             expected_modified=expected_modified,
         )
-        before_hash = self.pages.digest(self.pages.xml(page_id, "all"))
-        xml = build_page_update_xml(page_id, content=content, content_format=content_format, x=x, y=y)
+        before_xml = self.pages.xml(page_id, "all")
+        before_hash = self.pages.digest(before_xml)
+        xml = build_page_update_xml(
+            page_id,
+            content=content,
+            content_format=content_format,
+            x=x,
+            y=y,
+            existing_tag_definitions=tag_definitions_from_page_xml(before_xml),
+        )
         self.call("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
         if self.pages.digest(self.pages.xml(page_id, "all")) == before_hash:
             raise RuntimeError("Append returned success, but Page content did not change during read-back verification.")
@@ -519,7 +528,13 @@ class MutationService(BaseService):
                 deleted.append(object_id)
             self.call(
                 "update_page_content",
-                xml=build_page_update_xml(page_id, title=title, content=content, content_format=content_format),
+                xml=build_page_update_xml(
+                    page_id,
+                    title=title,
+                    content=content,
+                    content_format=content_format,
+                    existing_tag_definitions=tag_definitions_from_page_xml(page_xml),
+                ),
                 schema=XML_SCHEMA_2013,
                 force=False,
             )
