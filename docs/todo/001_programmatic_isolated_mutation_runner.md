@@ -1,7 +1,7 @@
 # 001：本地程序化 OneNote 隔离验证 Runner
 
 > ID：001
-> 状态：进行中
+> 状态：已完成
 > 优先级：P1
 > 类型：开发基础设施
 > 更新日期：2026-08-10
@@ -86,13 +86,10 @@ tests/manual_validation/
 - [x] `runner.py` 启动职责与 runtime/test utils 分离，`all` 串行入口覆盖 quiet、verbosity、失败继续和参数透传合同。
 - [x] 可执行 scenario 类化；`scenarios/__init__.py` 导入公开类并触发 wrapper 注册，parser、dispatch、静态 spec 与 `all` 资格由单一 `SCENARIO_REGISTRY` 对象管理；未注册的验证性 scenario 不会进入 `all`。
 
-## 待用户验收
+## 真实验收与完成结论
 
-代码与合同测试完成后，真实后端状态仍保持“未确认”，直到用户本人完成：
+2026-08-10，用户明确确认本 TODO 的真实 OneNote 验收矩阵已经完成。`create`、`rename`、`reorder-page`、`reorder-section`、三类 typed Reparent、`delete`、四层 Copy 与 `move-page` 均由用户通过扁平具名入口显式运行并完成结果核对；验收覆盖 fresh disposable Notebook、单 MCP、静态最小权限、before/after/restore 或 cleanup、成功 close/keep、严格失败保留以及本地文件保留边界。
 
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run
-.venv\Scripts\python.exe tests\manual_validation\run.py rename
-```
+`reorder-section-group` 继续以用户取得的负能力证据结束评估：COM 接受更新但后端保持固定名称升序，因此该场景不构成正向能力，也不进入 `all`。这一结论不影响 Runner 基础设施本身完成。
 
-其他 scenario 分别重复同样流程。验收时确认 `report.md`、成功 close/keep 状态，或严格场景的预期非零失败与保留现场。用户确认真实 OneNote 运行后，再更新本 TODO 状态和索引。
+真实运行均由用户本人触发；Agent、pytest、CI、hook、timer、watcher 和后台任务没有执行真实 scenario。代码、纯合同、文档与用户确认的真实证据已经满足本 TODO 的完成要求，本条状态正式更新为“已完成”。
