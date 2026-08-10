@@ -16,9 +16,11 @@ from ...mcp_stdio_client import (
     COPY_POLICY,
     DELETE_POLICY,
     MCPStdioClient,
-    MOVE_POLICY,
+    MOVE_PAGE_POLICY,
+    REPARENT_SECTION_POLICY,
+    REORDER_SECTION_GROUP_POLICY,
+    REORDER_SECTION_POLICY,
     READ_ONLY_POLICY,
-    RECONSTRUCTIVE_MOVE_PAGE_POLICY,
     WRITE_POLICY,
 )
 from ...runtime import EXIT_MCP, InvariantFailure, RunnerFailure
@@ -34,6 +36,7 @@ from .config import (
     COPY_FIXTURE_MARKER,
     COPY_FIXTURE_PNG,
     RELAXED_COPY_CAPABILITIES,
+    REPARENT_PAGE_FIXTURE_MARKER,
 )
 from .lookup import exactly_one
 
@@ -117,8 +120,12 @@ async def ensure_copy_rich_fixture(
     client: MCPStdioClient,
     page: dict[str, Any],
     run_dir: Path,
+    *,
+    marker: str = COPY_FIXTURE_MARKER,
+    fixture_label: str = "Copy",
+    asset_filename: str = "copy-fixture-1x1.png",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Idempotently add stable rich-text, table, and image Copy fixtures."""
+    """Idempotently add stable rich-text, table, and image fixtures."""
 
     page_id = str(page["id"])
     section_id = str(page["section_id"])
@@ -134,17 +141,17 @@ async def ensure_copy_rich_fixture(
             raise RunnerFailure(f"Copy fixture Page disappeared: {page_id}", EXIT_MCP)
         return current
 
-    if COPY_FIXTURE_MARKER not in xml or not has_table:
+    if marker not in xml or not has_table:
         current = await current_page()
         await client.call_tool(
             "append_to_page",
             {
                 "page_id": page_id,
                 "content": (
-                    f"<p><strong>{COPY_FIXTURE_MARKER}</strong> "
+                    f"<p><strong>{marker}</strong> "
                     "<em>rich text</em> <span style=\"color:#2F5597\">formatted</span></p>"
                     "<table><tr><th>Fixture</th><th>Value</th></tr>"
-                    "<tr><td>Copy</td><td>Table</td></tr></table>"
+                    f"<tr><td>{fixture_label}</td><td>Table</td></tr></table>"
                 ),
                 "content_format": "html",
                 "expected_title": display_name(current),
@@ -161,7 +168,7 @@ async def ensure_copy_rich_fixture(
     if not any(item.get("kind") == "Image" for item in objects if isinstance(item, dict)):
         asset_dir = run_dir / "fixture-assets"
         asset_dir.mkdir(parents=True, exist_ok=True)
-        image_path = asset_dir / "copy-fixture-1x1.png"
+        image_path = asset_dir / asset_filename
         if not image_path.exists():
             image_path.write_bytes(base64.b64decode(COPY_FIXTURE_PNG))
         current = await current_page()
@@ -188,14 +195,16 @@ async def ensure_copy_rich_fixture(
         await client.call_tool("get_page_objects", {"page_id": page_id})
     ).get("objects", [])
     has_table = any(node.tag.rsplit("}", 1)[-1] == "Table" for node in ET.fromstring(final_xml).iter())
-    if COPY_FIXTURE_MARKER not in final_xml or not has_table:
-        raise InvariantFailure("Prepared Copy fixture does not contain the rich-text/table marker.")
+    if marker not in final_xml or not has_table:
+        raise InvariantFailure(
+            f"Prepared {fixture_label} fixture does not contain the rich-text/table marker."
+        )
     if not any(item.get("kind") == "Image" for item in final_objects if isinstance(item, dict)):
-        raise InvariantFailure("Prepared Copy fixture does not contain an Image object.")
+        raise InvariantFailure(f"Prepared {fixture_label} fixture does not contain an Image object.")
     current = await current_page()
     evidence = {
         "page_id": page_id,
-        "marker": COPY_FIXTURE_MARKER,
+        "marker": marker,
         "automated_content": ["rich_text", "table", "image"],
         "manual_content": ["file_attachment", "ink", "media"],
         "observed_object_types": sorted(
@@ -207,6 +216,23 @@ async def ensure_copy_rich_fixture(
         ),
     }
     return current, evidence
+
+
+async def ensure_reparent_page_rich_fixture(
+    client: MCPStdioClient,
+    page: dict[str, Any],
+    run_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Add the reparent-specific rich content marker without Copy semantics."""
+
+    return await ensure_copy_rich_fixture(
+        client,
+        page,
+        run_dir,
+        marker=REPARENT_PAGE_FIXTURE_MARKER,
+        fixture_label="Reparent",
+        asset_filename="reparent-page-fixture-1x1.png",
+    )
 
 
 async def ensure_copy_list_tag_fixture(
@@ -336,11 +362,13 @@ def new_manifest(
         "scenario_policies": {
             "inspect_read_report": READ_ONLY_POLICY.as_dict(),
             "create_rename_reorder": WRITE_POLICY.as_dict(),
-            "move": MOVE_POLICY.as_dict(),
+            "reorder_section": REORDER_SECTION_POLICY.as_dict(),
+            "reorder_section_group": REORDER_SECTION_GROUP_POLICY.as_dict(),
+            "reparent-section": REPARENT_SECTION_POLICY.as_dict(),
             "delete": DELETE_POLICY.as_dict(),
             "copy": COPY_POLICY.as_dict(),
             "copy_notebook": COPY_NO_DELETE_POLICY.as_dict(),
-            "reconstructive_move_page": RECONSTRUCTIVE_MOVE_PAGE_POLICY.as_dict(),
+            "move_page": MOVE_PAGE_POLICY.as_dict(),
         },
         "retry_policy": {
             "mutation_attempts": 1,

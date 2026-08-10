@@ -27,14 +27,18 @@ from tests.manual_validation.scenarios.common import specs
 SCENARIO_MODULES = {
     "create": "CreateScenario",
     "rename": "RenameScenario",
-    "reorder": "ReorderScenario",
-    "move": "MoveScenario",
+    "reorder_page": "ReorderPageScenario",
+    "reorder_section": "ReorderSectionScenario",
+    "reorder_section_group": "ReorderSectionGroupScenario",
+    "reparent_section": "ReparentSectionScenario",
+    "reparent_page": "ReparentPageScenario",
+    "reparent_section_group": "ReparentSectionGroupScenario",
     "delete": "DeleteScenario",
     "copy_page": "CopyPageScenario",
     "copy_section": "CopySectionScenario",
     "copy_section_group": "CopySectionGroupScenario",
     "copy_notebook": "CopyNotebookScenario",
-    "reconstructive_move_page": "ReconstructiveMovePageScenario",
+    "move_page": "MovePageScenario",
 }
 SCENARIO_INFRASTRUCTURE_MODULES = {
     "__init__",
@@ -132,6 +136,43 @@ def test_unregistered_validation_scenario_does_not_enter_all(monkeypatch) -> Non
     assert set(registry.registered_test_names) < set(registry.public_names)
 
 
+def test_failed_section_group_reorder_probe_is_public_but_excluded_from_all() -> None:
+    scenario = SCENARIO_REGISTRY.get("reorder-section-group")
+
+    assert scenario.registered_for_all is False
+    assert "reorder-section-group" in SCENARIO_REGISTRY.public_names
+    assert "reorder-section-group" not in get_registered_test_scenarios()
+    assert scenario.capability_assessment == {
+        "capability_status": "limited",
+        "validation_status": "failed",
+        "reason": (
+            "The backend keeps SectionGroups in fixed ascending name order and "
+            "did not apply the requested sibling order after UpdateHierarchy returned success."
+        ),
+    }
+
+
+def test_passed_page_reparent_probe_is_public_but_excluded_from_all() -> None:
+    name = "reparent-page"
+    scenario = SCENARIO_REGISTRY.get(name)
+
+    assert scenario.registered_for_all is False
+    assert name in SCENARIO_REGISTRY.public_names
+    assert name not in get_registered_test_scenarios()
+    assert scenario.capability_assessment["capability_status"] == "experimental"
+    assert scenario.capability_assessment["validation_status"] == "passed"
+
+
+def test_passed_section_group_reparent_probe_remains_excluded_from_all() -> None:
+    scenario = SCENARIO_REGISTRY.get("reparent-section-group")
+
+    assert scenario.registered_for_all is False
+    assert "reparent-section-group" in SCENARIO_REGISTRY.public_names
+    assert "reparent-section-group" not in get_registered_test_scenarios()
+    assert scenario.capability_assessment["capability_status"] == "experimental"
+    assert scenario.capability_assessment["validation_status"] == "passed"
+
+
 def test_registry_wrapper_rejects_duplicate_scenario_names() -> None:
     registry = ScenarioRegistry()
 
@@ -160,7 +201,7 @@ def test_all_runs_every_scenario_serially_and_is_quiet_by_default(capsys) -> Non
     assert [command[2] for command in commands] == list(registered)
     output = capsys.readouterr().out
     assert "[1/10] create ..." in output
-    assert "PASS reconstructive-move-page" in output
+    assert "PASS move-page" in output
     assert "Completed 10 scenarios: 10 passed, 0 failed" in output
     assert "result for" not in output
 
@@ -211,11 +252,11 @@ def test_all_reports_failure_continues_and_returns_first_failure(capsys) -> None
 
     assert run_all(
         _args(),
-        scenarios=("create", "rename", "move"),
+        scenarios=("create", "rename", "reparent-section"),
         run_child=fake_run,
     ) == 5
 
-    assert attempted == ["create", "rename", "move"]
+    assert attempted == ["create", "rename", "reparent-section"]
     output = capsys.readouterr().out
     assert "FAIL rename (exit 5" in output
     assert "stdout: invariant failed" in output

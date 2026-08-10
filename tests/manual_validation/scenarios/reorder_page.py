@@ -21,7 +21,7 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
-from .common.config import REORDER_TOOLS
+from .common.config import REORDER_PAGE_TOOLS
 from .common.report import render_report
 
 
@@ -32,7 +32,7 @@ def page_predecessor(pages: list[dict[str, Any]], page_id: str) -> str:
     return "" if index == 0 else str(pages[index - 1]["id"])
 
 
-async def _execute_reorder(
+async def _execute_reorder_page(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
@@ -42,12 +42,12 @@ async def _execute_reorder(
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     target = resolve_manifest_item(manifest, "sibling_page")
     after_target = resolve_manifest_item(manifest, "parent_page")
-    section = resolve_manifest_item(manifest, "move_source")
-    out = scenario_dir(options.run_dir, "reorder")
+    section = resolve_manifest_item(manifest, "reorder_section")
+    out = scenario_dir(options.run_dir, "reorder-page")
     async with scenario_client(
         client,
         policy=WRITE_POLICY,
-        allowed_tools=REORDER_TOOLS,
+        allowed_tools=REORDER_PAGE_TOOLS,
         run_dir=out,
         timeout_seconds=options.timeout,
         client_factory=MCPStdioClient,
@@ -96,7 +96,7 @@ async def _execute_reorder(
             validation_error = exc
         if getattr(args, "keep_worksite", False):
             worksite = {
-                "status": "preserved_after_reorder",
+                "status": "preserved_after_reorder_page",
                 "target_ids": [original["id"]],
                 "target_id": original["id"],
                 "original_after_page_id": original_after,
@@ -114,7 +114,7 @@ async def _execute_reorder(
             if validation_error is not None:
                 raise validation_error
             result = {
-                "scenario": "reorder",
+                "scenario": "reorder-page",
                 "status": "passed",
                 "target_id": original["id"],
                 "temporary_after_page_id": after_target["id"],
@@ -151,7 +151,7 @@ async def _execute_reorder(
         if validation_error is not None:
             raise validation_error
         result = {
-            "scenario": "reorder",
+            "scenario": "reorder-page",
             "status": "passed",
             "target_id": original["id"],
             "temporary_after_page_id": after_target["id"],
@@ -165,8 +165,8 @@ async def _execute_reorder(
 
 
 @SCENARIO_REGISTRY.register
-class ReorderScenario(Scenario):
-    name = "reorder"
+class ReorderPageScenario(Scenario):
+    name = "reorder-page"
     help_text = "GATED: create, reorder/restore or preserve, report, then close or keep."
     registered_for_all = True
 
@@ -182,4 +182,4 @@ class ReorderScenario(Scenario):
         client: MCPStdioClient | None,
         fixture_result: dict[str, Any],
     ) -> dict[str, Any]:
-        return await _execute_reorder(args, options, manifest, client=client)
+        return await _execute_reorder_page(args, options, manifest, client=client)

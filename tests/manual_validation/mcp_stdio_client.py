@@ -21,9 +21,15 @@ POLICY_ENV_NAMES = {
     "writes_enabled": "LOCAL_ONENOTE_ENABLE_WRITES",
     "deletes_enabled": "LOCAL_ONENOTE_ENABLE_DELETES",
     "permanent_deletes_enabled": "LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES",
-    "experimental_move_section_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_MOVE_SECTION",
+    "experimental_reparent_section_enabled": (
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION"
+    ),
+    "experimental_reorder_section_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION",
+    "experimental_reorder_section_group_enabled": (
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"
+    ),
     "experimental_copy_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-    "reconstructive_move_page_enabled": "LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE",
+    "move_page_enabled": "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
     "raw_xml_enabled": "LOCAL_ONENOTE_ENABLE_RAW_XML",
 }
 COPY_BUDGET_ENV = {
@@ -47,7 +53,7 @@ MUTATION_TOOL_PREFIXES = (
     "navigate_",
     "open_",
     "publish_",
-    "reconstructive_",
+    "reparent_",
     "rename_",
     "reorder_",
     "replace_",
@@ -66,9 +72,11 @@ class ScenarioPolicy:
     writes_enabled: bool = False
     deletes_enabled: bool = False
     permanent_deletes_enabled: bool = False
-    experimental_move_section_enabled: bool = False
+    experimental_reparent_section_enabled: bool = False
+    experimental_reorder_section_enabled: bool = False
+    experimental_reorder_section_group_enabled: bool = False
     experimental_copy_enabled: bool = False
-    reconstructive_move_page_enabled: bool = False
+    move_page_enabled: bool = False
     raw_xml_enabled: bool = False
 
     def as_dict(self) -> dict[str, bool]:
@@ -76,16 +84,34 @@ class ScenarioPolicy:
             "writes_enabled": self.writes_enabled,
             "deletes_enabled": self.deletes_enabled,
             "permanent_deletes_enabled": self.permanent_deletes_enabled,
-            "experimental_move_section_enabled": self.experimental_move_section_enabled,
+            "experimental_reparent_section_enabled": (
+                self.experimental_reparent_section_enabled
+            ),
+            "experimental_reorder_section_enabled": self.experimental_reorder_section_enabled,
+            "experimental_reorder_section_group_enabled": (
+                self.experimental_reorder_section_group_enabled
+            ),
             "experimental_copy_enabled": self.experimental_copy_enabled,
-            "reconstructive_move_page_enabled": self.reconstructive_move_page_enabled,
+            "move_page_enabled": self.move_page_enabled,
             "raw_xml_enabled": self.raw_xml_enabled,
         }
 
 
 READ_ONLY_POLICY = ScenarioPolicy()
 WRITE_POLICY = ScenarioPolicy(writes_enabled=True)
-MOVE_POLICY = ScenarioPolicy(writes_enabled=True, experimental_move_section_enabled=True)
+REPARENT_SECTION_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    experimental_reparent_section_enabled=True,
+)
+REORDER_SECTION_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    experimental_reorder_section_enabled=True,
+)
+REORDER_SECTION_GROUP_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    experimental_reorder_section_group_enabled=True,
+)
+REPARENT_PROBE_POLICY = ScenarioPolicy(writes_enabled=True, raw_xml_enabled=True)
 DELETE_POLICY = ScenarioPolicy(deletes_enabled=True)
 COPY_POLICY = ScenarioPolicy(
     writes_enabled=True,
@@ -96,11 +122,11 @@ COPY_NO_DELETE_POLICY = ScenarioPolicy(
     writes_enabled=True,
     experimental_copy_enabled=True,
 )
-RECONSTRUCTIVE_MOVE_PAGE_POLICY = ScenarioPolicy(
+MOVE_PAGE_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
     experimental_copy_enabled=True,
-    reconstructive_move_page_enabled=True,
+    move_page_enabled=True,
 )
 
 

@@ -20,6 +20,7 @@ class Scenario:
     help_text = ""
     timeout_default = 180
     registered_for_all = False
+    capability_assessment: dict[str, str] | None = None
 
     @property
     def spec(self) -> ScenarioSpec:

@@ -16,12 +16,12 @@ def test_rename_attempts_restore_before_reporting_invariant_failure(monkeypatch,
     target = {
         "resource_type": "section",
         "id": "section-id",
-        "name": "Move-Source",
-        "path": "Notebook/Group-A/Move-Source",
+        "name": "Content-Section",
+        "path": "Notebook/Group-A/Content-Section",
         "parent_id": "group-a",
     }
     notebook = {"resource_type": "notebook", "id": "notebook-id", "name": "Notebook"}
-    manifest = {"schema_version": 1, "notebook": notebook, "structure": {"move_source": target}}
+    manifest = {"schema_version": 1, "notebook": notebook, "structure": {"content_section": target}}
     before = {
         "captured_at": "before",
         "notebook_id": "notebook-id",
@@ -29,7 +29,7 @@ def test_rename_attempts_restore_before_reporting_invariant_failure(monkeypatch,
         "page_hashes": {"page": "before-hash"},
         "page_objects": {"page": []},
     }
-    changed = {**target, "name": "Move-Source-Smoke-Renamed", "path": "renamed"}
+    changed = {**target, "name": "Content-Section-Smoke-Renamed", "path": "renamed"}
     after = {**before, "captured_at": "after", "items": [changed], "page_hashes": {"page": "changed-hash"}}
     restored = {**before, "captured_at": "restored"}
 
@@ -58,7 +58,7 @@ def test_rename_attempts_restore_before_reporting_invariant_failure(monkeypatch,
     monkeypatch.setattr(rename_scenario, "MCPStdioClient", FakeClient)
     monkeypatch.setattr(rename_scenario, "capture_snapshot", fake_snapshot)
     monkeypatch.setattr(rename_scenario, "render_report", lambda _run_dir: None)
-    args = SimpleNamespace(target="move_source", new_name=None, notebook_name=None)
+    args = SimpleNamespace(target="content_section", new_name=None, notebook_name=None)
     options = RuntimeOptions(tmp_path, 10, False, False)
     with pytest.raises(InvariantFailure):
         asyncio.run(
@@ -71,8 +71,8 @@ def test_rename_attempts_restore_before_reporting_invariant_failure(monkeypatch,
             )
         )
     assert [call[1]["new_name"] for call in FakeClient.calls] == [
-        "Move-Source-Smoke-Renamed",
-        "Move-Source",
+        "Content-Section-Smoke-Renamed",
+        "Content-Section",
     ]
 
 
@@ -80,19 +80,19 @@ def test_rename_keep_worksite_skips_restore_and_records_exact_target(monkeypatch
     target = {
         "resource_type": "section",
         "id": "section-id",
-        "name": "Move-Source",
-        "path": "Notebook/Group-A/Move-Source",
+        "name": "Content-Section",
+        "path": "Notebook/Group-A/Content-Section",
         "parent_id": "group-a",
     }
     changed = {
         **target,
-        "name": "Move-Source-Smoke-Renamed",
-        "path": "Notebook/Group-A/Move-Source-Smoke-Renamed",
+        "name": "Content-Section-Smoke-Renamed",
+        "path": "Notebook/Group-A/Content-Section-Smoke-Renamed",
     }
     manifest = {
         "schema_version": 1,
         "notebook": {"resource_type": "notebook", "id": "notebook-id", "name": "Notebook"},
-        "structure": {"move_source": target},
+        "structure": {"content_section": target},
     }
     before = {
         "captured_at": "before",
@@ -128,7 +128,7 @@ def test_rename_keep_worksite_skips_restore_and_records_exact_target(monkeypatch
     monkeypatch.setattr(rename_scenario, "capture_snapshot", fake_snapshot)
     monkeypatch.setattr(rename_scenario, "render_report", lambda _run_dir: None)
     args = SimpleNamespace(
-        target="move_source",
+        target="content_section",
         new_name=None,
         notebook_name=None,
         keep_worksite=True,

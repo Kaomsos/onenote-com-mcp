@@ -161,8 +161,8 @@ class RenameScenario(Scenario):
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--target",
-            choices=["group_a", "group_b", "move_source"],
-            default="move_source",
+            choices=["group_a", "group_b", "content_section"],
+            default="content_section",
         )
         parser.add_argument("--new-name")
 

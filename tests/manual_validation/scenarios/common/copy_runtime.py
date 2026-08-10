@@ -58,7 +58,7 @@ def copy_spec(
         }
     if scenario == "copy-section":
         return {
-            "source": resolve_manifest_item(manifest, "move_source"),
+            "source": resolve_manifest_item(manifest, "source_section"),
             "destination": resolve_manifest_item(manifest, "group_b"),
             "destination_name": f"Copy-Section-{suffix}",
             "tool": "copy_section",

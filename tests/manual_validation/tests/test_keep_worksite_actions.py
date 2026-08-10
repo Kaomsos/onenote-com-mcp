@@ -7,14 +7,12 @@ from types import SimpleNamespace
 
 from tests.manual_validation import test_utils
 from tests.manual_validation.runtime import RuntimeOptions
-from tests.manual_validation.scenarios import move as move_scenario
-from tests.manual_validation.scenarios import reconstructive_move_page as reconstructive_scenario
-from tests.manual_validation.scenarios import reorder as reorder_scenario
-from tests.manual_validation.scenarios.move import MoveScenario
-from tests.manual_validation.scenarios.reconstructive_move_page import (
-    ReconstructiveMovePageScenario,
-)
-from tests.manual_validation.scenarios.reorder import ReorderScenario
+from tests.manual_validation.scenarios import move_page as move_page_scenario
+from tests.manual_validation.scenarios import reparent_section as reparent_section_scenario
+from tests.manual_validation.scenarios import reorder_page as reorder_page_scenario
+from tests.manual_validation.scenarios.move_page import MovePageScenario
+from tests.manual_validation.scenarios.reparent_section import ReparentSectionScenario
+from tests.manual_validation.scenarios.reorder_page import ReorderPageScenario
 
 
 class FakeClient:
@@ -39,7 +37,7 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
     section = {
         "resource_type": "section",
         "id": "section-id",
-        "name": "Move-Source",
+        "name": "01-Reorder-Page-Section",
         "parent_id": "group-a",
     }
     parent = {
@@ -71,7 +69,7 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
         "schema_version": 1,
         "notebook": {"id": "notebook-id", "name": "Notebook"},
         "structure": {
-            "move_source": section,
+            "reorder_section": section,
             "parent_page": parent,
             "sibling_page": target,
         },
@@ -91,11 +89,11 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
 
     FakeClient.calls = []
     FakeClient.response_item = changed
-    monkeypatch.setattr(reorder_scenario, "MCPStdioClient", FakeClient)
-    monkeypatch.setattr(reorder_scenario, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(reorder_scenario, "render_report", lambda _run_dir: None)
+    monkeypatch.setattr(reorder_page_scenario, "MCPStdioClient", FakeClient)
+    monkeypatch.setattr(reorder_page_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(reorder_page_scenario, "render_report", lambda _run_dir: None)
     result = asyncio.run(
-        ReorderScenario().execute(
+        ReorderPageScenario().execute(
             SimpleNamespace(
                 notebook_name=None,
                 page_level=2,
@@ -111,60 +109,116 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
     assert [name for name, _ in FakeClient.calls] == ["reorder_page"]
     assert result["worksite_preserved"] is True
     worksite = test_utils.read_json(
-        tmp_path / "scenarios" / "reorder" / "worksite.json"
+        tmp_path / "scenarios" / "reorder-page" / "worksite.json"
     )
     assert worksite["target_ids"] == ["sibling-page"]
 
 
-def test_move_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
-    source = {
-        "resource_type": "section_group",
-        "id": "group-a",
-        "name": "Group-A",
-        "parent_id": "notebook-id",
+def test_reparent_section_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
+    notebook = {
+        "resource_type": "notebook",
+        "id": "notebook-id",
+        "name": "Notebook",
     }
-    destination = {
-        "resource_type": "section_group",
-        "id": "group-b",
-        "name": "Group-B",
-        "parent_id": "notebook-id",
+    groups = {
+        key: {
+            "resource_type": "section_group",
+            "id": key,
+            "name": key,
+            "parent_id": notebook["id"],
+        }
+        for key in ("destination-1", "source-2", "source-3", "destination-3")
     }
-    target = {
-        "resource_type": "section",
-        "id": "section-id",
-        "name": "Move-Source",
-        "parent_id": source["id"],
-    }
-    moved = {**target, "parent_id": destination["id"]}
-    manifest = {
-        "schema_version": 1,
-        "notebook": {"id": "notebook-id", "name": "Notebook"},
-        "structure": {
-            "group_a": source,
-            "group_b": destination,
-            "move_source": target,
+    sections = {
+        "section-1": {
+            "resource_type": "section",
+            "id": "section-1",
+            "name": "01-Notebook-To-Group-Section",
+            "parent_id": notebook["id"],
+        },
+        "section-2": {
+            "resource_type": "section",
+            "id": "section-2",
+            "name": "02-Group-To-Notebook-Section",
+            "parent_id": groups["source-2"]["id"],
+        },
+        "section-3": {
+            "resource_type": "section",
+            "id": "section-3",
+            "name": "03-Group-To-Group-Section",
+            "parent_id": groups["source-3"]["id"],
         },
     }
+    pages = [
+        {
+            "resource_type": "page",
+            "id": f"page-{index}",
+            "title": f"0{index}-Page",
+            "section_id": f"section-{index}",
+            "parent_id": f"section-{index}",
+            "order": 0,
+            "page_level": 1,
+            "parent_page_id": None,
+        }
+        for index in (1, 2, 3)
+    ]
+    manifest = {
+        "schema_version": 1,
+        "notebook": notebook,
+        "structure": {
+            "notebook_to_group_destination": groups["destination-1"],
+            "notebook_to_group_section": sections["section-1"],
+            "group_to_notebook_source": groups["source-2"],
+            "group_to_notebook_section": sections["section-2"],
+            "group_to_group_source": groups["source-3"],
+            "group_to_group_destination": groups["destination-3"],
+            "group_to_group_section": sections["section-3"],
+        },
+    }
+    base_items = [notebook, *groups.values(), *sections.values(), *pages]
     before = {
-        "items": [source, destination, target],
-        "page_hashes": {"page": "same"},
+        "items": base_items,
+        "page_hashes": {f"page-{index}": f"hash-{index}" for index in (1, 2, 3)},
     }
-    after = {
-        "items": [source, destination, moved],
-        "page_hashes": before["page_hashes"],
-    }
-    snapshots = iter([before, after])
+
+    def moved_snapshot(**parents):
+        return {
+            "items": [
+                *[notebook, *groups.values()],
+                *[
+                    {**section, "parent_id": parents.get(section_id, section["parent_id"])}
+                    for section_id, section in sections.items()
+                ],
+                *pages,
+            ],
+            "page_hashes": before["page_hashes"],
+        }
+
+    after_1 = moved_snapshot(**{"section-1": groups["destination-1"]["id"]})
+    after_2 = moved_snapshot(
+        **{
+            "section-1": groups["destination-1"]["id"],
+            "section-2": notebook["id"],
+        }
+    )
+    after_3 = moved_snapshot(
+        **{
+            "section-1": groups["destination-1"]["id"],
+            "section-2": notebook["id"],
+            "section-3": groups["destination-3"]["id"],
+        }
+    )
+    snapshots = iter([before, after_1, after_2, after_3])
 
     async def fake_snapshot(_client, _notebook_id):
         return next(snapshots)
 
     FakeClient.calls = []
-    FakeClient.response_item = moved
-    monkeypatch.setattr(move_scenario, "MCPStdioClient", FakeClient)
-    monkeypatch.setattr(move_scenario, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(move_scenario, "render_report", lambda _run_dir: None)
+    monkeypatch.setattr(reparent_section_scenario, "MCPStdioClient", FakeClient)
+    monkeypatch.setattr(reparent_section_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(reparent_section_scenario, "render_report", lambda _run_dir: None)
     result = asyncio.run(
-        MoveScenario().execute(
+        ReparentSectionScenario().execute(
             SimpleNamespace(notebook_name=None, keep_worksite=True),
             RuntimeOptions(tmp_path, 10, False, False),
             manifest,
@@ -173,16 +227,134 @@ def test_move_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
         )
     )
 
-    assert [name for name, _ in FakeClient.calls] == ["move_section"]
+    assert [name for name, _ in FakeClient.calls] == ["reparent_section"] * 3
     assert result["worksite_preserved"] is True
     worksite = test_utils.read_json(
-        tmp_path / "scenarios" / "move" / "worksite.json"
+        tmp_path / "scenarios" / "reparent-section" / "worksite.json"
     )
-    assert worksite["target_ids"] == ["section-id"]
-    assert worksite["current_parent_id"] == "group-b"
+    assert worksite["target_ids"] == ["section-1", "section-2", "section-3"]
+    assert [operation["case"] for operation in worksite["operations"]] == [
+        "notebook-to-section-group",
+        "section-group-to-notebook",
+        "section-group-to-section-group",
+    ]
+    assert [operation["destination_parent_id"] for operation in worksite["operations"]] == [
+        "destination-1",
+        "notebook-id",
+        "destination-3",
+    ]
 
 
-def test_reconstructive_move_accepts_active_absence_without_recycle_lookup(
+def test_reparent_section_default_restores_three_cases_in_reverse_order(monkeypatch, tmp_path) -> None:
+    notebook = {"id": "notebook", "resource_type": "notebook", "name": "Notebook"}
+    groups = {
+        key: {
+            "id": key,
+            "resource_type": "section_group",
+            "name": key,
+            "parent_id": "notebook",
+        }
+        for key in ("destination-1", "source-2", "source-3", "destination-3")
+    }
+    sections = {
+        "section-1": {
+            "id": "section-1",
+            "resource_type": "section",
+            "name": "01-Notebook-To-Group-Section",
+            "parent_id": "notebook",
+        },
+        "section-2": {
+            "id": "section-2",
+            "resource_type": "section",
+            "name": "02-Group-To-Notebook-Section",
+            "parent_id": "source-2",
+        },
+        "section-3": {
+            "id": "section-3",
+            "resource_type": "section",
+            "name": "03-Group-To-Group-Section",
+            "parent_id": "source-3",
+        },
+    }
+
+    def snapshot(parent_1: str, parent_2: str, parent_3: str) -> dict:
+        return {
+            "items": [
+                notebook,
+                *groups.values(),
+                {**sections["section-1"], "parent_id": parent_1},
+                {**sections["section-2"], "parent_id": parent_2},
+                {**sections["section-3"], "parent_id": parent_3},
+            ],
+            "page_hashes": {},
+        }
+
+    before = snapshot("notebook", "source-2", "source-3")
+    snapshots = iter(
+        [
+            before,
+            snapshot("destination-1", "source-2", "source-3"),
+            snapshot("destination-1", "notebook", "source-3"),
+            snapshot("destination-1", "notebook", "destination-3"),
+            snapshot("destination-1", "notebook", "source-3"),
+            snapshot("destination-1", "source-2", "source-3"),
+            before,
+        ]
+    )
+
+    async def fake_snapshot(_client, _notebook_id):
+        return next(snapshots)
+
+    manifest = {
+        "schema_version": 1,
+        "notebook": notebook,
+        "structure": {
+            "notebook_to_group_destination": groups["destination-1"],
+            "notebook_to_group_section": sections["section-1"],
+            "group_to_notebook_source": groups["source-2"],
+            "group_to_notebook_section": sections["section-2"],
+            "group_to_group_source": groups["source-3"],
+            "group_to_group_destination": groups["destination-3"],
+            "group_to_group_section": sections["section-3"],
+        },
+    }
+    FakeClient.calls = []
+    monkeypatch.setattr(reparent_section_scenario, "MCPStdioClient", FakeClient)
+    monkeypatch.setattr(reparent_section_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(reparent_section_scenario, "render_report", lambda _run_dir: None)
+
+    result = asyncio.run(
+        ReparentSectionScenario().execute(
+            SimpleNamespace(notebook_name=None, keep_worksite=False),
+            RuntimeOptions(tmp_path, 10, False, False),
+            manifest,
+            client=None,
+            fixture_result={},
+        )
+    )
+
+    reparent_calls = [arguments for name, arguments in FakeClient.calls if name == "reparent_section"]
+    assert [call["section_id"] for call in reparent_calls] == [
+        "section-1",
+        "section-2",
+        "section-3",
+        "section-3",
+        "section-2",
+        "section-1",
+    ]
+    assert [call["destination_parent_id"] for call in reparent_calls] == [
+        "destination-1",
+        "notebook",
+        "destination-3",
+        "source-3",
+        "source-2",
+        "notebook",
+    ]
+    assert result["restored"] is True
+    assert (tmp_path / "scenarios" / "reparent-section" / "restored.json").exists()
+
+
+def test_move_page_accepts_active_absence_without_recycle_lookup(
     monkeypatch, tmp_path
 ) -> None:
     notebook = {"resource_type": "notebook", "id": "notebook", "name": "Notebook"}
@@ -238,9 +410,9 @@ def test_reconstructive_move_accepts_active_absence_without_recycle_lookup(
     async def fake_snapshot(_client, _notebook_id):
         return next(snapshots)
 
-    class FakeReconstructiveClient:
-        policy = reconstructive_scenario.RECONSTRUCTIVE_MOVE_PAGE_POLICY
-        allowed_tools = reconstructive_scenario.RECONSTRUCTIVE_MOVE_PAGE_TOOLS | {
+    class FakeMovePageClient:
+        policy = move_page_scenario.MOVE_PAGE_POLICY
+        allowed_tools = move_page_scenario.MOVE_PAGE_TOOLS | {
             "health_check"
         }
         timeout_seconds = 1_800
@@ -250,7 +422,7 @@ def test_reconstructive_move_accepts_active_absence_without_recycle_lookup(
 
         async def call_tool(self, name: str, arguments: dict) -> dict:
             self.calls.append(name)
-            if name == "plan_reconstructive_move_page":
+            if name == "plan_move_page":
                 return {
                     "plan_digest": "digest",
                     "content_capabilities": [
@@ -262,7 +434,7 @@ def test_reconstructive_move_accepts_active_absence_without_recycle_lookup(
                         "Tag",
                     ],
                 }
-            assert name == "reconstructive_move_page"
+            assert name == "move_page"
             return {
                 "item": target,
                 "created_ids": ["target-page", "target-child"],
@@ -285,16 +457,16 @@ def test_reconstructive_move_accepts_active_absence_without_recycle_lookup(
         "notebook": notebook,
         "structure": {
             "disposable_page": source,
-            "move_source": destination,
+            "destination_section": destination,
         },
     }
-    client = FakeReconstructiveClient()
-    monkeypatch.setattr(reconstructive_scenario, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(reconstructive_scenario, "timestamp", lambda: "stamp")
-    monkeypatch.setattr(reconstructive_scenario, "render_report", lambda _run_dir: None)
+    client = FakeMovePageClient()
+    monkeypatch.setattr(move_page_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(move_page_scenario, "timestamp", lambda: "stamp")
+    monkeypatch.setattr(move_page_scenario, "render_report", lambda _run_dir: None)
 
     result = asyncio.run(
-        ReconstructiveMovePageScenario().execute(
+        MovePageScenario().execute(
             SimpleNamespace(notebook_name=None, keep_worksite=True),
             RuntimeOptions(tmp_path, 1_800, False, False),
             manifest,
@@ -304,13 +476,13 @@ def test_reconstructive_move_accepts_active_absence_without_recycle_lookup(
     )
 
     assert client.calls == [
-        "plan_reconstructive_move_page",
-        "reconstructive_move_page",
+        "plan_move_page",
+        "move_page",
     ]
     assert result["status"] == "passed"
     assert result["source_deleted_nonpermanently"] is True
     assert result["recycle_bin_verification"] == "not_required_com_unavailable"
     worksite = test_utils.read_json(
-        tmp_path / "scenarios" / "reconstructive-move-page" / "worksite.json"
+        tmp_path / "scenarios" / "move-page" / "worksite.json"
     )
     assert worksite["source_ids"] == ["source-child", "source-page"]

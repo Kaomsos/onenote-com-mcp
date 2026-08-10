@@ -34,14 +34,18 @@ PUBLIC_SCENARIOS = SCENARIO_REGISTRY.public_names
 WORKSITE_DRY_RUN_ACTIONS = {
     "create": "preserve-created-fixture",
     "rename": "preserve-renamed-target",
-    "reorder": "preserve-reordered-page",
-    "move": "preserve-moved-section",
+    "reorder-page": "preserve-reordered-page",
+    "reorder-section": "preserve-reordered-sections",
+    "reorder-section-group": "preserve-reordered-section-group",
+    "reparent-section": "preserve-reparented-section",
+    "reparent-page": "preserve-reparented-page",
+    "reparent-section-group": "preserve-reparented-section-group",
     "delete": "preserve-recycle-bin-state",
     "copy-page": "preserve-active-copy-targets",
     "copy-section": "preserve-active-copy-targets",
     "copy-section-group": "preserve-active-copy-targets",
     "copy-notebook": "preserve-open-copy-notebook",
-    "reconstructive-move-page": "preserve-copy-and-nonpermanently-deleted-source",
+    "move-page": "preserve-copy-and-nonpermanently-deleted-source",
 }
 
 # Compatibility view for callers that inspect the static policy table.  Each
@@ -148,6 +152,8 @@ def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[
             "result": "source and Copy Notebook directories are always preserved",
         },
     }
+    if scenario.capability_assessment is not None:
+        result["capability_assessment"] = dict(scenario.capability_assessment)
     if hasattr(args, "keep_worksite"):
         result["worksite"] = {
             "preserved": bool(args.keep_worksite),
@@ -161,7 +167,7 @@ def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[
 
 
 def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
-    return {
+    state = {
         "schema_version": 1,
         "command": args.scenario,
         "scenario": args.scenario,
@@ -177,6 +183,10 @@ def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[st
         "current_step": "create-source-notebook",
         "finalization_started": False,
     }
+    scenario = SCENARIO_REGISTRY.get(args.scenario)
+    if scenario.capability_assessment is not None:
+        state["capability_assessment"] = dict(scenario.capability_assessment)
+    return state
 
 
 def _preserved_notebook_paths(run_dir: Path, manifest: dict[str, Any]) -> list[str]:
@@ -279,11 +289,10 @@ async def finalize_notebook(
 
 async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
     _validate_notebook_name(args.notebook_name)
-    if args.scenario == "reorder" and args.page_level < 1:
+    if args.scenario == "reorder-page" and args.page_level < 1:
         raise RunnerFailure("--page-level must be at least 1.")
     if options.dry_run:
         return isolated_dry_run(args, options)
-
     _assert_fresh_run_dir(options.run_dir)
     state = _initial_state(args, options)
     state_path = options.run_dir / "run-state.json"
@@ -521,14 +530,18 @@ def record_failure(args: argparse.Namespace, message: str, exit_code: int) -> No
         }
         manifest = load_manifest(run_dir)
         target_keys = {
-            "rename": getattr(args, "target", "move_source"),
-            "reorder": "sibling_page",
-            "move": "move_source",
+            "rename": getattr(args, "target", "content_section"),
+            "reorder-page": "sibling_page",
+            "reorder-section": "root_section_c",
+            "reorder-section-group": "root_group_c",
+            "reparent-section": "notebook_to_group_section",
+            "reparent-page": "reparent_page",
+            "reparent-section-group": "notebook_to_group_target",
             "copy-page": "parent_page",
-            "copy-section": "move_source",
+            "copy-section": "source_section",
             "copy-section-group": "group_a",
             "copy-notebook": None,
-            "reconstructive-move-page": "disposable_page",
+            "move-page": "disposable_page",
         }
         if args.scenario == "delete":
             target_id = getattr(args, "delete_target_id", "")

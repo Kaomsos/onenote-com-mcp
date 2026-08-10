@@ -6,14 +6,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from ...test_utils import (
-    load_manifest,
-    manifest_path,
-    read_json,
-    display_name,
-    utc_now,
-    write_json,
-)
+from ...test_utils import display_name, manifest_path, read_json, utc_now
 
 def render_report(run_dir: Path) -> Path:
     manifest = read_json(manifest_path(run_dir))
@@ -31,6 +24,7 @@ def render_report(run_dir: Path) -> Path:
         "",
     ]
     copy_fixture = manifest.get("copy_fixture")
+    reparent_page_fixture = manifest.get("reparent_page_fixture")
     scenario_spec = manifest.get("scenario_spec")
     if isinstance(scenario_spec, dict):
         fixture_profile = scenario_spec.get("fixture_profile", {})
@@ -72,6 +66,27 @@ def render_report(run_dir: Path) -> Path:
                     "",
                 ]
             )
+    if isinstance(reparent_page_fixture, dict):
+        list_tag = reparent_page_fixture.get("list_tag", {})
+        lines.extend(
+            [
+                "## Reparent Page rich-content fixture",
+                "",
+                f"- Original Page ID: `{reparent_page_fixture.get('page_id', '')}`",
+                "- Automated content: `"
+                + ", ".join(reparent_page_fixture.get("automated_content", []))
+                + "`",
+                "- Observed object types: `"
+                + ", ".join(reparent_page_fixture.get("observed_object_types", []))
+                + "`",
+                "- List/Tag capabilities: `"
+                + ", ".join(list_tag.get("observed_capabilities", []))
+                + "`",
+                "- Acceptance: ID/Tag-index-normalized rich content and semantic object projection "
+                "must survive an allowed old-ID → new-ID transition.",
+                "",
+            ]
+        )
     lines.extend(["## Scenarios", ""])
     found = False
     scenarios_root = run_dir / "scenarios"
@@ -92,6 +107,7 @@ def render_report(run_dir: Path) -> Path:
                     "",
                     f"- Status: `{result.get('status', 'unknown')}`",
                     f"- Target ID: `{result.get('target_id', '')}`",
+                    f"- Target IDs: `{', '.join(result.get('target_ids', []))}`",
                     f"- Restored: `{result.get('restored', 'n/a')}`",
                     f"- Worksite preserved: `{result.get('worksite_preserved', False)}`",
                 ]
@@ -217,16 +233,5 @@ def render_report(run_dir: Path) -> Path:
     return path
 
 async def run_report(args: argparse.Namespace) -> dict[str, Any]:
-    if args.onenote_version or args.office_channel:
-        manifest = load_manifest(args.run_dir)
-        previous = manifest.get("validation_environment", {})
-        manifest["validation_environment"] = {
-            "onenote_version": args.onenote_version
-            or previous.get("onenote_version", "not recorded"),
-            "office_channel": args.office_channel
-            or previous.get("office_channel", "not recorded"),
-            "recorded_at": utc_now(),
-        }
-        write_json(manifest_path(args.run_dir), manifest)
     report_path = render_report(args.run_dir)
     return {"command": "report", "report": str(report_path.resolve())}

@@ -13,10 +13,13 @@ from tests.manual_validation.mcp_stdio_client import (
     COPY_POLICY,
     COPY_BUDGET_ENV,
     DELETE_POLICY,
-    MOVE_POLICY,
+    REPARENT_SECTION_POLICY,
     POLICY_ENV_NAMES,
     READ_ONLY_POLICY,
-    RECONSTRUCTIVE_MOVE_PAGE_POLICY,
+    REPARENT_PROBE_POLICY,
+    REORDER_SECTION_GROUP_POLICY,
+    REORDER_SECTION_POLICY,
+    MOVE_PAGE_POLICY,
     WRITE_POLICY,
     MCPStdioClient,
     build_server_env,
@@ -64,7 +67,7 @@ def test_scenario_client_rejects_runtime_permission_expansion(tmp_path) -> None:
     async def exercise():
         async with scenario_client(
             existing,
-            policy=MOVE_POLICY,
+            policy=REPARENT_SECTION_POLICY,
             allowed_tools={"rename_section"},
             run_dir=tmp_path,
             timeout_seconds=10,
@@ -79,32 +82,44 @@ def test_static_policy_matrix_is_minimal() -> None:
         "writes_enabled": False,
         "deletes_enabled": False,
         "permanent_deletes_enabled": False,
-        "experimental_move_section_enabled": False,
+        "experimental_reparent_section_enabled": False,
+        "experimental_reorder_section_enabled": False,
+        "experimental_reorder_section_group_enabled": False,
         "experimental_copy_enabled": False,
-        "reconstructive_move_page_enabled": False,
+        "move_page_enabled": False,
         "raw_xml_enabled": False,
     }
     assert WRITE_POLICY.writes_enabled is True
     assert WRITE_POLICY.deletes_enabled is False
-    assert MOVE_POLICY.writes_enabled is True
-    assert MOVE_POLICY.experimental_move_section_enabled is True
+    assert REPARENT_SECTION_POLICY.writes_enabled is True
+    assert REPARENT_SECTION_POLICY.experimental_reparent_section_enabled is True
+    assert REORDER_SECTION_POLICY.experimental_reorder_section_enabled is True
+    assert REORDER_SECTION_POLICY.experimental_reorder_section_group_enabled is False
+    assert REORDER_SECTION_GROUP_POLICY.experimental_reorder_section_group_enabled is True
+    assert REORDER_SECTION_GROUP_POLICY.experimental_reorder_section_enabled is False
+    assert REPARENT_PROBE_POLICY.writes_enabled is True
+    assert REPARENT_PROBE_POLICY.raw_xml_enabled is True
+    assert REPARENT_PROBE_POLICY.deletes_enabled is False
     assert DELETE_POLICY.deletes_enabled is True
     assert DELETE_POLICY.writes_enabled is False
     assert COPY_POLICY.experimental_copy_enabled is True
     assert COPY_POLICY.deletes_enabled is True
     assert COPY_NO_DELETE_POLICY.deletes_enabled is False
-    assert RECONSTRUCTIVE_MOVE_PAGE_POLICY.reconstructive_move_page_enabled is True
+    assert MOVE_PAGE_POLICY.move_page_enabled is True
     for policy in (
         READ_ONLY_POLICY,
         WRITE_POLICY,
-        MOVE_POLICY,
+        REPARENT_SECTION_POLICY,
+        REORDER_SECTION_POLICY,
+        REORDER_SECTION_GROUP_POLICY,
+        REPARENT_PROBE_POLICY,
         DELETE_POLICY,
         COPY_POLICY,
         COPY_NO_DELETE_POLICY,
-        RECONSTRUCTIVE_MOVE_PAGE_POLICY,
+        MOVE_PAGE_POLICY,
     ):
         assert policy.permanent_deletes_enabled is False
-        assert policy.raw_xml_enabled is False
+        assert policy.raw_xml_enabled is (policy is REPARENT_PROBE_POLICY)
 
 def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> None:
     for env_name in POLICY_ENV_NAMES.values():
@@ -116,9 +131,11 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
     assert env["LOCAL_ONENOTE_ENABLE_WRITES"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_DELETES"] == "true"
     assert env["LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_MOVE_SECTION"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_MOVE_PAGE"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_RAW_XML"] == "false"
     assert env["TEMP"] == env["TMP"]
     assert env["LOCAL_ONENOTE_MCP_TIMEOUT"] == "1800"
@@ -135,7 +152,7 @@ def test_bridge_audit_path_cannot_leak_from_parent_environment(monkeypatch, tmp_
 def test_non_read_only_tool_classification_never_retries_publish_or_copy() -> None:
     assert is_mutation_tool("publish_object") is True
     assert is_mutation_tool("copy_page") is True
-    assert is_mutation_tool("reconstructive_move_page") is True
+    assert is_mutation_tool("move_page") is True
     assert is_mutation_tool("plan_copy") is False
     assert is_mutation_tool("get_page_xml") is False
 
@@ -176,14 +193,14 @@ def test_client_failure_preserves_structured_partial_envelope(tmp_path) -> None:
 
     client = MCPStdioClient(
         policy=READ_ONLY_POLICY,
-        allowed_tools={"reconstructive_move_page"},
+        allowed_tools={"move_page"},
         run_dir=tmp_path,
         timeout_seconds=10,
     )
     client._session = FakeSession()
 
     with pytest.raises(Exception) as caught:
-        asyncio.run(client.call_tool("reconstructive_move_page", {}, retry_read=False))
+        asyncio.run(client.call_tool("move_page", {}, retry_read=False))
 
     assert isinstance(caught.value, ClientFailure)
     assert caught.value.envelope == partial

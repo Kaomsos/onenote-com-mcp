@@ -62,13 +62,51 @@ def test_parser_has_no_permission_expansion_flags() -> None:
     assert "--enable-deletes" not in help_text
     assert "--yes" not in help_text
 
+
+def test_page_reorder_uses_explicit_reorder_page_entry_only() -> None:
+    parser = build_parser()
+
+    args = parser.parse_args(["reorder-page", "--dry-run"])
+    assert args.command == "reorder-page"
+    assert args.page_level == 2
+    with pytest.raises(SystemExit):
+        parser.parse_args(["reorder", "--dry-run"])
+
+
+def test_section_group_reorder_dry_run_marks_failed_limited_capability(
+    tmp_path, capsys
+) -> None:
+    run_dir = tmp_path / "section-group-reorder"
+
+    assert main(
+        [
+            "reorder-section-group",
+            "--run-dir",
+            str(run_dir),
+            "--dry-run",
+            "--json",
+        ]
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["capability_assessment"] == {
+        "capability_status": "limited",
+        "validation_status": "failed",
+        "reason": (
+            "The backend keeps SectionGroups in fixed ascending name order and "
+            "did not apply the requested sibling order after UpdateHierarchy returned success."
+        ),
+    }
+    assert payload["server_started"] is False
+    assert not run_dir.exists()
+
 def test_p2_scenarios_default_to_copy_execute_timeout() -> None:
     parser = build_parser()
     copy_args = parser.parse_args(
         ["copy-notebook", "--run-dir", "run"]
     )
     move_args = parser.parse_args(
-        ["reconstructive-move-page", "--run-dir", "run"]
+        ["move-page", "--run-dir", "run"]
     )
     rename_args = parser.parse_args(
         ["rename", "--run-dir", "run"]
@@ -79,19 +117,37 @@ def test_p2_scenarios_default_to_copy_execute_timeout() -> None:
     assert rename_args.timeout == 180
 
 
+@pytest.mark.parametrize("legacy_name", ["move-section", "reconstructive-move-page"])
+def test_legacy_scenario_names_are_not_registered(legacy_name) -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([legacy_name, "--dry-run"])
+
+
+def test_rename_section_target_uses_neutral_fixture_name() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["rename", "--target", "content_section", "--dry-run"])
+    assert args.target == "content_section"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["rename", "--target", "move_source", "--dry-run"])
+
+
 def test_keep_worksite_is_available_to_every_named_action_but_not_all() -> None:
     parser = build_parser()
     for scenario in (
         "create",
         "rename",
-        "reorder",
-        "move",
+        "reorder-page",
+        "reorder-section",
+        "reorder-section-group",
+        "reparent-section",
+        "reparent-page",
+        "reparent-section-group",
         "delete",
         "copy-page",
         "copy-section",
         "copy-section-group",
         "copy-notebook",
-        "reconstructive-move-page",
+        "move-page",
     ):
         args = parser.parse_args([scenario, "--keep-worksite"])
         assert args.keep_worksite is True
@@ -105,15 +161,19 @@ def test_keep_worksite_is_available_to_every_named_action_but_not_all() -> None:
     [
         ("create", "preserve-created-fixture"),
         ("rename", "preserve-renamed-target"),
-        ("reorder", "preserve-reordered-page"),
-        ("move", "preserve-moved-section"),
+        ("reorder-page", "preserve-reordered-page"),
+        ("reorder-section", "preserve-reordered-sections"),
+        ("reorder-section-group", "preserve-reordered-section-group"),
+        ("reparent-section", "preserve-reparented-section"),
+        ("reparent-page", "preserve-reparented-page"),
+        ("reparent-section-group", "preserve-reparented-section-group"),
         ("delete", "preserve-recycle-bin-state"),
         ("copy-page", "preserve-active-copy-targets"),
         ("copy-section", "preserve-active-copy-targets"),
         ("copy-section-group", "preserve-active-copy-targets"),
         ("copy-notebook", "preserve-open-copy-notebook"),
         (
-            "reconstructive-move-page",
+            "move-page",
             "preserve-copy-and-nonpermanently-deleted-source",
         ),
     ],
@@ -189,7 +249,7 @@ def test_keep_worksite_dry_run_preserves_targets_and_source_notebook(tmp_path, c
         "copy-section",
         "copy-section-group",
         "copy-notebook",
-        "reconstructive-move-page",
+        "move-page",
     ],
 )
 def test_page_copy_dry_runs_declare_layered_automatic_fixture(
@@ -227,6 +287,24 @@ def test_dry_run_does_not_start_mcp(tmp_path, capsys) -> None:
     assert '"server_started": false' in output
     assert not (tmp_path / "run").exists()
 
+
+@pytest.mark.parametrize("scenario", ["reorder-section", "reorder-section-group"])
+def test_container_reorder_dry_run_requires_no_environment_metadata(scenario, tmp_path, capsys) -> None:
+    run_dir = tmp_path / scenario
+    args = build_parser().parse_args(
+        [scenario, "--run-dir", str(run_dir), "--dry-run", "--json"]
+    )
+    assert not hasattr(args, "onenote_version")
+    assert not hasattr(args, "office_channel")
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([scenario, "--dry-run", "--onenote-version", "16.0"])
+
+    assert main([scenario, "--run-dir", str(run_dir), "--dry-run", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "validation_environment" not in payload
+    assert not run_dir.exists()
+
 def test_scenario_dry_run_needs_no_prepared_manifest(tmp_path, capsys) -> None:
     run_dir = tmp_path / "run"
     exit_code = main(["rename", "--run-dir", str(run_dir), "--dry-run", "--json"])
@@ -243,7 +321,7 @@ def test_copy_dry_runs_use_named_scenarios_and_static_policies(tmp_path, capsys)
         ("copy-section", "rich-section-copy"),
         ("copy-section-group", "rich-group-copy"),
         ("copy-notebook", "rich-notebook-copy"),
-        ("reconstructive-move-page", "disposable-page-move"),
+        ("move-page", "disposable-page-move"),
     ):
         run_dir = tmp_path / scenario
         exit_code = main(
@@ -255,13 +333,13 @@ def test_copy_dry_runs_use_named_scenarios_and_static_policies(tmp_path, capsys)
         assert payload["server_started"] is False
         assert payload["fixture_profile"]["name"] == profile
         assert payload["expected_mcp_process_starts"] == 1
-        if scenario.startswith("copy-") or scenario == "reconstructive-move-page":
+        if scenario.startswith("copy-") or scenario == "move-page":
             assert '"timeout_seconds": 1800' in output
             assert '"max_pages": 200' in output
 
         assert not run_dir.exists()
 
-def test_internal_report_records_manual_environment_without_mcp(tmp_path) -> None:
+def test_internal_report_renders_scenario_evidence_without_collecting_environment(tmp_path) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "manifest.json").write_text(
@@ -337,20 +415,12 @@ def test_internal_report_records_manual_environment_without_mcp(tmp_path) -> Non
             },
         },
     )
-    result = asyncio.run(
-        run_report(
-            argparse.Namespace(
-                run_dir=run_dir,
-                onenote_version="16.0-test",
-                office_channel="Current",
-            )
-        )
-    )
+    result = asyncio.run(run_report(argparse.Namespace(run_dir=run_dir)))
     assert result["command"] == "report"
     manifest = (run_dir / "manifest.json").read_text(encoding="utf-8")
     report = (run_dir / "report.md").read_text(encoding="utf-8")
-    assert '"onenote_version": "16.0-test"' in manifest
-    assert "OneNote version: `16.0-test`" in report
+    assert '"validation_environment"' not in manifest
+    assert "## Validated environment" not in report
     assert "Automated content: `rich_text, table, image, list, tag`" in report
     assert "Validated content types: `Image, List, Outline, RichText, Table, Tag`" in report
     assert "Planned content capabilities: `Image, List, Outline, RichText, Table, Tag`" in report

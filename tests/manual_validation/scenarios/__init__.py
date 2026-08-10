@@ -15,14 +15,18 @@ from .common.config import ISOLATED_SCENARIO_NOTEBOOK_PREFIX
 # common/registry.py contains no scenario imports or parallel construction list.
 from .create import CreateScenario
 from .rename import RenameScenario
-from .reorder import ReorderScenario
-from .move import MoveScenario
+from .reorder_page import ReorderPageScenario
+from .reorder_section import ReorderSectionScenario
+from .reorder_section_group import ReorderSectionGroupScenario
+from .reparent_section import ReparentSectionScenario
+from .reparent_page import ReparentPageScenario
+from .reparent_section_group import ReparentSectionGroupScenario
 from .delete import DeleteScenario
 from .copy_page import CopyPageScenario
 from .copy_section import CopySectionScenario
 from .copy_section_group import CopySectionGroupScenario
 from .copy_notebook import CopyNotebookScenario
-from .reconstructive_move_page import ReconstructiveMovePageScenario
+from .move_page import MovePageScenario
 
 from .common.orchestrator import PUBLIC_SCENARIOS, run_validate
 
@@ -50,13 +54,17 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
 __all__ = [
     "CreateScenario",
     "RenameScenario",
-    "ReorderScenario",
-    "MoveScenario",
+    "ReorderPageScenario",
+    "ReorderSectionScenario",
+    "ReorderSectionGroupScenario",
+    "ReparentSectionScenario",
+    "ReparentPageScenario",
+    "ReparentSectionGroupScenario",
     "DeleteScenario",
     "CopyPageScenario",
     "CopySectionScenario",
     "CopySectionGroupScenario",
     "CopyNotebookScenario",
-    "ReconstructiveMovePageScenario",
+    "MovePageScenario",
     "dispatch_command",
 ]

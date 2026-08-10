@@ -33,7 +33,7 @@
 - Source Notebook 的 create/get/close 只属于窄 lifecycle wrapper，并受精确 ID/name/path lease 约束。Fixture 创建必须留在 scenario MCP process 内。
 - 使用绑定到 manifest 的精确 ID 和最新 confirmation field。可恢复操作默认必须 restore 并验证状态。每个具名 scenario 都可在用户显式传入 `--keep-worksite` 时，于 after/read-back 验证后跳过其契约内 restore/cleanup 并保留动作现场；本来就不可恢复的 scenario 则保留其既定最终状态。该模式必须保持源 Notebook 打开，在 evidence 中记录全部精确目标 ID 和人工清理要求，且不得由 `all` 透传。不可恢复操作只能触及 manifest allowlist 中的 disposable target。
 - Delete scenario 必须保持非永久删除。绝不能删除本地 Notebook 或 Copy directory。出现 mutation 失败、`copy_only`、restore 失败、fidelity 失败或状态不确定时，应以非零状态退出、保持 source Notebook 打开并保留全部 evidence。
-- 重建式 Move 必须保持严格：`copy_only`、source 未删除或 fidelity gate 失败都不算成功，不得跳过或降级处理。
+- Move 必须保持严格：`copy_only`、source 未删除或 fidelity gate 失败都不算成功，不得跳过或降级处理。
 
 ## 变更要求
 

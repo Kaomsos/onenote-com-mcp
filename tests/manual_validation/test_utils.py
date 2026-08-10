@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
 
+from local_onenote_mcp.page import canonical_page_digest
+from local_onenote_mcp.services.pages import stable_page_content_digest
+
 from .mcp_stdio_client import COPY_BUDGET_ENV, MCPStdioClient, ScenarioPolicy
 from .runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
 
@@ -87,11 +90,19 @@ SNAPSHOT_FIELDS = (
 )
 OBJECT_FIELDS = (
     "type",
+    "kind",
+    "id",
     "object_id",
     "callback_id",
     "format",
+    "media_type",
+    "can_delete",
     "delete_supported",
+    "delete_target_id",
     "delete_object_id",
+    "container_object_id",
+    "parent_object_id",
+    "page_id",
 )
 
 
@@ -100,19 +111,37 @@ def stable_item(item: dict[str, Any]) -> dict[str, Any]:
 
 
 def page_content_hash(xml: str) -> str:
-    """Hash Page content while excluding mutable root hierarchy metadata."""
+    """Hash stable Page content while preserving content-object identities."""
+
+    return stable_page_content_digest(xml)
+
+
+def page_reparent_content_hash(xml: str) -> str:
+    """Hash rich Page semantics while allowing native ID and Tag-index remapping."""
 
     root = ET.fromstring(xml)
-    for attribute in (
-        "ID",
-        "name",
-        "dateTime",
-        "lastModifiedTime",
-        "pageLevel",
-        "isCurrentlyViewed",
-    ):
-        root.attrib.pop(attribute, None)
-    return hashlib.sha256(ET.tostring(root, encoding="utf-8")).hexdigest()
+    tag_definitions: dict[str, tuple[str, str]] = {}
+    for node in root.iter():
+        if node.tag.rsplit("}", 1)[-1] != "TagDef":
+            continue
+        index = node.attrib.get("index")
+        if index is not None:
+            tag_definitions[index] = (
+                node.attrib.get("type", ""),
+                node.attrib.get("symbol", ""),
+            )
+    for node in root.iter():
+        if node.tag.rsplit("}", 1)[-1] != "Tag":
+            continue
+        index = node.attrib.pop("index", "")
+        semantic_type, semantic_symbol = tag_definitions.get(index, ("", ""))
+        node.attrib["semanticType"] = semantic_type
+        node.attrib["semanticSymbol"] = semantic_symbol
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag.rsplit("}", 1)[-1] == "TagDef":
+                parent.remove(child)
+    return canonical_page_digest(ET.tostring(root, encoding="unicode"))
 
 
 async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str, Any]:
@@ -124,23 +153,42 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
         key=lambda item: (str(item.get("section_id")), int(item.get("order", 0))),
     )
     page_hashes: dict[str, str] = {}
+    page_canonical_hashes: dict[str, str] = {}
+    page_reparent_hashes: dict[str, str] = {}
+    page_xml_hashes: dict[str, str] = {}
     page_objects: dict[str, list[dict[str, Any]]] = {}
     for page in pages:
         page_id = str(page["id"])
         xml_result = await client.call_tool("get_page_xml", {"page_id": page_id, "page_info": "all"})
         xml = str(xml_result["xml"])
         page_hashes[page_id] = page_content_hash(xml)
+        page_canonical_hashes[page_id] = canonical_page_digest(xml)
+        page_reparent_hashes[page_id] = page_reparent_content_hash(xml)
+        page_xml_hashes[page_id] = hashlib.sha256(xml.encode("utf-8")).hexdigest()
         objects_result = await client.call_tool("get_page_objects", {"page_id": page_id})
         page_objects[page_id] = [
             {field: obj.get(field) for field in OBJECT_FIELDS if field in obj}
             for obj in objects_result.get("objects", [])
             if isinstance(obj, dict)
         ]
+    refreshed_tree_result = await client.call_tool(
+        "get_tree", {"root_id": notebook_id, "max_depth": 8}
+    )
+    refreshed_items = flatten_tree(refreshed_tree_result["tree"])
+    initial_ids = {str(item["id"]) for item in items if item.get("id")}
+    refreshed_ids = {str(item["id"]) for item in refreshed_items if item.get("id")}
+    if refreshed_ids != initial_ids:
+        raise InvariantFailure(
+            "Hierarchy IDs changed while the snapshot was collecting Page evidence."
+        )
     return {
         "captured_at": utc_now(),
         "notebook_id": notebook_id,
-        "items": [stable_item(item) for item in items],
+        "items": [stable_item(item) for item in refreshed_items],
         "page_hashes": page_hashes,
+        "page_canonical_hashes": page_canonical_hashes,
+        "page_reparent_hashes": page_reparent_hashes,
+        "page_xml_hashes": page_xml_hashes,
         "page_objects": page_objects,
     }
 

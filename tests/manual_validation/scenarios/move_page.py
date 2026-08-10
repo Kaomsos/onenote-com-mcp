@@ -7,7 +7,7 @@ from typing import Any
 
 from ..mcp_stdio_client import (
     MCPStdioClient,
-    RECONSTRUCTIVE_MOVE_PAGE_POLICY,
+    MOVE_PAGE_POLICY,
     scenario_client,
 )
 from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
@@ -24,7 +24,7 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
-from .common.config import RECONSTRUCTIVE_MOVE_PAGE_TOOLS
+from .common.config import MOVE_PAGE_TOOLS
 from .common.copy_invariants import (
     assert_copy_fixture_capabilities,
     assert_copy_mapping,
@@ -34,7 +34,7 @@ from .common.copy_runtime import call_with_result_evidence
 from .common.report import render_report
 
 
-async def _execute_reconstructive_move_page(
+async def _execute_move_page(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
@@ -43,13 +43,13 @@ async def _execute_reconstructive_move_page(
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     source = resolve_manifest_item(manifest, "disposable_page")
-    destination = resolve_manifest_item(manifest, "move_source")
+    destination = resolve_manifest_item(manifest, "destination_section")
     destination_title = f"Moved-Disposable-{timestamp()}"
-    out = scenario_dir(options.run_dir, "reconstructive-move-page")
+    out = scenario_dir(options.run_dir, "move-page")
     async with scenario_client(
         client,
-        policy=RECONSTRUCTIVE_MOVE_PAGE_POLICY,
-        allowed_tools=RECONSTRUCTIVE_MOVE_PAGE_TOOLS,
+        policy=MOVE_PAGE_POLICY,
+        allowed_tools=MOVE_PAGE_TOOLS,
         run_dir=out,
         timeout_seconds=options.timeout,
         client_factory=MCPStdioClient,
@@ -60,7 +60,7 @@ async def _execute_reconstructive_move_page(
         if current is None:
             raise RunnerFailure("Disposable Page is not active; run create to replenish the fixture.")
         planned = await client.call_tool(
-            "plan_reconstructive_move_page",
+            "plan_move_page",
             {
                 "page_id": current["id"],
                 "destination_section_id": destination["id"],
@@ -69,9 +69,9 @@ async def _execute_reconstructive_move_page(
         )
         write_json(out / "plan.json", planned)
         assert_copy_fixture_capabilities(planned)
-        moved = await call_with_result_evidence(
+        move_result = await call_with_result_evidence(
             client,
-            "reconstructive_move_page",
+            "move_page",
             {
                 "page_id": current["id"],
                 "destination_section_id": destination["id"],
@@ -91,18 +91,18 @@ async def _execute_reconstructive_move_page(
         remaining_source_ids = source_subtree_ids & snapshot_ids(after)
         if remaining_source_ids:
             raise InvariantFailure(
-                f"Reconstructive Move source subtree remains active: {sorted(remaining_source_ids)}"
+                f"Move source subtree remains active: {sorted(remaining_source_ids)}"
             )
-        target_id = moved.get("item", {}).get("id")
+        target_id = move_result.get("item", {}).get("id")
         if not target_id or find_snapshot_item(after, target_id) is None:
-            raise InvariantFailure("Reconstructive Move target is missing from the active snapshot.")
+            raise InvariantFailure("Move target is missing from the active snapshot.")
         assert_copy_mapping(
             before,
             after,
             current["id"],
             destination["id"],
             destination_title,
-            moved,
+            move_result,
         )
         remaining = {
             "status": "source_subtree_removed_nonpermanently",
@@ -110,11 +110,11 @@ async def _execute_reconstructive_move_page(
             "source_ids": sorted(source_subtree_ids),
             "target_id": target_id,
             "target_ids": [target_id, *sorted(source_subtree_ids)],
-            "recycle_bin_verification": moved.get(
+            "recycle_bin_verification": move_result.get(
                 "recycle_bin_verification", "not_reported"
             ),
-            "recycled_source_ids": moved.get("recycled_source_ids", []),
-            "recycle_unverified_source_ids": moved.get(
+            "recycled_source_ids": move_result.get("recycled_source_ids", []),
+            "recycle_unverified_source_ids": move_result.get(
                 "recycle_unverified_source_ids", []
             ),
             "manual_cleanup_required": True,
@@ -132,7 +132,7 @@ async def _execute_reconstructive_move_page(
         if keep_worksite:
             write_json(out / "worksite.json", remaining)
         result = {
-            "scenario": "reconstructive-move-page",
+            "scenario": "move-page",
             "status": "passed",
             "target_id": current["id"],
             "new_target_id": target_id,
@@ -141,7 +141,7 @@ async def _execute_reconstructive_move_page(
             "source_deleted_nonpermanently": True,
             "recycle_bin_verification": remaining["recycle_bin_verification"],
             "remaining_state": remaining,
-            "copy_report": moved["copy_report"],
+            "copy_report": move_result["copy_report"],
         }
         write_json(out / "result.json", result)
         render_report(options.run_dir)
@@ -149,8 +149,8 @@ async def _execute_reconstructive_move_page(
 
 
 @SCENARIO_REGISTRY.register
-class ReconstructiveMovePageScenario(Scenario):
-    name = "reconstructive-move-page"
+class MovePageScenario(Scenario):
+    name = "move-page"
     help_text = (
         "GATED: create, strictly move the disposable Page by verified Copy plus "
         "non-permanent source removal, report, then close or keep."
@@ -167,4 +167,4 @@ class ReconstructiveMovePageScenario(Scenario):
         client: MCPStdioClient | None,
         fixture_result: dict[str, Any],
     ) -> dict[str, Any]:
-        return await _execute_reconstructive_move_page(args, options, manifest, client=client)
+        return await _execute_move_page(args, options, manifest, client=client)

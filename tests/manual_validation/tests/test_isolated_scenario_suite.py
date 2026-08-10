@@ -49,8 +49,8 @@ def _args(run_dir: Path, scenario: str, *, keep: bool = False) -> argparse.Names
         "keep_notebook": keep,
     }
     if scenario == "rename":
-        values.update(target="move_source", new_name=None)
-    if scenario == "reorder":
+        values.update(target="content_section", new_name=None)
+    if scenario == "reorder-page":
         values["page_level"] = 2
     return argparse.Namespace(**values)
 
@@ -63,7 +63,7 @@ def _manifest(run_dir: Path, name: str = "__ISOLATED__") -> dict:
         "structure": {
             "group_a": {"id": "group-a"},
             "group_b": {"id": "group-b"},
-            "move_source": {"id": "move-source"},
+            "content_section": {"id": "content-section"},
             "parent_page": {"id": "parent-page"},
             "sibling_page": {"id": "sibling-page"},
             "disposable_group": {"id": "disposable-group"},
@@ -110,12 +110,14 @@ def test_fixture_profiles_are_scenario_specific() -> None:
     names = {name: spec.fixture.name for name, spec in SCENARIO_SPECS.items()}
     assert names["create"] == "full-preset"
     assert names["rename"] == "rename-target"
-    assert names["move"] == "section-move"
+    assert names["reparent-section"] == "section-reparent"
+    assert names["reparent-page"] == "page-reparent-probe"
+    assert names["reparent-section-group"] == "section-group-reparent-probe"
     assert names["copy-page"] == "rich-page-copy"
     assert len(set(names.values())) == len(names)
     assert "create_notebook" not in SCENARIO_SPECS["create"].tool_allowlist
-    assert "move_section" not in SCENARIO_SPECS["rename"].tool_allowlist
-    assert "delete_section_group" not in SCENARIO_SPECS["move"].tool_allowlist
+    assert "reparent_section" not in SCENARIO_SPECS["rename"].tool_allowlist
+    assert "delete_section_group" not in SCENARIO_SPECS["reparent-section"].tool_allowlist
 
 
 def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
@@ -144,16 +146,26 @@ def test_call_metrics_count_only_run_scoped_audit_lines(tmp_path) -> None:
 
 def test_fixture_validator_proves_page_tree_topology() -> None:
     structure = {
-        "move_source": {"id": "section"},
+        "description_section": {"id": "description-section"},
+        "description_page": {"id": "description-page"},
+        "reorder_section": {"id": "section"},
         "parent_page": {"id": "parent"},
         "child_page": {"id": "child"},
         "sibling_page": {"id": "sibling"},
     }
     items = [
+        {"id": "description-section", "resource_type": "section"},
+        {
+            "id": "description-page",
+            "resource_type": "page",
+            "title": "00-Reorder-Description",
+            "section_id": "description-section",
+        },
         {"id": "section", "resource_type": "section"},
         {
             "id": "parent",
             "resource_type": "page",
+            "title": "01-Parent",
             "section_id": "section",
             "page_level": 1,
             "parent_page_id": None,
@@ -161,6 +173,7 @@ def test_fixture_validator_proves_page_tree_topology() -> None:
         {
             "id": "child",
             "resource_type": "page",
+            "title": "02-Child",
             "section_id": "section",
             "page_level": 2,
             "parent_page_id": "parent",
@@ -168,18 +181,368 @@ def test_fixture_validator_proves_page_tree_topology() -> None:
         {
             "id": "sibling",
             "resource_type": "page",
+            "title": "03-Sibling",
             "section_id": "section",
             "page_level": 1,
             "parent_page_id": None,
         },
     ]
 
-    checks = _validate_fixture_snapshot("reorder", {"items": items}, structure, None)
+    checks = _validate_fixture_snapshot("reorder-page", {"items": items}, structure, None)
     assert "Page levels and derived parent relationships match the profile" in checks
+    assert "all scenario Pages use stable 00/01/02/03 title prefixes" in checks
 
-    items[2]["parent_page_id"] = "wrong"
+    items[4]["parent_page_id"] = "wrong"
     with pytest.raises(runtime.InvariantFailure, match="topology"):
-        _validate_fixture_snapshot("reorder", {"items": items}, structure, None)
+        _validate_fixture_snapshot("reorder-page", {"items": items}, structure, None)
+    items[4]["parent_page_id"] = "parent"
+    items[5]["title"] = "Sibling"
+    with pytest.raises(runtime.InvariantFailure, match="numbering"):
+        _validate_fixture_snapshot("reorder-page", {"items": items}, structure, None)
+
+
+def test_reorder_page_fixture_description_makes_order_visually_explicit() -> None:
+    spec = SCENARIO_SPECS["reorder-page"]
+
+    assert {"description_section", "description_page"} <= set(spec.fixture.manifest_keys)
+    assert "get_page_text" in spec.tool_allowlist
+    assert "00-Reorder-Description" in spec.fixture.expected_structure[0]
+    assert "01-Parent" in spec.fixture.expected_structure[1]
+    assert "02-Child" in spec.fixture.expected_structure[1]
+    assert "03-Sibling" in spec.fixture.expected_structure[1]
+    assert "操作前（顺序 01,02,03）" in fixture_module.REORDER_PAGE_DESCRIPTION
+    assert "预期操作后（顺序 01,03,02）" in fixture_module.REORDER_PAGE_DESCRIPTION
+    assert "默认恢复后（顺序 01,02,03）" in fixture_module.REORDER_PAGE_DESCRIPTION
+
+
+def test_reorder_section_fixture_description_covers_both_parent_types() -> None:
+    spec = SCENARIO_SPECS["reorder-section"]
+
+    assert {"description_section", "description_page"} <= set(
+        spec.fixture.manifest_keys
+    )
+    assert "get_page_text" in spec.tool_allowlist
+    assert "00-Reorder-Section-Description" in spec.fixture.expected_structure[0]
+    assert "01-Root-Section-A" in spec.fixture.expected_structure[1]
+    assert "01-Group-Section-A" in spec.fixture.expected_structure[2]
+    assert "场景一：父级为 Notebook" in fixture_module.REORDER_SECTION_DESCRIPTION
+    assert (
+        "场景二：父级为 01-Section-Parent（SectionGroup）"
+        in fixture_module.REORDER_SECTION_DESCRIPTION
+    )
+    assert (
+        "操作后：00-Description, 01-Root-Section-A, 03-Root-Section-C, 02-Root-Section-B"
+        in fixture_module.REORDER_SECTION_DESCRIPTION
+    )
+    assert (
+        "操作后：01-Group-Section-A, 03-Group-Section-C, 02-Group-Section-B"
+        in fixture_module.REORDER_SECTION_DESCRIPTION
+    )
+
+
+def test_fixture_validator_proves_numbered_section_sequences_for_both_parents() -> None:
+    structure = {
+        "description_section": {"id": "description-section"},
+        "description_page": {"id": "description-page"},
+        "section_parent_group": {"id": "section-parent"},
+    }
+    items = [
+        {"id": "notebook", "resource_type": "notebook", "name": "Notebook"},
+        {
+            "id": "description-section",
+            "resource_type": "section",
+            "name": "00-Description",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "description-page",
+            "resource_type": "page",
+            "title": "00-Reorder-Section-Description",
+            "section_id": "description-section",
+        },
+        {
+            "id": "section-parent",
+            "resource_type": "section_group",
+            "name": "01-Section-Parent",
+            "parent_id": "notebook",
+        },
+    ]
+    for prefix, parent_id, label in (
+        ("root", "notebook", "Root"),
+        ("group", "section-parent", "Group"),
+    ):
+        for index, letter in enumerate("abc", start=1):
+            section_id = f"{prefix}-section-{letter}"
+            page_id = f"{prefix}-page-{letter}"
+            structure[f"{prefix}_section_{letter}"] = {"id": section_id}
+            structure[f"{prefix}_page_{letter}"] = {"id": page_id}
+            items.extend(
+                [
+                    {
+                        "id": section_id,
+                        "resource_type": "section",
+                        "name": f"{index:02d}-{label}-Section-{letter.upper()}",
+                        "parent_id": parent_id,
+                    },
+                    {
+                        "id": page_id,
+                        "resource_type": "page",
+                        "title": f"{index:02d}-{label}-Page-{letter.upper()}",
+                        "section_id": section_id,
+                    },
+                ]
+            )
+
+    checks = _validate_fixture_snapshot(
+        "reorder-section", {"items": items}, structure, None
+    )
+    assert (
+        "Section fixture covers both legal parent types: Notebook and SectionGroup"
+        in checks
+    )
+    assert "both Section sibling sequences are exactly A/B/C" in checks
+
+    next(
+        item for item in items if item["id"] == "group-section-b"
+    )["parent_id"] = "notebook"
+    with pytest.raises(runtime.InvariantFailure, match="outside its declared parent"):
+        _validate_fixture_snapshot("reorder-section", {"items": items}, structure, None)
+
+
+def test_reorder_section_group_fixture_description_covers_both_parent_types() -> None:
+    spec = SCENARIO_SPECS["reorder-section-group"]
+
+    assert {"description_section", "description_page"} <= set(
+        spec.fixture.manifest_keys
+    )
+    assert "get_page_text" in spec.tool_allowlist
+    assert "00-Reorder-SectionGroup-Description" in spec.fixture.expected_structure[0]
+    assert "01-Root-Group-A" in spec.fixture.expected_structure[1]
+    assert "01-Nested-Group-A" in spec.fixture.expected_structure[2]
+    assert (
+        "场景一：父级为 Notebook"
+        in fixture_module.REORDER_SECTION_GROUP_DESCRIPTION
+    )
+    assert (
+        "场景二：父级为 00-Group-Parent（SectionGroup）"
+        in fixture_module.REORDER_SECTION_GROUP_DESCRIPTION
+    )
+    assert (
+        "操作后：00-Group-Parent, 01-Root-Group-A, 03-Root-Group-C, 02-Root-Group-B"
+        in fixture_module.REORDER_SECTION_GROUP_DESCRIPTION
+    )
+    assert (
+        "操作后：01-Nested-Group-A, 03-Nested-Group-C, 02-Nested-Group-B"
+        in fixture_module.REORDER_SECTION_GROUP_DESCRIPTION
+    )
+
+
+def test_reparent_section_fixture_description_covers_all_parent_transitions() -> None:
+    spec = SCENARIO_SPECS["reparent-section"]
+
+    assert {"description_section", "description_page"} <= set(
+        spec.fixture.manifest_keys
+    )
+    assert "get_page_text" in spec.tool_allowlist
+    assert "create_page" in spec.tool_allowlist
+    assert "00-Reparent-Section-Description" in spec.fixture.expected_structure[0]
+    assert "Notebook-To-Group" in spec.fixture.expected_structure[1]
+    assert "Group-To-Notebook" in spec.fixture.expected_structure[2]
+    assert "Group-To-Group" in spec.fixture.expected_structure[3]
+    assert (
+        "场景一：Notebook 父级 → SectionGroup 父级"
+        in fixture_module.REPARENT_SECTION_DESCRIPTION
+    )
+    assert (
+        "场景二：SectionGroup 父级 → Notebook 父级"
+        in fixture_module.REPARENT_SECTION_DESCRIPTION
+    )
+    assert (
+        "场景三：SectionGroup 父级 → SectionGroup 父级"
+        in fixture_module.REPARENT_SECTION_DESCRIPTION
+    )
+
+
+def test_reparent_section_fixture_validator_proves_three_parent_transitions() -> None:
+    structure = {
+        "description_section": {"id": "description-section"},
+        "description_page": {"id": "description-page"},
+        "notebook_to_group_destination": {"id": "destination-1"},
+        "notebook_to_group_section": {"id": "section-1"},
+        "notebook_to_group_page": {"id": "page-1"},
+        "group_to_notebook_source": {"id": "source-2"},
+        "group_to_notebook_section": {"id": "section-2"},
+        "group_to_notebook_page": {"id": "page-2"},
+        "group_to_group_source": {"id": "source-3"},
+        "group_to_group_destination": {"id": "destination-3"},
+        "group_to_group_section": {"id": "section-3"},
+        "group_to_group_page": {"id": "page-3"},
+    }
+    items = [
+        {"id": "notebook", "resource_type": "notebook", "name": "Notebook"},
+        {
+            "id": "description-section",
+            "resource_type": "section",
+            "name": "00-Description",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "description-page",
+            "resource_type": "page",
+            "title": "00-Reparent-Section-Description",
+            "section_id": "description-section",
+        },
+        {
+            "id": "destination-1",
+            "resource_type": "section_group",
+            "name": "01-Destination-Group",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "section-1",
+            "resource_type": "section",
+            "name": "01-Notebook-To-Group-Section",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "page-1",
+            "resource_type": "page",
+            "title": "01-Notebook-To-Group-Page",
+            "section_id": "section-1",
+        },
+        {
+            "id": "source-2",
+            "resource_type": "section_group",
+            "name": "02-Source-Group",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "section-2",
+            "resource_type": "section",
+            "name": "02-Group-To-Notebook-Section",
+            "parent_id": "source-2",
+        },
+        {
+            "id": "page-2",
+            "resource_type": "page",
+            "title": "02-Group-To-Notebook-Page",
+            "section_id": "section-2",
+        },
+        {
+            "id": "source-3",
+            "resource_type": "section_group",
+            "name": "03-Source-Group",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "destination-3",
+            "resource_type": "section_group",
+            "name": "03-Destination-Group",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "section-3",
+            "resource_type": "section",
+            "name": "03-Group-To-Group-Section",
+            "parent_id": "source-3",
+        },
+        {
+            "id": "page-3",
+            "resource_type": "page",
+            "title": "03-Group-To-Group-Page",
+            "section_id": "section-3",
+        },
+    ]
+
+    checks = _validate_fixture_snapshot(
+        "reparent-section", {"items": items}, structure, None
+    )
+    assert "case 1 source is Notebook-root and destination is a root SectionGroup" in checks
+    assert "case 2 source is under its root SectionGroup and destination is Notebook" in checks
+    assert "case 3 source and destination are distinct root SectionGroups" in checks
+
+    next(item for item in items if item["id"] == "section-2")["parent_id"] = "notebook"
+    with pytest.raises(runtime.InvariantFailure, match="SectionGroup-to-Notebook"):
+        _validate_fixture_snapshot("reparent-section", {"items": items}, structure, None)
+
+
+def test_fixture_validator_proves_numbered_section_groups_for_both_parents() -> None:
+    structure = {
+        "description_section": {"id": "description-section"},
+        "description_page": {"id": "description-page"},
+        "section_group_parent": {"id": "group-parent"},
+    }
+    items = [
+        {"id": "notebook", "resource_type": "notebook", "name": "Notebook"},
+        {
+            "id": "description-section",
+            "resource_type": "section",
+            "name": "00-Description",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "description-page",
+            "resource_type": "page",
+            "title": "00-Reorder-SectionGroup-Description",
+            "section_id": "description-section",
+        },
+        {
+            "id": "group-parent",
+            "resource_type": "section_group",
+            "name": "00-Group-Parent",
+            "parent_id": "notebook",
+        },
+    ]
+    for prefix, parent_id, label in (
+        ("root", "notebook", "Root"),
+        ("nested", "group-parent", "Nested"),
+    ):
+        for index, letter in enumerate("abc", start=1):
+            group_id = f"{prefix}-group-{letter}"
+            section_id = f"{prefix}-section-{letter}"
+            page_id = f"{prefix}-page-{letter}"
+            structure[f"{prefix}_group_{letter}"] = {"id": group_id}
+            structure[f"{prefix}_section_{letter}"] = {"id": section_id}
+            structure[f"{prefix}_page_{letter}"] = {"id": page_id}
+            items.extend(
+                [
+                    {
+                        "id": group_id,
+                        "resource_type": "section_group",
+                        "name": f"{index:02d}-{label}-Group-{letter.upper()}",
+                        "parent_id": parent_id,
+                    },
+                    {
+                        "id": section_id,
+                        "resource_type": "section",
+                        "name": f"{index:02d}-{label}-Section-{letter.upper()}",
+                        "parent_id": group_id,
+                    },
+                    {
+                        "id": page_id,
+                        "resource_type": "page",
+                        "title": f"{index:02d}-{label}-Page-{letter.upper()}",
+                        "section_id": section_id,
+                    },
+                ]
+            )
+
+    checks = _validate_fixture_snapshot(
+        "reorder-section-group", {"items": items}, structure, None
+    )
+    assert (
+        "SectionGroup fixture covers both legal parent types: Notebook and SectionGroup"
+        in checks
+    )
+    assert "both SectionGroup sibling sequences are exactly A/B/C" in checks
+
+    next(item for item in items if item["id"] == "nested-group-b")[
+        "parent_id"
+    ] = "root-group-a"
+    with pytest.raises(runtime.InvariantFailure, match="Notebook and SectionGroup parents"):
+        _validate_fixture_snapshot(
+            "reorder-section-group", {"items": items}, structure, None
+        )
 
 
 def test_fixture_validator_rejects_delete_target_outside_sandbox() -> None:
@@ -257,7 +620,7 @@ def test_keep_dry_run_omits_close(capsys, tmp_path) -> None:
     run_dir = tmp_path / "run"
     assert main(
         [
-            "move",
+            "reparent-section",
             "--notebook-name",
             "__CUSTOM__",
             "--run-dir",
@@ -271,7 +634,7 @@ def test_keep_dry_run_omits_close(capsys, tmp_path) -> None:
     assert payload["lifecycle"] == "keep"
     assert [step["step"] for step in payload["ordered_steps"]] == [
         "create-source-notebook",
-        "move",
+        "reparent-section",
         "report",
     ]
     assert not run_dir.exists()
@@ -501,9 +864,9 @@ def test_copy_only_records_cleanup_and_never_closes(monkeypatch, tmp_path) -> No
         raise ClientFailure("copy_only", envelope=partial)
 
     monkeypatch.setattr(
-        SCENARIO_REGISTRY.get("reconstructive-move-page"), "execute", copy_only
+        SCENARIO_REGISTRY.get("move-page"), "execute", copy_only
     )
-    args = _args(tmp_path / "run", "reconstructive-move-page")
+    args = _args(tmp_path / "run", "move-page")
     with pytest.raises(ClientFailure, match="copy_only"):
         asyncio.run(validation.run_validate(args, RuntimeOptions(args.run_dir, 1_800, False, False)))
     validation.record_failure(args, "copy_only", runtime.EXIT_MCP)
@@ -516,7 +879,7 @@ def test_copy_only_records_cleanup_and_never_closes(monkeypatch, tmp_path) -> No
     assert failure["created_ids"] == ["copied-page"]
     state = test_utils.read_json(args.run_dir / "run-state.json")
     assert state["status"] == "failed_preserved_open"
-    assert state["failed_step"] == "reconstructive-move-page"
+    assert state["failed_step"] == "move-page"
 
 
 def test_finalize_uses_lifecycle_lease_and_never_starts_mcp(tmp_path) -> None:
@@ -526,7 +889,7 @@ def test_finalize_uses_lifecycle_lease_and_never_starts_mcp(tmp_path) -> None:
     manifest = _manifest(run_dir)
     result = asyncio.run(
         validation.finalize_notebook(
-            _args(run_dir, "move"),
+            _args(run_dir, "reparent-section"),
             RuntimeOptions(run_dir, 180, False, False),
             manifest,
             wrapper=wrapper,
@@ -609,7 +972,7 @@ def test_keep_validates_lease_but_does_not_close(tmp_path) -> None:
     wrapper.create_fresh_notebook("__ISOLATED__")
     result = asyncio.run(
         validation.finalize_notebook(
-            _args(run_dir, "move", keep=True),
+            _args(run_dir, "reparent-section", keep=True),
             RuntimeOptions(run_dir, 180, False, False),
             _manifest(run_dir),
             wrapper=wrapper,
