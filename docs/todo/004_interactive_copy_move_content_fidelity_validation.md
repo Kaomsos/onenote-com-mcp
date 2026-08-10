@@ -25,7 +25,7 @@
 建立两个不进入 `all` 的扁平、具名、human-gated 场景，让用户在 Runner 创建并绑定精确 ID 的 disposable fixture Page 中，通过 OneNote UI 手动加入待验证内容：
 
 1. `interactive-copy-content`：只取得 Copy 保真证据，不获得 Delete 权限；
-2. `interactive-move-content`：仅在对应类型已基于 Copy 证据进入静态 allowlist 后，验证严格重建式 Move 和非永久源删除门。
+2. `interactive-move-content`：仅在对应类型已基于 Copy 证据进入静态 allowlist 后，验证严格 Move 和非永久源删除门。
 
 两个场景都必须保持 local-only、单 scenario/单 MCP、静态最小权限和全程有界。Agent、pytest、CI、hook、timer、watcher 或后台任务不得执行真实命令；只有用户可以在终端显式启动并完成交互确认。
 
@@ -92,7 +92,7 @@ Copy 场景允许预期的 `content_type_unverified`，因为它的职责正是�
   --keep-worksite
 ```
 
-该场景拥有独立静态 spec，才可启用 Writes、Experimental Copy、Deletes 和 Reconstructive Move；永久删除与 raw XML 始终关闭。它重复创建全新 Notebook 和全新交互 fixture，不复用 Copy 取证场景的 Notebook、run-dir、MCP、policy 或运行时状态。
+该场景拥有独立静态 spec，才可启用 Writes、Experimental Copy、Deletes 和 Move；永久删除与 raw XML 始终关闭。它重复创建全新 Notebook 和全新交互 fixture，不复用 Copy 取证场景的 Notebook、run-dir、MCP、policy 或运行时状态。
 
 用户完成 fixture 编辑后，Runner 必须重新检测精确内容类型并生成 fresh plan。只有 `copy_report.lossless=true`、`verified=true`、每个 Page 按其静态 tier 等价、源快照未变化且不存在 issue 时，才允许执行 `DeleteHierarchy(permanently=false)`。成功后还必须证明整棵源子树从活动 hierarchy 消失；回收站 UI 可见性继续作为人工诊断，不替代活动树回读。
 
@@ -111,7 +111,7 @@ Copy 场景允许预期的 `content_type_unverified`，因为它的职责正是�
 
 - dry-run 不创建目录、不启动 MCP、不读取 stdin、不访问 OneNote，并显示交互阶段、timeout、静态 policy、tool allowlist 和 Copy budget；
 - 两个场景都不进入 `all`，且 `all` 不接受或透传交互参数；
-- Copy 场景没有 Delete、Permanent Delete、Raw XML 或 Reconstructive Move 权限；
+- Copy 场景没有 Delete、Permanent Delete、Raw XML 或 Move 权限；
 - Move 场景只接受已在代码中静态验证的类型，不因用户输入扩权；
 - timeout、EOF、取消、错误确认短语、缺失/额外类型和未知节点均在 mutation 前 fail closed；
 - 所有 target 都来自本次 manifest 的精确 ID，禁止名称匹配和外部 ID；

@@ -4,7 +4,7 @@
 > 状态：进行中
 > 优先级：P1
 > 类型：开发基础设施
-> 更新日期：2026-08-09
+> 更新日期：2026-08-10
 > 触发边界：只能由用户在终端显式运行，不进入 CI、hook、自动化或默认测试
 
 ## 目标
@@ -49,7 +49,7 @@ tests/manual_validation/
   [--json]
 ```
 
-当前 scenario：`create`、`rename`、`reorder`、`move`、`delete`、`copy-page`、`copy-section`、`copy-section-group`、`copy-notebook`、`reconstructive-move-page`。
+当前成功能力验收 scenario：`create`、`rename`、`reorder-page`、`reorder-section`、`reparent-page`、`reparent-section`、`reparent-section-group`、`delete`、`copy-page`、`copy-section`、`copy-section-group`、`copy-notebook`、`move-page`。三类 Reparent 都只允许同一 Notebook；Page 和 SectionGroup 场景仍不进入 `all`。`reorder-section-group` 保留可单独调用的诊断实现，但明确标记为功能受限、真实验证失败，并显式设置 `registered_for_all=False`；后端仅维持按名称固定升序，产品契约拒绝该操作。
 
 特殊批量入口：`run.py all [--timeout <seconds>] [--dry-run] [--json] [--verbosity quiet|normal|verbose]`。它只读取 `SCENARIO_REGISTRY` 中 `registered_for_all=True` 的类实例，不支持 `--run-dir`，默认 quiet，仅输出进度、错误和失败。
 
@@ -61,13 +61,13 @@ tests/manual_validation/
 - 默认 close 只关闭 Notebook；源与 Copy 文件夹始终保留，不实现自动文件删除。
 - `--keep-worksite` 适用于全部具名 scenario：成功 after/read-back 后保留该 action 的现场、记录 `worksite.json`、精确目标 ID 和人工清理说明，并隐含保持源 Notebook 打开；可恢复 action 默认仍 restore/cleanup，`all` 不接受也不透传该参数。
 - 任一步失败立即停止，源 Notebook 保持打开；close 失败作为恢复失败处理。
-- `reconstructive-move-page` 始终严格运行。空保真 allowlist 导致的 `copy_only`、源未删除或保真门失败必须非零退出，不得跳过或降级。
+- `move-page` 始终严格运行。空保真 allowlist 导致的 `copy_only`、源未删除或保真门失败必须非零退出，不得跳过或降级。
 
 ## 权限与证据要求
 
 每个 scenario 最多启动一个 MCP 子进程。它使用固定的场景级完整闭包 policy 和 tool allowlist，在 fixture 前通过 `health_check` 核对，并在同一进程完成最小 fixture、当前 mutation、证据读取和 restore/cleanup；不得跨 scenario 使用权限并集或运行时扩权。源 Notebook create/get/close 由窄 lifecycle wrapper 依照精确 ID/name/path lease 完成，不启动额外 MCP，也不得创建 Section、Page 或内容 fixture。
 
-真实 mutation 使用 manifest 中的精确 ID 和最新 name/title、parent、modified 确认字段。可恢复操作必须恢复并回读；Delete 仅作用于 manifest allowlist 中的 disposable target，并保持非永久删除。Copy 和重建式 Move 的失败证据必须保留 `outcome`、`created_ids` 与 `id_map`。
+真实 mutation 使用 manifest 中的精确 ID 和最新 name/title、parent、modified 确认字段。可恢复操作必须恢复并回读；Delete 仅作用于 manifest allowlist 中的 disposable target，并保持非永久删除。Copy 和 Move 的失败证据必须保留 `outcome`、`created_ids` 与 `id_map`。
 
 典型输出包括 `run-state.json`、`run-result.json`/`run-failure.json`、`manifest.json`、`prepared.json`、`fixture-result.json`、`lifecycle-lease.json`、`lifecycle.json`、`run-metrics.json`、`report.md` 和 `scenarios/<scenario>/` 下的 before/plan/copy-result/after/restored/result/failure artifacts。
 
@@ -80,7 +80,7 @@ tests/manual_validation/
 - [x] 默认精确 ID close、`--keep-notebook` 和本地文件永久保留；
 - [x] 所有具名 action 的人工验收支持显式 `--keep-worksite`，默认 restore/cleanup 不变，保留现场时记录精确目标与人工清理要求；
 - [x] Delete 自动绑定 disposable group；
-- [x] 重建式 Move 严格失败门禁与失败交接；
+- [x] Move 严格失败门禁与失败交接；
 - [x] Agent/CI/hook/timer/watcher 禁令；
 - [x] 不访问 OneNote 的合同测试覆盖默认值、run-dir、同名冲突、顺序、失败停止、close/keep 与严格 `copy_only`。
 - [x] `runner.py` 启动职责与 runtime/test utils 分离，`all` 串行入口覆盖 quiet、verbosity、失败继续和参数透传合同。

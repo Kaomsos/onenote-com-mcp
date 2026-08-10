@@ -21,9 +21,9 @@
 
 1. `run-20260806T060013Z`：`rename` 通过，fixture validation 通过，restore 通过，只启动 1 个 MCP，源 Notebook 按精确 lease 关闭且本地目录保留；
 2. `run-20260806T060140Z`：`create` 通过，完整 fixture validation 通过，只启动 1 个 MCP，总耗时 37.697279 秒；
-3. `run-20260806T060239Z` 与 `run-20260806T060301Z`：严格重建式 Move 均在 Copy 写入阶段安全失败，源 Notebook 保持打开，`created_ids/id_map` 和人工清理状态被保留。
+3. `run-20260806T060239Z` 与 `run-20260806T060301Z`：严格 Move 均在 Copy 写入阶段安全失败，源 Notebook 保持打开，`created_ids/id_map` 和人工清理状态被保留。
 
-严格场景的首轮真实证据定位出 `_created_item` 错误优先选择父 Section 的问题：后续 `UpdatePageContent` 因此错误命中 Section ID 并返回 HRESULT `0x80042005`。实现已改为优先选择新 Page，同时保证部分创建统一返回 `copy_unverified`，由重建式 Move 归一化为 `copy_only`。
+严格场景的首轮真实证据定位出 `_created_item` 错误优先选择父 Section 的问题：后续 `UpdatePageContent` 因此错误命中 Section ID 并返回 HRESULT `0x80042005`。实现已改为优先选择新 Page，同时保证部分创建统一返回 `copy_unverified`，由 Move 归一化为 `copy_only`。
 
 用户随后完成修复后复跑 `run-20260806T061225Z`：fixture validation 通过；只启动 1 个 MCP；Copy 创建了真实新 Page ID 并生成 old→new `id_map`；因 `Outline` 尚未通过真实保真 allowlist，结果按设计返回 `outcome=copy_only`、`source_deleted=false` 和非零退出；源 Notebook lease 保持 `active`，finalization 未启动，本地 `.one` 文件与全部证据保留。该结果证明严格门禁和失败保留语义，而不把未验证内容错误视为成功 Move。
 
@@ -55,14 +55,16 @@ wrapper 直接创建全新源 Notebook
 | --- | --- |
 | `create` | 当前完整预设结构；不执行额外 mutation |
 | `rename` | 一个可重命名 Group 或 Section |
-| `reorder` | 一个 Section 和 Parent/Child/Sibling Page 树 |
-| `move` | 源 Group、目标 Group 和一个 Section |
+| `reorder-page` | Description 说明分区，以及带 `01/02/03` 固定编号的 Parent/Child/Sibling Page 树 |
+| `reparent-section` | Description 说明分区；三个带编号 Page 的目标 Section，分别覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup，并支持逆序恢复或保留现场 |
+| `reparent-page` | Description 说明页；编号源/目标 Section、目标 Page 和无关锚点；受控 raw XML 探针，默认恢复或保留现场 |
+| `reparent-section-group` | Description 说明页；三组编号 Group/Section/Page，覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；受控 raw XML 探针，默认逆序恢复或保留现场 |
 | `delete` | Delete-Sandbox 和一个 manifest-allowlisted disposable target |
 | `copy-page` | 富内容源 Page 和目标 Section |
 | `copy-section` | 源 Section 和目标 Group |
 | `copy-section-group` | 一个源 Group 和 Notebook 根目标 |
 | `copy-notebook` | 最小可复制 Notebook 和 allowlisted 本地 Copy root |
-| `reconstructive-move-page` | disposable 源 Page 和目标 Section |
+| `move-page` | disposable 源 Page 和目标 Section |
 
 Fixture profile 必须声明预期结构、内容能力、manifest keys、创建工具和验证条件，禁止运行时自由扩权或猜测缺失目标。
 
@@ -115,7 +117,7 @@ close_exact_notebook
 2. 定义 `ScenarioSpec`、fixture profile、静态 policy 和 tool allowlist 数据模型；
 3. 将 fixture helper 改为接收现有 MCP client，不自行启动子进程；
 4. 实现窄接口 Notebook lifecycle wrapper 和 lifecycle lease；
-5. 逐个迁移 scenario，优先从 `rename`、`reorder` 等低风险场景开始；
+5. 逐个迁移 scenario，优先从 `rename`、现名为 `reorder-page` 的 Page Reorder 等低风险场景开始；
 6. 为精确 ID/path/name 绑定、失败不关闭、Copy 副本隔离和权限不扩张增加合同测试；
 7. 比较迁移前后的 MCP 启动次数、COM 调用数和总耗时；
 8. 用户本人完成真实 OneNote 隔离验证后，才可声明新架构已验证。
@@ -148,11 +150,11 @@ close_exact_notebook
 .venv\Scripts\python.exe tests\manual_validation\run.py create --json
 
 # 严格 Copy/Move 场景；允许安全门导致非零退出并保留现场
-.venv\Scripts\python.exe tests\manual_validation\run.py reconstructive-move-page --dry-run --json
-.venv\Scripts\python.exe tests\manual_validation\run.py reconstructive-move-page --json
+.venv\Scripts\python.exe tests\manual_validation\run.py move-page --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py move-page --json
 ```
 
-全部验收证据已经保存：`rename`、`create` 与修复后的 `reconstructive-move-page` 分别证明低风险闭环、性能/进程收益和严格 `copy_only` 安全门。
+全部验收证据已经保存：`rename`、`create` 与修复后的 `move-page` 分别证明低风险闭环、性能/进程收益和严格 `copy_only` 安全门。
 
 ## 风险与决策门
 
