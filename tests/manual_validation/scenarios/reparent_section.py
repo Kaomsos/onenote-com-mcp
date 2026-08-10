@@ -27,6 +27,7 @@ from ..test_utils import (
 from .base import Scenario
 from .common.config import REPARENT_SECTION_TOOLS
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.reparent_section import RECIPE
 from .common.report import render_report
 
 
@@ -238,11 +239,13 @@ async def _execute_reparent_section(
 @SCENARIO_REGISTRY.register
 class ReparentSectionScenario(Scenario):
     name = "reparent-section"
+    fixture_recipe = RECIPE
     help_text = (
         "GATED: validate Notebook→SectionGroup, SectionGroup→Notebook, and "
         "SectionGroup→SectionGroup Section reparent operations, then restore or preserve."
     )
-    registered_for_all = True
+    included_in_all = True
+    worksite_dry_run_action = "preserve-reparented-section"
     capability_assessment = {
         "capability_status": "experimental",
         "validation_status": "passed",

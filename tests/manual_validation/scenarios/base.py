@@ -7,6 +7,8 @@ from typing import Any, Callable
 
 from ..mcp_stdio_client import MCPStdioClient
 from ..runtime import RuntimeOptions
+from .common.fixture_models import FixtureRecipe
+from .common.dry_run import DryRunCase, DryRunExpectations, DryRunVariant
 from .common.specs import ScenarioSpec, get_scenario_spec
 
 
@@ -19,12 +21,46 @@ class Scenario:
     name = ""
     help_text = ""
     timeout_default = 180
-    registered_for_all = False
+    included_in_all = False
     capability_assessment: dict[str, str] | None = None
+    fixture_recipe: FixtureRecipe
+    dry_run_variants: tuple[DryRunVariant, ...] = ()
+    worksite_dry_run_action = "preserve-verified-worksite"
 
     @property
     def spec(self) -> ScenarioSpec:
         return get_scenario_spec(self.name)
+
+    @property
+    def fixture_profile(self):
+        return self.fixture_recipe.profile
+
+    @property
+    def dry_run_cases(self) -> tuple[DryRunCase, ...]:
+        cases = [
+            DryRunCase(
+                case_id=f"{self.name}.default",
+                scenario_name=self.name,
+                documentation_key=f"{self.name}.default",
+            ),
+            DryRunCase(
+                case_id=f"{self.name}.keep-worksite",
+                scenario_name=self.name,
+                scenario_args=("--keep-worksite",),
+                expected=DryRunExpectations(lifecycle="keep"),
+            ),
+        ]
+        cases.extend(
+            DryRunCase(
+                case_id=f"{self.name}.{variant.case_suffix}",
+                scenario_name=self.name,
+                scenario_args=variant.scenario_args,
+                expected=variant.expectations,
+                documentation_key=variant.documentation_key,
+            )
+            for variant in self.dry_run_variants
+        )
+        return tuple(cases)
 
     def runtime_spec(self, args: argparse.Namespace) -> ScenarioSpec:
         """Return the fixed scenario spec selected by explicit CLI mode."""

@@ -15,16 +15,29 @@ from tests.manual_validation.scenarios.common.config import (
     REPARENT_PAGE_TOOLS,
     REPARENT_SECTION_GROUP_TOOLS,
 )
-from tests.manual_validation.scenarios.common.fixtures import (
-    REPARENT_PAGE_DESCRIPTION,
-    REPARENT_SECTION_GROUP_DESCRIPTION,
-    _validate_fixture_snapshot,
-)
+from tests.manual_validation.scenarios.common.fixture_models import FixtureBuildResult, FixtureValidationContext
+from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.scenarios.common.specs import SCENARIO_SPECS
+from tests.manual_validation.scenarios.fixture_recipes.reparent_page import DESCRIPTION as REPARENT_PAGE_DESCRIPTION
+from tests.manual_validation.scenarios.fixture_recipes.reparent_section_group import DESCRIPTION as REPARENT_SECTION_GROUP_DESCRIPTION
 from tests.manual_validation.scenarios.reparent_page import ReparentPageScenario
 from tests.manual_validation.scenarios.reparent_section_group import (
     ReparentSectionGroupScenario,
 )
+
+
+def _validate_fixture_snapshot(name, snapshot, structure, content_fixture):
+    evidence = {}
+    if content_fixture is not None:
+        evidence["reparent_page_fixture"] = content_fixture
+    return list(
+        SCENARIO_REGISTRY.get(name).fixture_recipe.validate(
+            FixtureValidationContext(
+                args=SimpleNamespace(scenario=name), snapshot=snapshot
+            ),
+            FixtureBuildResult(structure, evidence),
+        )
+    )
 
 
 class FakeClient:

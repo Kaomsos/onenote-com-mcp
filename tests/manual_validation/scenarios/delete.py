@@ -22,6 +22,7 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.delete import RECIPE
 from .common.config import DELETE_TOOLS
 from .common.report import render_report
 
@@ -151,10 +152,12 @@ async def _execute_delete(
 @SCENARIO_REGISTRY.register
 class DeleteScenario(Scenario):
     name = "delete"
+    fixture_recipe = RECIPE
     help_text = (
         "GATED: create, non-permanently delete the disposable group, report, then close or keep."
     )
-    registered_for_all = True
+    included_in_all = True
+    worksite_dry_run_action = "preserve-recycle-bin-state"
 
     def prepare_arguments(
         self,

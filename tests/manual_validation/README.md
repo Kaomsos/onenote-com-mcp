@@ -31,7 +31,7 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py copy-page --keep-worksite
 ```
 
-`--keep-worksite` 会隐含保持源 Notebook 打开，并在成功 read-back 验证后保留该 action 的现场：`rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 跳过反向恢复，Copy 跳过目标 cleanup，`create/delete/move-page` 保留其原本最终状态以供查看。精确目标 ID、原/现 predecessor、现场状态和人工清理说明写入 `worksite.json`。Page reparent 若由 OneNote 重映射 ID，会同时记录 `target_id`、`current_target_id` 与完整 `id_history`。该选项不会扩权；Copy 场景反而从 policy/tool allowlist 移除不再需要的 Delete/Close cleanup 权限。默认不传时仍执行各 scenario 原有的 restore/cleanup 与生命周期策略。`reorder-section-group`、`reparent-page` 和 `reparent-section-group` 不进入 `all`：前者已有失败结论，后两者保留显式能力入口。
+`--keep-worksite` 会隐含保持源 Notebook 打开，并在成功 read-back 验证后保留该 action 的现场：`rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 跳过反向恢复，Copy 跳过目标 cleanup，`create/delete/move-page` 保留其原本最终状态以供查看。精确目标 ID、原/现 predecessor、现场状态和人工清理说明写入 `worksite.json`。Page reparent 若由 OneNote 重映射 ID，会同时记录 `target_id`、`current_target_id` 与完整 `id_history`。该选项不会扩权；Copy 场景反而从 policy/tool allowlist 移除不再需要的 Delete/Close cleanup 权限。默认不传时仍执行各 scenario 原有的 restore/cleanup 与生命周期策略。`reorder-section`、`reorder-section-group`、`reparent-page` 和 `reparent-section-group` 不进入 `all`，但仍全部进入注册 dry-run 自动测试。
 
 所有会通过 COM 复制 Page XML 的具名场景（四个 Copy 层级以及
 `move-page`）都自动创建两页组成的完整 Page 子树：
@@ -41,13 +41,17 @@
 
 整个过程不暂停、不要求用户编辑，也不启用 raw XML。第二层忽略 COM 重新编号 `TagDef`、列表序号状态和 Outline 布局重排，但仍严格比较可见文本、列表种类、标签类型、完成状态和二进制内容。`List/Tag` 已进入 validated/lossless allowlist；这表示其保真结论由 `semantic_list_tag` 而不是 canonical XML 相等来证明。`MeetingInfo` 暂不属于验证范围。
 
-唯一特殊入口 `all` 会按显式测试注册表的顺序串行启动其中的 scenario：
+唯一特殊入口 `all` 会按显式 `included_in_all` 资格的顺序串行启动其中的 scenario：
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py all
 ```
 
-唯一注册表对象位于 `scenarios/common/registry.py` 的 `SCENARIO_REGISTRY`。每个场景类使用 `@SCENARIO_REGISTRY.register` wrapper；`scenarios/__init__.py` 按审查后的固定顺序导入所有公开场景，导入时自动完成实例注册。Registry 本身不再导入具体场景，也不维护第二份构造列表。新增公开 scenario 不会自动进入 `all`：探索性或仅用于某次隔离验证的类保持 `registered_for_all = False`；只有经过稳定性和权限审查并显式改为 `True`，才会被批量执行。
+唯一注册表对象位于 `scenarios/common/registry.py` 的 `SCENARIO_REGISTRY`。每个场景类使用 `@SCENARIO_REGISTRY.register` wrapper；`scenarios/__init__.py` 按审查后的固定顺序导入所有公开场景，导入时自动完成实例注册。Registry 本身不导入具体场景，也不维护第二份构造列表。新增公开 scenario 默认 `included_in_all = False`；只有经过稳定性和权限审查才可改为 `True`。`get_all_scenario_names()` 只表示用户真实 `all` 批处理资格，不能用于 pytest collection。
+
+每个 Scenario 同时显式持有一个 `fixture_recipe`。场景专属 Description、构建与 validator 位于 `scenarios/fixture_recipes/<scenario>.py`；`common/fixture_runtime.py` 只负责 recorder、snapshot、通用 profile 检查和证据持久化，不按 scenario 名称分派。Recorder 在每个精确 ID 创建后增量写入 pending manifest；中途失败会保留已登记 ID、lifecycle lease 路径、Notebook 路径和 failed validation handoff。Copy/Move 只共享不含 scenario 名称分支的 layered Page component。
+
+同一个 Scenario registry 还导出冻结的 `dry_run_cases`：每个公开场景自动拥有 `default` 与 `keep-worksite` case，Rename 和 Page Reorder 在自身类中声明有限参数变体，另有 runner 级 `all.default`。pytest 使用正式 parser、无 I/O pure plan builder 和 side-effect sentinel 运行 catalog；`included_in_all=False` 不影响 dry-run 收集。Case 不得携带 `--dry-run`、`--json`、`--run-dir` 或授权参数，这些值只能由 harness 强制注入。
 
 `all` 本身不是 scenario，不创建共享 Notebook 或共享证据目录，也不接受 `--run-dir`、`--notebook-name`、`--keep-notebook` 或 `--keep-worksite`。每个已注册子命令仍创建自己的默认 Notebook 和 `.local-validation\run-<TIMESTAMP>`，使用自己的 MCP 子进程、最小权限、报告与关闭/失败保留语义。一个 scenario 失败后，`all` 会显示其错误并继续后续已注册 scenario，最终返回第一个失败的非零退出码。
 
@@ -78,14 +82,87 @@ Delete-Sandbox
    └─ Disposable-Page
 ```
 
-随后生成 manifest、prepared snapshot 和 report，并按默认 close、仅保持打开的 `--keep-notebook`，或写出现场证据的 `--keep-worksite` 处理生命周期。
+随后生成 manifest、`prepared.json`/`fixture-snapshot.json`、`fixture-result.json` 和 report，并按默认 close、仅保持打开的 `--keep-notebook`，或写出现场证据的 `--keep-worksite` 处理生命周期。
 
 ## 安全审查与执行
 
 用户应先查看 dry-run；它不创建目录、不启动 MCP、不访问 OneNote：
 
+以下 canonical 命令由 `SCENARIO_REGISTRY.dry_run_cases` 投影并由纯文档合同检查；Markdown 只用于显示，从不由测试执行：
+
+<!-- dry-run-case: create.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py create --dry-run --json
+```
+
+<!-- dry-run-case: rename.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run --json
+```
+
+<!-- dry-run-case: reorder-page.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py reorder-page --dry-run --json
+```
+
+<!-- dry-run-case: reorder-section.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py reorder-section --dry-run --json
+```
+
+<!-- dry-run-case: reorder-section-group.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py reorder-section-group --dry-run --json
+```
+
+<!-- dry-run-case: reparent-section.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py reparent-section --dry-run --json
+```
+
+<!-- dry-run-case: reparent-page.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py reparent-page --dry-run --json
+```
+
+<!-- dry-run-case: reparent-section-group.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py reparent-section-group --dry-run --json
+```
+
+<!-- dry-run-case: delete.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py delete --dry-run --json
+```
+
+<!-- dry-run-case: copy-page.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py copy-page --dry-run --json
+```
+
+<!-- dry-run-case: copy-section.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py copy-section --dry-run --json
+```
+
+<!-- dry-run-case: copy-section-group.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py copy-section-group --dry-run --json
+```
+
+<!-- dry-run-case: copy-notebook.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py copy-notebook --dry-run --json
+```
+
+<!-- dry-run-case: move-page.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py move-page --dry-run --json
+```
+
+<!-- dry-run-case: all.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run --json
 ```
 
 确认 Notebook 名、目录、步骤、权限和 allowlist 后，真实命令只能由用户本人运行：
@@ -131,7 +208,7 @@ Delete-Sandbox
 - `--run-dir` 必须不存在或为空；同名 Notebook 已存在时拒绝复用。
 - 默认仅在当前 scenario 和报告成功后，按 lifecycle lease 的精确 ID/name/path 并经即时回读后关闭源 Notebook。
 - `--keep-notebook` 保持源 Notebook 打开，供用户人工检查。
-- `--keep-worksite` 适用于全部公开具名场景，并同时保持源 Notebook 打开。可恢复的 `rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 不执行反向恢复；Page/Section/SectionGroup Copy 不执行回收站 cleanup；Notebook Copy 不关闭副本；其余 action 记录本来就会留下的 fixture、回收站或 Move 状态。`worksite.json` 和 `result.json` 记录精确目标 ID、当前位置/名称/路径以及 `manual_cleanup_required=true`；Page reparent 还记录新旧 ID 历史。功能受限的 `reorder-section-group` 以及两个已经用户验证通过、但仍保持实验边界的 typed Reparent 场景均设置 `registered_for_all=False`；特殊批处理入口 `all` 不接受 `--keep-worksite`。
+- `--keep-worksite` 适用于全部公开具名场景，并同时保持源 Notebook 打开。可恢复的 `rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 不执行反向恢复；Page/Section/SectionGroup Copy 不执行回收站 cleanup；Notebook Copy 不关闭副本；其余 action 记录本来就会留下的 fixture、回收站或 Move 状态。`worksite.json` 和 `result.json` 记录精确目标 ID、当前位置/名称/路径以及 `manual_cleanup_required=true`；Page reparent 还记录新旧 ID 历史。未进入批处理的场景均设置 `included_in_all=False`，但仍注册 default/keep dry-run cases；特殊入口 `all` 不接受 `--keep-worksite`。
 - Runner 永不删除本地 Notebook 文件或目录；Notebook Copy 文件夹同样保留。
 - `delete` 自动使用本次 manifest 中的 `disposable_group`，不接受外部 target ID，并保持非永久删除。
 - `rename` 另支持 `--target group_a|group_b|content_section` 和 `--new-name`。
@@ -139,7 +216,7 @@ Delete-Sandbox
 
 ## Isolated、单进程与最小权限边界
 
-`scenarios/` 根目录中的每个可执行模块只提供一个具名 `Scenario` 子类；四个 Copy 入口分别位于 `copy_page.py`、`copy_section.py`、`copy_section_group.py` 和 `copy_notebook.py`，并共享基础设施 `copy_scenario_base.py`。根目录的 `base.py` 和 `__init__.py` 明确属于基础设施。类统一声明名称、help、默认 timeout、scenario 专属参数、manifest 参数准备、执行器和 `registered_for_all`，并通过 registry wrapper 注册。`scenarios/__init__.py` 是公开场景导入顺序的唯一清单，`SCENARIO_REGISTRY` 则是 parser、dispatch 和 `all` 的共同权威对象。
+`scenarios/` 根目录中的每个可执行模块只提供一个具名 `Scenario` 子类；四个 Copy 入口分别位于 `copy_page.py`、`copy_section.py`、`copy_section_group.py` 和 `copy_notebook.py`，并共享基础设施 `copy_scenario_base.py`。根目录的 `base.py` 和 `__init__.py` 明确属于基础设施。类统一声明名称、help、默认 timeout、scenario 专属参数、fixture recipe、dry-run variants、manifest 参数准备、执行器和 `included_in_all`，并通过 registry wrapper 注册。`scenarios/__init__.py` 是公开场景导入顺序的唯一清单，`SCENARIO_REGISTRY` 则是 parser、dispatch、fixture metadata、dry-run catalog 和 `all` 的共同权威对象。
 
 不代表单个 scenario 的依赖统一放在 `scenarios/common/`，包括 registry、闭环 orchestrator、静态 spec、fixture builders、fixture 编排、报告、Copy runtime 与 invariants。根目录因此不会混入名称看似 scenario、实际却只是共享函数的模块。
 

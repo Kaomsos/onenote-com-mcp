@@ -151,7 +151,7 @@ Notebook 父级：
 
 各 Section 内的 Page 也对应编号，以便目视确认后代没有互换。
 
-不要再运行 `reorder-section-group` 作为正向能力验收，也不要开启 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP`。该场景实现和单独 CLI 入口继续保留用于诊断，但显式设置 `registered_for_all=False`，不会由 `all` 调度；dry-run 和运行状态将其标记为 `capability_status=limited`、`validation_status=failed`。2026-08-10 保存的真实后端证据显示：Notebook 直属 Group 的 `01,02,03 → 01,03,02` 请求中，`UpdateHierarchy(xs2013)` 返回成功，但即时回读仍保持按名称固定升序 `01,02,03`。失败发生在生产工具自身的写后验证，不是 Runner 误报。嵌套父级操作因根级失败而没有执行；产品层依据后端没有可变 SectionGroup sibling order 的能力边界，对 Notebook 和 SectionGroup 两种父级统一拒绝 reorder。
+不要再运行 `reorder-section-group` 作为正向能力验收，也不要开启 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP`。该场景实现和单独 CLI 入口继续保留用于诊断，但显式设置 `included_in_all=False`，不会由 `all` 调度；它仍由 registry 自动收集 default/keep dry-run cases。dry-run 和运行状态将其标记为 `capability_status=limited`、`validation_status=failed`。2026-08-10 保存的真实后端证据显示：Notebook 直属 Group 的 `01,02,03 → 01,03,02` 请求中，`UpdateHierarchy(xs2013)` 返回成功，但即时回读仍保持按名称固定升序 `01,02,03`。失败发生在生产工具自身的写后验证，不是 Runner 误报。嵌套父级操作因根级失败而没有执行；产品层依据后端没有可变 SectionGroup sibling order 的能力边界，对 Notebook 和 SectionGroup 两种父级统一拒绝 reorder。
 
 `reorder-section` 默认完成正向 reorder、before/after read-back、反向 restore 和 restored read-back，并记录稳定 Page 内容 hash、原始 XML 诊断 hash 与内容对象投影；`--keep-worksite` 可保留新 predecessor 供 UI 检查。稳定 hash 忽略 OneNote 延迟补写的作者/时钟/选择/视图元数据，但保留内容对象 ID、格式、文本和二进制内容；原始 XML hash 的单独变化不判定正文变化。逐 Page 取证完成后会末尾刷新 hierarchy，mutation confirmation 使用这次最新回读的 `modified`。场景只开启 Section Reorder 实验开关，不启用 Delete、Permanent Delete、Copy、Move 或 Raw XML。场景不要求环境元数据参数；跨版本取证另见 [`TODO 007`](../todo/007_cross_version_compatibility_evidence.md)，不作为当前验收前置条件。
 
@@ -193,7 +193,7 @@ Notebook 父级：
 .venv\Scripts\python.exe tests\manual_validation\run.py reparent-section-group --dry-run --json
 ```
 
-两个场景都创建全新的 disposable Notebook，且显式设置 `registered_for_all=False`。它们只启用 Writes + 统一 Reparent 实验门；Delete、Permanent Delete、Copy、Move、Reorder 与 Raw XML 保持关闭。runner 仅向 `reparent_page` / `reparent_section_group` 提交 manifest 绑定的精确 ID、confirmation 和可选 modified，不构造或传递 hierarchy XML。
+两个场景都创建全新的 disposable Notebook，且显式设置 `included_in_all=False`；这不影响它们进入注册 dry-run 自动测试。它们只启用 Writes + 统一 Reparent 实验门；Delete、Permanent Delete、Copy、Move、Reorder 与 Raw XML 保持关闭。runner 仅向 `reparent_page` / `reparent_section_group` 提交 manifest 绑定的精确 ID、confirmation 和可选 modified，不构造或传递 hierarchy XML。
 
 `reparent-page` 创建 Description 说明页和以下编号结构：
 
@@ -257,6 +257,7 @@ Page Move 对源子树只使用 `DeleteHierarchy(permanently=false)`。生产删
 1. 自动化 pytest 只允许 mock/纯合同测试，不能访问真实 OneNote；
 2. 真实场景统一放在 [`tests/manual_validation/`](../../tests/manual_validation/README.md)，通过一个总入口由用户显式选择顶层场景；每个 `run.py <scenario>` 自身包含 lifecycle create、该场景最小 fixture、mutation、report 与 close/keep；不得公开辅助 action。唯一批处理例外是用户显式运行的 `run.py all`，它只能串行启动显式注册的稳定测试 scenario，不得共享 run-dir、Notebook、MCP、权限或 lifecycle；新增的探索性/验证性 scenario 默认不得进入该注册表；
 3. 每个 scenario 最多启动一个 MCP 子进程。Runner 为其推导覆盖 fixture、mutation、evidence 与 restore/cleanup 的静态最小权限闭包，并在 fixture 前用 `health_check` 精确核验；源 Notebook 生命周期只能通过精确 lease 约束的窄 wrapper 操作；
+   每个 Scenario 显式持有唯一 fixture recipe；common runtime 不按名称分派，并在每次登记精确 ID 后增量保存 pending/failed evidence。每个公开 Scenario 还自动注册 default/keep dry-run cases，与 `included_in_all` 资格完全分离；pytest harness 强制安全参数并以 sentinel 证明零 MCP、零 lifecycle、零 subprocess 和零目录副作用；
 4. 使用专用可丢弃 Notebook、精确 ID、最新确认字段和 before/after 证据；可恢复操作默认执行恢复与 restored 回读。所有具名 scenario 都提供显式 `--keep-worksite` 人工验收模式，用于保留各自动验证通过的动作现场，并必须写入带精确目标 ID 和清理说明的 `worksite.json`；该模式不得扩权；
 5. 不可恢复操作只能命中 manifest 白名单中的 disposable 对象，并在报告中明确最终状态和人工处理方式；
 6. 新增或修改非只读 tool 时，必须同步新增/更新对应 manual scenario 和使用命令；用户完成隔离实测前，不得声明真实后端验证完成。

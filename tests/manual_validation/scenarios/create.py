@@ -10,13 +10,16 @@ from ..runtime import RuntimeOptions
 from ..test_utils import scenario_dir, write_json
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.create import RECIPE
 
 
 @SCENARIO_REGISTRY.register
 class CreateScenario(Scenario):
     name = "create"
+    fixture_recipe = RECIPE
     help_text = "GATED: create the preset isolated Notebook fixture, report, then close or keep."
-    registered_for_all = True
+    included_in_all = True
+    worksite_dry_run_action = "preserve-created-fixture"
 
     async def execute(
         self,

@@ -19,7 +19,7 @@ from tests.manual_validation.scenarios.base import Scenario
 from tests.manual_validation.scenarios.common.registry import (
     SCENARIO_REGISTRY,
     ScenarioRegistry,
-    get_registered_test_scenarios,
+    get_all_scenario_names,
 )
 from tests.manual_validation.scenarios.common import specs
 
@@ -57,6 +57,15 @@ def _args(**overrides):
     }
     values.update(overrides)
     return argparse.Namespace(**values)
+
+
+def _fixture_recipe(name: str):
+    return SimpleNamespace(
+        scenario_name=name,
+        profile=specs.SCENARIO_SPECS[name].fixture,
+        manifest_keys=frozenset({"content_section"}),
+        validate_registration=lambda _spec: None,
+    )
 
 
 def test_scenarios_root_contains_only_infrastructure_or_one_scenario_class() -> None:
@@ -115,7 +124,7 @@ def test_all_uses_only_the_explicit_test_scenario_registry(monkeypatch) -> None:
 
     monkeypatch.setattr(all_scenarios, "run_all", fake_all)
     assert main(["all"]) == 0
-    assert captured["scenarios"] == get_registered_test_scenarios()
+    assert captured["scenarios"] == get_all_scenario_names()
 
 
 def test_unregistered_validation_scenario_does_not_enter_all(monkeypatch) -> None:
@@ -127,21 +136,22 @@ def test_unregistered_validation_scenario_does_not_enter_all(monkeypatch) -> Non
         "validation-probe",
         replace(specs.SCENARIO_SPECS["rename"], name="validation-probe"),
     )
+    ValidationProbeScenario.fixture_recipe = _fixture_recipe("validation-probe")
     registry = ScenarioRegistry()
     wrapped = registry.register(ValidationProbeScenario)
 
     assert wrapped is ValidationProbeScenario
     assert "validation-probe" in registry.public_names
-    assert "validation-probe" not in registry.registered_test_names
-    assert set(registry.registered_test_names) < set(registry.public_names)
+    assert "validation-probe" not in registry.all_scenario_names
+    assert set(registry.all_scenario_names) < set(registry.public_names)
 
 
 def test_failed_section_group_reorder_probe_is_public_but_excluded_from_all() -> None:
     scenario = SCENARIO_REGISTRY.get("reorder-section-group")
 
-    assert scenario.registered_for_all is False
+    assert scenario.included_in_all is False
     assert "reorder-section-group" in SCENARIO_REGISTRY.public_names
-    assert "reorder-section-group" not in get_registered_test_scenarios()
+    assert "reorder-section-group" not in get_all_scenario_names()
     assert scenario.capability_assessment == {
         "capability_status": "limited",
         "validation_status": "failed",
@@ -156,9 +166,9 @@ def test_typed_page_reparent_passed_but_remains_excluded_from_all() -> None:
     name = "reparent-page"
     scenario = SCENARIO_REGISTRY.get(name)
 
-    assert scenario.registered_for_all is False
+    assert scenario.included_in_all is False
     assert name in SCENARIO_REGISTRY.public_names
-    assert name not in get_registered_test_scenarios()
+    assert name not in get_all_scenario_names()
     assert scenario.capability_assessment["capability_status"] == "experimental"
     assert scenario.capability_assessment["validation_status"] == "passed"
 
@@ -166,9 +176,9 @@ def test_typed_page_reparent_passed_but_remains_excluded_from_all() -> None:
 def test_typed_section_group_reparent_passed_but_remains_excluded_from_all() -> None:
     scenario = SCENARIO_REGISTRY.get("reparent-section-group")
 
-    assert scenario.registered_for_all is False
+    assert scenario.included_in_all is False
     assert "reparent-section-group" in SCENARIO_REGISTRY.public_names
-    assert "reparent-section-group" not in get_registered_test_scenarios()
+    assert "reparent-section-group" not in get_all_scenario_names()
     assert scenario.capability_assessment["capability_status"] == "experimental"
     assert scenario.capability_assessment["validation_status"] == "passed"
 
@@ -178,9 +188,11 @@ def test_registry_wrapper_rejects_duplicate_scenario_names() -> None:
 
     class FirstRenameScenario(Scenario):
         name = "rename"
+        fixture_recipe = _fixture_recipe("rename")
 
     class DuplicateRenameScenario(Scenario):
         name = "rename"
+        fixture_recipe = _fixture_recipe("rename")
 
     assert registry.register(FirstRenameScenario) is FirstRenameScenario
     with pytest.raises(ValueError, match="Duplicate scenario registration: rename"):
@@ -195,7 +207,7 @@ def test_all_runs_every_scenario_serially_and_is_quiet_by_default(capsys) -> Non
         assert kwargs == {"capture_output": True, "text": True, "check": False}
         return SimpleNamespace(returncode=0, stdout=f"result for {command[2]}", stderr="")
 
-    registered = get_registered_test_scenarios()
+    registered = get_all_scenario_names()
     assert run_all(_args(), scenarios=registered, run_child=fake_run) == 0
 
     assert [command[2] for command in commands] == list(registered)

@@ -10,17 +10,20 @@ from ..runtime import RuntimeOptions
 from .base import Scenario
 from .common.config import REPARENT_SECTION_GROUP_TOOLS
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.reparent_section_group import RECIPE
 from .common.reparent import execute_typed_reparent
 
 
 @SCENARIO_REGISTRY.register
 class ReparentSectionGroupScenario(Scenario):
     name = "reparent-section-group"
+    fixture_recipe = RECIPE
     help_text = (
         "EXPERIMENTAL: validate typed Notebook→SectionGroup, SectionGroup→Notebook, and "
         "SectionGroup→SectionGroup ID-preserving reparent, then restore or preserve."
     )
-    registered_for_all = False
+    included_in_all = False
+    worksite_dry_run_action = "preserve-reparented-section-group"
     capability_assessment = {
         "capability_status": "experimental",
         "validation_status": "passed",

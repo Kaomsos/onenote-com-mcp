@@ -15,14 +15,35 @@ from tests.manual_validation.mcp_stdio_client import ClientFailure
 from tests.manual_validation.runner import build_parser, main
 from tests.manual_validation.runtime import RuntimeOptions
 from tests.manual_validation.scenarios.common import orchestrator as validation
-from tests.manual_validation.scenarios.common import fixtures as fixture_module
-from tests.manual_validation.scenarios.common.fixtures import _validate_fixture_snapshot
+from tests.manual_validation.scenarios.common import fixture_runtime
+from tests.manual_validation.scenarios.common.fixture_models import FixtureBuildResult, FixtureValidationContext
 from tests.manual_validation.scenarios.base import Scenario
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.scenarios.common.specs import SCENARIO_SPECS
+from tests.manual_validation.scenarios.fixture_recipes import delete as delete_fixture
+from tests.manual_validation.scenarios.fixture_recipes.reorder_page import DESCRIPTION as REORDER_PAGE_DESCRIPTION
+from tests.manual_validation.scenarios.fixture_recipes.reorder_section import DESCRIPTION as REORDER_SECTION_DESCRIPTION
+from tests.manual_validation.scenarios.fixture_recipes.reorder_section_group import DESCRIPTION as REORDER_SECTION_GROUP_DESCRIPTION
+from tests.manual_validation.scenarios.fixture_recipes.reparent_section import DESCRIPTION as REPARENT_SECTION_DESCRIPTION
 
 
 SCENARIOS = validation.PUBLIC_SCENARIOS
+
+
+def _validate_fixture_snapshot(scenario, snapshot, structure, content_fixture):
+    evidence = {}
+    if content_fixture is not None:
+        evidence[
+            "reparent_page_fixture" if scenario == "reparent-page" else "copy_fixture"
+        ] = content_fixture
+    return list(
+        SCENARIO_REGISTRY.get(scenario).fixture_recipe.validate(
+            FixtureValidationContext(
+                args=argparse.Namespace(scenario=scenario), snapshot=snapshot
+            ),
+            FixtureBuildResult(structure, evidence),
+        )
+    )
 
 
 def test_public_scenarios_are_class_managed_and_spec_backed() -> None:
@@ -210,9 +231,9 @@ def test_reorder_page_fixture_description_makes_order_visually_explicit() -> Non
     assert "01-Parent" in spec.fixture.expected_structure[1]
     assert "02-Child" in spec.fixture.expected_structure[1]
     assert "03-Sibling" in spec.fixture.expected_structure[1]
-    assert "操作前（顺序 01,02,03）" in fixture_module.REORDER_PAGE_DESCRIPTION
-    assert "预期操作后（顺序 01,03,02）" in fixture_module.REORDER_PAGE_DESCRIPTION
-    assert "默认恢复后（顺序 01,02,03）" in fixture_module.REORDER_PAGE_DESCRIPTION
+    assert "操作前（顺序 01,02,03）" in REORDER_PAGE_DESCRIPTION
+    assert "预期操作后（顺序 01,03,02）" in REORDER_PAGE_DESCRIPTION
+    assert "默认恢复后（顺序 01,02,03）" in REORDER_PAGE_DESCRIPTION
 
 
 def test_reorder_section_fixture_description_covers_both_parent_types() -> None:
@@ -225,18 +246,18 @@ def test_reorder_section_fixture_description_covers_both_parent_types() -> None:
     assert "00-Reorder-Section-Description" in spec.fixture.expected_structure[0]
     assert "01-Root-Section-A" in spec.fixture.expected_structure[1]
     assert "01-Group-Section-A" in spec.fixture.expected_structure[2]
-    assert "场景一：父级为 Notebook" in fixture_module.REORDER_SECTION_DESCRIPTION
+    assert "场景一：父级为 Notebook" in REORDER_SECTION_DESCRIPTION
     assert (
         "场景二：父级为 01-Section-Parent（SectionGroup）"
-        in fixture_module.REORDER_SECTION_DESCRIPTION
+        in REORDER_SECTION_DESCRIPTION
     )
     assert (
         "操作后：00-Description, 01-Root-Section-A, 03-Root-Section-C, 02-Root-Section-B"
-        in fixture_module.REORDER_SECTION_DESCRIPTION
+        in REORDER_SECTION_DESCRIPTION
     )
     assert (
         "操作后：01-Group-Section-A, 03-Group-Section-C, 02-Group-Section-B"
-        in fixture_module.REORDER_SECTION_DESCRIPTION
+        in REORDER_SECTION_DESCRIPTION
     )
 
 
@@ -321,19 +342,19 @@ def test_reorder_section_group_fixture_description_covers_both_parent_types() ->
     assert "01-Nested-Group-A" in spec.fixture.expected_structure[2]
     assert (
         "场景一：父级为 Notebook"
-        in fixture_module.REORDER_SECTION_GROUP_DESCRIPTION
+        in REORDER_SECTION_GROUP_DESCRIPTION
     )
     assert (
         "场景二：父级为 00-Group-Parent（SectionGroup）"
-        in fixture_module.REORDER_SECTION_GROUP_DESCRIPTION
+        in REORDER_SECTION_GROUP_DESCRIPTION
     )
     assert (
         "操作后：00-Group-Parent, 01-Root-Group-A, 03-Root-Group-C, 02-Root-Group-B"
-        in fixture_module.REORDER_SECTION_GROUP_DESCRIPTION
+        in REORDER_SECTION_GROUP_DESCRIPTION
     )
     assert (
         "操作后：01-Nested-Group-A, 03-Nested-Group-C, 02-Nested-Group-B"
-        in fixture_module.REORDER_SECTION_GROUP_DESCRIPTION
+        in REORDER_SECTION_GROUP_DESCRIPTION
     )
 
 
@@ -351,15 +372,15 @@ def test_reparent_section_fixture_description_covers_all_parent_transitions() ->
     assert "Group-To-Group" in spec.fixture.expected_structure[3]
     assert (
         "场景一：Notebook 父级 → SectionGroup 父级"
-        in fixture_module.REPARENT_SECTION_DESCRIPTION
+        in REPARENT_SECTION_DESCRIPTION
     )
     assert (
         "场景二：SectionGroup 父级 → Notebook 父级"
-        in fixture_module.REPARENT_SECTION_DESCRIPTION
+        in REPARENT_SECTION_DESCRIPTION
     )
     assert (
         "场景三：SectionGroup 父级 → SectionGroup 父级"
-        in fixture_module.REPARENT_SECTION_DESCRIPTION
+        in REPARENT_SECTION_DESCRIPTION
     )
 
 
@@ -584,14 +605,15 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
             "page_hashes": {},
         }
 
-    monkeypatch.setattr(fixture_module, "ensure_group", fake_group)
-    monkeypatch.setattr(fixture_module, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(delete_fixture, "ensure_group", fake_group)
+    monkeypatch.setattr(fixture_runtime, "capture_snapshot", fake_snapshot)
     args = argparse.Namespace(scenario="delete")
     options = RuntimeOptions(tmp_path, 180, False, False)
 
     with pytest.raises(runtime.InvariantFailure, match="Delete-Sandbox"):
         asyncio.run(
-            fixture_module.prepare_scenario_fixture(
+            fixture_runtime.prepare_fixture(
+                SCENARIO_REGISTRY.get("delete"),
                 args,
                 options,
                 object(),
@@ -744,9 +766,10 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
     monkeypatch.setattr(validation, "NotebookLifecycleWrapper", FakeLifecycle)
     monkeypatch.setattr(validation, "MCPStdioClient", FakeMCP)
 
-    async def fake_fixture(args, options, client, _notebook, _path, spec):
+    async def fake_fixture(scenario, args, options, client, _notebook, _path, spec):
         assert client is FakeMCP.active
-        assert spec == SCENARIO_REGISTRY.get(args.scenario).runtime_spec(args)
+        assert scenario is SCENARIO_REGISTRY.get(args.scenario)
+        assert spec == scenario.runtime_spec(args)
         calls.append("fixture")
         manifest = _manifest(options.run_dir, args.notebook_name)
         test_utils.write_json(options.run_dir / "manifest.json", manifest)
@@ -756,7 +779,7 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
         calls.append("report")
         return run_dir / "report.md"
 
-    monkeypatch.setattr(validation, "prepare_scenario_fixture", fake_fixture)
+    monkeypatch.setattr(validation, "prepare_fixture", fake_fixture)
     monkeypatch.setattr(validation, "render_report", fake_report)
 
 

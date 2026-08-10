@@ -23,6 +23,8 @@ from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
 from .common.config import RENAME_TOOLS
 from .common.report import render_report
+from .fixture_recipes.rename import RECIPE
+from .common.dry_run import DryRunVariant
 
 
 async def _execute_rename(
@@ -155,8 +157,14 @@ async def _execute_rename(
 @SCENARIO_REGISTRY.register
 class RenameScenario(Scenario):
     name = "rename"
+    fixture_recipe = RECIPE
     help_text = "GATED: create, rename/restore or preserve, report, then close or keep."
-    registered_for_all = True
+    included_in_all = True
+    worksite_dry_run_action = "preserve-renamed-target"
+    dry_run_variants = (
+        DryRunVariant("group-a", ("--target", "group_a")),
+        DryRunVariant("group-b", ("--target", "group_b")),
+    )
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument(

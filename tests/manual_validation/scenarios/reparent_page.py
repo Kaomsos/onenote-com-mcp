@@ -10,17 +10,20 @@ from ..runtime import RuntimeOptions
 from .base import Scenario
 from .common.config import REPARENT_PAGE_TOOLS
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.reparent_page import RECIPE
 from .common.reparent import execute_typed_reparent
 
 
 @SCENARIO_REGISTRY.register
 class ReparentPageScenario(Scenario):
     name = "reparent-page"
+    fixture_recipe = RECIPE
     help_text = (
         "EXPERIMENTAL: validate typed same-Notebook Page reparent with a Description "
         "Page, then restore or preserve."
     )
-    registered_for_all = False
+    included_in_all = False
+    worksite_dry_run_action = "preserve-reparented-page"
     capability_assessment = {
         "capability_status": "experimental",
         "validation_status": "passed",

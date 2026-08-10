@@ -82,10 +82,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "all":
         from .all_scenarios import run_all
-        from .scenarios.common.registry import get_registered_test_scenarios
+        from .scenarios.common.registry import get_all_scenario_names
 
         try:
-            return run_all(args, scenarios=get_registered_test_scenarios())
+            return run_all(args, scenarios=get_all_scenario_names())
         except ValueError as exc:
             error = {"ok": False, "error": str(exc), "exit_code": EXIT_ARGUMENT}
             print_result(error, json_output=bool(args.json_output))

@@ -24,6 +24,7 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.move_page import RECIPE
 from .common.config import MOVE_PAGE_TOOLS
 from .common.copy_invariants import (
     assert_copy_fixture_capabilities,
@@ -151,12 +152,14 @@ async def _execute_move_page(
 @SCENARIO_REGISTRY.register
 class MovePageScenario(Scenario):
     name = "move-page"
+    fixture_recipe = RECIPE
     help_text = (
         "GATED: create, strictly move the disposable Page by verified Copy plus "
         "non-permanent source removal, report, then close or keep."
     )
     timeout_default = 1_800
-    registered_for_all = True
+    included_in_all = True
+    worksite_dry_run_action = "preserve-copy-and-nonpermanently-deleted-source"
 
     async def execute(
         self,

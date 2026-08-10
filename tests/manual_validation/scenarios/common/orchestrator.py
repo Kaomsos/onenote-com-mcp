@@ -11,7 +11,6 @@ from typing import Any
 from ...mcp_stdio_client import (
     COPY_BUDGET_ENV,
     MCPStdioClient,
-    ScenarioPolicy,
 )
 from ...lifecycle import NotebookLifecycleWrapper
 from ...runtime import EXIT_RESTORE, RestoreFailure, RunnerFailure, RuntimeOptions
@@ -23,30 +22,14 @@ from ...test_utils import (
     utc_now,
     write_json,
 )
-from .fixtures import prepare_scenario_fixture
+from .fixture_runtime import prepare_fixture
+from .dry_run import build_isolated_dry_run_plan
 from .report import render_report
 from .specs import SCENARIO_SPECS
 from .registry import SCENARIO_REGISTRY
 
 
 PUBLIC_SCENARIOS = SCENARIO_REGISTRY.public_names
-
-WORKSITE_DRY_RUN_ACTIONS = {
-    "create": "preserve-created-fixture",
-    "rename": "preserve-renamed-target",
-    "reorder-page": "preserve-reordered-page",
-    "reorder-section": "preserve-reordered-sections",
-    "reorder-section-group": "preserve-reordered-section-group",
-    "reparent-section": "preserve-reparented-section",
-    "reparent-page": "preserve-reparented-page",
-    "reparent-section-group": "preserve-reparented-section-group",
-    "delete": "preserve-recycle-bin-state",
-    "copy-page": "preserve-active-copy-targets",
-    "copy-section": "preserve-active-copy-targets",
-    "copy-section-group": "preserve-active-copy-targets",
-    "copy-notebook": "preserve-open-copy-notebook",
-    "move-page": "preserve-copy-and-nonpermanently-deleted-source",
-}
 
 # Compatibility view for callers that inspect the static policy table.  Each
 # entry is the complete fixture + mutation closure for one scenario process.
@@ -81,89 +64,19 @@ def _assert_fresh_run_dir(run_dir: Path) -> None:
         )
 
 
-def _step(
-    name: str,
-    policy: ScenarioPolicy,
-    tools: set[str],
-    target: str,
-) -> dict[str, Any]:
-    return {
-        "step": name,
-        "target": target,
-        "mutation_policy": policy.as_dict(),
-        "tool_allowlist": sorted(tools),
-    }
-
-
 def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
     scenario = SCENARIO_REGISTRY.get(args.scenario)
     spec = scenario.runtime_spec(args)
-    steps: list[dict[str, Any]] = [
-        {
-            "step": "create-source-notebook",
-            "trust_boundary": "narrow lifecycle wrapper",
-            "allowed_operations": ["create_fresh_notebook"],
-            "target": "new exact-name Notebook under run-dir/notebooks",
-        },
-        _step(
-            args.scenario,
-            spec.policy,
-            set(spec.tool_allowlist),
-            f"fixture profile {spec.fixture.name} and selected mutation",
-        ),
-        {
-            "step": "report",
-            "trust_boundary": "local artifacts only",
-            "tool_allowlist": [],
-            "target": "run-dir evidence",
-        },
-    ]
-    if not _keep_source_notebook(args):
-        steps.append(
-            {
-                "step": "close-source-notebook",
-                "trust_boundary": "narrow lifecycle wrapper",
-                "allowed_operations": ["get_exact_notebook", "close_exact_notebook"],
-                "target": "exact lifecycle lease Notebook ID/name/path",
-            }
-        )
-    result = {
-        "command": args.scenario,
-        "scenario": args.scenario,
-        "dry_run": True,
-        "human_only": True,
-        "agent_execution_prohibited": True,
-        "notebook_name": args.notebook_name,
-        "run_dir": str(options.run_dir.resolve()),
-        "notebook_base_folder": str((options.run_dir.resolve() / "notebooks").resolve()),
-        "fixture_profile": spec.fixture.as_dict(),
-        "scenario_spec": spec.as_dict(),
-        "timeout_seconds": options.timeout,
-        "copy_budget": {
+    return build_isolated_dry_run_plan(
+        args,
+        options,
+        spec=spec,
+        capability_assessment=scenario.capability_assessment,
+        copy_budget={
             field: value for field, (_env_name, value) in COPY_BUDGET_ENV.items()
         },
-        "lifecycle": "keep" if _keep_source_notebook(args) else "close",
-        "lifecycle_lease": str((options.run_dir.resolve() / "lifecycle-lease.json")),
-        "expected_mcp_process_starts": 1,
-        "server_started": False,
-        "ordered_steps": steps,
-        "filesystem_cleanup": {
-            "enabled": False,
-            "result": "source and Copy Notebook directories are always preserved",
-        },
-    }
-    if scenario.capability_assessment is not None:
-        result["capability_assessment"] = dict(scenario.capability_assessment)
-    if hasattr(args, "keep_worksite"):
-        result["worksite"] = {
-            "preserved": bool(args.keep_worksite),
-            "target_cleanup": (
-                WORKSITE_DRY_RUN_ACTIONS[args.scenario]
-                if args.keep_worksite
-                else "default-scenario-finalization"
-            ),
-        }
-    return result
+        worksite_action=scenario.worksite_dry_run_action,
+    )
 
 
 def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
@@ -352,7 +265,8 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
             entered_client = True
             metrics["observed_mcp_process_starts"] = 1
             write_json(metrics_path, metrics)
-            manifest, fixture_result = await prepare_scenario_fixture(
+            manifest, fixture_result = await prepare_fixture(
+                scenario,
                 args,
                 options,
                 client,

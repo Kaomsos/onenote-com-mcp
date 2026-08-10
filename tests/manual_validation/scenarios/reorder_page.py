@@ -21,6 +21,8 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.reorder_page import RECIPE
+from .common.dry_run import DryRunVariant
 from .common.config import REORDER_PAGE_TOOLS
 from .common.report import render_report
 
@@ -167,8 +169,11 @@ async def _execute_reorder_page(
 @SCENARIO_REGISTRY.register
 class ReorderPageScenario(Scenario):
     name = "reorder-page"
+    fixture_recipe = RECIPE
     help_text = "GATED: create, reorder/restore or preserve, report, then close or keep."
-    registered_for_all = True
+    included_in_all = True
+    worksite_dry_run_action = "preserve-reordered-page"
+    dry_run_variants = (DryRunVariant("level-one", ("--page-level", "1")),)
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--page-level", type=int, default=2)

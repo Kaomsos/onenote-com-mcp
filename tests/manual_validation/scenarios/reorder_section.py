@@ -11,11 +11,15 @@ from .base import Scenario
 from .common.config import REORDER_SECTION_TOOLS
 from .common.container_reorder import execute_container_reorder
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.reorder_section import RECIPE
 
 
 @SCENARIO_REGISTRY.register
 class ReorderSectionScenario(Scenario):
     name = "reorder-section"
+    fixture_recipe = RECIPE
+    included_in_all = False
+    worksite_dry_run_action = "preserve-reordered-sections"
     help_text = "GATED: reorder and restore Sections under Notebook and SectionGroup parents."
 
     async def execute(

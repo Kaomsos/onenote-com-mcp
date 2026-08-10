@@ -4,32 +4,15 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-import platform
-import sys
 from typing import Any
 import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.page import text_from_page_xml
 
-from ...mcp_stdio_client import (
-    COPY_NO_DELETE_POLICY,
-    COPY_POLICY,
-    DELETE_POLICY,
-    MCPStdioClient,
-    MOVE_PAGE_POLICY,
-    REPARENT_POLICY,
-    REORDER_SECTION_GROUP_POLICY,
-    REORDER_SECTION_POLICY,
-    READ_ONLY_POLICY,
-    WRITE_POLICY,
-)
+from ...mcp_stdio_client import MCPStdioClient
 from ...runtime import EXIT_MCP, InvariantFailure, RunnerFailure
 from ...test_utils import (
     display_name,
-    installed_runner_version,
-    stable_item,
-    utc_now,
-    write_json,
 )
 from .config import (
     AUTOMATED_COPY_CAPABILITIES,
@@ -335,49 +318,3 @@ async def ensure_copy_list_tag_fixture(
         },
     }
     return await current_page(), evidence
-
-def new_manifest(
-    run_dir: Path,
-    notebook: dict[str, Any],
-    structure: dict[str, Any],
-    *,
-    notebook_path: str | None = None,
-) -> dict[str, Any]:
-    disposable_targets = {
-        "notebook_copy_root": str((run_dir / "notebook-copies").resolve()),
-    }
-    if notebook_path:
-        disposable_targets["source_notebook_path"] = str(Path(notebook_path).resolve())
-    return {
-        "schema_version": 1,
-        "run_id": run_dir.name,
-        "created_at": utc_now(),
-        "runner": "tests/manual_validation/run.py",
-        "local_onenote_mcp_version": installed_runner_version(),
-        "python": sys.version,
-        "platform": platform.platform(),
-        "notebook": stable_item(notebook),
-        "structure": {key: stable_item(value) for key, value in structure.items()},
-        "disposable_targets": disposable_targets,
-        "scenario_policies": {
-            "inspect_read_report": READ_ONLY_POLICY.as_dict(),
-            "create_rename_reorder": WRITE_POLICY.as_dict(),
-            "reorder_section": REORDER_SECTION_POLICY.as_dict(),
-            "reorder_section_group": REORDER_SECTION_GROUP_POLICY.as_dict(),
-            "reparent-section": REPARENT_POLICY.as_dict(),
-            "delete": DELETE_POLICY.as_dict(),
-            "copy": COPY_POLICY.as_dict(),
-            "copy_notebook": COPY_NO_DELETE_POLICY.as_dict(),
-            "move_page": MOVE_PAGE_POLICY.as_dict(),
-        },
-        "retry_policy": {
-            "mutation_attempts": 1,
-            "read_attempts": 2,
-            "note": "Only transport failures on read-only calls are retried.",
-        },
-        "copy_scenario": {
-            "supported": True,
-            "real_backend_confirmed": True,
-            "validated_content_types": sorted(AUTOMATED_COPY_CAPABILITIES),
-        },
-    }

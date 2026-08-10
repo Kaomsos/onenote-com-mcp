@@ -11,16 +11,19 @@ from .base import Scenario
 from .common.config import REORDER_SECTION_GROUP_TOOLS
 from .common.container_reorder import execute_container_reorder
 from .common.registry import SCENARIO_REGISTRY
+from .fixture_recipes.reorder_section_group import RECIPE
 
 
 @SCENARIO_REGISTRY.register
 class ReorderSectionGroupScenario(Scenario):
     name = "reorder-section-group"
+    fixture_recipe = RECIPE
     help_text = (
         "CAPABILITY-LIMITED / VALIDATION FAILED: retained SectionGroup reorder "
         "diagnostic; backend keeps fixed ascending name order."
     )
-    registered_for_all = False
+    included_in_all = False
+    worksite_dry_run_action = "preserve-reordered-section-group"
     capability_assessment = {
         "capability_status": "limited",
         "validation_status": "failed",

@@ -18,7 +18,8 @@ CopyExecutor = Callable[..., Awaitable[dict[str, Any]]]
 
 class CopyScenario(Scenario):
     timeout_default = 1_800
-    registered_for_all = True
+    included_in_all = True
+    worksite_dry_run_action = "preserve-active-copy-targets"
     execute_copy: CopyExecutor
 
     def runtime_spec(self, args: argparse.Namespace) -> ScenarioSpec:

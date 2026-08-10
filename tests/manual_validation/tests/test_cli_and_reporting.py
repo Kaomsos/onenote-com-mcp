@@ -14,6 +14,7 @@ from tests.manual_validation.runner import build_parser, main
 from tests.manual_validation.runtime import EXIT_MCP
 from tests.manual_validation.scenarios.common.report import run_report
 from tests.manual_validation.scenarios.common.orchestrator import record_failure
+from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 
 def test_failure_handoff_surfaces_partial_copy_targets(tmp_path) -> None:
     run_dir = tmp_path / "run"
@@ -133,22 +134,7 @@ def test_rename_section_target_uses_neutral_fixture_name() -> None:
 
 def test_keep_worksite_is_available_to_every_named_action_but_not_all() -> None:
     parser = build_parser()
-    for scenario in (
-        "create",
-        "rename",
-        "reorder-page",
-        "reorder-section",
-        "reorder-section-group",
-        "reparent-section",
-        "reparent-page",
-        "reparent-section-group",
-        "delete",
-        "copy-page",
-        "copy-section",
-        "copy-section-group",
-        "copy-notebook",
-        "move-page",
-    ):
+    for scenario in SCENARIO_REGISTRY.public_names:
         args = parser.parse_args([scenario, "--keep-worksite"])
         assert args.keep_worksite is True
 
@@ -156,30 +142,9 @@ def test_keep_worksite_is_available_to_every_named_action_but_not_all() -> None:
         parser.parse_args(["all", "--keep-worksite"])
 
 
-@pytest.mark.parametrize(
-    ("scenario", "expected_cleanup"),
-    [
-        ("create", "preserve-created-fixture"),
-        ("rename", "preserve-renamed-target"),
-        ("reorder-page", "preserve-reordered-page"),
-        ("reorder-section", "preserve-reordered-sections"),
-        ("reorder-section-group", "preserve-reordered-section-group"),
-        ("reparent-section", "preserve-reparented-section"),
-        ("reparent-page", "preserve-reparented-page"),
-        ("reparent-section-group", "preserve-reparented-section-group"),
-        ("delete", "preserve-recycle-bin-state"),
-        ("copy-page", "preserve-active-copy-targets"),
-        ("copy-section", "preserve-active-copy-targets"),
-        ("copy-section-group", "preserve-active-copy-targets"),
-        ("copy-notebook", "preserve-open-copy-notebook"),
-        (
-            "move-page",
-            "preserve-copy-and-nonpermanently-deleted-source",
-        ),
-    ],
-)
+@pytest.mark.parametrize("scenario", SCENARIO_REGISTRY.public_names)
 def test_every_named_action_has_a_bounded_keep_worksite_dry_run(
-    scenario, expected_cleanup, tmp_path, capsys
+    scenario, tmp_path, capsys
 ) -> None:
     run_dir = tmp_path / scenario
     assert main(
@@ -197,7 +162,7 @@ def test_every_named_action_has_a_bounded_keep_worksite_dry_run(
     assert payload["lifecycle"] == "keep"
     assert payload["worksite"] == {
         "preserved": True,
-        "target_cleanup": expected_cleanup,
+        "target_cleanup": SCENARIO_REGISTRY.get(scenario).worksite_dry_run_action,
     }
     assert payload["ordered_steps"][-1]["step"] == "report"
     assert not run_dir.exists()
