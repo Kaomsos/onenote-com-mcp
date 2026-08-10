@@ -474,7 +474,7 @@ def page_equivalence(
     *,
     verification_tier: str = STRICT_CANONICAL_VERIFICATION,
 ) -> dict[str, Any]:
-    """Return the stable content checks used by Copy and reconstructive Move."""
+    """Return the stable content checks used by Copy and Page Move."""
 
     checks = {
         "canonical_xml": canonical_page_digest(expected_xml) == canonical_page_digest(actual_xml),

@@ -1,4 +1,4 @@
-"""Experimental Copy planning, execution, and reconstructive Page move tools."""
+"""Experimental Copy planning, execution, and Page Move tools."""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ async def copy_notebook(
     )
 
 
-async def plan_reconstructive_move_page(
+async def plan_move_page(
     page_id: str,
     destination_section_id: str,
     destination_title: str = "",
@@ -137,7 +137,7 @@ async def plan_reconstructive_move_page(
     """Plan a Page-subtree Copy followed by non-permanent source deletion."""
 
     return invoke(
-        lambda: get_services().copying.plan_reconstructive_move_page(
+        lambda: get_services().copying.plan_move_page(
             page_id,
             destination_section_id,
             destination_title,
@@ -145,7 +145,7 @@ async def plan_reconstructive_move_page(
     )
 
 
-async def reconstructive_move_page(
+async def move_page(
     page_id: str,
     destination_section_id: str,
     expected_title: str,
@@ -157,7 +157,7 @@ async def reconstructive_move_page(
     """Copy a Page subtree and recycle the source only after lossless verification."""
 
     return invoke(
-        lambda: get_services().copying.reconstructive_move_page(
+        lambda: get_services().copying.move_page(
             page_id,
             destination_section_id,
             expected_title,
@@ -175,6 +175,6 @@ TOOLS = [
     copy_section,
     copy_section_group,
     copy_notebook,
-    plan_reconstructive_move_page,
-    reconstructive_move_page,
+    plan_move_page,
+    move_page,
 ]

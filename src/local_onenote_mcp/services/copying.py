@@ -1,4 +1,4 @@
-"""Experimental four-layer Copy and reconstructive Page move orchestration."""
+"""Experimental four-layer Copy and Page Move orchestration."""
 
 from __future__ import annotations
 
@@ -308,7 +308,7 @@ class CopyService(BaseService):
             {"operation": "reorder_pages", "count": pages},
             {"operation": "verify_copy", "count": bundle["estimated"]["resources"]},
         ]
-        if operation == "reconstructive_move_page":
+        if operation == "move_page":
             steps.append({"operation": "recycle_source_pages", "count": pages})
         return {
             **bundle,
@@ -318,8 +318,8 @@ class CopyService(BaseService):
             "steps": steps,
             "lossless_candidate": not bundle["preview_issues"],
             "execute_tool": (
-                "reconstructive_move_page"
-                if operation == "reconstructive_move_page"
+                "move_page"
+                if operation == "move_page"
                 else COPY_EXECUTE_TOOLS[bundle["source"]["resource_type"]]
             ),
         }
@@ -327,9 +327,9 @@ class CopyService(BaseService):
     @staticmethod
     def _public_plan(plan: dict[str, Any]) -> dict[str, Any]:
         warnings = sorted({issue["reason"] for issue in plan["preview_issues"]})
-        if plan["operation"] == "reconstructive_move_page":
+        if plan["operation"] == "move_page":
             warnings.append(
-                "Reconstructive move creates new Page IDs; inbound links from outside the copied subtree are not scanned."
+                "Move creates new Page IDs; inbound links from outside the copied subtree are not scanned."
             )
         return {
             "operation": plan["operation"],
@@ -368,7 +368,7 @@ class CopyService(BaseService):
             )
         )
 
-    def plan_reconstructive_move_page(
+    def plan_move_page(
         self,
         page_id: str,
         destination_section_id: str,
@@ -378,7 +378,7 @@ class CopyService(BaseService):
             page_id,
             destination_section_id,
             destination_title,
-            operation="reconstructive_move_page",
+            operation="move_page",
         )
         if plan["source"]["resource_type"] != "page":
             raise ValueError("page_id must identify a Page.")
@@ -720,7 +720,7 @@ class CopyService(BaseService):
             raise ValueError("Copy plan is missing or stale. Run plan_copy again before mutation.")
         return self._execute_copy(plan)
 
-    def reconstructive_move_page(
+    def move_page(
         self,
         page_id: str,
         destination_section_id: str,
@@ -730,7 +730,7 @@ class CopyService(BaseService):
         expected_modified: str | None = None,
         destination_title: str = "",
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_reconstructive_move_page()
+        MutationPolicy.current().require_move_page()
         self._confirm_source(
             page_id,
             "page",
@@ -742,11 +742,11 @@ class CopyService(BaseService):
             page_id,
             destination_section_id,
             destination_title,
-            operation="reconstructive_move_page",
+            operation="move_page",
         )
         if not plan_digest or plan_digest != plan["plan_digest"]:
             raise ValueError(
-                "Reconstructive Move plan is missing or stale. Run plan_reconstructive_move_page again."
+                "Move plan is missing or stale. Run plan_move_page again."
             )
         execute_started = time.monotonic()
         execute_budget = CopyBudget.current()
@@ -754,7 +754,7 @@ class CopyService(BaseService):
         def check_move_deadline() -> None:
             if time.monotonic() - execute_started > execute_budget.max_execute_seconds:
                 raise RuntimeError(
-                    f"Reconstructive Move execution exceeded {execute_budget.max_execute_seconds} seconds."
+                    f"Move execution exceeded {execute_budget.max_execute_seconds} seconds."
                 )
 
         try:
@@ -872,7 +872,7 @@ class CopyService(BaseService):
                 "deleted_source_ids": removed,
                 "warnings": [
                     *copied.get("warnings", []),
-                    "Reconstructive move created new Page IDs; inbound links outside the copied subtree were not scanned.",
+                    "Move created new Page IDs; inbound links outside the copied subtree were not scanned.",
                     *(
                         [
                             "OneNote removed one or more source Pages from the active hierarchy after "

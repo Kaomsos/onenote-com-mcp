@@ -288,8 +288,14 @@ class HierarchyService(BaseService):
 
         return {"tree": build(root, 0)}
 
-    def update_xml(self, item: dict[str, Any], **attributes: str) -> str:
-        all_items = self.resources(include_recycle_bin=True)
+    def update_xml(
+        self,
+        item: dict[str, Any],
+        *,
+        catalog: list[dict[str, Any]] | None = None,
+        **attributes: str,
+    ) -> str:
+        all_items = catalog if catalog is not None else self.resources(include_recycle_bin=True)
         by_id = {candidate["id"]: candidate for candidate in all_items}
         chain = [item]
         parent_id = item.get("parent_id")
@@ -310,7 +316,7 @@ class HierarchyService(BaseService):
             current = ET.SubElement(current, f"{{{ONE_NS}}}{tags[candidate['resource_type']]}", attrs)
         return ET.tostring(root, encoding="unicode")
 
-    def section_move_xml(self, section: dict[str, Any], destination: dict[str, Any]) -> str:
+    def section_reparent_xml(self, section: dict[str, Any], destination: dict[str, Any]) -> str:
         all_items = self.resources(include_recycle_bin=True)
         by_id = {candidate["id"]: candidate for candidate in all_items}
         chain = [destination]
@@ -318,7 +324,7 @@ class HierarchyService(BaseService):
         while parent_id:
             parent = by_id.get(parent_id)
             if parent is None:
-                raise RuntimeError(f"Cannot build move update: missing ancestor {parent_id}.")
+                raise RuntimeError(f"Cannot build reparent update: missing ancestor {parent_id}.")
             chain.append(parent)
             parent_id = parent.get("parent_id")
         chain.reverse()
@@ -342,5 +348,41 @@ class HierarchyService(BaseService):
                 section_node,
                 f"{{{ONE_NS}}}Page",
                 {"ID": page["id"], "name": display_name(page), "pageLevel": str(page["page_level"])},
+            )
+        return ET.tostring(root, encoding="unicode")
+
+    def container_order_xml(
+        self,
+        parent: dict[str, Any],
+        ordered_children: list[dict[str, Any]],
+        *,
+        catalog: list[dict[str, Any]],
+    ) -> str:
+        """Build an ancestor-complete update containing every direct container child."""
+
+        if parent["resource_type"] not in {"notebook", "section_group"}:
+            raise ValueError("Container reorder parent must be a notebook or section_group.")
+        if any(
+            child.get("parent_id") != parent["id"]
+            or child.get("resource_type") not in {"section_group", "section"}
+            for child in ordered_children
+        ):
+            raise ValueError("Container reorder children must be direct section/section_group siblings.")
+        child_ids = [child["id"] for child in ordered_children]
+        if len(child_ids) != len(set(child_ids)):
+            raise ValueError("Container reorder children must have unique IDs.")
+
+        root = ET.fromstring(self.update_xml(parent, catalog=catalog))
+        parent_node = next(
+            node
+            for node in root.iter()
+            if node.attrib.get("ID") == parent["id"]
+        )
+        tags = {"section_group": "SectionGroup", "section": "Section"}
+        for child in ordered_children:
+            ET.SubElement(
+                parent_node,
+                f"{{{ONE_NS}}}{tags[child['resource_type']]}",
+                {"ID": child["id"], "name": display_name(child)},
             )
         return ET.tostring(root, encoding="unicode")

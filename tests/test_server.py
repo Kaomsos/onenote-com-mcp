@@ -142,20 +142,24 @@ def test_local_search_rejects_candidate_overflow_before_page_reads(monkeypatch):
 def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
-    assert len(names) == 50
+    assert len(names) == 52
+    assert {"reorder_section", "reorder_section_group", "reparent_section"} <= names
     assert {
         "plan_copy",
         "copy_page",
         "copy_section",
         "copy_section_group",
         "copy_notebook",
-        "plan_reconstructive_move_page",
-        "reconstructive_move_page",
+        "plan_move_page",
+        "move_page",
     } <= names
     assert "update_page_xml" not in names
     assert "update_hierarchy_xml" not in names
     assert "delete_hierarchy" not in names
     assert "merge_sections" not in names
+    assert "move_section" not in names
+    assert "plan_reconstructive_move_page" not in names
+    assert "reconstructive_move_page" not in names
 
 
 def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
@@ -184,8 +188,8 @@ def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
             "plan_digest",
         },
         "copy_notebook": {"notebook_id", "expected_name", "plan_digest"},
-        "plan_reconstructive_move_page": {"page_id", "destination_section_id"},
-        "reconstructive_move_page": {
+        "plan_move_page": {"page_id", "destination_section_id"},
+        "move_page": {
             "page_id",
             "destination_section_id",
             "expected_title",
@@ -200,11 +204,33 @@ def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
     assert tools["plan_copy"].parameters["properties"]["destination_base_folder"]["default"] == ""
 
 
+def test_container_reorder_tool_schemas_require_exact_confirmation():
+    tools = server.mcp._tool_manager._tools
+
+    assert set(tools["reorder_section"].parameters.get("required", [])) == {
+        "section_id",
+        "expected_name",
+        "expected_parent_id",
+    }
+    assert set(tools["reorder_section_group"].parameters.get("required", [])) == {
+        "section_group_id",
+        "expected_name",
+        "expected_parent_id",
+    }
+    assert tools["reorder_section"].parameters["properties"]["after_section_id"]["default"] == ""
+    assert (
+        tools["reorder_section_group"].parameters["properties"]["after_section_group_id"]["default"]
+        == ""
+    )
+
+
 def test_page_content_digest_ignores_page_clock_and_hierarchy_metadata():
-    first = '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p" name="Old" lastModifiedTime="1"><one:Outline objectID="o" /></one:Page>'
-    second = '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p" name="New" lastModifiedTime="2"><one:Outline objectID="o" /></one:Page>'
+    first = '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p" name="Old" lastModifiedTime="1"><one:Outline objectID="o"><one:OE author="Old" creationTime="1" /></one:Outline></one:Page>'
+    second = '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p" name="New" lastModifiedTime="2"><one:Outline objectID="o"><one:OE author="New" creationTime="2" selected="all" /></one:Outline></one:Page>'
+    changed_object = second.replace('objectID="o"', 'objectID="changed"')
 
     assert server.services.pages.digest(first) == server.services.pages.digest(second)
+    assert server.services.pages.digest(first) != server.services.pages.digest(changed_object)
 
 
 def test_list_hierarchy_children_returns_only_direct_typed_children(monkeypatch):

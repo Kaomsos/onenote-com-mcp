@@ -19,7 +19,7 @@ from ..page import (
     proportional_dimensions,
     tag_definitions_from_page_xml,
 )
-from ..policy import MutationPolicy
+from ..policy import CopyBudget, MutationPolicy
 from .base import BaseService
 from .errors import PartialFailure
 from .hierarchy import HierarchyService
@@ -355,7 +355,237 @@ class MutationService(BaseService):
             raise RuntimeError("Reorder returned success, but order/page_level read-back verification failed.")
         return {"item": refreshed, "pages": refreshed_pages}
 
-    def move_section(
+    @staticmethod
+    def _container_subtree(
+        items: list[dict[str, Any]], root_id: str
+    ) -> list[dict[str, Any]]:
+        descendant_ids = {root_id}
+        while True:
+            added = {
+                item["id"]
+                for item in items
+                if item.get("parent_id") in descendant_ids and item.get("id") not in descendant_ids
+            }
+            if not added:
+                break
+            descendant_ids.update(added)
+        return [item for item in items if item.get("id") in descendant_ids]
+
+    @staticmethod
+    def _container_subtree_signature(items: list[dict[str, Any]]) -> list[tuple[Any, ...]]:
+        return sorted(
+            (
+                item.get("id"),
+                item.get("resource_type"),
+                item.get("parent_id"),
+                item.get("notebook_id"),
+                item.get("section_id"),
+                item.get("order"),
+                item.get("page_level"),
+                item.get("parent_page_id"),
+                display_name(item),
+            )
+            for item in items
+        )
+
+    def _page_digests(self, pages: list[dict[str, Any]]) -> dict[str, str]:
+        budget = CopyBudget.current()
+        if len(pages) > budget.max_pages:
+            raise ValueError(
+                f"Reorder verification includes {len(pages)} Pages, above the configured "
+                f"maximum of {budget.max_pages}."
+            )
+        total_bytes = 0
+        digests: dict[str, str] = {}
+        for page in pages:
+            xml = self.pages.xml(page["id"], "all")
+            size = len(xml.encode("utf-8"))
+            if size > budget.max_page_xml_bytes:
+                raise ValueError(
+                    f"Reorder verification Page {page['id']} exceeds the configured per-Page XML budget."
+                )
+            total_bytes += size
+            if total_bytes > budget.max_total_xml_bytes:
+                raise ValueError("Reorder verification exceeds the configured total XML budget.")
+            digests[page["id"]] = self.pages.digest(xml)
+        return digests
+
+    def _reorder_container(
+        self,
+        object_id: str,
+        resource_type: str,
+        expected_name: str,
+        expected_parent_id: str,
+        after_id: str,
+        expected_modified: str | None,
+    ) -> dict[str, Any]:
+        MutationPolicy.current().require_experimental_reorder(resource_type)
+        all_items = self.hierarchy.resources(include_recycle_bin=True)
+        by_id = {item["id"]: item for item in all_items if item.get("id")}
+        item = by_id.get(object_id)
+        if item is None:
+            raise ValueError(f"No {resource_type} found for ID '{object_id}'.")
+        if item.get("resource_type") != resource_type:
+            raise ValueError(f"ID '{object_id}' does not identify a {resource_type}.")
+        if item.get("is_in_recycle_bin") is True:
+            raise ValueError(f"Cannot reorder a {resource_type} in the recycle bin.")
+        if display_name(item) != expected_name:
+            raise ValueError(
+                f"Confirmation mismatch: expected name '{expected_name}', found '{display_name(item)}'."
+            )
+        if item.get("parent_id") != expected_parent_id:
+            raise ValueError(
+                f"Confirmation mismatch: expected parent_id '{expected_parent_id}', "
+                f"found '{item.get('parent_id')}'."
+            )
+        if expected_modified is not None and item.get("modified") != expected_modified:
+            raise ValueError(
+                f"Confirmation mismatch: expected modified '{expected_modified}', "
+                f"found '{item.get('modified')}'."
+            )
+
+        parent = by_id.get(expected_parent_id)
+        allowed_parent_types = {"notebook", "section_group"}
+        if parent is None or parent.get("resource_type") not in allowed_parent_types:
+            raise ValueError(
+                "expected_parent_id must identify an active notebook or section_group."
+            )
+        if parent.get("is_in_recycle_bin") is True:
+            raise ValueError("Cannot reorder an object below a recycle-bin parent.")
+
+        active_items = self.hierarchy.without_recycle_bin(all_items)
+        direct_children = [
+            candidate
+            for candidate in active_items
+            if candidate.get("parent_id") == expected_parent_id
+            and candidate.get("resource_type") in {"section", "section_group"}
+        ]
+        siblings = [
+            candidate for candidate in direct_children if candidate["resource_type"] == resource_type
+        ]
+        if object_id not in {candidate["id"] for candidate in siblings}:
+            raise RuntimeError("Reorder target is absent from its active direct sibling sequence.")
+
+        remaining = [candidate for candidate in siblings if candidate["id"] != object_id]
+        if after_id:
+            if after_id == object_id:
+                parameter = "after_section_id" if resource_type == "section" else "after_section_group_id"
+                raise ValueError(f"{parameter} cannot equal the target ID.")
+            predecessor = by_id.get(after_id)
+            if predecessor is None:
+                raise ValueError(f"Predecessor ID '{after_id}' does not exist.")
+            if predecessor.get("is_in_recycle_bin") is True:
+                raise ValueError("Predecessor cannot be in the recycle bin.")
+            if predecessor.get("resource_type") != resource_type:
+                raise ValueError(f"Predecessor must identify another {resource_type}.")
+            if predecessor.get("parent_id") != expected_parent_id:
+                raise ValueError("Predecessor must have the same parent as the reorder target.")
+            insertion_index = next(
+                index for index, candidate in enumerate(remaining) if candidate["id"] == after_id
+            ) + 1
+        else:
+            insertion_index = 0
+        ordered_siblings = [*remaining]
+        ordered_siblings.insert(insertion_index, item)
+
+        sibling_iterator = iter(ordered_siblings)
+        ordered_children = [
+            next(sibling_iterator) if child["resource_type"] == resource_type else child
+            for child in direct_children
+        ]
+        before_subtree = self._container_subtree(active_items, object_id)
+        if len(before_subtree) > CopyBudget.current().max_resources:
+            raise ValueError("Reorder verification exceeds the configured hierarchy resource budget.")
+        before_signature = self._container_subtree_signature(before_subtree)
+        before_pages = [node for node in before_subtree if node["resource_type"] == "page"]
+        before_page_digests = self._page_digests(before_pages)
+        before_direct_ids = {child["id"] for child in direct_children}
+        expected_sibling_ids = [candidate["id"] for candidate in ordered_siblings]
+
+        self.call(
+            "update_hierarchy",
+            xml=self.hierarchy.container_order_xml(
+                parent,
+                ordered_children,
+                catalog=active_items,
+            ),
+            schema=XML_SCHEMA_2013,
+        )
+
+        refreshed_items = self.hierarchy.resources(include_recycle_bin=False)
+        refreshed_by_id = {candidate["id"]: candidate for candidate in refreshed_items}
+        refreshed = refreshed_by_id.get(object_id)
+        if refreshed is None or refreshed.get("resource_type") != resource_type:
+            raise RuntimeError("Reorder returned success, but the target ID could not be read back.")
+        if refreshed.get("parent_id") != expected_parent_id:
+            raise RuntimeError("Reorder returned success, but the target parent changed.")
+        refreshed_direct = [
+            candidate
+            for candidate in refreshed_items
+            if candidate.get("parent_id") == expected_parent_id
+            and candidate.get("resource_type") in {"section", "section_group"}
+        ]
+        if {candidate["id"] for candidate in refreshed_direct} != before_direct_ids:
+            raise RuntimeError("Reorder returned success, but the direct sibling ID set changed.")
+        refreshed_siblings = [
+            candidate for candidate in refreshed_direct if candidate["resource_type"] == resource_type
+        ]
+        if [candidate["id"] for candidate in refreshed_siblings] != expected_sibling_ids:
+            raise RuntimeError("Reorder returned success, but the requested sibling order was not observed.")
+
+        refreshed_subtree = self._container_subtree(refreshed_items, object_id)
+        if self._container_subtree_signature(refreshed_subtree) != before_signature:
+            raise RuntimeError("Reorder returned success, but target descendant IDs or relationships changed.")
+        refreshed_pages = [node for node in refreshed_subtree if node["resource_type"] == "page"]
+        if self._page_digests(refreshed_pages) != before_page_digests:
+            raise RuntimeError("Reorder returned success, but Page content changed.")
+        return {
+            "item": refreshed,
+            "siblings": refreshed_siblings,
+            "after_id": after_id,
+            "verified": {
+                "parent_unchanged": True,
+                "sibling_ids_unchanged": True,
+                "descendants_unchanged": True,
+                "page_content_unchanged": True,
+            },
+        }
+
+    def reorder_section(
+        self,
+        section_id: str,
+        expected_name: str,
+        expected_parent_id: str,
+        after_section_id: str = "",
+        expected_modified: str | None = None,
+    ) -> dict[str, Any]:
+        return self._reorder_container(
+            section_id,
+            "section",
+            expected_name,
+            expected_parent_id,
+            after_section_id,
+            expected_modified,
+        )
+
+    def reorder_section_group(
+        self,
+        section_group_id: str,
+        expected_name: str,
+        expected_parent_id: str,
+        after_section_group_id: str = "",
+        expected_modified: str | None = None,
+    ) -> dict[str, Any]:
+        return self._reorder_container(
+            section_group_id,
+            "section_group",
+            expected_name,
+            expected_parent_id,
+            after_section_group_id,
+            expected_modified,
+        )
+
+    def reparent_section(
         self,
         section_id: str,
         destination_parent_id: str,
@@ -363,7 +593,7 @@ class MutationService(BaseService):
         expected_parent_id: str,
         expected_modified: str | None = None,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_experimental_move()
+        MutationPolicy.current().require_experimental_reparent_section()
         section = self.confirm_resource(
             section_id,
             "section",
@@ -378,7 +608,7 @@ class MutationService(BaseService):
             destination["id"] if destination["resource_type"] == "notebook" else destination["notebook_id"]
         )
         if destination_notebook_id != section["notebook_id"]:
-            raise ValueError("move_section only supports destinations in the same notebook.")
+            raise ValueError("reparent_section only supports destinations in the same notebook.")
         before_pages = [
             item
             for item in self.hierarchy.resources(include_recycle_bin=False)
@@ -386,14 +616,18 @@ class MutationService(BaseService):
         ]
         before_pages.sort(key=lambda item: item["order"])
         before_hashes = {item["id"]: self.pages.digest(self.pages.xml(item["id"], "all")) for item in before_pages}
-        self.call("update_hierarchy", xml=self.hierarchy.section_move_xml(section, destination), schema=XML_SCHEMA_2013)
-        moved = self.hierarchy.wait_for(
+        self.call(
+            "update_hierarchy",
+            xml=self.hierarchy.section_reparent_xml(section, destination),
+            schema=XML_SCHEMA_2013,
+        )
+        reparented = self.hierarchy.wait_for(
             section_id,
             "section",
             predicate=lambda value: value["parent_id"] == destination_parent_id,
         )
-        if moved is None:
-            raise RuntimeError("Move returned success, but the Section parent could not be verified.")
+        if reparented is None:
+            raise RuntimeError("Reparent returned success, but the Section parent could not be verified.")
         after_pages = [
             item
             for item in self.hierarchy.resources(include_recycle_bin=False)
@@ -401,12 +635,12 @@ class MutationService(BaseService):
         ]
         after_pages.sort(key=lambda item: item["order"])
         if [item["id"] for item in after_pages] != [item["id"] for item in before_pages]:
-            raise RuntimeError("Section moved, but Page identity/order verification failed.")
+            raise RuntimeError("Section reparented, but Page identity/order verification failed.")
         after_hashes = {item["id"]: self.pages.digest(self.pages.xml(item["id"], "all")) for item in after_pages}
         if after_hashes != before_hashes:
-            raise RuntimeError("Section moved, but Page content verification failed.")
+            raise RuntimeError("Section reparented, but Page content verification failed.")
         return {
-            "item": moved,
+            "item": reparented,
             "verified": {
                 "section_id_preserved": True,
                 "page_ids_and_order_preserved": True,

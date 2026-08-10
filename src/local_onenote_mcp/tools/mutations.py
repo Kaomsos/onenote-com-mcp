@@ -121,17 +121,57 @@ async def reorder_page(
     )
 
 
-async def move_section(
+async def reorder_section(
+    section_id: str,
+    expected_name: str,
+    expected_parent_id: str,
+    after_section_id: str = "",
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Experimentally reorder a section among same-parent Section siblings."""
+
+    return invoke(
+        lambda: get_services().mutations.reorder_section(
+            section_id,
+            expected_name,
+            expected_parent_id,
+            after_section_id,
+            expected_modified,
+        )
+    )
+
+
+async def reorder_section_group(
+    section_group_id: str,
+    expected_name: str,
+    expected_parent_id: str,
+    after_section_group_id: str = "",
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Experimentally reorder a SectionGroup among same-parent Group siblings."""
+
+    return invoke(
+        lambda: get_services().mutations.reorder_section_group(
+            section_group_id,
+            expected_name,
+            expected_parent_id,
+            after_section_group_id,
+            expected_modified,
+        )
+    )
+
+
+async def reparent_section(
     section_id: str,
     destination_parent_id: str,
     expected_name: str,
     expected_parent_id: str,
     expected_modified: str | None = None,
 ) -> dict[str, Any]:
-    """Experimentally move a section within one notebook."""
+    """Experimentally reparent a Section within one Notebook."""
 
     return invoke(
-        lambda: get_services().mutations.move_section(
+        lambda: get_services().mutations.reparent_section(
             section_id,
             destination_parent_id,
             expected_name,
@@ -304,7 +344,9 @@ TOOLS = [
     rename_section_group,
     rename_section,
     reorder_page,
-    move_section,
+    reorder_section,
+    reorder_section_group,
+    reparent_section,
     append_to_page,
     add_image_to_page,
     replace_page_body,

@@ -8,9 +8,11 @@ def test_mutations_are_disabled_by_default(monkeypatch):
         "LOCAL_ONENOTE_ENABLE_WRITES",
         "LOCAL_ONENOTE_ENABLE_DELETES",
         "LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_MOVE_SECTION",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-        "LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE",
+        "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
         "LOCAL_ONENOTE_ENABLE_RAW_XML",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -21,7 +23,9 @@ def test_mutations_are_disabled_by_default(monkeypatch):
     assert policy.deletes_enabled is False
     assert policy.permanent_deletes_enabled is False
     assert policy.experimental_copy_enabled is False
-    assert policy.reconstructive_move_page_enabled is False
+    assert policy.experimental_reorder_section_enabled is False
+    assert policy.experimental_reorder_section_group_enabled is False
+    assert policy.move_page_enabled is False
     with pytest.raises(PermissionError):
         policy.require_write()
     with pytest.raises(PermissionError):
@@ -29,16 +33,38 @@ def test_mutations_are_disabled_by_default(monkeypatch):
     with pytest.raises(PermissionError):
         policy.require_experimental_copy()
     with pytest.raises(PermissionError):
-        policy.require_reconstructive_move_page()
+        policy.require_experimental_reorder("section")
+    with pytest.raises(PermissionError):
+        policy.require_experimental_reorder("section_group")
+    with pytest.raises(PermissionError):
+        policy.require_move_page()
 
 
-def test_reconstructive_move_requires_all_three_mutation_capabilities(monkeypatch):
+def test_move_page_requires_all_three_mutation_capabilities(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
 
-    MutationPolicy.current().require_reconstructive_move_page()
+    MutationPolicy.current().require_move_page()
+
+
+@pytest.mark.parametrize(
+    ("resource_type", "env_name"),
+    [
+        ("section", "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"),
+        ("section_group", "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"),
+    ],
+)
+def test_container_reorder_requires_write_and_its_independent_gate(monkeypatch, resource_type, env_name):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv(env_name, "true")
+
+    MutationPolicy.current().require_experimental_reorder(resource_type)
+
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "false")
+    with pytest.raises(PermissionError):
+        MutationPolicy.current().require_experimental_reorder(resource_type)
 
 
 @pytest.mark.parametrize(
@@ -67,21 +93,21 @@ def test_copy_permission_matrix(monkeypatch, writes, copy, allowed):
         "LOCAL_ONENOTE_ENABLE_WRITES",
         "LOCAL_ONENOTE_ENABLE_DELETES",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-        "LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE",
+        "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
     ],
 )
-def test_reconstructive_move_permission_matrix_rejects_each_missing_gate(monkeypatch, missing):
+def test_move_page_permission_matrix_rejects_each_missing_gate(monkeypatch, missing):
     for name in (
         "LOCAL_ONENOTE_ENABLE_WRITES",
         "LOCAL_ONENOTE_ENABLE_DELETES",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-        "LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE",
+        "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
     ):
         monkeypatch.setenv(name, "true")
     monkeypatch.setenv(missing, "false")
 
     with pytest.raises(PermissionError):
-        MutationPolicy.current().require_reconstructive_move_page()
+        MutationPolicy.current().require_move_page()
 
 
 def test_search_budget_reads_bounded_environment_values(monkeypatch):

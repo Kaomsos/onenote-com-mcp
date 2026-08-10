@@ -26,9 +26,11 @@ class MutationPolicy:
     writes_enabled: bool
     deletes_enabled: bool
     permanent_deletes_enabled: bool
-    experimental_move_section_enabled: bool
+    experimental_reparent_section_enabled: bool
+    experimental_reorder_section_enabled: bool
+    experimental_reorder_section_group_enabled: bool
     experimental_copy_enabled: bool
-    reconstructive_move_page_enabled: bool
+    move_page_enabled: bool
     raw_xml_enabled: bool
 
     @classmethod
@@ -37,11 +39,17 @@ class MutationPolicy:
             writes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_WRITES"),
             deletes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_DELETES"),
             permanent_deletes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES"),
-            experimental_move_section_enabled=env_bool("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_MOVE_SECTION"),
-            experimental_copy_enabled=env_bool("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY"),
-            reconstructive_move_page_enabled=env_bool(
-                "LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE"
+            experimental_reparent_section_enabled=env_bool(
+                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION"
             ),
+            experimental_reorder_section_enabled=env_bool(
+                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"
+            ),
+            experimental_reorder_section_group_enabled=env_bool(
+                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"
+            ),
+            experimental_copy_enabled=env_bool("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY"),
+            move_page_enabled=env_bool("LOCAL_ONENOTE_ENABLE_MOVE_PAGE"),
             raw_xml_enabled=env_bool("LOCAL_ONENOTE_ENABLE_RAW_XML"),
         )
 
@@ -57,12 +65,30 @@ class MutationPolicy:
                 "Permanent deletes are disabled. Set LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES=true in addition to deletes."
             )
 
-    def require_experimental_move(self) -> None:
+    def require_experimental_reparent_section(self) -> None:
         self.require_write()
-        if not self.experimental_move_section_enabled:
+        if not self.experimental_reparent_section_enabled:
             raise PermissionError(
-                "Section move is experimental. Validate it in an isolated notebook, then set "
-                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_MOVE_SECTION=true."
+                "Section reparent is experimental. Validate it in an isolated notebook, then set "
+                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION=true."
+            )
+
+    def require_experimental_reorder(self, resource_type: str) -> None:
+        self.require_write()
+        if resource_type == "section":
+            enabled = self.experimental_reorder_section_enabled
+            env_name = "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"
+            label = "Section reorder"
+        elif resource_type == "section_group":
+            enabled = self.experimental_reorder_section_group_enabled
+            env_name = "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"
+            label = "SectionGroup reorder"
+        else:
+            raise ValueError("Experimental reorder only supports section or section_group.")
+        if not enabled:
+            raise PermissionError(
+                f"{label} is experimental. Validate it in an isolated notebook, then set "
+                f"{env_name}=true."
             )
 
     def require_experimental_copy(self) -> None:
@@ -73,13 +99,13 @@ class MutationPolicy:
                 "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true."
             )
 
-    def require_reconstructive_move_page(self) -> None:
+    def require_move_page(self) -> None:
         self.require_experimental_copy()
         self.require_delete(permanently=False)
-        if not self.reconstructive_move_page_enabled:
+        if not self.move_page_enabled:
             raise PermissionError(
-                "Reconstructive Page move is disabled. Validate it in an isolated notebook, then set "
-                "LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE=true."
+                "Page move is disabled. Validate it in an isolated notebook, then set "
+                "LOCAL_ONENOTE_ENABLE_MOVE_PAGE=true."
             )
 
     def require_raw_xml(self) -> None:

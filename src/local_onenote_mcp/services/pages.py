@@ -14,6 +14,39 @@ from .base import BaseService
 from .hierarchy import HierarchyService
 
 
+VOLATILE_PAGE_ATTRIBUTES = {
+    "author",
+    "authorInitials",
+    "authorResolutionID",
+    "creationTime",
+    "dateTime",
+    "lastModifiedTime",
+    "lastModifiedBy",
+    "lastModifiedByInitials",
+    "lastModifiedByResolutionID",
+    "isCurrentlyViewed",
+    "selected",
+    "isSelected",
+    "path",
+    "pathCache",
+    "sourcePath",
+    "localFilePath",
+}
+ROOT_HIERARCHY_ATTRIBUTES = {"ID", "name", "pageLevel"}
+
+
+def stable_page_content_digest(xml: str) -> str:
+    """Hash in-place Page content while ignoring OneNote-owned clocks/view metadata."""
+
+    root = ET.fromstring(xml)
+    for node in root.iter():
+        for attribute in VOLATILE_PAGE_ATTRIBUTES:
+            node.attrib.pop(attribute, None)
+    for attribute in ROOT_HIERARCHY_ATTRIBUTES:
+        root.attrib.pop(attribute, None)
+    return hashlib.sha256(ET.tostring(root, encoding="utf-8")).hexdigest()
+
+
 class PageService(BaseService):
     def __init__(self, bridge: OneNoteBridge, hierarchy: HierarchyService, max_text_chars: int) -> None:
         super().__init__(bridge)
@@ -30,10 +63,7 @@ class PageService(BaseService):
 
     @staticmethod
     def digest(xml: str) -> str:
-        root = ET.fromstring(xml)
-        for attribute in ("ID", "name", "dateTime", "lastModifiedTime", "pageLevel", "isCurrentlyViewed"):
-            root.attrib.pop(attribute, None)
-        return hashlib.sha256(ET.tostring(root, encoding="utf-8")).hexdigest()
+        return stable_page_content_digest(xml)
 
     @staticmethod
     def truncate(text: str, max_chars: int) -> str:

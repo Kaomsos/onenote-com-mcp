@@ -1057,14 +1057,14 @@ def test_page_subtree_copy_creates_new_ids_restores_relative_levels_and_verifies
 
 
 @pytest.mark.write_contract
-def test_reconstructive_move_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
+def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
     install_plan_fakes(monkeypatch)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_reconstructive_move_page(
+    plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
     monkeypatch.setattr(
@@ -1079,7 +1079,7 @@ def test_reconstructive_move_degrades_to_copy_when_fidelity_is_unverified(monkey
     )
 
     with pytest.raises(PartialFailure) as caught:
-        server.services.copying.reconstructive_move_page(
+        server.services.copying.move_page(
             "parent",
             "destination-section",
             "Parent",
@@ -1093,14 +1093,14 @@ def test_reconstructive_move_degrades_to_copy_when_fidelity_is_unverified(monkey
 
 
 @pytest.mark.write_contract
-def test_reconstructive_move_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
+def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_reconstructive_move_page(
+    plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
     report = {
@@ -1126,7 +1126,7 @@ def test_reconstructive_move_normalizes_copy_readback_failure_to_copy_only(monke
     )
 
     with pytest.raises(PartialFailure) as caught:
-        server.services.copying.reconstructive_move_page(
+        server.services.copying.move_page(
             "parent",
             "destination-section",
             "Parent",
@@ -1142,14 +1142,14 @@ def test_reconstructive_move_normalizes_copy_readback_failure_to_copy_only(monke
 
 
 @pytest.mark.write_contract
-def test_reconstructive_move_reports_copy_only_when_source_revalidation_fails(monkeypatch):
+def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_reconstructive_move_page(
+    plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
     monkeypatch.setattr(
@@ -1184,7 +1184,7 @@ def test_reconstructive_move_reports_copy_only_when_source_revalidation_fails(mo
     )
 
     with pytest.raises(PartialFailure) as caught:
-        server.services.copying.reconstructive_move_page(
+        server.services.copying.move_page(
             "parent",
             "destination-section",
             "Parent",
@@ -1199,14 +1199,14 @@ def test_reconstructive_move_reports_copy_only_when_source_revalidation_fails(mo
 
 
 @pytest.mark.write_contract
-def test_reconstructive_move_blocks_delete_when_source_changes_after_copy(monkeypatch):
+def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_reconstructive_move_page(
+    plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
 
@@ -1231,7 +1231,7 @@ def test_reconstructive_move_blocks_delete_when_source_changes_after_copy(monkey
     )
 
     with pytest.raises(PartialFailure) as caught:
-        server.services.copying.reconstructive_move_page(
+        server.services.copying.move_page(
             "parent",
             "destination-section",
             "Parent",
@@ -1246,14 +1246,14 @@ def test_reconstructive_move_blocks_delete_when_source_changes_after_copy(monkey
 
 
 @pytest.mark.write_contract
-def test_reconstructive_move_recycles_source_pages_leaf_to_root(monkeypatch):
+def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_reconstructive_move_page(
+    plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
     monkeypatch.setattr(
@@ -1279,7 +1279,7 @@ def test_reconstructive_move_recycles_source_pages_leaf_to_root(monkeypatch):
 
     monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
 
-    result = server.services.copying.reconstructive_move_page(
+    result = server.services.copying.move_page(
         "parent",
         "destination-section",
         "Parent",
@@ -1297,14 +1297,14 @@ def test_reconstructive_move_recycles_source_pages_leaf_to_root(monkeypatch):
 
 
 @pytest.mark.write_contract
-def test_reconstructive_move_reports_verified_and_remaining_ids_on_delete_failure(monkeypatch):
+def test_move_page_reports_verified_and_remaining_ids_on_delete_failure(monkeypatch):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_reconstructive_move_page(
+    plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
     monkeypatch.setattr(
@@ -1330,7 +1330,7 @@ def test_reconstructive_move_reports_verified_and_remaining_ids_on_delete_failur
     monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
 
     with pytest.raises(PartialFailure) as caught:
-        server.services.copying.reconstructive_move_page(
+        server.services.copying.move_page(
             "parent",
             "destination-section",
             "Parent",
@@ -1349,15 +1349,15 @@ def test_reconstructive_move_reports_verified_and_remaining_ids_on_delete_failur
 
 
 @pytest.mark.write_contract
-def test_reconstructive_move_accepts_active_absence_without_recycle_metadata(monkeypatch):
+def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     state["items"] = [item for item in state["items"] if item["id"] != "child"]
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_reconstructive_move_page(
+    plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
     monkeypatch.setattr(
@@ -1379,7 +1379,7 @@ def test_reconstructive_move_accepts_active_absence_without_recycle_metadata(mon
         "delete_page",
         lambda *args, **kwargs: {"deleted": True, "final_state": None},
     )
-    result = server.services.copying.reconstructive_move_page(
+    result = server.services.copying.move_page(
         "parent",
         "destination-section",
         "Parent",
