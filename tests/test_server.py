@@ -142,8 +142,14 @@ def test_local_search_rejects_candidate_overflow_before_page_reads(monkeypatch):
 def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
-    assert len(names) == 52
-    assert {"reorder_section", "reorder_section_group", "reparent_section"} <= names
+    assert len(names) == 54
+    assert {
+        "reorder_section",
+        "reorder_section_group",
+        "reparent_page",
+        "reparent_section",
+        "reparent_section_group",
+    } <= names
     assert {
         "plan_copy",
         "copy_page",
@@ -160,6 +166,57 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
     assert "move_section" not in names
     assert "plan_reconstructive_move_page" not in names
     assert "reconstructive_move_page" not in names
+
+
+def test_raw_hierarchy_xml_is_absent_from_advanced_and_every_registration_profile():
+    from local_onenote_mcp.bridge import POWERSHELL_BRIDGE
+    from local_onenote_mcp.tools import ADVANCED_TOOLS, register_tools
+
+    assert "update_hierarchy_xml" not in {tool.__name__ for tool in ADVANCED_TOOLS}
+    assert not hasattr(server.services.mutations, "update_hierarchy_xml")
+    assert '"update_hierarchy"' in POWERSHELL_BRIDGE
+
+    class FakeMCP:
+        def __init__(self):
+            self.names = []
+
+        def tool(self):
+            def register(function):
+                self.names.append(function.__name__)
+                return function
+
+            return register
+
+    fake = FakeMCP()
+    register_tools(fake, server.services, raw_xml_enabled=True)
+    assert "update_page_xml" in fake.names
+    assert "update_hierarchy_xml" not in fake.names
+    assert "move_section" not in fake.names
+
+
+def test_reparent_tool_schemas_require_exact_typed_confirmation():
+    tools = server.mcp._tool_manager._tools
+    assert set(tools["reparent_page"].parameters.get("required", [])) == {
+        "page_id",
+        "destination_section_id",
+        "expected_title",
+        "expected_section_id",
+    }
+    assert set(tools["reparent_section"].parameters.get("required", [])) == {
+        "section_id",
+        "destination_parent_id",
+        "expected_name",
+        "expected_parent_id",
+    }
+    assert set(tools["reparent_section_group"].parameters.get("required", [])) == {
+        "section_group_id",
+        "destination_parent_id",
+        "expected_name",
+        "expected_parent_id",
+    }
+    for name in ("reparent_page", "reparent_section", "reparent_section_group"):
+        assert "xml" not in tools[name].parameters["properties"]
+        assert "force" not in tools[name].parameters["properties"]
 
 
 def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():

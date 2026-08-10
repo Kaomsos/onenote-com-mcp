@@ -585,6 +585,329 @@ class MutationService(BaseService):
             expected_modified,
         )
 
+    @staticmethod
+    def _resource_notebook_id(item: dict[str, Any]) -> str | None:
+        return (
+            item.get("id")
+            if item.get("resource_type") == "notebook"
+            else item.get("notebook_id")
+        )
+
+    @staticmethod
+    def _notebook_items(items: list[dict[str, Any]], notebook_id: str) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in items
+            if item.get("id") == notebook_id or item.get("notebook_id") == notebook_id
+        ]
+
+    def _capture_reparent_snapshot(self, notebook_id: str) -> dict[str, Any]:
+        """Capture bounded hierarchy and Page evidence for one active Notebook."""
+
+        budget = CopyBudget.current()
+        initial = self._notebook_items(
+            self.hierarchy.resources(include_recycle_bin=False), notebook_id
+        )
+        if not any(item.get("id") == notebook_id for item in initial):
+            raise ValueError(f"No active notebook found for ID '{notebook_id}'.")
+        if len(initial) > budget.max_resources:
+            raise ValueError("Reparent verification exceeds the configured hierarchy resource budget.")
+        pages = [item for item in initial if item.get("resource_type") == "page"]
+        if len(pages) > budget.max_pages:
+            raise ValueError("Reparent verification exceeds the configured Page budget.")
+
+        total_bytes = 0
+        page_xml: dict[str, str] = {}
+        for page in pages:
+            xml = self.pages.xml(page["id"], "all")
+            size = len(xml.encode("utf-8"))
+            if size > budget.max_page_xml_bytes:
+                raise ValueError(
+                    f"Reparent verification Page {page['id']} exceeds the per-Page XML budget."
+                )
+            total_bytes += size
+            if total_bytes > budget.max_total_xml_bytes:
+                raise ValueError("Reparent verification exceeds the total Page XML budget.")
+            page_xml[page["id"]] = xml
+
+        refreshed = self._notebook_items(
+            self.hierarchy.resources(include_recycle_bin=False), notebook_id
+        )
+        if {item["id"] for item in refreshed} != {item["id"] for item in initial}:
+            raise RuntimeError(
+                "Notebook hierarchy changed while Reparent verification evidence was collected."
+            )
+        return {"items": refreshed, "page_xml": page_xml}
+
+    @staticmethod
+    def _ordered_children(
+        items: list[dict[str, Any]], excluded_ids: set[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        result: dict[str, list[tuple[str, str]]] = {}
+        for item in items:
+            if item.get("id") in excluded_ids or item.get("resource_type") == "notebook":
+                continue
+            parent_id = (
+                item.get("section_id")
+                if item.get("resource_type") == "page"
+                else item.get("parent_id")
+            )
+            if parent_id:
+                result.setdefault(parent_id, []).append((item["resource_type"], item["id"]))
+        return result
+
+    def _validate_reparent_snapshots(
+        self,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        *,
+        target_id: str,
+        destination_parent_id: str,
+        resource_type: str,
+    ) -> tuple[dict[str, Any], dict[str, str], dict[str, bool]]:
+        before_items = before["items"]
+        after_items = after["items"]
+        before_by_id = {item["id"]: item for item in before_items}
+        after_by_id = {item["id"]: item for item in after_items}
+        before_ids = set(before_by_id)
+        after_ids = set(after_by_id)
+        before_target = before_by_id[target_id]
+
+        current_target_id = target_id
+        if resource_type == "page" and target_id not in after_by_id:
+            removed = before_ids - after_ids
+            added = after_ids - before_ids
+            if removed != {target_id} or len(added) != 1:
+                raise RuntimeError("Page reparent did not produce one exact old-to-new ID transition.")
+            current_target_id = next(iter(added))
+        elif before_ids != after_ids:
+            raise RuntimeError("Reparent changed one or more unexpected hierarchy object IDs.")
+
+        current = after_by_id.get(current_target_id)
+        if current is None or current.get("resource_type") != resource_type:
+            raise RuntimeError("Reparent returned success, but the typed target could not be read back.")
+        observed_parent = (
+            current.get("section_id") if resource_type == "page" else current.get("parent_id")
+        )
+        if observed_parent != destination_parent_id:
+            raise RuntimeError("Reparent returned success, but the requested parent was not observed.")
+        if display_name(current) != display_name(before_target):
+            raise RuntimeError("Reparent changed the target name or title.")
+        if self._resource_notebook_id(current) != self._resource_notebook_id(before_target):
+            raise RuntimeError("Reparent changed the target Notebook identity.")
+
+        id_map = {target_id: current_target_id}
+        excluded_before = {target_id}
+        excluded_after = {current_target_id}
+        if self._ordered_children(before_items, excluded_before) != self._ordered_children(
+            after_items, excluded_after
+        ):
+            raise RuntimeError("Reparent changed unrelated hierarchy topology or sibling order.")
+
+        relationship_fields = ("parent_id", "section_id", "page_level", "parent_page_id")
+        for object_id, before_item in before_by_id.items():
+            if object_id == target_id:
+                continue
+            after_item = after_by_id.get(object_id)
+            if after_item is None:
+                raise RuntimeError(f"Reparent removed unrelated hierarchy object {object_id}.")
+            if (
+                after_item.get("resource_type") != before_item.get("resource_type")
+                or display_name(after_item) != display_name(before_item)
+                or self._resource_notebook_id(after_item)
+                != self._resource_notebook_id(before_item)
+            ):
+                raise RuntimeError(f"Reparent changed unrelated hierarchy object {object_id}.")
+            if any(after_item.get(field) != before_item.get(field) for field in relationship_fields):
+                raise RuntimeError(f"Reparent changed an unrelated relationship for {object_id}.")
+
+        for page_id, before_xml in before["page_xml"].items():
+            if page_id == target_id:
+                continue
+            after_xml = after["page_xml"].get(page_id)
+            if after_xml is None or self.pages.digest(after_xml) != self.pages.digest(before_xml):
+                raise RuntimeError(f"Reparent changed unrelated Page content for {page_id}.")
+
+        if resource_type == "page":
+            if (
+                current.get("page_level") != before_target.get("page_level")
+                or current.get("parent_page_id") != before_target.get("parent_page_id")
+            ):
+                raise RuntimeError("Page reparent changed indentation topology.")
+            before_xml = before["page_xml"][target_id]
+            after_xml = after["page_xml"].get(current_target_id)
+            if after_xml is None:
+                raise RuntimeError("Page reparent read-back is missing target Page content.")
+            if self.pages.reparent_digest(after_xml) != self.pages.reparent_digest(before_xml):
+                raise RuntimeError("Page reparent changed rich Page content semantics.")
+            id_map.update(self.pages.observable_id_map(before_xml, after_xml))
+            verified = {
+                "parent_applied": True,
+                "target_id_transition_valid": True,
+                "same_notebook_preserved": True,
+                "page_topology_preserved": True,
+                "rich_content_preserved": True,
+                "content_object_ids_mapped": True,
+                "unrelated_objects_preserved": True,
+            }
+        else:
+            verified = {
+                "parent_applied": True,
+                f"{resource_type}_id_preserved": True,
+                "same_notebook_preserved": True,
+                "descendant_topology_preserved": True,
+                "page_content_preserved": True,
+                "unrelated_objects_preserved": True,
+            }
+        return current, id_map, verified
+
+    def _reparent(
+        self,
+        object_id: str,
+        resource_type: str,
+        destination_parent_id: str,
+        expected_name: str,
+        expected_parent_id: str,
+        expected_modified: str | None,
+    ) -> dict[str, Any]:
+        MutationPolicy.current().require_experimental_reparent()
+        all_items = self.hierarchy.resources(include_recycle_bin=True)
+        by_id = {item["id"]: item for item in all_items if item.get("id")}
+        target = by_id.get(object_id)
+        if target is None or target.get("resource_type") != resource_type:
+            raise ValueError(f"No {resource_type} found for ID '{object_id}'.")
+        if target.get("is_in_recycle_bin") is True:
+            raise ValueError(f"Cannot reparent a {resource_type} in the recycle bin.")
+        if display_name(target) != expected_name:
+            field = "title" if resource_type == "page" else "name"
+            raise ValueError(
+                f"Confirmation mismatch: expected {field} '{expected_name}', "
+                f"found '{display_name(target)}'."
+            )
+        actual_parent_id = (
+            target.get("section_id") if resource_type == "page" else target.get("parent_id")
+        )
+        if actual_parent_id != expected_parent_id:
+            field = "section_id" if resource_type == "page" else "parent_id"
+            raise ValueError(
+                f"Confirmation mismatch: expected {field} '{expected_parent_id}', "
+                f"found '{actual_parent_id}'."
+            )
+        if expected_modified is not None and target.get("modified") != expected_modified:
+            raise ValueError(
+                f"Confirmation mismatch: expected modified '{expected_modified}', "
+                f"found '{target.get('modified')}'."
+            )
+        if destination_parent_id == expected_parent_id:
+            raise ValueError("destination parent must differ from the current parent.")
+
+        allowed_destination_types = {
+            "page": {"section"},
+            "section": {"notebook", "section_group"},
+            "section_group": {"notebook", "section_group"},
+        }
+        source = by_id.get(expected_parent_id)
+        if (
+            source is None
+            or source.get("resource_type") not in allowed_destination_types[resource_type]
+            or source.get("is_in_recycle_bin") is True
+        ):
+            raise ValueError("The confirmed current parent is not an active legal parent.")
+        destination = by_id.get(destination_parent_id)
+        if (
+            destination is None
+            or destination.get("resource_type") not in allowed_destination_types[resource_type]
+        ):
+            label = "section" if resource_type == "page" else "notebook or section_group"
+            parameter = (
+                "destination_section_id"
+                if resource_type == "page"
+                else "destination_parent_id"
+            )
+            raise ValueError(f"{parameter} must identify an active {label}.")
+        if destination.get("is_in_recycle_bin") is True:
+            raise ValueError("Cannot reparent below a recycle-bin destination.")
+        notebook_id = self._resource_notebook_id(target)
+        if notebook_id is None or self._resource_notebook_id(destination) != notebook_id:
+            raise ValueError(f"reparent_{resource_type} only supports destinations in the same notebook.")
+
+        active_items = self.hierarchy.without_recycle_bin(all_items)
+        if resource_type == "section_group":
+            descendants = {item["id"] for item in self._container_subtree(active_items, object_id)}
+            if destination_parent_id in descendants:
+                raise ValueError("A section_group cannot be reparented below itself or its descendant.")
+        if resource_type == "page":
+            if target.get("parent_page_id") is not None or any(
+                item.get("resource_type") == "page" and item.get("parent_page_id") == object_id
+                for item in active_items
+            ):
+                raise ValueError(
+                    "The validated Page reparent contract only supports a root Page without child Pages."
+                )
+
+        before = self._capture_reparent_snapshot(notebook_id)
+        before_by_id = {item["id"]: item for item in before["items"]}
+        snap_target = before_by_id.get(object_id)
+        snap_destination = before_by_id.get(destination_parent_id)
+        if snap_target != target or snap_destination != destination:
+            raise RuntimeError("Hierarchy changed after Reparent confirmation; mutation was not attempted.")
+
+        self.call(
+            "update_hierarchy",
+            xml=self.hierarchy.reparent_xml(target, destination, catalog=active_items),
+            schema=XML_SCHEMA_2013,
+        )
+
+        after: dict[str, Any] | None = None
+        last_error: RuntimeError | None = None
+        for attempt in range(8):
+            try:
+                candidate = self._capture_reparent_snapshot(notebook_id)
+                current, id_map, verified = self._validate_reparent_snapshots(
+                    before,
+                    candidate,
+                    target_id=object_id,
+                    destination_parent_id=destination_parent_id,
+                    resource_type=resource_type,
+                )
+                after = candidate
+                break
+            except RuntimeError as exc:
+                last_error = exc
+                if attempt < 7:
+                    time.sleep(0.5)
+        if after is None:
+            raise RuntimeError(
+                f"Reparent returned success, but read-back verification failed: {last_error}"
+            )
+        return {
+            "item": current,
+            "previous_parent_id": expected_parent_id,
+            "destination_parent_id": destination_parent_id,
+            "id_map": id_map,
+            "verified": verified,
+            "warnings": [
+                "Experimental COM behavior verified only for the documented isolated OneNote/Office scenarios."
+            ],
+        }
+
+    def reparent_page(
+        self,
+        page_id: str,
+        destination_section_id: str,
+        expected_title: str,
+        expected_section_id: str,
+        expected_modified: str | None = None,
+    ) -> dict[str, Any]:
+        return self._reparent(
+            page_id,
+            "page",
+            destination_section_id,
+            expected_title,
+            expected_section_id,
+            expected_modified,
+        )
+
     def reparent_section(
         self,
         section_id: str,
@@ -593,61 +916,31 @@ class MutationService(BaseService):
         expected_parent_id: str,
         expected_modified: str | None = None,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_experimental_reparent_section()
-        section = self.confirm_resource(
+        return self._reparent(
             section_id,
             "section",
-            expected_name=expected_name,
-            expected_parent_id=expected_parent_id,
-            expected_modified=expected_modified,
+            destination_parent_id,
+            expected_name,
+            expected_parent_id,
+            expected_modified,
         )
-        destination = self.hierarchy.resource(destination_parent_id)
-        if destination["resource_type"] not in {"notebook", "section_group"}:
-            raise ValueError("destination_parent_id must identify a notebook or section_group.")
-        destination_notebook_id = (
-            destination["id"] if destination["resource_type"] == "notebook" else destination["notebook_id"]
+
+    def reparent_section_group(
+        self,
+        section_group_id: str,
+        destination_parent_id: str,
+        expected_name: str,
+        expected_parent_id: str,
+        expected_modified: str | None = None,
+    ) -> dict[str, Any]:
+        return self._reparent(
+            section_group_id,
+            "section_group",
+            destination_parent_id,
+            expected_name,
+            expected_parent_id,
+            expected_modified,
         )
-        if destination_notebook_id != section["notebook_id"]:
-            raise ValueError("reparent_section only supports destinations in the same notebook.")
-        before_pages = [
-            item
-            for item in self.hierarchy.resources(include_recycle_bin=False)
-            if item["resource_type"] == "page" and item["section_id"] == section_id
-        ]
-        before_pages.sort(key=lambda item: item["order"])
-        before_hashes = {item["id"]: self.pages.digest(self.pages.xml(item["id"], "all")) for item in before_pages}
-        self.call(
-            "update_hierarchy",
-            xml=self.hierarchy.section_reparent_xml(section, destination),
-            schema=XML_SCHEMA_2013,
-        )
-        reparented = self.hierarchy.wait_for(
-            section_id,
-            "section",
-            predicate=lambda value: value["parent_id"] == destination_parent_id,
-        )
-        if reparented is None:
-            raise RuntimeError("Reparent returned success, but the Section parent could not be verified.")
-        after_pages = [
-            item
-            for item in self.hierarchy.resources(include_recycle_bin=False)
-            if item["resource_type"] == "page" and item["section_id"] == section_id
-        ]
-        after_pages.sort(key=lambda item: item["order"])
-        if [item["id"] for item in after_pages] != [item["id"] for item in before_pages]:
-            raise RuntimeError("Section reparented, but Page identity/order verification failed.")
-        after_hashes = {item["id"]: self.pages.digest(self.pages.xml(item["id"], "all")) for item in after_pages}
-        if after_hashes != before_hashes:
-            raise RuntimeError("Section reparented, but Page content verification failed.")
-        return {
-            "item": reparented,
-            "verified": {
-                "section_id_preserved": True,
-                "page_ids_and_order_preserved": True,
-                "page_content_preserved": True,
-            },
-            "warnings": ["Experimental COM behavior: keep this tool disabled until the documented isolated test passes."],
-        }
 
     def append_to_page(
         self,
@@ -912,11 +1205,4 @@ class MutationService(BaseService):
         policy.require_raw_xml()
         policy.require_write()
         self.call("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        return {"updated": True}
-
-    def update_hierarchy_xml(self, xml: str) -> dict[str, Any]:
-        policy = MutationPolicy.current()
-        policy.require_raw_xml()
-        policy.require_write()
-        self.call("update_hierarchy", xml=xml, schema=XML_SCHEMA_2013)
         return {"updated": True}

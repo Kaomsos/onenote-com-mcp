@@ -25,7 +25,7 @@
 
 ## 1. 结论先行
 
-2026-08-04 审计提出的核心方向——“对象模型优先，COM adapter 居后”——已经成为当前架构，而不再只是重构建议。默认 MCP profile 现有 52 个工具，另有 7 个只在显式启用时注册的 advanced 工具。Notebook、SectionGroup、Section、Page 和 PageContentObject 已有独立 typed model；业务规则从 `server.py` 移入 services；默认 mutation 使用精确 ID、confirmation fields、独立 policy 和操作后回读。
+2026-08-04 审计提出的核心方向——“对象模型优先，COM adapter 居后”——已经成为当前架构，而不再只是重构建议。默认 MCP profile 现有 54 个工具，另有 6 个只在显式启用时注册的 advanced 工具。Notebook、SectionGroup、Section、Page 和 PageContentObject 已有独立 typed model；业务规则从 `server.py` 移入 services；默认 mutation 使用精确 ID、confirmation fields、独立 policy 和操作后回读。
 
 原审计列出的主要产品边界也大多已经落实：
 
@@ -33,11 +33,11 @@
 - Page 元数据、XML、文本、内容对象和二进制已拆分读取；
 - SectionGroup/Section Rename、Page Reorder 和三类 typed Delete 已实现；Section 同父级 Reorder 已有用户确认的真实 UI 证据；SectionGroup Reorder 因后端只支持按名称固定升序而明确拒绝；
 - Search 要求显式 scope，local scan 具有候选 Page、单页字符、总字符和总耗时硬预算，且不会静默切换 backend；
-- Writes、Deletes、Permanent Deletes、Section Reparent、Copy、Page Move 和 raw XML 分别 fail closed；
+- Writes、Deletes、Permanent Deletes、统一 Reparent、Copy、Page Move 和 raw XML 分别 fail closed；
 - raw XML 与 legacy generic destructive 工具不进入默认 profile；
 - 四层 Copy 与 Page Move 已有实验实现、plan digest、预算和部分失败语义；Move 的定义天然包含 Copy、验证与源处理，不再添加额外的操作名前缀。
 
-项目当前的主要差距已从“缺少稳定对象模型”转移到“实验能力的真实证据尚未闭环”：Section、SectionGroup、Notebook Copy 和最终 Page Move 的 Copy 场景仍需用户分别完成统一 fixture 的真实复跑；附件、插入文件、墨迹、媒体和 MeetingInfo 仍不在已验证保真集合。Page、Section、SectionGroup 三类 Reparent 已由用户在真实 OneNote 中通过；这里的 SectionGroup 缺口仅指 Copy，不包括 Reparent 或 Reorder。SectionGroup Reorder 已依据后端固定名称升序结束评估，不再等待正向复跑。COM bridge 也仍然每次调用启动 PowerShell 并创建 `OneNote.Application`，尚未用正式基准证明是否值得引入长驻 broker。
+项目当前的主要差距已从“缺少稳定对象模型”转移到“其余实验能力的真实证据尚未闭环”：Section、SectionGroup、Notebook Copy 和最终 Page Move 的 Copy 场景仍需用户分别完成统一 fixture 的真实复跑；三类迁移后的 typed Reparent 场景已由用户确认在当前环境全部通过；附件、插入文件、墨迹、媒体和 MeetingInfo 仍不在已验证保真集合。SectionGroup Reorder 已依据后端固定名称升序结束评估，不再等待正向复跑。COM bridge 也仍然每次调用启动 PowerShell 并创建 `OneNote.Application`，尚未用正式基准证明是否值得引入长驻 broker。
 
 ## 2. 复审范围与证据等级
 
@@ -50,7 +50,7 @@
 | 用户确认的真实证据 | 指定 OneNote/Office 环境中的真实 COM 副作用或 UI 结果 | TODO 中记录的 run、manual-validation evidence、Lesson |
 | 尚未确认           | 只有实现、Mock、dry-run 或工程推断                    | 进行中/待办 TODO 和未进入保真 allowlist 的类型        |
 
-当前记录的完整纯自动化测试结果为 `293 passed`。该结果证明离线合同通过，不证明真实 OneNote mutation 已普遍通过。复审过程没有由 Agent 运行 `tests/manual_validation/run.py <scenario>` 或 `run.py all`；Section/SectionGroup Reorder 以及 Page、Section、SectionGroup Reparent 的真实结果来自用户本人显式启动的隔离场景。
+当前记录的完整纯自动化测试结果为 `305 passed`。该结果证明离线合同通过，不证明真实 OneNote mutation 已普遍通过。复审过程没有由 Agent 运行真实 `tests/manual_validation/run.py <scenario>` 或 `run.py all`；仅执行了无副作用 dry-run。Section/SectionGroup Reorder 以及三类 Reparent 的真实结果来自用户本人显式启动的隔离场景；用户已确认迁移后的三个 typed Reparent 场景在当前环境全部通过。
 
 ### 2.2 历史基线问题的完成度
 
@@ -62,10 +62,10 @@
 | 无独立 Writes/Deletes/Permanent Deletes/raw XML 开关           | 风险能力使用相互独立、默认关闭的 policy                                                                                                                                               | 已解决                                        |
 | Notebook 被 generic Delete 工具错误承诺                        | typed Delete 不提供 Notebook；advanced generic Delete 也显式拒绝 Notebook                                                                                                             | 已解决                                        |
 | Search 只限制命中数，不限制本地扫描成本                        | 已增加显式 scope、候选数、单页字符、总字符和时间预算                                                                                                                                  | 已解决；仍不是字节预算                        |
-| raw Page/Hierarchy XML 默认暴露                                | 7 个 advanced 工具只在 raw XML profile 显式启用时注册，service 仍二次检查 policy                                                                                                      | 已解决                                        |
+| raw Page/Hierarchy XML 默认暴露                                | raw Page XML 只在 6-tool advanced profile 显式启用；raw hierarchy MCP 工具已从所有生产 profile 移除，内部 bridge operation 仅供受约束 service 使用                                      | 已解决                                        |
 | `replace_page_body` 容易被理解为原子 Replace                 | 当前合同明确为非原子，失败返回`partial_failure/completed_steps`                                                                                                                     | 已解决；尚无独立执行计划                      |
 | SectionGroup 缺 typed List/Get，四层缺 Query/Get Tree          | 对称 List/Get、Query、Path、Tree 已实现                                                                                                                                               | 已解决                                        |
-| Rename、Reorder、Reparent、Move 和 Copy 缺稳定能力边界         | Rename 已 typed；Page/Section Reorder 有明确契约，SectionGroup Reorder 因后端固定名称升序而拒绝；三类同 Notebook Reparent 已完成真实验收；四层 Copy 与 Page Move 已实验实现并独立门控 | 能力边界已明确；实验 Copy/Move 验证未全部完成 |
+| Rename、Reorder、Reparent、Move 和 Copy 缺稳定能力边界         | Rename 已 typed；Page/Section Reorder 有明确契约，SectionGroup Reorder 因后端固定名称升序而拒绝；三类同 Notebook Reparent 已 typed、独立门控并由用户确认当前环境真实通过；四层 Copy 与 Page Move 已实验实现 | 能力边界已明确；Copy/Move 验证仍未全部完成 |
 
 ## 3. 当前架构与对象模型
 
@@ -150,7 +150,7 @@ Section → Page → PageContentObject
 | `X`  | 当前明确不支持或不承诺                                                                 |
 | `—` | 对该对象不适用                                                                         |
 
-关系术语统一见 [§3.3 容器父级与 Page 缩进关系](#33-容器父级与-page-缩进关系)；历史基线问题与当前完成度见 [§2.2](#22-历史基线问题的完成度)。本矩阵只评价默认 profile 中的 typed 产品契约，不列入 `update_hierarchy_xml`、`update_page_xml` 等 advanced/低层工具。矩阵以一行一个操作为原则；“工具英文名”统一使用真实 typed MCP 工具名。通配符 `*` 只表示 Notebook、SectionGroup、Section、Page 对象层级及工具名所需的单复数形式；不同动作名不得由 `*` 代替，应在同一单元格中逐项列出。
+关系术语统一见 [§3.3 容器父级与 Page 缩进关系](#33-容器父级与-page-缩进关系)；历史基线问题与当前完成度见 [§2.2](#22-历史基线问题的完成度)。本矩阵只评价默认 profile 中的 typed 产品契约，不列入 `update_page_xml` 等 advanced/低层工具；`update_hierarchy_xml` 已不属于任何生产 profile。矩阵以一行一个操作为原则；“工具英文名”统一使用真实 typed MCP 工具名。通配符 `*` 只表示 Notebook、SectionGroup、Section、Page 对象层级及工具名所需的单复数形式；不同动作名不得由 `*` 代替，应在同一单元格中逐项列出。
 
 | 类别  | 操作               | 工具英文名                                                                           | Notebook                   | SectionGroup            | Section              | Page                             | 备注                                                                                              |
 | ----- | ------------------ | ------------------------------------------------------------------------------------ | -------------------------- | ----------------------- | -------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
@@ -170,7 +170,7 @@ Section → Page → PageContentObject
 | `U` | 缩进/取消缩进      | `reorder_page`                                                                     | `—`                     | `—`                  | `—`               | `T`                            | 通过`page_level` 实现。                                                                         |
 | `D` | 删除               | `delete_*` / `delete_page_content`                                               | `X`：Close 不等于 Delete | `T`                   | `T`                | `T`：另含内容对象删除          | 此处`delete_*` 只展开为 hierarchy 对象删除工具。                                                |
 | `O` | 复制               | `copy_*`                                                                           | `E`                      | `E`                   | `E`                | `E`：复制完整缩进子树          | 可跨允许的目标容器，始终创建新 ID。                                                               |
-| `O` | 换父级（Reparent） | `reparent_section`                                                                 | `—`                     | `X`：无 typed 工具    | `E`：仅同 Notebook | `X`：无 typed 工具             | typed 产品契约当前只交付 Section；Page/SectionGroup 的已验证 advanced 探针见下一节，不计入矩阵。  |
+| `O` | 换父级（Reparent） | `reparent_page` / `reparent_section` / `reparent_section_group`                  | `—`                     | `E`：仅同 Notebook    | `E`：仅同 Notebook | `E`：仅同 Notebook、可重映射 ID | 三类工具共用 Reparent 实验门；Page 返回 Page/内容对象 `id_map`。                                   |
 | `O` | 移动（Move）       | `move_page`                                                                        | `—`                     | `—`                  | `—`               | `E`：新 ID，验证后非永久删除源 | Move 天然采用重建语义：Copy、验证目标，再处理源对象。                                             |
 | `O` | 导出               | `publish_object`                                                                   | `T`                      | `X`                   | `T`                | `T`                            | —                                                                                                |
 | `O` | 获取超链接         | `get_hyperlink`                                                                    | `T`                      | `T`                   | `T`                | `T`：可定位内容对象            | —                                                                                                |
@@ -182,9 +182,9 @@ Section → Page → PageContentObject
 
 ## 5. Advanced/低层操作
 
-Advanced profile 用于开发、诊断和受控能力探测，不属于默认 typed 对象模型，也不参与对象—操作矩阵评级。Page 与 SectionGroup Reparent 虽已由用户在隔离 Notebook 中验证底层 COM 路线，但当前仍通过受控 `update_hierarchy_xml` 实现，没有独立 typed 工具，因此矩阵保持 `X：无 typed 工具`。
+Advanced profile 用于开发、诊断和受控能力探测，不属于默认 typed 对象模型，也不参与对象—操作矩阵评级。Page 与 SectionGroup Reparent 的既有底层证据已封装到 typed 工具和迁移后的具名场景；advanced profile 不再包含 raw hierarchy mutation。
 
-7 个 advanced 工具的注册条件、逐工具用途、policy 门限以及 Reparent 探针与产品契约的边界，统一由 [Advanced/低层操作](../design/advanced_operations.md) 定义；本评估不再复制该设计合同。
+6 个 advanced 工具的注册条件、逐工具用途、policy 门限以及 raw hierarchy 移除边界，统一由 [Advanced/低层操作](../design/advanced_operations.md) 定义；本评估不再复制该设计合同。
 
 ## 6. 已实现的安全与动态契约
 
@@ -200,7 +200,7 @@ Advanced profile 用于开发、诊断和受控能力探测，不属于默认 ty
 - Deletes；
 - Permanent Deletes；
 - 实验 Section Reorder；
-- 实验 Section Reparent；
+- 实验 Page/Section/SectionGroup Reparent；
 - 实验 Copy；
 - Page Move；
 - raw XML/advanced profile。
@@ -257,8 +257,8 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | Section Reorder                                                         | 已覆盖两种合法父级、写后顺序与 Page 内容不变量                                                                                              | 用户确认真实 OneNote UI 排序成功；早期 Runner hash 假阳性已定位并修复                                           | 保留 typed 实验门控               |
 | SectionGroup Reorder                                                    | 已覆盖 fail-closed 写后回读；诊断场景保留但显式排除于`all`                                                                                | Notebook 直属 Group 的`A,B,C → A,C,B` 请求中，UpdateHierarchy 返回成功但实际仍为固定名称升序；嵌套操作未执行 | 功能受限、验证失败；明确拒绝      |
 | Section Reparent                                                        | 已覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup 三种同 Notebook 父级变化，含编号 Page、逐步回读和逆序恢复 | 用户真实运行确认三条路线成功                                                                                    | 保留 typed 实验门控               |
-| Page Reparent                                                           | 已覆盖编号源/目标 Section、同页 Rich Text/Table/List/Tag/Image、Page ID 一对一重映射、Tag-index 归一化富内容与逻辑恢复合同                  | 用户真实运行确认换父级成功，富内容保持且 ID 重映射符合合同                                                      | 当前环境验证成功；仍不进入`all` |
-| SectionGroup Reparent                                                   | 已覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup 三种路线，含编号后代、逐步回读和逆序恢复                  | 用户真实运行确认三条路线均保持 Group/后代 ID、关系及 Page 内容                                                  | 当前环境验证成功；仍不进入`all` |
+| Page Reparent                                                           | typed service 与 runner 已覆盖精确 confirmation、同 Notebook、Page/内容对象 ID 一对一重映射、Tag-index 归一化富内容、无关对象和逻辑恢复 | 用户确认迁移后的 `reparent_page` 场景在当前环境真实通过                                                       | typed 实验工具；仍不进入`all`   |
+| SectionGroup Reparent                                                   | typed service 与 runner 已覆盖防循环、三种父级路线、后代 ID/拓扑、Page 内容、无关对象和逆序恢复                                         | 用户确认迁移后的 `reparent_section_group` 场景在当前环境真实通过                                              | typed 实验工具；仍不进入`all`   |
 | 统一双页 fixture 的 Page/Section/SectionGroup/Notebook Copy 与最终 Move | 已覆盖 Runner 与生产合同                                                                                                                    | 五个场景尚未全部分别完成最终复跑                                                                                | P2 仍进行中                       |
 | FileAttachment/InsertedFile/InkDrawing/MediaFile/MeetingInfo            | 有识别和 fail-closed 分支                                                                                                                   | 尚无逐类型完整保真结论                                                                                          | 保持 unverified，阻止 Move 删除源 |
 
@@ -278,15 +278,16 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | [006：Typed Section 与 SectionGroup Reorder](../todo/006_typed_section_and_section_group_reorder.md)         | 已完成 | Section 真实排序已确认；SectionGroup 因后端固定名称升序而明确拒绝   |
 | [007：跨版本兼容性证据与环境元数据](../todo/007_cross_version_compatibility_evidence.md)                     | 待办   | 后续补充非阻塞的跨版本证据，不重开 SectionGroup Reorder 能力结论    |
 | [008：全部已打开 Notebook 的全局 Page 搜索](../todo/008_all_open_notebooks_search_scope.md)                  | 待办   | 扩展显式 scope 下的跨 Notebook 搜索，同时保持全局预算               |
+| [009：Typed Reparent 工具与隐藏 Raw Hierarchy XML](../todo/009_typed_reparent_tools_and_hide_raw_hierarchy_xml.md) | 已完成 | typed 工具、生产隐藏和纯合同已交付；用户确认三个迁移场景全部通过    |
 
 ### 8.2 优先事项
 
 1. 由用户按 TODO 002 顺序复跑 Page、Section、SectionGroup、Notebook Copy 和最终 Move；记录 OneNote/Office 版本与 evidence，不由 Agent 代为执行。
 2. 实施 TODO 004 的交互式、非 `all` 场景，为未验证内容分别建立机器 comparator 与用户 UI verdict；不能用运行时输入动态扩展生产 allowlist。
-3. 在真实证据闭环前继续保持 Section Reparent、Copy 和 Page Move 的独立实验开关；SectionGroup Reorder 的遗留开关保持关闭。
+3. 在迁移后真实证据闭环前继续保持统一 Reparent、Copy 和 Page Move 的独立实验开关；SectionGroup Reorder 的遗留开关保持关闭。
 4. 若 Page body replacement 的审查需求提高，再为 Replace 设计独立 plan/execute，而不是把当前非原子工具描述为事务。
 5. 只有在收集 bridge 启动、连续读取、Search 和批量 mutation 的正式基准后，才评估长驻单线程 COM broker；必须同时验证 COM apartment、超时、重启和 OneNote busy/HRESULT 恢复语义。
-6. Notebook Rename/Delete、SectionGroup Export 仍不承诺。Page Reparent 已观察到会重映射 Page/内容对象 ID；它属于同 Notebook 层级换父级，不应描述为保留 ID，也不应把 raw XML 探针直接暴露为稳定 typed 工具。
+6. Notebook Rename/Delete、SectionGroup Export 仍不承诺。Page Reparent 已观察到会重映射 Page/内容对象 ID；它属于同 Notebook 层级换父级，不应描述为保留 ID。raw hierarchy XML 已从生产工具面移除。
 
 ## 9. 最终判断
 

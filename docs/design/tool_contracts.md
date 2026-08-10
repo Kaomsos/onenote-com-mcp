@@ -4,7 +4,7 @@
 > 更新日期：2026-08-10
 > ID 参数均指 OneNote COM 对象 ID，除 `resolve_identifier` 和兼容只读 `list_hierarchy.start_identifier` 外不接受名称或路径。
 
-默认 profile 共 52 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。Section Reorder、Section Reparent 与 P2 Copy/Move 由默认关闭的独立策略保护；SectionGroup Reorder 不属于受支持能力，任何请求都必须 fail closed。只有下文列入 validated allowlist 的 Page 内容类型具有真实 OneNote 隔离证据，实验工具在对应真实场景完成前不升级稳定性承诺。
+默认 profile 共 54 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。Section Reorder、三类 Reparent 与 P2 Copy/Move 由默认关闭的独立策略保护；SectionGroup Reorder 不属于受支持能力，任何请求都必须 fail closed。只有下文列入 validated allowlist 的 Page 内容类型具有真实 OneNote 隔离证据，实验工具在对应真实场景完成前不升级稳定性承诺。
 
 ## 1. 通用返回 envelope
 
@@ -95,13 +95,15 @@
 | `reorder_page` | `page_id`, `expected_title`, `expected_section_id`, `after_page_id=""`, `page_level=0`, `expected_modified=null` | `item`, `pages`；验证位置与缩进。空 `after_page_id` 表示置顶，`page_level=0` 表示保留。 |
 | `reorder_section` | `section_id`, `expected_name`, `expected_parent_id`, `after_section_id=""`, `expected_modified=null` | `item`, `siblings`, `after_id`, `verified`；只在同一 Notebook/SectionGroup 父级的 Section 序列内移动。空 predecessor 表示置于同类型序列首位。 |
 | `reorder_section_group` | 不支持 | 必须拒绝，不能尝试通过 sibling XML、Rename、Copy/Delete 或 raw XML 模拟。OneNote 后端只提供按名称固定升序的 SectionGroup 集合，没有可验证的可变 sibling order。 |
-| `reparent_section` | `section_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `expected_modified=null` | `item`, `verified`；验证 Section ID、Page ID/顺序及忽略层级/时钟属性后的 Page 内容摘要。 |
+| `reparent_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `expected_modified=null` | `item`, `previous_parent_id`, `destination_parent_id`, `id_map`, `verified`, `warnings`；允许 Page/可观测内容对象 ID 一对一重映射，验证根 Page 拓扑、富内容和无关对象。 |
+| `reparent_section` | `section_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `expected_modified=null` | 同一响应骨架；验证 Section ID、Page ID/顺序、Page 内容和无关对象。 |
+| `reparent_section_group` | `section_group_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `expected_modified=null` | 同一响应骨架；验证 Group/后代 ID、父子拓扑、Page 内容和无关对象。 |
 
 Rename 与 Page Reorder 要求写开关。Section Reorder 还要求 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION=true`；它在 mutation 前精确确认 ID/名称/父级/可选 modified，使用完整直属容器 sibling XML，并在写后验证父级、sibling ID 集合以及所有受影响 Page 的顺序和内容摘要。Page 内容摘要忽略 OneNote 所有层级节点上的时钟、作者、选择与视图元数据，但保留内容对象 ID、格式、文本和二进制内容。验证读取受现有 Copy hierarchy/Page/XML budgets 限制。
 
 `reorder_section_group` 的早期实验实现不构成产品能力。2026-08-10 的用户触发隔离验证中，Notebook 直属 Group 的 `A,B,C → A,C,B` 请求通过 `UpdateHierarchy(xs2013)` 返回成功，但立即按 ID 回读仍为后端固定的名称升序。该结果排除了 confirmation、父级选择、fixture 和 Runner 后置判断问题；嵌套父级操作因根级失败而没有执行。基于“后端没有 SectionGroup 可变顺序原语”这一能力边界，产品契约对 Notebook 与 SectionGroup 两种父级统一拒绝 reorder，而不是继续用更多 mutation 猜测后端行为。
 
-Reparent 统一表示同一 Notebook 内的容器换父级，不包含 Copy/Delete，也不能跨 Notebook。当前默认 typed profile 只提供 `reparent_section`，并要求 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION=true`；人工验证入口为 `run.py reparent-section`。Page 与 SectionGroup 只有经过人工验证的 advanced 探针，没有 `reparent_page` 或 `reparent_section_group` typed 工具，边界见 [Advanced/低层操作](advanced_operations.md#3-reparent-探针与产品能力边界)。Microsoft 对 OneNote COM [`UpdateHierarchy`](https://learn.microsoft.com/en-us/office/client-developer/onenote/application-interface-onenote#updatehierarchy-method) 的公开说明只承诺在一个 Notebook 内改变 Section 归属，因此跨 Notebook 目标在调用 COM 前即被拒绝。跨 Notebook 转移若未来支持，应作为创建新 ID、验证目标并非永久删除源的 Move 独立设计，不能静默降级到 Reparent。
+Reparent 统一表示同一 Notebook 内的容器换父级，不包含 Copy/Delete，也不能跨 Notebook。三个 typed 工具默认注册，但执行同时要求 Writes 与 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT=true`。service 在任何 COM mutation 前完成精确 ID/类型、confirmation、活动对象、同 Notebook 和目标类型检查；SectionGroup 额外拒绝自身/后代目标。Page 的已验证合同只接受没有父/子缩进关系的根 Page，并允许 OneNote 原生操作把 Page 及内容对象 ID 一对一重映射；调用方必须从 `item.id`/`id_map` 继续。所有验证均受现有 hierarchy/Page/XML budget 限制。底层 bridge `update_hierarchy` 只由这些受约束 service 及 Reorder 内部编排，生产 MCP 不存在接受外部任意 hierarchy XML 的工具。跨 Notebook 转移若未来支持，应作为创建新 ID、验证目标并非永久删除源的 Move 独立设计，不能静默降级到 Reparent。
 
 ## 6. Delete
 
@@ -171,12 +173,12 @@ Move 对每个源 Page 调用 `DeleteHierarchy(permanently=false)`。通用删�
 | `LOCAL_ONENOTE_ENABLE_WRITES` | `false` | Create、Update、Rename、Reorder、Close。 |
 | `LOCAL_ONENOTE_ENABLE_DELETES` | `false` | 层级和 Page 内容删除。 |
 | `LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES` | `false` | 永久删除，不能替代 Delete 总开关。 |
-| `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION` | `false` | 同 Notebook Section Reparent，不能替代写开关。 |
+| `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT` | `false` | 同 Notebook Page/Section/SectionGroup Reparent，不能替代写开关。 |
 | `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION` | `false` | 同父级 Section Reorder，不能替代写开关。 |
 | `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP` | `false` | 遗留实验开关；必须保持 `false`，不授予 SectionGroup reorder 能力，等待实现面移除。 |
 | `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY` | `false` | 四层 Copy；不能替代写开关。 |
 | `LOCAL_ONENOTE_ENABLE_MOVE_PAGE` | `false` | Page Move；还要求 Writes、Deletes 和 Experimental Copy。Move 天然采用重建语义。 |
-| `LOCAL_ONENOTE_ENABLE_RAW_XML` | `false` | 启动时注册开发 profile 工具。 |
+| `LOCAL_ONENOTE_ENABLE_RAW_XML` | `false` | 启动时注册剩余 6 个开发 profile 工具；不能开放 raw hierarchy mutation。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_PAGES` | `200` | 本地扫描候选 Page 上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS` | `100000` | 单 Page 扫描字符上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS` | `2000000` | 单次扫描总字符上限。 |
@@ -190,4 +192,4 @@ Move 对每个源 Page 调用 `DeleteHierarchy(permanently=false)`。通用删�
 | `LOCAL_ONENOTE_MAX_COPY_PLAN_SECONDS` | `300` | 只读计划阶段秒数上限。 |
 | `LOCAL_ONENOTE_MAX_COPY_EXECUTE_SECONDS` | `1800` | 执行阶段秒数上限；超限按部分失败报告。 |
 
-默认不注册 `update_page_xml/update_hierarchy_xml/delete_hierarchy/open_hierarchy/find_meta/merge_sections/set_filing_location`。开发 profile 即使注册 raw mutation，也仍需对应 write/delete 开关；`force` 不进入默认 typed 工具。逐工具用途和安全边界见 [Advanced/低层操作](advanced_operations.md)。
+默认不注册 `update_page_xml/delete_hierarchy/open_hierarchy/find_meta/merge_sections/set_filing_location`。`update_hierarchy_xml` 已从所有生产 profile 移除，设置 Raw XML 开关也不会枚举或恢复该工具；内部 bridge operation `update_hierarchy` 保留。开发 profile 即使注册剩余 raw mutation，也仍需对应 write/delete 开关；`force` 不进入默认 typed 工具。逐工具用途和安全边界见 [Advanced/低层操作](advanced_operations.md)。

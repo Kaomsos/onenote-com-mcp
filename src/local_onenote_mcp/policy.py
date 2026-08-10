@@ -26,7 +26,7 @@ class MutationPolicy:
     writes_enabled: bool
     deletes_enabled: bool
     permanent_deletes_enabled: bool
-    experimental_reparent_section_enabled: bool
+    experimental_reparent_enabled: bool
     experimental_reorder_section_enabled: bool
     experimental_reorder_section_group_enabled: bool
     experimental_copy_enabled: bool
@@ -39,8 +39,8 @@ class MutationPolicy:
             writes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_WRITES"),
             deletes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_DELETES"),
             permanent_deletes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES"),
-            experimental_reparent_section_enabled=env_bool(
-                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION"
+            experimental_reparent_enabled=env_bool(
+                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT"
             ),
             experimental_reorder_section_enabled=env_bool(
                 "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"
@@ -65,12 +65,12 @@ class MutationPolicy:
                 "Permanent deletes are disabled. Set LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES=true in addition to deletes."
             )
 
-    def require_experimental_reparent_section(self) -> None:
+    def require_experimental_reparent(self) -> None:
         self.require_write()
-        if not self.experimental_reparent_section_enabled:
+        if not self.experimental_reparent_enabled:
             raise PermissionError(
-                "Section reparent is experimental. Validate it in an isolated notebook, then set "
-                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION=true."
+                "Reparent is experimental. Validate the typed operation in an isolated notebook, "
+                "then set LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT=true."
             )
 
     def require_experimental_reorder(self, resource_type: str) -> None:

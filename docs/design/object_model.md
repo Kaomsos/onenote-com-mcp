@@ -119,7 +119,7 @@ Page 不公开 `name`，统一使用 `title`：
 | Section 同父级 Reorder | P1 typed 实验实现；由独立开关 fail closed，已有用户确认的真实 UI 排序证据 |
 | SectionGroup 同父级 Reorder | 明确不支持并拒绝；后端仅提供按名称固定升序，不提供可变 sibling order |
 | Section 同 Notebook Move | P1 实验实现；保持 Section ID；真实 COM 隔离验证前由独立开关禁用 |
-| Reparent | 只表示同一 Notebook 内的容器换父级；Page、Section、SectionGroup 三类场景均已通过用户验收。Section 使用 typed `reparent_section`；Page/SectionGroup 当前仍是 [advanced raw-hierarchy 探针](advanced_operations.md#3-reparent-探针与产品能力边界)。 |
+| Reparent | 只表示同一 Notebook 内的容器换父级；默认 profile 注册 typed `reparent_page`、`reparent_section`、`reparent_section_group`，共用 Writes + Reparent 实验门。Page 显式返回原生 ID 映射；Section/SectionGroup 验证自身、后代拓扑和 Page 内容。生产 MCP 不暴露 raw hierarchy XML。 |
 | Section 跨 Notebook 转移 | 不属于 Reparent；若未来交付，应作为 Move 新建 Copy→验证→非永久删除源合同并产生新 ID。 |
 | 四层 Copy、Page Move | P2 实验实现；Move 天然采用 Copy→验证→非永久删除源的重建语义，仅在保真验证通过后处理源对象。 |
 | Notebook/Section/Page Export、导航、Notebook Sync/Close | P1 typed 契约已实现 |

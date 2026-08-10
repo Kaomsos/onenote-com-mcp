@@ -181,6 +181,46 @@ async def reparent_section(
     )
 
 
+async def reparent_page(
+    page_id: str,
+    destination_section_id: str,
+    expected_title: str,
+    expected_section_id: str,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Experimentally reparent a Page within one Notebook."""
+
+    return invoke(
+        lambda: get_services().mutations.reparent_page(
+            page_id,
+            destination_section_id,
+            expected_title,
+            expected_section_id,
+            expected_modified,
+        )
+    )
+
+
+async def reparent_section_group(
+    section_group_id: str,
+    destination_parent_id: str,
+    expected_name: str,
+    expected_parent_id: str,
+    expected_modified: str | None = None,
+) -> dict[str, Any]:
+    """Experimentally reparent a SectionGroup within one Notebook."""
+
+    return invoke(
+        lambda: get_services().mutations.reparent_section_group(
+            section_group_id,
+            destination_parent_id,
+            expected_name,
+            expected_parent_id,
+            expected_modified,
+        )
+    )
+
+
 async def append_to_page(
     page_id: str,
     content: str,
@@ -346,7 +386,9 @@ TOOLS = [
     reorder_page,
     reorder_section,
     reorder_section_group,
+    reparent_page,
     reparent_section,
+    reparent_section_group,
     append_to_page,
     add_image_to_page,
     replace_page_body,

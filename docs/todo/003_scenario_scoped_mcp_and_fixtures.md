@@ -57,8 +57,8 @@ wrapper 直接创建全新源 Notebook
 | `rename` | 一个可重命名 Group 或 Section |
 | `reorder-page` | Description 说明分区，以及带 `01/02/03` 固定编号的 Parent/Child/Sibling Page 树 |
 | `reparent-section` | Description 说明分区；三个带编号 Page 的目标 Section，分别覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup，并支持逆序恢复或保留现场 |
-| `reparent-page` | Description 说明页；编号源/目标 Section、目标 Page 和无关锚点；受控 raw XML 探针，默认恢复或保留现场 |
-| `reparent-section-group` | Description 说明页；三组编号 Group/Section/Page，覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；受控 raw XML 探针，默认逆序恢复或保留现场 |
+| `reparent-page` | Description 说明页；编号源/目标 Section、目标 Page 和无关锚点；typed `reparent_page`，默认恢复或保留现场 |
+| `reparent-section-group` | Description 说明页；三组编号 Group/Section/Page，覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；typed `reparent_section_group`，默认逆序恢复或保留现场 |
 | `delete` | Delete-Sandbox 和一个 manifest-allowlisted disposable target |
 | `copy-page` | 富内容源 Page 和目标 Section |
 | `copy-section` | 源 Section 和目标 Group |

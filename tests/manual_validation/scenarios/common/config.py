@@ -58,13 +58,13 @@ REPARENT_PAGE_TOOLS = READ_TOOLS | {
     "append_to_page",
     "create_section",
     "create_page",
-    "update_hierarchy_xml",
+    "reparent_page",
 }
 REPARENT_SECTION_GROUP_TOOLS = READ_TOOLS | {
     "create_section_group",
     "create_section",
     "create_page",
-    "update_hierarchy_xml",
+    "reparent_section_group",
 }
 COPY_CLEANUP_TOOLS = {"delete_section_group", "delete_section", "delete_page"}
 DELETE_TOOLS = READ_TOOLS | COPY_CLEANUP_TOOLS

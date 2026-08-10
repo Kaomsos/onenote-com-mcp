@@ -34,12 +34,6 @@ async def update_page_xml(xml: str) -> dict[str, Any]:
     return invoke(lambda: get_services().mutations.update_page_xml(xml))
 
 
-async def update_hierarchy_xml(xml: str) -> dict[str, Any]:
-    """Send raw hierarchy XML when raw XML and write policies are enabled."""
-
-    return invoke(lambda: get_services().mutations.update_hierarchy_xml(xml))
-
-
 async def merge_sections(
     source_section_identifier: str, destination_section_identifier: str
 ) -> dict[str, Any]:
@@ -71,7 +65,6 @@ TOOLS = [
     open_hierarchy,
     delete_hierarchy,
     update_page_xml,
-    update_hierarchy_xml,
     merge_sections,
     set_filing_location,
 ]

@@ -123,7 +123,7 @@ classDiagram
         +current()$ MutationPolicy
         +require_write()
         +require_delete(permanently)
-        +require_experimental_reparent_section()
+        +require_experimental_reparent()
         +require_experimental_copy()
         +require_move_page()
         +require_raw_xml()
@@ -293,12 +293,12 @@ classDiagram
 | `tools.system` | 3 | hierarchy、operations |
 | `tools.hierarchy` | 11 | hierarchy |
 | `tools.pages` | 6 | pages、search |
-| `tools.mutations` | 16 | mutations |
+| `tools.mutations` | 20 | mutations |
 | `tools.copying` | 7 | copying |
 | `tools.operations` | 7 | operations |
-| 合计 | 50 | — |
+| 合计 | 54 | — |
 
-`tools.advanced` 另有 7 个开发 profile 工具，仅当进程启动时 `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 才注册。注册并不代表取得写权限；service 仍会再次执行 write/delete/raw policy。逐工具合同见 [Advanced/低层操作](advanced_operations.md)。
+`tools.advanced` 另有 6 个开发 profile 工具，仅当进程启动时 `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 才注册。注册并不代表取得写权限；service 仍会再次执行 write/delete/raw policy。公开 `update_hierarchy_xml` 已从所有生产 profile 移除，内部 bridge `update_hierarchy` 只由受约束 service 编排。逐工具合同见 [Advanced/低层操作](advanced_operations.md)。
 
 响应映射：
 
@@ -384,4 +384,4 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 2. `tools.context` 是进程级 service 绑定，适合当前单 server 实例；多租户或多 bridge 配置需要改为显式 MCP context 注入。
 3. PowerShell/COM 每次调用的延迟尚无正式基准；长驻 broker 必须先验证 COM apartment、超时和恢复语义。
 4. 字典是当前 MCP 边界格式；新增 DTO 时必须复用 `domain/` 的字段契约，不能建立第二套对象模型。
-5. Section Reparent 已通过用户隔离验收，仍由独立实验开关保护且只允许同一 Notebook。
+5. Page、Section、SectionGroup Reparent 均为默认注册的 typed 实验工具，共用独立 Reparent 开关且只允许同一 Notebook；用户已确认三个迁移后的 typed 真实场景在当前环境全部通过，跨版本证据仍需单独积累。

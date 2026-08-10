@@ -316,8 +316,29 @@ class HierarchyService(BaseService):
             current = ET.SubElement(current, f"{{{ONE_NS}}}{tags[candidate['resource_type']]}", attrs)
         return ET.tostring(root, encoding="unicode")
 
-    def section_reparent_xml(self, section: dict[str, Any], destination: dict[str, Any]) -> str:
-        all_items = self.resources(include_recycle_bin=True)
+    def reparent_xml(
+        self,
+        target: dict[str, Any],
+        destination: dict[str, Any],
+        *,
+        catalog: list[dict[str, Any]],
+    ) -> str:
+        """Build an ancestor-complete typed reparent update for one active target."""
+
+        target_type = target.get("resource_type")
+        allowed_destinations = {
+            "page": {"section"},
+            "section": {"notebook", "section_group"},
+            "section_group": {"notebook", "section_group"},
+        }
+        if target_type not in allowed_destinations:
+            raise ValueError("Reparent target must be a page, section, or section_group.")
+        if destination.get("resource_type") not in allowed_destinations[target_type]:
+            raise ValueError(
+                f"Invalid destination type for {target_type} reparent: "
+                f"{destination.get('resource_type')}."
+            )
+        all_items = catalog
         by_id = {candidate["id"]: candidate for candidate in all_items}
         chain = [destination]
         parent_id = destination.get("parent_id")
@@ -330,14 +351,30 @@ class HierarchyService(BaseService):
         chain.reverse()
         root = ET.Element(f"{{{ONE_NS}}}Notebooks")
         current = root
-        tags = {"notebook": "Notebook", "section_group": "SectionGroup"}
+        tags = {
+            "notebook": "Notebook",
+            "section_group": "SectionGroup",
+            "section": "Section",
+        }
         for candidate in chain:
             current = ET.SubElement(
                 current,
                 f"{{{ONE_NS}}}{tags[candidate['resource_type']]}",
                 {"ID": candidate["id"], "name": display_name(candidate)},
             )
-        ET.SubElement(current, f"{{{ONE_NS}}}Section", {"ID": section["id"], "name": display_name(section)})
+        target_attributes = {"ID": target["id"], "name": display_name(target)}
+        if target_type == "page":
+            target_attributes["pageLevel"] = str(max(1, int(target.get("page_level") or 1)))
+        target_tags = {
+            "page": "Page",
+            "section": "Section",
+            "section_group": "SectionGroup",
+        }
+        ET.SubElement(
+            current,
+            f"{{{ONE_NS}}}{target_tags[target_type]}",
+            target_attributes,
+        )
         return ET.tostring(root, encoding="unicode")
 
     def page_order_xml(self, section: dict[str, Any], pages: list[dict[str, Any]]) -> str:

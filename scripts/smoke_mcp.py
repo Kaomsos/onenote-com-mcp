@@ -53,7 +53,7 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "LOCAL_ONENOTE_ENABLE_WRITES": "false",
             "LOCAL_ONENOTE_ENABLE_DELETES": "false",
             "LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES": "false",
-            "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION": "false",
+            "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT": "false",
             "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION": "false",
             "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP": "false",
             "LOCAL_ONENOTE_ENABLE_RAW_XML": "false",
@@ -75,6 +75,9 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 "list_sections",
                 "get_tree",
                 "query_hierarchy",
+                "reparent_page",
+                "reparent_section",
+                "reparent_section_group",
             }
             forbidden_default_tools = {
                 "update_page_xml",

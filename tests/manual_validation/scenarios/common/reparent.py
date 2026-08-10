@@ -1,17 +1,14 @@
-"""Shared raw-XML capability probes for ID-preserving reparent operations."""
+"""Shared typed scenario runtime for Page and SectionGroup reparent operations."""
 
 from __future__ import annotations
 
 import argparse
 import json
 from typing import Any
-import xml.etree.ElementTree as ET
-
-from local_onenote_mcp.constants import ONE_NS
 
 from ...mcp_stdio_client import (
     MCPStdioClient,
-    REPARENT_PROBE_POLICY,
+    REPARENT_POLICY,
     scenario_client,
 )
 from ...runtime import InvariantFailure, RestoreFailure, RuntimeOptions
@@ -26,70 +23,6 @@ from ...test_utils import (
     validate_manifest_notebook,
     write_json,
 )
-
-
-ET.register_namespace("one", ONE_NS)
-
-
-def build_reparent_xml(
-    notebook: dict[str, Any],
-    destination_parent: dict[str, Any],
-    target: dict[str, Any],
-    resource_type: str,
-) -> str:
-    """Build the smallest unambiguous hierarchy update for a disposable target."""
-
-    root = ET.Element(f"{{{ONE_NS}}}Notebooks")
-    notebook_node = ET.SubElement(
-        root,
-        f"{{{ONE_NS}}}Notebook",
-        {"ID": str(notebook["id"]), "name": display_name(notebook)},
-    )
-    if resource_type == "page":
-        if destination_parent.get("resource_type") != "section":
-            raise ValueError("Page reparent destination must be a Section.")
-        parent_node = ET.SubElement(
-            notebook_node,
-            f"{{{ONE_NS}}}Section",
-            {
-                "ID": str(destination_parent["id"]),
-                "name": display_name(destination_parent),
-            },
-        )
-        ET.SubElement(
-            parent_node,
-            f"{{{ONE_NS}}}Page",
-            {
-                "ID": str(target["id"]),
-                "name": display_name(target),
-                "pageLevel": str(max(1, int(target.get("page_level", 1)))),
-            },
-        )
-    elif resource_type == "section_group":
-        destination_type = destination_parent.get("resource_type")
-        if destination_type == "notebook":
-            parent_node = notebook_node
-        elif destination_type == "section_group":
-            parent_node = ET.SubElement(
-                notebook_node,
-                f"{{{ONE_NS}}}SectionGroup",
-                {
-                    "ID": str(destination_parent["id"]),
-                    "name": display_name(destination_parent),
-                },
-            )
-        else:
-            raise ValueError(
-                "SectionGroup reparent destination must be a Notebook or SectionGroup."
-            )
-        ET.SubElement(
-            parent_node,
-            f"{{{ONE_NS}}}SectionGroup",
-            {"ID": str(target["id"]), "name": display_name(target)},
-        )
-    else:
-        raise ValueError(f"Unsupported reparent resource type: {resource_type}")
-    return ET.tostring(root, encoding="unicode")
 
 
 def _container_parent(item: dict[str, Any], resource_type: str) -> Any:
@@ -348,7 +281,31 @@ def _validate_reparented_snapshot(
     )
 
 
-async def execute_reparent_probe(
+def _typed_reparent_call(
+    target: dict[str, Any],
+    destination_parent_id: str,
+    resource_type: str,
+) -> tuple[str, dict[str, Any]]:
+    if resource_type == "page":
+        return "reparent_page", {
+            "page_id": target["id"],
+            "destination_section_id": destination_parent_id,
+            "expected_title": display_name(target),
+            "expected_section_id": target["section_id"],
+            "expected_modified": target.get("modified"),
+        }
+    if resource_type == "section_group":
+        return "reparent_section_group", {
+            "section_group_id": target["id"],
+            "destination_parent_id": destination_parent_id,
+            "expected_name": display_name(target),
+            "expected_parent_id": target["parent_id"],
+            "expected_modified": target.get("modified"),
+        }
+    raise ValueError(f"Unsupported typed reparent resource type: {resource_type}")
+
+
+async def execute_typed_reparent(
     *,
     args: argparse.Namespace,
     options: RuntimeOptions,
@@ -366,7 +323,7 @@ async def execute_reparent_probe(
     notebook = manifest["notebook"]
     if plans is None:
         if target_key is None:
-            raise ValueError("A target key is required for a single reparent probe.")
+            raise ValueError("A target key is required for a single typed reparent scenario.")
         plans = ((scenario_name, target_key, source_parent_key, destination_parent_key),)
     out = scenario_dir(options.run_dir, scenario_name)
 
@@ -395,24 +352,17 @@ async def execute_reparent_probe(
                 raise RestoreFailure(
                     f"{operation['case']} target has an unknown parent; refusing recovery."
                 )
-            restore_parent = find_snapshot_item(
-                restore_snapshot, operation["source_parent_id"]
-            )
-            if restore_parent is None:
+            if find_snapshot_item(restore_snapshot, operation["source_parent_id"]) is None:
                 raise RestoreFailure(
                     f"{operation['case']} source parent disappeared before restoration."
                 )
-            restore_xml = build_reparent_xml(
-                notebook,
-                restore_parent,
+            step_before = restore_snapshot
+            tool_name, arguments = _typed_reparent_call(
                 restore_target,
+                operation["source_parent_id"],
                 resource_type,
             )
-            operation["restore_xml"] = restore_xml
-            step_before = restore_snapshot
-            await active_client.call_tool(
-                "update_hierarchy_xml", {"xml": restore_xml}
-            )
+            response = await active_client.call_tool(tool_name, arguments)
             restore_snapshot = await capture_snapshot(active_client, notebook_id)
             write_json(out / f"restore-{index}.json", restore_snapshot)
             restored_target_id, _restore_checks = _validate_reparented_snapshot(
@@ -423,8 +373,15 @@ async def execute_reparent_probe(
                 resource_type=resource_type,
             )
             operation["current_target_id"] = restored_target_id
+            response_id_map = response.get("id_map")
+            if not isinstance(response_id_map, dict) or response_id_map.get(
+                active_target_id
+            ) != restored_target_id:
+                raise RestoreFailure(
+                    f"{operation['case']} typed restore did not report the observed target ID mapping."
+                )
             operation.setdefault("restore_id_maps", []).append(
-                {active_target_id: restored_target_id}
+                response_id_map
             )
             if restored_target_id not in operation["id_history"]:
                 operation["id_history"].append(restored_target_id)
@@ -443,7 +400,7 @@ async def execute_reparent_probe(
 
     async with scenario_client(
         client,
-        policy=REPARENT_PROBE_POLICY,
+        policy=REPARENT_POLICY,
         allowed_tools=allowed_tools,
         run_dir=out,
         timeout_seconds=options.timeout,
@@ -473,19 +430,16 @@ async def execute_reparent_probe(
                 "id_history": [str(current["id"])],
                 "source_parent_id": str(source["id"]),
                 "destination_parent_id": str(destination["id"]),
-                "forward_xml": build_reparent_xml(
-                    notebook, destination, current, resource_type
-                ),
-                "restore_xml": build_reparent_xml(
-                    notebook, source, current, resource_type
-                ),
             }
             operations.append(operation)
             write_json(out / "requests.json", {"operations": operations})
             step_before = current_snapshot
-            await active_client.call_tool(
-                "update_hierarchy_xml", {"xml": operation["forward_xml"]}
+            tool_name, arguments = _typed_reparent_call(
+                current,
+                operation["destination_parent_id"],
+                resource_type,
             )
+            response = await active_client.call_tool(tool_name, arguments)
             current_snapshot = await capture_snapshot(active_client, notebook_id)
             write_json(out / f"forward-{index}.json", current_snapshot)
 
@@ -501,20 +455,14 @@ async def execute_reparent_probe(
                 if current_target_id not in operation["id_history"]:
                     operation["id_history"].append(current_target_id)
                 operation["target_id_changed"] = current_target_id != operation["target_id"]
-                operation["forward_id_map"] = {
-                    operation["target_id"]: current_target_id
-                }
-                current_target = find_snapshot_item(current_snapshot, current_target_id)
-                if current_target is None:
+                response_id_map = response.get("id_map")
+                if not isinstance(response_id_map, dict) or response_id_map.get(
+                    operation["target_id"]
+                ) != current_target_id:
                     raise InvariantFailure(
-                        f"{case} target disappeared before reverse request construction."
+                        f"{case} typed tool did not report the observed target ID mapping."
                     )
-                operation["restore_xml"] = build_reparent_xml(
-                    notebook,
-                    source,
-                    current_target,
-                    resource_type,
-                )
+                operation["forward_id_map"] = response_id_map
                 write_json(out / "requests.json", {"operations": operations})
                 verified[case] = checks
             except InvariantFailure as exc:
@@ -553,14 +501,7 @@ async def execute_reparent_probe(
             worksite = {
                 "status": "preserved_after_reparent",
                 "target_ids": [operation["current_target_id"] for operation in operations],
-                "operations": [
-                    {
-                        key: value
-                        for key, value in operation.items()
-                        if key not in {"forward_xml", "restore_xml"}
-                    }
-                    for operation in operations
-                ],
+                "operations": [dict(operation) for operation in operations],
                 "verified": True,
                 "manual_cleanup_required": True,
                 "cleanup": [
@@ -578,7 +519,7 @@ async def execute_reparent_probe(
                 "restored": False,
                 "worksite_preserved": True,
                 "remaining_state": worksite,
-                "warning": "This probes one installed OneNote/Office combination only.",
+                "warning": "This validates one installed OneNote/Office combination only.",
             }
             write_json(out / "result.json", result)
             return result
@@ -588,25 +529,18 @@ async def execute_reparent_probe(
         except Exception as exc:
             if isinstance(exc, RestoreFailure):
                 raise
-            raise RestoreFailure(f"Reparent probe completed but restoration failed: {exc}") from exc
+            raise RestoreFailure(f"Typed Reparent completed but restoration failed: {exc}") from exc
         result = {
             "scenario": scenario_name,
             "status": "passed",
-            "operations": [
-                {
-                    key: value
-                    for key, value in operation.items()
-                    if key not in {"forward_xml", "restore_xml"}
-                }
-                for operation in operations
-            ],
+            "operations": [dict(operation) for operation in operations],
             "verified": verified,
             "restored": True,
             "worksite_preserved": False,
-            "warning": "This probes one installed OneNote/Office combination only.",
+            "warning": "This validates one installed OneNote/Office combination only.",
         }
         write_json(out / "result.json", result)
         return result
 
 
-__all__ = ["build_reparent_xml", "execute_reparent_probe"]
+__all__ = ["execute_typed_reparent"]

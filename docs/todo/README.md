@@ -14,7 +14,7 @@
 | 006 | [Typed Section 与 SectionGroup Reorder](006_typed_section_and_section_group_reorder.md) | 已完成 | P1 | Section typed 同父级排序已确认；SectionGroup 后端仅固定名称升序，最终契约明确不支持并拒绝。 |
 | 007 | [跨版本兼容性证据与环境元数据](007_cross_version_compatibility_evidence.md) | 待办 | P3 | 后续设计非阻塞、local-only 的环境识别与跨版本验证矩阵；当前场景不要求用户填写版本或 channel。 |
 | 008 | [全部已打开 Notebook 的全局 Page 搜索](008_all_open_notebooks_search_scope.md) | 待办 | P1 | 为 `search_pages` 增加 `all_open_notebooks` scope，以单次全局预算支持类似 Desktop `Ctrl+E` 的跨 Notebook 检索。 |
-| 009 | [Typed Reparent 工具与隐藏 Raw Hierarchy XML](009_typed_reparent_tools_and_hide_raw_hierarchy_xml.md) | 待办 | P1 | 注册三类同 Notebook typed `reparent_*`，并从所有生产 MCP profile 移除可提交任意 XML 的 `update_hierarchy_xml`。 |
+| 009 | [Typed Reparent 工具与隐藏 Raw Hierarchy XML](009_typed_reparent_tools_and_hide_raw_hierarchy_xml.md) | 已完成 | P1 | 三个 typed 工具、统一门控与生产隐藏已交付；用户确认三个迁移后的具名场景全部通过。 |
 
 ## 文件命名
 

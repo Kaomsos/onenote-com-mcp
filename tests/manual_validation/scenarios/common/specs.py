@@ -9,8 +9,7 @@ from ...mcp_stdio_client import (
     COPY_NO_DELETE_POLICY,
     COPY_POLICY,
     MOVE_PAGE_POLICY,
-    REPARENT_SECTION_POLICY,
-    REPARENT_PROBE_POLICY,
+    REPARENT_POLICY,
     REORDER_SECTION_GROUP_POLICY,
     REORDER_SECTION_POLICY,
     ScenarioPolicy,
@@ -255,7 +254,7 @@ SCENARIO_SPECS = {
                 "Description Page states before/after/restore for all three cases",
             ),
         ),
-        REPARENT_SECTION_POLICY,
+        REPARENT_POLICY,
         frozenset(
             REPARENT_SECTION_TOOLS
             | {"create_section_group", "create_section", "create_page", "get_page_text"}
@@ -264,7 +263,7 @@ SCENARIO_SPECS = {
     "reparent-page": ScenarioSpec(
         "reparent-page",
         _profile(
-            "page-reparent-probe",
+            "typed-page-reparent",
             (
                 "00-Description/00-Reparent-Page-Description explains before/after/restore",
                 "01-Source-Section/01-Reparent-Page -> 02-Destination-Section",
@@ -302,13 +301,13 @@ SCENARIO_SPECS = {
                 "target Page contains three mixed List/Tag items alongside rich content",
             ),
         ),
-        REPARENT_PROBE_POLICY,
+        REPARENT_POLICY,
         frozenset(REPARENT_PAGE_TOOLS | {"get_page_text"}),
     ),
     "reparent-section-group": ScenarioSpec(
         "reparent-section-group",
         _profile(
-            "section-group-reparent-probe",
+            "typed-section-group-reparent",
             (
                 "00-Description/00-Reparent-SectionGroup-Description explains all three transitions",
                 "Notebook/01-Notebook-To-Group-Target/{01-Descendant-Section/01-Descendant-Page} -> 01-Destination-Parent",
@@ -349,7 +348,7 @@ SCENARIO_SPECS = {
                 "Description Page and Section belong to the fixture Notebook",
             ),
         ),
-        REPARENT_PROBE_POLICY,
+        REPARENT_POLICY,
         frozenset(REPARENT_SECTION_GROUP_TOOLS | {"get_page_text"}),
     ),
     "delete": ScenarioSpec(

@@ -152,7 +152,7 @@ def test_failed_section_group_reorder_probe_is_public_but_excluded_from_all() ->
     }
 
 
-def test_passed_page_reparent_probe_is_public_but_excluded_from_all() -> None:
+def test_typed_page_reparent_passed_but_remains_excluded_from_all() -> None:
     name = "reparent-page"
     scenario = SCENARIO_REGISTRY.get(name)
 
@@ -163,7 +163,7 @@ def test_passed_page_reparent_probe_is_public_but_excluded_from_all() -> None:
     assert scenario.capability_assessment["validation_status"] == "passed"
 
 
-def test_passed_section_group_reparent_probe_remains_excluded_from_all() -> None:
+def test_typed_section_group_reparent_passed_but_remains_excluded_from_all() -> None:
     scenario = SCENARIO_REGISTRY.get("reparent-section-group")
 
     assert scenario.registered_for_all is False

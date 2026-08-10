@@ -8,7 +8,7 @@ def test_mutations_are_disabled_by_default(monkeypatch):
         "LOCAL_ONENOTE_ENABLE_WRITES",
         "LOCAL_ONENOTE_ENABLE_DELETES",
         "LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
@@ -25,11 +25,14 @@ def test_mutations_are_disabled_by_default(monkeypatch):
     assert policy.experimental_copy_enabled is False
     assert policy.experimental_reorder_section_enabled is False
     assert policy.experimental_reorder_section_group_enabled is False
+    assert policy.experimental_reparent_enabled is False
     assert policy.move_page_enabled is False
     with pytest.raises(PermissionError):
         policy.require_write()
     with pytest.raises(PermissionError):
         policy.require_delete()
+    with pytest.raises(PermissionError):
+        policy.require_experimental_reparent()
     with pytest.raises(PermissionError):
         policy.require_experimental_copy()
     with pytest.raises(PermissionError):
@@ -47,6 +50,35 @@ def test_move_page_requires_all_three_mutation_capabilities(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
 
     MutationPolicy.current().require_move_page()
+
+
+@pytest.mark.parametrize(
+    ("writes", "reparent", "allowed"),
+    [
+        (False, False, False),
+        (False, True, False),
+        (True, False, False),
+        (True, True, True),
+    ],
+)
+def test_reparent_permission_matrix(monkeypatch, writes, reparent, allowed):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", str(writes))
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", str(reparent))
+
+    if allowed:
+        MutationPolicy.current().require_experimental_reparent()
+    else:
+        with pytest.raises(PermissionError):
+            MutationPolicy.current().require_experimental_reparent()
+
+
+def test_legacy_section_only_reparent_switch_is_not_an_implicit_alias(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION", "true")
+    monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", raising=False)
+
+    with pytest.raises(PermissionError, match="LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT"):
+        MutationPolicy.current().require_experimental_reparent()
 
 
 @pytest.mark.parametrize(

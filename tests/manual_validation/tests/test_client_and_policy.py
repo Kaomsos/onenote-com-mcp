@@ -13,10 +13,9 @@ from tests.manual_validation.mcp_stdio_client import (
     COPY_POLICY,
     COPY_BUDGET_ENV,
     DELETE_POLICY,
-    REPARENT_SECTION_POLICY,
+    REPARENT_POLICY,
     POLICY_ENV_NAMES,
     READ_ONLY_POLICY,
-    REPARENT_PROBE_POLICY,
     REORDER_SECTION_GROUP_POLICY,
     REORDER_SECTION_POLICY,
     MOVE_PAGE_POLICY,
@@ -67,7 +66,7 @@ def test_scenario_client_rejects_runtime_permission_expansion(tmp_path) -> None:
     async def exercise():
         async with scenario_client(
             existing,
-            policy=REPARENT_SECTION_POLICY,
+            policy=REPARENT_POLICY,
             allowed_tools={"rename_section"},
             run_dir=tmp_path,
             timeout_seconds=10,
@@ -82,7 +81,7 @@ def test_static_policy_matrix_is_minimal() -> None:
         "writes_enabled": False,
         "deletes_enabled": False,
         "permanent_deletes_enabled": False,
-        "experimental_reparent_section_enabled": False,
+        "experimental_reparent_enabled": False,
         "experimental_reorder_section_enabled": False,
         "experimental_reorder_section_group_enabled": False,
         "experimental_copy_enabled": False,
@@ -91,15 +90,12 @@ def test_static_policy_matrix_is_minimal() -> None:
     }
     assert WRITE_POLICY.writes_enabled is True
     assert WRITE_POLICY.deletes_enabled is False
-    assert REPARENT_SECTION_POLICY.writes_enabled is True
-    assert REPARENT_SECTION_POLICY.experimental_reparent_section_enabled is True
+    assert REPARENT_POLICY.writes_enabled is True
+    assert REPARENT_POLICY.experimental_reparent_enabled is True
     assert REORDER_SECTION_POLICY.experimental_reorder_section_enabled is True
     assert REORDER_SECTION_POLICY.experimental_reorder_section_group_enabled is False
     assert REORDER_SECTION_GROUP_POLICY.experimental_reorder_section_group_enabled is True
     assert REORDER_SECTION_GROUP_POLICY.experimental_reorder_section_enabled is False
-    assert REPARENT_PROBE_POLICY.writes_enabled is True
-    assert REPARENT_PROBE_POLICY.raw_xml_enabled is True
-    assert REPARENT_PROBE_POLICY.deletes_enabled is False
     assert DELETE_POLICY.deletes_enabled is True
     assert DELETE_POLICY.writes_enabled is False
     assert COPY_POLICY.experimental_copy_enabled is True
@@ -109,17 +105,16 @@ def test_static_policy_matrix_is_minimal() -> None:
     for policy in (
         READ_ONLY_POLICY,
         WRITE_POLICY,
-        REPARENT_SECTION_POLICY,
+        REPARENT_POLICY,
         REORDER_SECTION_POLICY,
         REORDER_SECTION_GROUP_POLICY,
-        REPARENT_PROBE_POLICY,
         DELETE_POLICY,
         COPY_POLICY,
         COPY_NO_DELETE_POLICY,
         MOVE_PAGE_POLICY,
     ):
         assert policy.permanent_deletes_enabled is False
-        assert policy.raw_xml_enabled is (policy is REPARENT_PROBE_POLICY)
+        assert policy.raw_xml_enabled is False
 
 def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> None:
     for env_name in POLICY_ENV_NAMES.values():
@@ -131,7 +126,7 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
     assert env["LOCAL_ONENOTE_ENABLE_WRITES"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_DELETES"] == "true"
     assert env["LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY"] == "false"

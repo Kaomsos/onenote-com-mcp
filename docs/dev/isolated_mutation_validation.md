@@ -59,13 +59,13 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
 LOCAL_ONENOTE_ENABLE_WRITES = "true"
 LOCAL_ONENOTE_ENABLE_DELETES = "false"
 LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES = "false"
-LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION = "true"
+LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT = "true"
 LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION = "false"
 LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP = "false"
 LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 ```
 
-先调用 `health_check`，确认只有 `writes_enabled` 和 `experimental_reparent_section_enabled` 为 `true`。禁止设置 raw XML 或永久删除开关。
+先调用 `health_check`，确认只有 `writes_enabled` 和 `experimental_reparent_enabled` 为 `true`。禁止设置 raw XML 或永久删除开关。
 
 ## 4. 建立只读基线
 
@@ -180,20 +180,20 @@ Notebook 父级：
   操作后：03-Destination-Group/03-Group-To-Group-Section/03-Group-To-Group-Page
 ```
 
-三次正向 Move 按上述顺序执行；每次都重新读取完整 hierarchy 和 Page 证据，使下一次 mutation 使用最新 confirmation。统一 after 快照必须证明所有 hierarchy ID、三个 Section 的 parent、Page ID/顺序/缩进关系和稳定正文 hash 不变。默认按场景三、二、一的逆序逐项移回并生成 `restored.json`；`--keep-worksite` 不恢复，记录三个目标 Section 的原父级、当前父级和人工清理顺序。
+三次正向 Reparent 按上述顺序执行；每次都重新读取完整 hierarchy 和 Page 证据，使下一次 mutation 使用最新 confirmation。统一 after 快照必须证明所有 hierarchy ID、三个 Section 的 parent、Page ID/顺序/缩进关系和稳定正文 hash 不变。默认按场景三、二、一的逆序逐项移回并生成 `restored.json`；`--keep-worksite` 不恢复，记录三个目标 Section 的原父级、当前父级和人工清理顺序。
 
-只有三次正向 Move 和三次恢复 Move 全部通过，才可确认本次真实运行；该结论不等同于对所有 Office/OneNote 版本解除实验状态，也不包含跨 Notebook Move。跨版本兼容性证据的统一采集与矩阵另见 [`TODO 007`](../todo/007_cross_version_compatibility_evidence.md)。
+只有三次正向 Reparent 和三次恢复 Reparent 全部通过，才可确认本次真实运行；该结论不等同于对所有 Office/OneNote 版本解除实验状态，也不包含跨 Notebook Move。跨版本兼容性证据的统一采集与矩阵另见 [`TODO 007`](../todo/007_cross_version_compatibility_evidence.md)。
 
 ## 7.1 Page 与 SectionGroup Reparent
 
-这两项尚无 typed mutation 工具，必须使用 runner 中受控的探索性场景，不能手工拼接 raw XML：
+这两项已迁移为 typed mutation 工具，必须使用 runner 中受控的具名场景，不能手工拼接 raw XML：
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py reparent-page --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py reparent-section-group --dry-run --json
 ```
 
-两个 advanced 场景都创建全新的 disposable Notebook，且显式设置 `registered_for_all=False`。它们的唯一 mutation 权限是 Writes + Raw XML；Delete、Permanent Delete、Copy、typed Section Reparent 与 Reorder 实验开关保持关闭。Raw XML 由 runner 根据 manifest 中的精确 Notebook、目标和新旧父级 ID 生成，不接受 CLI 或外部文件传入的 XML。
+两个场景都创建全新的 disposable Notebook，且显式设置 `registered_for_all=False`。它们只启用 Writes + 统一 Reparent 实验门；Delete、Permanent Delete、Copy、Move、Reorder 与 Raw XML 保持关闭。runner 仅向 `reparent_page` / `reparent_section_group` 提交 manifest 绑定的精确 ID、confirmation 和可选 modified，不构造或传递 hierarchy XML。
 
 `reparent-page` 创建 Description 说明页和以下编号结构：
 
@@ -204,7 +204,7 @@ Notebook 父级：
 恢复后：01-Source-Section/01-Reparent-Page
 ```
 
-目标 Page 本身包含 Rich Text、Table、三个混合 List/Tag 项和 Image；不是另建一个只读旁证页。fixture 构建使用普通 Page 写工具，正向 reparent 仍只有一次 `update_hierarchy_xml`。场景 policy 不启用 Copy 或 Delete，因此不会调用 `copy_page`、`UpdatePageContent` 重建目标，也不会调用 `DeleteHierarchy` 或显式操作回收站。
+目标 Page 本身包含 Rich Text、Table、三个混合 List/Tag 项和 Image；不是另建一个只读旁证页。fixture 构建使用普通 Page 写工具，正向 reparent 只调用一次 `reparent_page`。场景 policy 不启用 Copy、Delete 或 Raw XML，因此不会调用 `copy_page`、`UpdatePageContent` 重建目标、`DeleteHierarchy` 或任意 XML mutation 工具。
 
 `reparent-section-group` 创建 Description 说明页和三组带编号 Section/Page 后代的目标 Group：
 
@@ -219,7 +219,7 @@ Notebook 父级：
     → 03-Destination-Parent/03-Group-To-Group-Target
 ```
 
-Page 探针的验收标准是：
+Page typed 场景的验收标准是：
 
 1. `UpdateHierarchy` 返回后，原 ID 仍在目标 Section，或者全树恰好出现 `旧 Page ID 消失 + 目标 Section 新增一个 Page ID`；不接受多个新增、多个消失或无法唯一关联的结果；
 2. 记录 `target_id`、`current_target_id` 和完整 `id_history`，不把新 ID 冒充成原 ID；
@@ -231,7 +231,7 @@ Page 探针的验收标准是：
 
 SectionGroup 三次正向请求逐项执行并立即回读；前一步未通过时不继续。它仍要求原目标及全部后代 ID 保持不变，全 Notebook ID 集合、Page 稳定内容 hash 和内容对象 ID 投影不变；默认按 `03→02→01` 逆序恢复并与 before 完整比较。`--keep-worksite` 保留当前父级及人工清理顺序。
 
-COM 返回成功但父级未变化、Page ID 转换不是精确一对一、富内容语义摘要变化、无关对象变化或恢复不完整都必须判为失败并保留现场。Page 与 SectionGroup Reparent 已由用户在当前环境通过；对象矩阵中的 `A` 仍只表示 advanced/raw probe 可表达，不表示已经交付 typed `reparent_page` 或 `reparent_section_group` 工具。
+COM 返回成功但父级未变化、Page ID 转换不是精确一对一、富内容语义摘要变化、无关对象变化或恢复不完整都必须判为失败并保留现场。用户已明确确认迁移后的 `reparent-page`、`reparent-section`、`reparent-section-group` 三个 typed 场景在当前环境全部通过；这完成了 TODO 009 的真实证据闭环，但不构成跨 OneNote/Office 版本保证。
 
 ## 8. 非永久 Delete 验证（可选、单独重启）
 
@@ -273,4 +273,4 @@ Page Move 对源子树只使用 `DeleteHierarchy(permanently=false)`。生产删
 
 真实 COM mutation 永远不能进入默认 CI、pre-commit 或 smoke test。`write_contract` 仅是 mock 合同测试；真实隔离验证必须由用户在终端明确启动。
 
-本地程序化 Runner 不是默认自动化：只有用户本人手动运行具体 `run.py <scenario>` 才构成授权；Agent 只能修改 runner、运行不接触 OneNote 的合同测试或把命令交给用户，不能代为执行。Runner 为该场景唯一的 MCP 子进程开启完整闭环所需的静态最小权限，不要求额外权限开关或二次确认，也不跨场景合并权限。永久 OneNote Delete 在所有场景中始终关闭；Raw XML 只在 `reparent-page` 与 `reparent-section-group` 两个受控探针中开启，且不接受外部 XML。所有 scenario suite 都不删除本地 Notebook 文件。将来若开发相应 typed tool，只能新增权限更窄、目标约束更强的独立手动场景，不能扩大现有场景权限。
+本地程序化 Runner 不是默认自动化：只有用户本人手动运行具体 `run.py <scenario>` 才构成授权；Agent 只能修改 runner、运行不接触 OneNote 的合同测试或把命令交给用户，不能代为执行。Runner 为该场景唯一的 MCP 子进程开启完整闭环所需的静态最小权限，不要求额外权限开关或二次确认，也不跨场景合并权限。永久 OneNote Delete 在所有场景中始终关闭；三个 Reparent 场景全部使用 typed 工具且保持 Raw XML 关闭。所有 scenario suite 都不删除本地 Notebook 文件。

@@ -1,15 +1,14 @@
-"""Pure contracts for same-Notebook Page and SectionGroup reparent probes."""
+"""Pure contracts for same-Notebook typed Page and SectionGroup reparent scenarios."""
 
 from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
-import xml.etree.ElementTree as ET
 
 import pytest
 
-from tests.manual_validation.mcp_stdio_client import REPARENT_PROBE_POLICY
+from tests.manual_validation.mcp_stdio_client import REPARENT_POLICY
 from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
 from tests.manual_validation.scenarios.common import reparent as reparent_runtime
 from tests.manual_validation.scenarios.common.config import (
@@ -31,13 +30,18 @@ from tests.manual_validation.scenarios.reparent_section_group import (
 class FakeClient:
     def __init__(self, allowed_tools: set[str], timeout_seconds: int = 180) -> None:
         self.allowed_tools = set(allowed_tools) | {"get_page_text"}
-        self.policy = REPARENT_PROBE_POLICY
+        self.policy = REPARENT_POLICY
         self.timeout_seconds = timeout_seconds
         self.calls: list[tuple[str, dict]] = []
 
     async def call_tool(self, name: str, arguments: dict, **_kwargs) -> dict:
         self.calls.append((name, arguments))
-        return {"ok": True, "updated": True}
+        target_id = arguments.get("page_id") or arguments.get("section_group_id")
+        current_id = {
+            "target-page": "reparented-page",
+            "reparented-page": "restored-page",
+        }.get(target_id, target_id)
+        return {"ok": True, "complete": True, "id_map": {target_id: current_id}}
 
 
 def _snapshot(items: list[dict]) -> dict:
@@ -294,7 +298,7 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
 
 @pytest.mark.parametrize("case", [_page_case, _section_group_case])
 @pytest.mark.parametrize("keep_worksite", [False, True])
-def test_reparent_probe_verifies_identity_content_and_restore_or_preserve(
+def test_typed_reparent_verifies_identity_content_and_restore_or_preserve(
     monkeypatch, tmp_path, case, keep_worksite
 ) -> None:
     manifest, before, forwards, restores, scenario_type, allowed_tools = case()
@@ -320,14 +324,21 @@ def test_reparent_probe_verifies_identity_content_and_restore_or_preserve(
     assert result["restored"] is (not keep_worksite)
     assert result["worksite_preserved"] is keep_worksite
     assert all(all(checks.values()) for checks in result["verified"].values())
-    assert [name for name, _arguments in client.calls] == [
-        "update_hierarchy_xml"
-    ] * (operation_count if keep_worksite else operation_count * 2)
+    expected_tool = (
+        "reparent_page" if scenario_type is ReparentPageScenario else "reparent_section_group"
+    )
+    assert [name for name, _arguments in client.calls] == [expected_tool] * (
+        operation_count if keep_worksite else operation_count * 2
+    )
 
-    forward_roots = [ET.fromstring(call[1]["xml"]) for call in client.calls[:operation_count]]
-    ids = [[node.attrib.get("ID") for node in root.iter()] for root in forward_roots]
     if scenario_type is ReparentPageScenario:
-        assert ids == [[None, "notebook", "destination-section", "target-page"]]
+        assert client.calls[0][1] == {
+            "page_id": "target-page",
+            "destination_section_id": "destination-section",
+            "expected_title": "01-Reparent-Page",
+            "expected_section_id": "source-section",
+            "expected_modified": None,
+        }
         assert result["operations"][0]["id_history"] == (
             ["target-page", "reparented-page"]
             if keep_worksite
@@ -337,29 +348,29 @@ def test_reparent_probe_verifies_identity_content_and_restore_or_preserve(
             "target-page": "reparented-page"
         }
         if not keep_worksite:
-            restore_target_id = [
-                node.attrib.get("ID")
-                for node in ET.fromstring(client.calls[1][1]["xml"]).iter()
-            ][-1]
-            assert restore_target_id == "reparented-page"
+            assert client.calls[1][1]["page_id"] == "reparented-page"
             assert result["operations"][0]["restore_id_maps"] == [
                 {"reparented-page": "restored-page"}
             ]
     else:
-        assert ids == [
-            [None, "notebook", "destination-1", "target-1"],
-            [None, "notebook", "target-2"],
-            [None, "notebook", "destination-3", "target-3"],
+        assert [arguments["section_group_id"] for _name, arguments in client.calls[:3]] == [
+            "target-1",
+            "target-2",
+            "target-3",
+        ]
+        assert [arguments["destination_parent_id"] for _name, arguments in client.calls[:3]] == [
+            "destination-1",
+            "notebook",
+            "destination-3",
         ]
         if not keep_worksite:
             restore_target_ids = [
-                [node.attrib.get("ID") for node in ET.fromstring(call[1]["xml"]).iter()][-1]
-                for call in client.calls[operation_count:]
+                call[1]["section_group_id"] for call in client.calls[operation_count:]
             ]
             assert restore_target_ids == ["target-3", "target-2", "target-1"]
 
 
-def test_reparent_probe_rejects_com_success_without_parent_change(monkeypatch, tmp_path) -> None:
+def test_typed_reparent_rejects_com_success_without_parent_change(monkeypatch, tmp_path) -> None:
     manifest, before, _forwards, _restores, scenario_type, allowed_tools = _page_case()
     snapshots = iter([before, before])
 
@@ -378,7 +389,7 @@ def test_reparent_probe_rejects_com_success_without_parent_change(monkeypatch, t
                 fixture_result={},
             )
         )
-    assert [name for name, _arguments in client.calls] == ["update_hierarchy_xml"]
+    assert [name for name, _arguments in client.calls] == ["reparent_page"]
 
 
 def test_reparent_page_rejects_ambiguous_identity_transition_without_restore(
@@ -416,7 +427,7 @@ def test_reparent_page_rejects_ambiguous_identity_transition_without_restore(
                 fixture_result={},
             )
         )
-    assert [name for name, _arguments in client.calls] == ["update_hierarchy_xml"]
+    assert [name for name, _arguments in client.calls] == ["reparent_page"]
 
 
 def test_reparent_page_rejects_rich_content_change_after_valid_id_remap() -> None:
@@ -433,15 +444,18 @@ def test_reparent_page_rejects_rich_content_change_after_valid_id_remap() -> Non
         )
 
 
-def test_reparent_specs_are_raw_xml_only_and_fixtures_are_valid() -> None:
+def test_reparent_specs_use_typed_tools_without_raw_xml_and_fixtures_are_valid() -> None:
     for name, case in (
         ("reparent-page", _page_case),
         ("reparent-section-group", _section_group_case),
     ):
         manifest, before, _forwards, _restores, _scenario_type, _allowed_tools = case()
         spec = SCENARIO_SPECS[name]
-        assert spec.policy == REPARENT_PROBE_POLICY
-        assert "update_hierarchy_xml" in spec.tool_allowlist
+        assert spec.policy == REPARENT_POLICY
+        assert "update_hierarchy_xml" not in spec.tool_allowlist
+        assert (
+            "reparent_page" if name == "reparent-page" else "reparent_section_group"
+        ) in spec.tool_allowlist
         assert "get_page_text" in spec.tool_allowlist
         assert not {
             "delete_page",
@@ -478,12 +492,12 @@ def test_reparent_descriptions_make_states_and_three_group_transitions_explicit(
     assert "场景三：SectionGroup 父级 → SectionGroup 父级" in REPARENT_SECTION_GROUP_DESCRIPTION
 
 
-def test_section_group_xml_accepts_notebook_destination() -> None:
-    manifest, before, _forwards, _restores, _scenario_type, _allowed_tools = _section_group_case()
+def test_section_group_typed_call_accepts_notebook_destination() -> None:
+    _manifest, before, _forwards, _restores, _scenario_type, _allowed_tools = _section_group_case()
     target = next(item for item in before["items"] if item["id"] == "target-2")
-    xml = reparent_runtime.build_reparent_xml(
-        manifest["notebook"], manifest["notebook"], target, "section_group"
+    name, arguments = reparent_runtime._typed_reparent_call(
+        target, "notebook", "section_group"
     )
-    root = ET.fromstring(xml)
-    ids = [node.attrib.get("ID") for node in root.iter()]
-    assert ids == [None, "notebook", "target-2"]
+    assert name == "reparent_section_group"
+    assert arguments["section_group_id"] == "target-2"
+    assert arguments["destination_parent_id"] == "notebook"

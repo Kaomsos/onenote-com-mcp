@@ -21,9 +21,7 @@ POLICY_ENV_NAMES = {
     "writes_enabled": "LOCAL_ONENOTE_ENABLE_WRITES",
     "deletes_enabled": "LOCAL_ONENOTE_ENABLE_DELETES",
     "permanent_deletes_enabled": "LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES",
-    "experimental_reparent_section_enabled": (
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION"
-    ),
+    "experimental_reparent_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT",
     "experimental_reorder_section_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION",
     "experimental_reorder_section_group_enabled": (
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"
@@ -72,7 +70,7 @@ class ScenarioPolicy:
     writes_enabled: bool = False
     deletes_enabled: bool = False
     permanent_deletes_enabled: bool = False
-    experimental_reparent_section_enabled: bool = False
+    experimental_reparent_enabled: bool = False
     experimental_reorder_section_enabled: bool = False
     experimental_reorder_section_group_enabled: bool = False
     experimental_copy_enabled: bool = False
@@ -84,9 +82,7 @@ class ScenarioPolicy:
             "writes_enabled": self.writes_enabled,
             "deletes_enabled": self.deletes_enabled,
             "permanent_deletes_enabled": self.permanent_deletes_enabled,
-            "experimental_reparent_section_enabled": (
-                self.experimental_reparent_section_enabled
-            ),
+            "experimental_reparent_enabled": self.experimental_reparent_enabled,
             "experimental_reorder_section_enabled": self.experimental_reorder_section_enabled,
             "experimental_reorder_section_group_enabled": (
                 self.experimental_reorder_section_group_enabled
@@ -99,9 +95,9 @@ class ScenarioPolicy:
 
 READ_ONLY_POLICY = ScenarioPolicy()
 WRITE_POLICY = ScenarioPolicy(writes_enabled=True)
-REPARENT_SECTION_POLICY = ScenarioPolicy(
+REPARENT_POLICY = ScenarioPolicy(
     writes_enabled=True,
-    experimental_reparent_section_enabled=True,
+    experimental_reparent_enabled=True,
 )
 REORDER_SECTION_POLICY = ScenarioPolicy(
     writes_enabled=True,
@@ -111,7 +107,6 @@ REORDER_SECTION_GROUP_POLICY = ScenarioPolicy(
     writes_enabled=True,
     experimental_reorder_section_group_enabled=True,
 )
-REPARENT_PROBE_POLICY = ScenarioPolicy(writes_enabled=True, raw_xml_enabled=True)
 DELETE_POLICY = ScenarioPolicy(deletes_enabled=True)
 COPY_POLICY = ScenarioPolicy(
     writes_enabled=True,

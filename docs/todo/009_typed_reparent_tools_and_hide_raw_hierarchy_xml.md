@@ -1,7 +1,7 @@
 # 009：Typed Reparent 工具与隐藏 Raw Hierarchy XML
 
 > ID：009
-> 状态：待办
+> 状态：已完成
 > 优先级：P1
 > 类型：公开 mutation 契约 / 工具注册与安全收敛
 > 更新日期：2026-08-10
@@ -84,6 +84,20 @@
 - `reparent_page` 的调用方必须处理 `item.id` 与原 `page_id` 不同，并以 `id_map` 继续后续操作；
 - `reparent_section_group` 不得因为当前环境验证成功而宣称跨 OneNote/Office 版本普遍保证；
 - 依赖 `update_hierarchy_xml` 的外部开发调用不属于稳定兼容合同。移除时应返回“工具不存在”，而不是保留一个运行时拒绝但仍可枚举的生产工具。
+
+## 实施进度与证据
+
+截至 2026-08-10，代码、纯合同、文档迁移和用户把关的真实验证已经完成：
+
+- 默认 profile 已注册 `reparent_page`、`reparent_section`、`reparent_section_group`，并统一使用 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT`；旧的 Section-only 环境变量和 health-check 字段不保留别名；
+- service 在调用内部 `update_hierarchy` 前执行 typed confirmation、同 Notebook、目标类型和 SectionGroup 防循环检查，并用受 Copy budgets 限制的 Notebook/Page before/after 快照验证 ID、拓扑、富内容与无关对象；
+- Page 结果返回 Page 及可观测内容对象的 `id_map`；Section/SectionGroup 返回目标 identity mapping；
+- `update_hierarchy_xml` 已从 advanced adapter、service 公共入口和所有生产注册路径移除；Raw XML 开关只会注册剩余 6 个 advanced 工具；
+- `reparent-page` 与 `reparent-section-group` runner 已改为 typed tool 调用，三类 Reparent policy 均不要求 Raw XML；
+- 聚焦生产合同、全部 manual-validation 纯测试和完整 pytest 均通过（`305 passed`）；三个场景的 `--dry-run --json` 均证明 `raw_xml_enabled=false`、统一 Reparent 门开启且 allowlist 只包含对应 typed `reparent_*`。
+- 用户明确确认迁移后的 `reparent-page`、`reparent-section`、`reparent-section-group` 三个具名场景全部通过手动验证。场景分别只调用 `reparent_page`、`reparent_section`、`reparent_section_group`，其成功结果覆盖目标父级变化、Page 的精确一对一 ID 行为、Section/SectionGroup 身份保持、内容/后代拓扑不变量以及默认恢复。
+
+上述真实结果来自用户本人显式运行；Agent 未启动真实 `run.py <scenario>` 或 `run.py all`。证据结论只适用于本次用户环境，不扩展为跨 OneNote/Office 版本保证。至此完成定义全部满足，本 TODO 状态更新为“已完成”。
 
 ## 完成定义
 

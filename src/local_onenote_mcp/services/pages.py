@@ -9,7 +9,12 @@ import xml.etree.ElementTree as ET
 from ..bridge import OneNoteBridge
 from ..constants import PAGE_INFO, XML_SCHEMA_2013
 from ..domain import content_objects
-from ..page import collect_page_objects, text_from_page_xml, title_from_page_xml
+from ..page import (
+    canonical_page_digest,
+    collect_page_objects,
+    text_from_page_xml,
+    title_from_page_xml,
+)
 from .base import BaseService
 from .hierarchy import HierarchyService
 
@@ -33,6 +38,7 @@ VOLATILE_PAGE_ATTRIBUTES = {
     "localFilePath",
 }
 ROOT_HIERARCHY_ATTRIBUTES = {"ID", "name", "pageLevel"}
+GENERATED_CONTENT_ID_ATTRIBUTES = ("objectID", "callbackID")
 
 
 def stable_page_content_digest(xml: str) -> str:
@@ -45,6 +51,72 @@ def stable_page_content_digest(xml: str) -> str:
     for attribute in ROOT_HIERARCHY_ATTRIBUTES:
         root.attrib.pop(attribute, None)
     return hashlib.sha256(ET.tostring(root, encoding="utf-8")).hexdigest()
+
+
+def reparent_page_content_digest(xml: str) -> str:
+    """Hash rich Page semantics while allowing native ID and Tag-index remapping."""
+
+    root = ET.fromstring(xml)
+    tag_definitions: dict[str, tuple[str, str]] = {}
+    for node in root.iter():
+        if node.tag.rsplit("}", 1)[-1] != "TagDef":
+            continue
+        index = node.attrib.get("index")
+        if index is not None:
+            tag_definitions[index] = (
+                node.attrib.get("type", ""),
+                node.attrib.get("symbol", ""),
+            )
+    for node in root.iter():
+        if node.tag.rsplit("}", 1)[-1] != "Tag":
+            continue
+        index = node.attrib.pop("index", "")
+        semantic_type, semantic_symbol = tag_definitions.get(index, ("", ""))
+        node.attrib["semanticType"] = semantic_type
+        node.attrib["semanticSymbol"] = semantic_symbol
+    for parent in root.iter():
+        for child in list(parent):
+            if child.tag.rsplit("}", 1)[-1] == "TagDef":
+                parent.remove(child)
+    return canonical_page_digest(ET.tostring(root, encoding="unicode"))
+
+
+def observable_content_id_map(before_xml: str, after_xml: str) -> dict[str, str]:
+    """Map COM-generated content IDs by their verified structural positions."""
+
+    before_nodes = [
+        node
+        for node in ET.fromstring(before_xml).iter()
+        if node.tag.rsplit("}", 1)[-1] != "TagDef"
+    ]
+    after_nodes = [
+        node
+        for node in ET.fromstring(after_xml).iter()
+        if node.tag.rsplit("}", 1)[-1] != "TagDef"
+    ]
+    if len(before_nodes) != len(after_nodes) or any(
+        before.tag.rsplit("}", 1)[-1] != after.tag.rsplit("}", 1)[-1]
+        for before, after in zip(before_nodes, after_nodes, strict=True)
+    ):
+        raise RuntimeError("Page reparent changed the content-object structure.")
+
+    id_map: dict[str, str] = {}
+    reverse: dict[str, str] = {}
+    for before, after in zip(before_nodes, after_nodes, strict=True):
+        for attribute in GENERATED_CONTENT_ID_ATTRIBUTES:
+            old_id = before.attrib.get(attribute)
+            new_id = after.attrib.get(attribute)
+            if bool(old_id) != bool(new_id):
+                raise RuntimeError("Page reparent changed observable content-object identity coverage.")
+            if not old_id or not new_id:
+                continue
+            if old_id in id_map and id_map[old_id] != new_id:
+                raise RuntimeError("Page reparent produced an ambiguous content-object ID mapping.")
+            if new_id in reverse and reverse[new_id] != old_id:
+                raise RuntimeError("Page reparent produced a non-bijective content-object ID mapping.")
+            id_map[old_id] = new_id
+            reverse[new_id] = old_id
+    return id_map
 
 
 class PageService(BaseService):
@@ -64,6 +136,14 @@ class PageService(BaseService):
     @staticmethod
     def digest(xml: str) -> str:
         return stable_page_content_digest(xml)
+
+    @staticmethod
+    def reparent_digest(xml: str) -> str:
+        return reparent_page_content_digest(xml)
+
+    @staticmethod
+    def observable_id_map(before_xml: str, after_xml: str) -> dict[str, str]:
+        return observable_content_id_map(before_xml, after_xml)
 
     @staticmethod
     def truncate(text: str, max_chars: int) -> str:

@@ -111,8 +111,8 @@ def test_fixture_profiles_are_scenario_specific() -> None:
     assert names["create"] == "full-preset"
     assert names["rename"] == "rename-target"
     assert names["reparent-section"] == "section-reparent"
-    assert names["reparent-page"] == "page-reparent-probe"
-    assert names["reparent-section-group"] == "section-group-reparent-probe"
+    assert names["reparent-page"] == "typed-page-reparent"
+    assert names["reparent-section-group"] == "typed-section-group-reparent"
     assert names["copy-page"] == "rich-page-copy"
     assert len(set(names.values())) == len(names)
     assert "create_notebook" not in SCENARIO_SPECS["create"].tool_allowlist

@@ -1386,7 +1386,7 @@ async def prepare_scenario_fixture(
         elif args.scenario == "reparent-section":
             validation_checks.append(
                 "Description Page states before/after/restore for Notebook-to-SectionGroup, "
-                "SectionGroup-to-Notebook, and SectionGroup-to-SectionGroup moves"
+                "SectionGroup-to-Notebook, and SectionGroup-to-SectionGroup reparents"
             )
         elif args.scenario == "reparent-page":
             validation_checks.append(
@@ -1396,7 +1396,7 @@ async def prepare_scenario_fixture(
         elif args.scenario == "reparent-section-group":
             validation_checks.append(
                 "Description Page states before/after/restore for Notebook-to-SectionGroup, "
-                "SectionGroup-to-Notebook, and SectionGroup-to-SectionGroup reparent probes"
+                "SectionGroup-to-Notebook, and SectionGroup-to-SectionGroup typed reparents"
             )
     except InvariantFailure as exc:
         manifest["fixture_validation"] = {

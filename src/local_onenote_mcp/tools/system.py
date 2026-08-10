@@ -37,9 +37,7 @@ async def health_check() -> dict[str, Any]:
                 "writes_enabled": policy.writes_enabled,
                 "deletes_enabled": policy.deletes_enabled,
                 "permanent_deletes_enabled": policy.permanent_deletes_enabled,
-                "experimental_reparent_section_enabled": (
-                    policy.experimental_reparent_section_enabled
-                ),
+                "experimental_reparent_enabled": policy.experimental_reparent_enabled,
                 "experimental_reorder_section_enabled": policy.experimental_reorder_section_enabled,
                 "experimental_reorder_section_group_enabled": (
                     policy.experimental_reorder_section_group_enabled

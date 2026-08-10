@@ -1,4 +1,4 @@
-"""Human-gated same-Notebook SectionGroup reparent capability probe."""
+"""Human-gated same-Notebook typed SectionGroup reparent scenario."""
 
 from __future__ import annotations
 
@@ -10,14 +10,14 @@ from ..runtime import RuntimeOptions
 from .base import Scenario
 from .common.config import REPARENT_SECTION_GROUP_TOOLS
 from .common.registry import SCENARIO_REGISTRY
-from .common.reparent import execute_reparent_probe
+from .common.reparent import execute_typed_reparent
 
 
 @SCENARIO_REGISTRY.register
 class ReparentSectionGroupScenario(Scenario):
     name = "reparent-section-group"
     help_text = (
-        "EXPERIMENTAL: probe Notebook→SectionGroup, SectionGroup→Notebook, and "
+        "EXPERIMENTAL: validate typed Notebook→SectionGroup, SectionGroup→Notebook, and "
         "SectionGroup→SectionGroup ID-preserving reparent, then restore or preserve."
     )
     registered_for_all = False
@@ -25,8 +25,8 @@ class ReparentSectionGroupScenario(Scenario):
         "capability_status": "experimental",
         "validation_status": "passed",
         "reason": (
-            "A user-run probe observed all three same-Notebook parent transitions while "
-            "preserving the SectionGroup ID, descendants, relationships, and Page content."
+            "A user-run migrated typed scenario confirmed all three same-Notebook "
+            "SectionGroup transitions while preserving identity, topology, content, and restoration."
         ),
     }
 
@@ -39,7 +39,7 @@ class ReparentSectionGroupScenario(Scenario):
         client: MCPStdioClient | None,
         fixture_result: dict[str, Any],
     ) -> dict[str, Any]:
-        return await execute_reparent_probe(
+        return await execute_typed_reparent(
             args=args,
             options=options,
             manifest=manifest,

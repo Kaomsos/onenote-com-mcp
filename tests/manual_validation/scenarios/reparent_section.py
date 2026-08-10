@@ -8,7 +8,7 @@ from typing import Any
 from ..mcp_stdio_client import (
     ClientFailure,
     MCPStdioClient,
-    REPARENT_SECTION_POLICY,
+    REPARENT_POLICY,
     scenario_client,
 )
 from ..runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
@@ -96,7 +96,7 @@ async def _execute_reparent_section(
     out = scenario_dir(options.run_dir, "reparent-section")
     async with scenario_client(
         client,
-        policy=REPARENT_SECTION_POLICY,
+        policy=REPARENT_POLICY,
         allowed_tools=REPARENT_SECTION_TOOLS,
         run_dir=out,
         timeout_seconds=options.timeout,

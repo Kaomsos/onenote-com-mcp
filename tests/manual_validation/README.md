@@ -131,7 +131,7 @@ Delete-Sandbox
 - `--run-dir` 必须不存在或为空；同名 Notebook 已存在时拒绝复用。
 - 默认仅在当前 scenario 和报告成功后，按 lifecycle lease 的精确 ID/name/path 并经即时回读后关闭源 Notebook。
 - `--keep-notebook` 保持源 Notebook 打开，供用户人工检查。
-- `--keep-worksite` 适用于全部公开具名场景，并同时保持源 Notebook 打开。可恢复的 `rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 不执行反向恢复；Page/Section/SectionGroup Copy 不执行回收站 cleanup；Notebook Copy 不关闭副本；其余 action 记录本来就会留下的 fixture、回收站或 Move 状态。`worksite.json` 和 `result.json` 记录精确目标 ID、当前位置/名称/路径以及 `manual_cleanup_required=true`；Page reparent 还记录新旧 ID 历史。功能受限的 `reorder-section-group` 以及两个 advanced Reparent 场景均设置 `registered_for_all=False`；特殊批处理入口 `all` 不接受 `--keep-worksite`。
+- `--keep-worksite` 适用于全部公开具名场景，并同时保持源 Notebook 打开。可恢复的 `rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 不执行反向恢复；Page/Section/SectionGroup Copy 不执行回收站 cleanup；Notebook Copy 不关闭副本；其余 action 记录本来就会留下的 fixture、回收站或 Move 状态。`worksite.json` 和 `result.json` 记录精确目标 ID、当前位置/名称/路径以及 `manual_cleanup_required=true`；Page reparent 还记录新旧 ID 历史。功能受限的 `reorder-section-group` 以及两个已经用户验证通过、但仍保持实验边界的 typed Reparent 场景均设置 `registered_for_all=False`；特殊批处理入口 `all` 不接受 `--keep-worksite`。
 - Runner 永不删除本地 Notebook 文件或目录；Notebook Copy 文件夹同样保留。
 - `delete` 自动使用本次 manifest 中的 `disposable_group`，不接受外部 target ID，并保持非永久删除。
 - `rename` 另支持 `--target group_a|group_b|content_section` 和 `--new-name`。
@@ -155,8 +155,8 @@ Delete-Sandbox
 | `reorder-section` | `00-Description/00-Reorder-Section-Description` 分别说明 Notebook 父级和 `01-Section-Parent`（SectionGroup）父级的 before/after/restore；两组 Section 及其 Page 均使用 `01/02/03` 编号，UI 可直接核对 `01,02,03 → 01,03,02 → 01,02,03`；只开启 Writes 与 Section Reorder，不加入 `all`，等待真实证据 |
 | `reorder-section-group` | **功能受限 / 验证失败 / 不注册到 `all`**。保留完整 fixture、mutation 和写后回读实现作为可单独调用的诊断场景；真实后端对 Notebook 直属 Group 返回 UpdateHierarchy 成功但保持按名称固定升序，嵌套操作未执行。dry-run 和运行状态证据写入 `capability_assessment={capability_status: limited, validation_status: failed, ...}`。 |
 | `reparent-section` | `00-Description/00-Reparent-Section-Description` 说明三种 before/after/restore：`01-Notebook-To-Group-Section` 从 Notebook 根换父级到 `01-Destination-Group`，`02-Group-To-Notebook-Section` 从 `02-Source-Group` 换父级到 Notebook 根，`03-Group-To-Group-Section` 从 `03-Source-Group` 换父级到 `03-Destination-Group`。三个 Section 及其 Page 均编号；每次 Reparent 后刷新快照，验证 ID、父级、Page 拓扑和内容，默认逆序恢复，`--keep-worksite` 保留三项目标父级。只允许同一 Notebook。 |
-| `reparent-page` | **探索性 / 当前环境真实验证成功 / 不注册到 `all`**。`00-Description/00-Reparent-Page-Description` 解释原生 `UpdateHierarchy` 与 ID 重映射；`01-Source-Section/01-Reparent-Page` 同页包含 Rich Text、Table、List、Tag、Image，再请求改属 `02-Destination-Section`，编号锚点 `02-Destination-Anchor` 保持无关。用户运行确认目标 Page/内容对象 ID 一对一重映射，并保持 ID/Tag-index 归一化后的富内容与对象语义以及所有无关对象；默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
-| `reparent-section-group` | **探索性 / 当前环境真实验证成功 / 不注册到 `all`**。`00-Description/00-Reparent-SectionGroup-Description` 和三组编号 Group/Section/Page 覆盖 `01` Notebook→SectionGroup、`02` SectionGroup→Notebook、`03` SectionGroup→SectionGroup；用户运行确认三条路线均保持目标及后代 ID、关系、Page 内容和内容对象。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级；该单环境证据不会自动升级为 typed 稳定工具。 |
+| `reparent-page` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_page` 提交精确 ID 与 confirmation，不要求 Raw XML。`00-Description/00-Reparent-Page-Description` 解释原生 `UpdateHierarchy` 与 ID 重映射；`01-Source-Section/01-Reparent-Page` 同页包含 Rich Text、Table、List、Tag、Image，再请求改属 `02-Destination-Section`，编号锚点保持无关。工具与 runner 双层验证 Page/内容对象一对一映射、富内容和无关对象；默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
+| `reparent-section-group` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_section_group` 提交精确 ID 与 confirmation，不要求 Raw XML。三组编号 Group/Section/Page 覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；要求目标及后代 ID、关系、Page 内容保持。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级。 |
 | `delete` | Delete-Sandbox 与 allowlisted disposable group；写入加非永久 Delete，永久删除关闭；`--keep-worksite` 保持 Notebook 打开并记录回收站目标 |
 | Page/Section/Group Copy | 对应最小源和目标；每个源容器均含严格富内容父页与三个混合 List/Tag 项的语义子页；默认执行可恢复清理，显式 `--keep-worksite` 在 after/mapping 验证后保留精确目标 ID |
 | Notebook Copy | 最小 Notebook 同样包含严格父页和 List/Tag 语义子页；Copy 开启、Delete 关闭，默认关闭副本；显式 `--keep-worksite` 保持副本打开并记录路径 |
@@ -164,7 +164,7 @@ Delete-Sandbox
 | Report | 只读取本地 artifacts，不启动 MCP |
 | Source lifecycle | wrapper 仅支持 `create_fresh_notebook`、精确 get/close；不启动额外 MCP |
 
-永久 OneNote Delete 始终关闭。Raw XML 默认关闭，且除 `reparent-page`、`reparent-section-group` 两个受控能力探针外，其他场景均保持关闭；探针 XML 只能由 runner 使用本次 disposable manifest 的精确 ID 构造，不接受外部 XML 参数。
+永久 OneNote Delete 始终关闭。三个 Reparent 场景只启用 Writes 与统一 Reparent 实验门；Raw XML 在全部 Reparent 场景中关闭，runner 不构造、不接收也不传递 hierarchy XML。
 
 ### 同 Notebook Reparent 能力
 
@@ -177,9 +177,9 @@ Delete-Sandbox
 
 真实运行只能由用户本人分别显式启动。`reparent-page` 的 Description 明示编号 Page 从 `01-Source-Section` 到 `02-Destination-Section` 再恢复的状态和富内容门限；`reparent-section-group` 的 Description 明示 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup 三条编号路线。两个场景都把 COM 返回成功仅视为“请求已返回”，不视为能力成立。
 
-Page 探针接受两种原生结果：目标 ID 保持，或全树中恰好发生 `旧 Page ID 消失 + 目标 Section 新增一个 Page ID` 的一对一替换。后者必须记录 `old→new`，且新 Page 的 Notebook、标题、page level、父子缩进、富内容语义摘要和内容对象语义必须与原 Page 一致；Rich Text、Table、List、Tag、Image 的 fixture 能力在 mutation 前已经过门限。富内容摘要忽略 Page/内容对象 ID，并把 TagDef/Tag index 解析为类型和符号后比较，其余格式、结构、文本和 Image Data 保持严格。所有无关对象仍要求 ID、关系、稳定内容 hash 和内容对象身份不变。默认恢复使用正向回读得到的新 ID；OneNote 再次重映射时记录第三个 ID，并按逻辑位置和相同富内容摘要验证恢复，不虚构原 ID 已恢复。场景没有 Copy/Delete 权限，不调用 `copy_page` 或 `DeleteHierarchy`，也不把回收站可见性作为验收条件。
+Page typed 场景接受两种原生结果：目标 ID 保持，或全树中恰好发生 `旧 Page ID 消失 + 目标 Section 新增一个 Page ID` 的一对一替换。后者必须记录 `old→new`，且新 Page 的 Notebook、标题、page level、父子缩进、富内容语义摘要和内容对象语义必须与原 Page 一致；Rich Text、Table、List、Tag、Image 的 fixture 能力在 mutation 前已经过门限。富内容摘要忽略 Page/内容对象 ID，并把 TagDef/Tag index 解析为类型和符号后比较，其余格式、结构、文本和 Image Data 保持严格。所有无关对象仍要求 ID、关系、稳定内容 hash 和内容对象身份不变。默认恢复使用正向回读得到的新 ID；OneNote 再次重映射时记录第三个 ID，并按逻辑位置和相同富内容摘要验证恢复，不虚构原 ID 已恢复。场景没有 Copy/Delete 权限，不调用 `copy_page` 或 `DeleteHierarchy`，也不把回收站可见性作为验收条件。
 
-SectionGroup 探针仍要求同一目标 ID、全树 ID 集合、全部后代和 Page 内容身份保持不变；每步回读，默认按第三、第二、第一条路线逆序恢复。`--keep-worksite` 只在全部正向验证通过时保留现场。请求被忽略、Page ID 转换不是精确一对一、富内容变化、无关对象变化或恢复失败都会非零退出并保留 Notebook 与证据。一次通过只证明当前 OneNote/Office 组合，不自动形成 typed 工具合同。
+SectionGroup typed 场景仍要求同一目标 ID、全树 ID 集合、全部后代和 Page 内容身份保持不变；每步回读，默认按第三、第二、第一条路线逆序恢复。`--keep-worksite` 只在全部正向验证通过时保留现场。请求被忽略、Page ID 转换不是精确一对一、富内容变化、无关对象变化或恢复失败都会非零退出并保留 Notebook 与证据。一次通过只证明当前 OneNote/Office 组合，不构成跨版本保证。
 
 `reorder-section` 与 `reorder-page` 一样，不要求也不收集 OneNote 版本或 Office channel 参数。跨版本兼容性取证作为独立低优先级工作跟踪，见 [`docs/todo/007_cross_version_compatibility_evidence.md`](../../docs/todo/007_cross_version_compatibility_evidence.md)，不作为当前场景的运行前置条件。`reorder-section-group` 保留实现和扁平 CLI 注册，但只用于明确的独立诊断，不进入 `all`，也不得因跨版本取证重新解释为受支持能力。其静态状态可无副作用检查：
 
