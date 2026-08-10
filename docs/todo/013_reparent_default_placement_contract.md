@@ -180,7 +180,7 @@ Tool 描述明确后续 Reorder 是独立 mutation；Reparent 响应提供 fresh
 3. 先补 sibling sequence 的 parser/service 合同和多 anchors mock，再扩展现有 manual-validation fixtures/assertions。
 4. 用户重新运行增强场景，分别确认 Page、Section→Notebook、Section→SectionGroup 的追加语义。
 5. 证据成立后更新 tool 描述、object model、architecture、README 和场景文档；否则采用 `backend_determined` 回退合同。
-6. TODO 010/011 完成后，把增强场景的 dry-run 和 fixture recipe 接入相应框架，但它们不是定义默认落点的前置条件。
+6. TODO 010/011 已完成；实现增强场景时直接把 dry-run case 和 fixture recipe 接入现有 Scenario registry，不得新增并行 catalog 或 fixture switch。它们仍不是定义默认落点的前置条件。
 
 ## 非目标
 

@@ -124,8 +124,8 @@ close_exact_notebook
 
 ## 当前实现与待验收证据
 
-- `scenarios/common/specs.py` 固定声明十个公开 scenario 的 fixture profile、完整 policy 和 tool allowlist；
-- `scenarios/common/fixtures.py` 使用外部传入的唯一 MCP client 创建场景最小 fixture；
+- `scenarios/common/specs.py` 固定声明公开 scenario 的 fixture profile、完整 policy 和 tool allowlist；
+- 每个 Scenario 显式持有 `scenarios/fixture_recipes/<scenario>.py` 中的唯一 recipe；`scenarios/common/fixture_runtime.py` 使用外部传入的唯一 MCP client 编排构建、snapshot、验证和证据持久化，不再按 scenario 名称分派；
 - fixture 完成后会对 active IDs、父子关系、Page tree、源/目标隔离和富内容能力执行 profile invariant，并把通过项写入 `fixture-result.json`；
 - `lifecycle.py` 只公开 `create_fresh_notebook`、`get_exact_notebook`、`close_exact_notebook`，并写入精确 lease；
 - `run-metrics.json` 记录 phase elapsed seconds、旧架构预期启动数、本次实际 MCP 启动数、MCP tool calls 和 content-free bridge call counts；失败时也会保留截至唯一 scenario process 退出时的计数与耗时；

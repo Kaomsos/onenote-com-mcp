@@ -44,7 +44,7 @@
   --keep-worksite
 ```
 
-这只是目标 CLI，实施前不构成当前可用命令。场景设置 `registered_for_all = False`，特殊入口 `all` 永远不得透传或自动选择交互场景。
+这只是目标 CLI，实施前不构成当前可用命令。场景设置 `included_in_all = False`，特殊入口 `all` 永远不得透传或自动选择交互场景。
 
 Runner 的有界状态机：
 
@@ -98,7 +98,7 @@ Copy 场景允许预期的 `content_type_unverified`，因为它的职责正是�
 
 ## 实施范围
 
-1. 新增两个独立 `Scenario` 子类并显式注册，均设置 `registered_for_all = False`；不得新增 `prepare/resume/inspect` 等公开 helper action。
+1. 新增两个独立 `Scenario` 子类并显式注册，均设置 `included_in_all = False`；不得新增 `prepare/resume/inspect` 等公开 helper action。
 2. 为交互 checkpoint、run-bound confirmation、timeout、取消和 stdin EOF 建立可测试的 runtime abstraction，合同测试不得真实等待用户输入。
 3. 为每种类型创建独立 scaffold Page 和 exact-ID manifest；fixture 构建本身不得伪造 raw XML 内容，待验证对象必须由用户在 OneNote UI 中加入。
 4. 新增内容检测器，输出 requested/observed/missing/unexpected 类型和对象计数；检测不到精确类型时禁止 Copy/Move。

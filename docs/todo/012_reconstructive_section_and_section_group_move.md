@@ -208,7 +208,7 @@ move_section_group
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section-group --dry-run --json
 ```
 
-真实命令仍只能由用户本人显式启动。两个场景初始设置 `registered_for_all=False`，在容器 Copy 与失败语义完成真实评审前不得进入 `all`。
+真实命令仍只能由用户本人显式启动。两个场景初始设置 `included_in_all=False`，在容器 Copy 与失败语义完成真实评审前不得进入 `all`。
 
 ### 双 Notebook fixture
 
@@ -327,7 +327,7 @@ move_section_group
 - Section/SectionGroup 仅执行一次 `permanently=false` 的 typed 根删除，并验证全部原源 ID 从活动 hierarchy 消失；
 - Copy、源重校验、删除和最终目标复核的每类失败都有明确 outcome、created/removed/remaining IDs 和失败保留证据；
 - `LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS`、health-check、README、设计文档和 policy 测试完成，现有 Page Move 配置保持兼容；
-- `move-section`、`move-section-group` 具名场景使用两个 fresh disposable Notebook、单 MCP、角色化 lease、静态最小权限和 `registered_for_all=False`；
+- `move-section`、`move-section-group` 具名场景使用两个 fresh disposable Notebook、单 MCP、角色化 lease、静态最小权限和 `included_in_all=False`；
 - manual-validation 纯测试与完整 pytest 通过；所有 Agent 执行的新场景命令都显式带 `--dry-run`；
 - 用户分别确认 `copy-section`、`copy-section-group` 以及两个新 container Move 场景的真实证据；失败或未运行不能标记为通过；
 - 当前 tool contracts、对象模型、architecture、manual-validation README、TODO 002/004/009/010/011 和 TODO 索引与最终实现一致。

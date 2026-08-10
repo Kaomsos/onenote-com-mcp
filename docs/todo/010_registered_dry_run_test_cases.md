@@ -1,7 +1,7 @@
 # 010：Manual Validation Dry-run 自动测试用例注册
 
 > ID：010
-> 状态：待办
+> 状态：已完成
 > 优先级：P1
 > 类型：验证架构 / 自动化合同与安全边界
 > 更新日期：2026-08-10
@@ -219,3 +219,15 @@ README 中需要长期保留的 dry-run 示例使用稳定标记关联 `document
 - dry-run payload 的 policy、allowlist、budget、ordered steps、lifecycle 和零副作用合同拥有共享断言；
 - manual-validation 纯测试与完整 pytest 通过，所有执行日志中的 manual scenario 命令都显式包含 `--dry-run`；
 - 当前开发文档、人工验证 README、AGENTS 安全边界和 TODO 索引与最终实现一致。
+
+## 实施结果与完成证据
+
+在 TODO 011 的 Scenario metadata/recipe 所有权落地后，2026-08-10 完成本 TODO：
+
+- `DryRunCase`、`DryRunVariant` 和 `DryRunExpectations` 为冻结声明；case schema 拒绝 command token 以及 harness 独占的 `--dry-run`、`--json`、`--run-dir`、Notebook/lifecycle 和 timeout 参数；Registry 对 case ID、documentation key、scenario 归属和覆盖完整性 fail closed；
+- 每个公开 Scenario 自动注册 `default` 与 `keep-worksite`，Rename/Page Reorder 在自身类中声明有限参数变体；catalog 另含 `all.default`，共 32 个稳定 case。所有 `included_in_all=False` 场景仍在 catalog 中；
+- `registered_for_all`/`get_registered_test_scenarios()` 已替换为语义明确的 `included_in_all`/`get_all_scenario_names()`；真实 `all` allowlist 保持原有 10 个场景，没有因 pytest 收集扩张；
+- `common/dry_run.py` 提供无 I/O plan builder；CLI 和测试共享它。AST 合同拒绝 MCP client、lifecycle、fixture runtime 和 subprocess import；
+- 注册 case 全部经过正式 parser 和 in-process CLI round-trip。Harness 强制安全参数，并以 MCP、stdio child、OneNote bridge、lifecycle、evidence write 和 subprocess sentinel 证明零外部副作用，同时断言 run directory 不存在；
+- README 中 14 个默认场景和 `all.default` 的带标记 PowerShell block 与 registry 渲染逐字一致；测试只解析比较，不执行 Markdown；
+- `.venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run --json` 显式运行成功，10 个 `all` 子场景均只收到 `--dry-run --json`；manual-validation 纯测试与完整 pytest 全部通过。没有运行任何缺少 `--dry-run` 的 manual scenario 命令。

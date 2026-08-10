@@ -67,7 +67,7 @@ Reorder returned success, but the requested sibling order was not observed.
 
 - 保留 Section Reorder 的 schema、policy、同父级拒绝、bridge 失败和写后不变量自动化合同；
 - 保留 `reorder-section` 的编号 fixture、Description、before/after/restored 和 `--keep-worksite` 流程；
-- `reorder-section-group` 保留完整实现和单独 CLI 注册，明确标记为功能受限、真实验证失败，并显式设置 `registered_for_all=False`；它只作为诊断探针和回归证据，不列为用户应执行的正向验收；
+- `reorder-section-group` 保留完整实现和单独 CLI 注册，明确标记为功能受限、真实验证失败，并显式设置 `included_in_all=False`；它只作为诊断探针和回归证据，不列为用户应执行的正向验收；
 - `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP` 必须保持 `false`，不得解释为授权使用；
 - Agent、pytest、CI、hook、timer 或 watcher 仍不得启动任何真实 OneNote mutation 场景。
 

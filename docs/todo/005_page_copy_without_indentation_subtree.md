@@ -1,4 +1,4 @@
-# 005：Page Copy 可选排除缩进子树
+# 005：Page Copy 默认仅复制单页，可选包含缩进子树
 
 > ID：005
 > 状态：待办
@@ -12,16 +12,17 @@
 
 ## 目标
 
-为 Page Copy 增加向后兼容的范围参数：
+为 Page Copy 增加范围参数，并将默认行为改为只复制指定 Page：
 
 ```json
 {
-  "include_descendants": true
+  "include_descendants": false
 }
 ```
 
-- `true` 保持现有默认语义：复制完整缩进子树；
-- `false` 只复制 `page_id` 指定的 Page，不创建其缩进后代；
+- 省略参数或显式传入 `false` 时，只复制 `page_id` 指定的 Page，不创建其缩进后代；
+- 只有显式传入 `true` 时，才复制指定 Page 及其完整缩进子树；
+- 该默认值变更会改变未显式传参的既有调用语义，实施时必须在 tool 描述、README 和迁移说明中明确记录；
 - 该参数同时进入 `plan_copy` 与 `copy_page`，并纳入 `plan_digest`；计划值和执行值不一致时必须在 mutation 前拒绝；
 - 非 Page 源不得用该参数改变 Section、SectionGroup 或 Notebook 的递归 Copy 语义。
 
@@ -40,16 +41,17 @@
 1. 扩展 Page Copy 的 tool/service 参数、源快照选择和稳定 `plan_digest` payload；
 2. 让计划的 `estimated`、`snapshots.source`、步骤计数和 Copy budget 只反映实际选择范围；
 3. 调整链接改写输入集合，使未选择的缩进后代保持范围外链接语义；
-4. 为默认完整子树与显式单页两种模式补充成功、过期计划、参数不一致、预算、名称冲突、保真和部分失败合同测试；
+4. 为默认单页与显式完整子树两种模式补充成功、过期计划、参数不一致、预算、名称冲突、保真和部分失败合同测试；
 5. 在 `tests/manual_validation/` 增加具名、隔离、human-gated 的单页 Copy 场景，使用 Parent/Child fixture 证明只创建 Parent 副本、Child 保持源端且没有目标映射；真实执行仍只允许用户显式启动；
 6. 实现完成后同步更新 `docs/design/tool_contracts.md`、根 README、对象—操作矩阵和人工验证文档。
 
 ## 完成定义
 
-- `include_descendants` 默认值保持现有完整子树行为，现有调用者无需修改；
-- `include_descendants=false` 时只创建并验证指定 Page，源缩进后代不出现在 `id_map` 或目标 hierarchy；
+- `include_descendants` 默认值为 `false`，省略参数时只创建并验证指定 Page，源缩进后代不出现在 `id_map` 或目标 hierarchy；
+- `include_descendants=true` 时复制并验证完整缩进子树，保持原有完整子树能力；
+- 默认语义变化已在 tool 描述、README 和迁移说明中明确告知调用方；
 - 参数已绑定进计划摘要，计划/执行范围不一致会在任何 mutation 前 fail closed；
-- 自动化合同覆盖默认兼容性、单页范围、链接、预算、策略拒绝和部分失败；
+- 自动化合同覆盖默认单页语义、显式完整子树、链接、预算、策略拒绝和部分失败；
 - 具名 manual-validation scenario、dry-run、权限/tool allowlist 和证据字段齐全；
 - 用户在 disposable Notebook 中显式确认真实 OneNote 单页 Copy 行为后，记录 OneNote/Office 版本与证据；
 - 当前设计文档、README、人工验证文档和 TODO 索引同步更新。

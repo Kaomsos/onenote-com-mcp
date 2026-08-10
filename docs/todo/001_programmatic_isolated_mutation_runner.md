@@ -49,9 +49,9 @@ tests/manual_validation/
   [--json]
 ```
 
-当前成功能力验收 scenario：`create`、`rename`、`reorder-page`、`reorder-section`、`reparent-page`、`reparent-section`、`reparent-section-group`、`delete`、`copy-page`、`copy-section`、`copy-section-group`、`copy-notebook`、`move-page`。三类 Reparent 都只允许同一 Notebook；Page 和 SectionGroup 场景仍不进入 `all`。`reorder-section-group` 保留可单独调用的诊断实现，但明确标记为功能受限、真实验证失败，并显式设置 `registered_for_all=False`；后端仅维持按名称固定升序，产品契约拒绝该操作。
+当前成功能力验收 scenario：`create`、`rename`、`reorder-page`、`reorder-section`、`reparent-page`、`reparent-section`、`reparent-section-group`、`delete`、`copy-page`、`copy-section`、`copy-section-group`、`copy-notebook`、`move-page`。三类 Reparent 都只允许同一 Notebook；Page 和 SectionGroup 场景仍不进入 `all`。`reorder-section-group` 保留可单独调用的诊断实现，但明确标记为功能受限、真实验证失败，并显式设置 `included_in_all=False`；后端仅维持按名称固定升序，产品契约拒绝该操作。
 
-特殊批量入口：`run.py all [--timeout <seconds>] [--dry-run] [--json] [--verbosity quiet|normal|verbose]`。它只读取 `SCENARIO_REGISTRY` 中 `registered_for_all=True` 的类实例，不支持 `--run-dir`，默认 quiet，仅输出进度、错误和失败。
+特殊批量入口：`run.py all [--timeout <seconds>] [--dry-run] [--json] [--verbosity quiet|normal|verbose]`。它只读取 `SCENARIO_REGISTRY` 中 `included_in_all=True` 的类实例，不支持 `--run-dir`，默认 quiet，仅输出进度、错误和失败。
 
 - 默认 Notebook：`__LOCAL_MCP_TEST_ISOLATED__<UTC_TIMESTAMP>`。
 - 默认目录：`.local-validation\run-<同一 UTC_TIMESTAMP>`。

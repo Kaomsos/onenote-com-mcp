@@ -1,14 +1,14 @@
 # 011：Scenario 自管理 Fixture Recipe 与拆分集中式 Fixtures
 
 > ID：011
-> 状态：待办
+> 状态：已完成
 > 优先级：P1
 > 类型：验证架构 / Scenario 所有权与 Fixture 可维护性
 > 更新日期：2026-08-10
 
 ## 背景与当前问题
 
-[`tests/manual_validation/scenarios/common/fixtures.py`](../../tests/manual_validation/scenarios/common/fixtures.py) 当前约 1439 行。它已不再只是共享 fixture helper，而是同时承担：
+实施前的 `tests/manual_validation/scenarios/common/fixtures.py` 约 1439 行。它已不再只是共享 fixture helper，而是同时承担：
 
 - 14 个公开 Scenario 的具体 fixture 构建，并在 `prepare_scenario_fixture()` 中通过 `if/elif args.scenario` 分派；
 - Reorder/Reparent 的长篇 Description 文本和场景专属标题；
@@ -355,3 +355,15 @@ Recipe 通过声明式 `evidence` 返回这些字段，由 common persistence ad
 - 单 Scenario 单 MCP、fresh Notebook、静态最小权限、失败保留和 HUMAN-GATED 真实执行边界保持不变；
 - manual-validation 纯测试与完整 pytest 通过；Agent 执行的所有 scenario 检查都显式带 `--dry-run`；
 - manual-validation AGENTS、README、开发验证文档、TODO 003/010 的相关引用和 TODO 索引与最终架构一致。
+
+## 实施结果与完成证据
+
+2026-08-10 已按本 TODO 先于 TODO 010 完成迁移：
+
+- 14 个公开 Scenario 各自显式持有唯一 recipe；场景专属 Description、build 与 validator 位于 `tests/manual_validation/scenarios/fixture_recipes/`，Copy/Move 只共享不按 scenario 名称分派的 `layered_copy.py` component；
+- 新增 `common/fixture_models.py` 与 `common/fixture_runtime.py`。Runtime 只从已选 Scenario 取得 recipe，`common/fixtures.py` 已删除；typed primitive 继续保留在职责收窄后的 `fixture_builders.py`；
+- `FixtureRecorder` 对 manifest key、重复 key、缺失/变化 ID 和 evidence key fail closed，每次登记后保存 pending manifest；build、snapshot 或 validation 异常统一保存 failed manifest/result、精确已创建 ID、source Notebook 路径和 lifecycle lease 路径；
+- Registry 在 import/注册阶段核对 recipe 唯一所有权、scenario/profile 一致性、manifest key 格式以及 creation tools 是 allowlist 子集；
+- recording fake 合同逐一执行全部公开 recipe，证明观测到的 fixture mutation 调用不越出 profile creation tools 或 scenario allowlist；ownership 合同证明 common fixture runtime/primitives 无 `args.scenario`、公开 scenario 名称分派或第二 registry；
+- 原有 manifest、`prepared.json`、`fixture-result.json`、copy/reparent evidence 与 report 消费字段保持兼容，并补充同内容的 `fixture-snapshot.json`；
+- `.venv\Scripts\python.exe -m pytest tests\manual_validation\tests -q` 与完整 `.venv\Scripts\python.exe -m pytest -q` 通过。未执行任何真实 OneNote scenario。
