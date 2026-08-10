@@ -12,7 +12,7 @@
 
 ### 测试替身与契约验证
 
-项目中的默认自动化测试不会连接 OneNote，而是用 Mock bridge 替代真实 COM 后端，验证工具注册、参数转换、权限分支、服务编排和错误返回。需要写权限的测试还通过单独的 `write_contract` 标记运行，以便明确区分普通只读回归和 mutation 合同测试。对于 Copy 和重建式 Move，这一层可以稳定覆盖计划摘要是否确定、计划过期后是否在 mutation 前拒绝、预算是否提前生效、未知 XML 节点是否被报告、部分失败是否返回已创建对象，以及删除门是否只在内容验证通过后打开。
+项目中的默认自动化测试不会连接 OneNote，而是用 Mock bridge 替代真实 COM 后端，验证工具注册、参数转换、权限分支、服务编排和错误返回。需要写权限的测试还通过单独的 `write_contract` 标记运行，以便明确区分普通只读回归和 mutation 合同测试。对于 Copy 和 Move，这一层可以稳定覆盖计划摘要是否确定、计划过期后是否在 mutation 前拒绝、预算是否提前生效、未知 XML 节点是否被报告、部分失败是否返回已创建对象，以及删除门是否只在内容验证通过后打开。
 
 这里更准确的名称是“测试替身与契约验证”，而不只是 Mocking。Stub 可以返回预设结果，Mock 可以检查调用方式，Fake 可以提供一个简化但可运行的实现；契约测试则进一步约束调用方与提供方对接口的共同理解。Google 的测试建议也强调：真实实现的保真度最高，其次是 Fake，只有无法使用前两者时才选择 Mock，因为 Mock 最容易与真实依赖的行为发生漂移。[Google Testing Blog：Increase Test Fidelity By Avoiding Mocks](https://testing.googleblog.com/2024/02/increase-test-fidelity-by-avoiding-mocks.html)
 
@@ -20,9 +20,9 @@
 
 ### 门控式实后端验证
 
-为了补上真实后端证据，项目在 `tests/manual_validation/` 中建立了一个统一 runner。真实 mutation 不会由 pytest、CI、hook、安装脚本、import 或前台/后台 Agent 执行；用户必须本人在终端明确选择 `create`、`rename`、`move` 等具名场景。每个扁平的 `run.py <scenario>` 本身都是完整隔离闭环，会创建全新 Notebook、准备 fixture、运行所选场景（`create` 仅保留预设 fixture）、报告并关闭或保留 Notebook；`validate` 和诊断辅助 action 均不是公开入口。运行这条命令本身就是对该场景的一次授权，不再要求用户逐步点击确认；Agent 只能准备代码、运行纯合同测试并把命令交给用户。
+为了补上真实后端证据，项目在 `tests/manual_validation/` 中建立了一个统一 runner。真实 mutation 不会由 pytest、CI、hook、安装脚本、import 或前台/后台 Agent 执行；用户必须本人在终端明确选择 `create`、`rename`、`reparent-section` 等具名场景。每个扁平的 `run.py <scenario>` 本身都是完整隔离闭环，会创建全新 Notebook、准备 fixture、运行所选场景（`create` 仅保留预设 fixture）、报告并关闭或保留 Notebook；`validate` 和诊断辅助 action 均不是公开入口。运行这条命令本身就是对该场景的一次授权，不再要求用户逐步点击确认；Agent 只能准备代码、运行纯合同测试并把命令交给用户。
 
-授权之后，runner 不会给任何 Agent 或测试进程开放笼统的“完整权限”。每个 scenario 最多启动一个 MCP 子进程，其静态权限与 tool allowlist 只覆盖该场景的最小 fixture、mutation、证据读取和 restore/cleanup 闭包，并在 fixture 前通过 `health_check` 核对每个权限位；不同场景之间不使用权限并集。源 Notebook create/get/close 由只暴露生命周期操作的窄 wrapper 完成，并通过 lifecycle lease 绑定精确 ID、名称和本地路径。永久 OneNote Delete 和 Raw XML 始终关闭；Copy、Delete 和重建式 Move 只在对应具名场景启用。
+授权之后，runner 不会给任何 Agent 或测试进程开放笼统的“完整权限”。每个 scenario 最多启动一个 MCP 子进程，其静态权限与 tool allowlist 只覆盖该场景的最小 fixture、mutation、证据读取和 restore/cleanup 闭包，并在 fixture 前通过 `health_check` 核对每个权限位；不同场景之间不使用权限并集。源 Notebook create/get/close 由只暴露生命周期操作的窄 wrapper 完成，并通过 lifecycle lease 绑定精确 ID、名称和本地路径。永久 OneNote Delete 始终关闭；Raw XML 只在两个不进入 `all`、不接受外部 XML 的 advanced `reparent-*` 能力场景中启用；Copy、Delete 和 Move 也只在对应具名场景启用。
 
 真正的执行过程仍然是自动化的：runner 采集 before 快照，调用一次 mutation，回读 after 状态，验证对象 ID、父子关系、页面顺序和内容摘要，然后对可恢复操作执行恢复或清理并生成 restored 证据。非幂等 mutation 不自动重试；如果 Copy 只完成了一部分，报告会保留 `created_ids`、`id_map` 和剩余状态，让用户基于证据处理，而不是让 Agent 猜测性地再次修改数据。
 
@@ -34,7 +34,7 @@
 
 ### 1. 权限策略与安全不变量测试
 
-第一类补充不是模拟业务后端，而是直接测试安全门本身。例如，自动检查所有写工具是否声明写权限、删除工具是否额外要求删除权限、重建式 Move 是否同时依赖 Copy 和非永久删除，以及任何默认配置是否都无法开启 Raw XML 或永久删除。还可以检查 manual runner 是否只有一个入口、每个场景的权限矩阵是否固定、mutation 是否禁用自动重试。
+第一类补充不是模拟业务后端，而是直接测试安全门本身。例如，自动检查所有写工具是否声明写权限、删除工具是否额外要求删除权限、Move 是否同时依赖 Copy 和非永久删除，以及任何默认配置是否都无法开启 Raw XML 或永久删除。还可以检查 manual runner 是否只有一个入口、每个场景的权限矩阵是否固定、mutation 是否禁用自动重试。
 
 这类测试很适合本项目，因为它完全不接触 OneNote，却能防止一次普通重构意外拆掉安全边界。它不能验证业务结果，但可以作为所有其他测试的前置条件：如果无法证明权限门默认关闭，就不应该继续讨论如何安全地打开它。
 
@@ -66,7 +66,7 @@ OneNote COM 并没有等价的 server-side dry-run，因此本项目不能虚构
 
 Shadow testing 会把真实流量复制给候选系统，但不让候选结果影响用户。AWS SageMaker 的 Shadow Test 就是让新模型和现有模型同时接收请求，仅返回现有模型的结果，再离线比较候选输出。[AWS：Shadow tests](https://docs.aws.amazon.com/sagemaker/latest/dg/shadow-tests.html) 对 OneNote mutation 而言，完全真实的 Shadow 很难成立：如果不执行 COM 写入，就无法观察真实副作用；如果执行，又已经不再是 Shadow。可行的变体是让候选 Agent 针对只读快照生成计划和工具调用，与人工操作或旧版本结果比较，但禁止 dispatch mutation。
 
-Canary 或渐进暴露则适合功能通过隔离实测之后的发布阶段。Azure Well-Architected Framework 建议先向小范围用户开放新版本，观察稳定后再逐步扩大范围。[Microsoft Azure：Safe deployment practices](https://learn.microsoft.com/en-us/azure/well-architected/operational-excellence/safe-deployments) 本项目不是持续承载线上流量的服务，因此不需要按请求百分比做传统 Canary；但可以按能力渐进开放：先只读，再开放可恢复写入，随后是实验性 Copy，最后才是会改变 Page ID 的重建式 Move。同时按 OneNote 版本和 Office channel 记录实测范围，避免一次机器上的成功被误写成普遍保证。
+Canary 或渐进暴露则适合功能通过隔离实测之后的发布阶段。Azure Well-Architected Framework 建议先向小范围用户开放新版本，观察稳定后再逐步扩大范围。[Microsoft Azure：Safe deployment practices](https://learn.microsoft.com/en-us/azure/well-architected/operational-excellence/safe-deployments) 本项目不是持续承载线上流量的服务，因此不需要按请求百分比做传统 Canary；但可以按能力渐进开放：先只读，再开放可恢复写入，随后是实验性 Copy，最后才是会改变 Page ID 的 Move。同时按 OneNote 版本和 Office channel 记录实测范围，避免一次机器上的成功被误写成普遍保证。
 
 ## 从单点技巧到分层测试体系
 

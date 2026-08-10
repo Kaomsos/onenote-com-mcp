@@ -44,7 +44,7 @@ src/local_onenote_mcp/
 │  ├─ hierarchy.py           层级 List/Get/Query/Path/Tree
 │  ├─ pages.py               Page 内容读取与 Search
 │  ├─ mutations.py           typed Create/Update/Delete
-│  ├─ copying.py             P2 Copy/重建式 Page Move
+│  ├─ copying.py             P2 Copy/Page Move
 │  ├─ operations.py          Export/导航/Sync/Close
 │  ├─ advanced.py            启动时可选的开发 profile
 │  └─ __init__.py            默认/高级工具集合和注册
@@ -123,9 +123,9 @@ classDiagram
         +current()$ MutationPolicy
         +require_write()
         +require_delete(permanently)
-        +require_experimental_move()
+        +require_experimental_reparent_section()
         +require_experimental_copy()
-        +require_reconstructive_move_page()
+        +require_move_page()
         +require_raw_xml()
     }
     class SearchBudget {
@@ -178,7 +178,7 @@ classDiagram
 | `PageService` | `services.pages` | 读取 Page XML/text/object/binary，确认 Page，计算内容摘要。 |
 | `SearchService` | `services.search` | 执行有显式 scope 和硬预算的 local scan 或 OneNote index 搜索。 |
 | `MutationService` | `services.mutations` | typed 创建、修改、删除；策略检查、乐观确认和操作后回读均在此。 |
-| `CopyService` | `services.copying` | 无状态 Copy 计划、四层递归复制、Page XML 保真报告和重建式 Move 删除门。 |
+| `CopyService` | `services.copying` | 无状态 Copy 计划、四层递归复制、Page XML 保真报告和 Move 删除门。 |
 | `OperationsService` | `services.operations` | 特殊目录、超链接、父级、导出、导航、同步、关闭及高级应用操作。 |
 | `MutationPolicy` | `policy` | 从环境变量生成不可变权限快照。 |
 | `SearchBudget` | `policy` | 从环境变量生成不可变搜索预算。 |
@@ -298,7 +298,7 @@ classDiagram
 | `tools.operations` | 7 | operations |
 | 合计 | 50 | — |
 
-`tools.advanced` 另有 7 个开发 profile 工具，仅当进程启动时 `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 才注册。注册并不代表取得写权限；service 仍会再次执行 write/delete/raw policy。
+`tools.advanced` 另有 7 个开发 profile 工具，仅当进程启动时 `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 才注册。注册并不代表取得写权限；service 仍会再次执行 write/delete/raw policy。逐工具合同见 [Advanced/低层操作](advanced_operations.md)。
 
 响应映射：
 
@@ -384,4 +384,4 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 2. `tools.context` 是进程级 service 绑定，适合当前单 server 实例；多租户或多 bridge 配置需要改为显式 MCP context 注入。
 3. PowerShell/COM 每次调用的延迟尚无正式基准；长驻 broker 必须先验证 COM apartment、超时和恢复语义。
 4. 字典是当前 MCP 边界格式；新增 DTO 时必须复用 `domain/` 的字段契约，不能建立第二套对象模型。
-5. Section Move 在真实 OneNote 版本隔离验证前仍保持实验开关关闭。
+5. Section Reparent 已通过用户隔离验收，仍由独立实验开关保护且只允许同一 Notebook。

@@ -14,7 +14,7 @@
 ## 安全与契约规则
 
 - 不得绕过 `MutationPolicy` 检查。如果新 mutation 能力的风险不同于现有写入或删除，必须为其设置独立且 fail-closed 的权限。
-- 永久删除、raw XML、实验性 Copy/Move 和重建式 Move 必须保持可独立审查，并默认关闭。
+- 永久删除、raw XML、实验性 Reparent、Copy 和 Move 必须保持可独立审查，并默认关闭。
 - 在支持的地方，mutation 使用精确 object ID 加当前 confirmation field。不得静默回退到名称匹配或宽泛目标。
 - Search 和 Copy 工作必须受其配置预算约束。预算耗尽是显式失败，不代表可以继续无界执行。
 - 绝不能直接编辑 `.one` 文件，也不能为 OneNote 内容增加云端或网络路径。

@@ -8,4 +8,4 @@
 
 | Lesson | 主题 | 证据范围 | Canonical 链接 |
 | --- | --- | --- | --- |
-| [`onenote_com_recycle_bin_visibility.md`](onenote_com_recycle_bin_visibility.md) | OneNote COM 回收站可见性不能作为非永久删除的必要验收条件 | 2026-08-09 隔离 reconstructive Page Move 人工观察与对应合同回归 | [`tool_contracts.md`](../design/tool_contracts.md)、[`isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md) |
+| [`onenote_com_recycle_bin_visibility.md`](onenote_com_recycle_bin_visibility.md) | OneNote COM 回收站可见性不能作为非永久删除的必要验收条件 | 2026-08-09 隔离 Page Move 人工观察与对应合同回归 | [`tool_contracts.md`](../design/tool_contracts.md)、[`isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md) |

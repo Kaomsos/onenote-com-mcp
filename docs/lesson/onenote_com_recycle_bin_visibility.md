@@ -2,7 +2,7 @@
 
 > 状态：当前有效的工程经验<br>
 > 观察日期：2026-08-09<br>
-> 范围：Windows OneNote Desktop、本地 COM、隔离的 reconstructive Page Move 人工验证<br>
+> 范围：Windows OneNote Desktop、本地 COM、隔离的 Page Move 人工验证<br>
 > 当前契约：[`../design/tool_contracts.md`](../design/tool_contracts.md)<br>
 > 验证流程：[`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md)
 
@@ -10,11 +10,11 @@
 
 `DeleteHierarchy(permanently=false)` 成功后，OneNote UI 可以在“已删除的笔记”中显示目标 Page，但 COM hierarchy 即使请求包含回收站，也可能不再返回该 Page 的旧 ID。因此，`is_in_recycle_bin=true` 是有价值的正向诊断证据，却不能作为非永久删除成功的必要条件。
 
-可靠的自动验收边界是：删除调用明确使用 `permanently=false`，并且目标经过有界回读后不再处于活动 hierarchy。对于 reconstructive Move，还必须在删除前完成目标内容与拓扑验证，并在删除后确认整棵源 Page 子树均不再活动。
+可靠的自动验收边界是：删除调用明确使用 `permanently=false`，并且目标经过有界回读后不再处于活动 hierarchy。对于 Move，还必须在删除前完成目标内容与拓扑验证，并在删除后确认整棵源 Page 子树均不再活动。
 
 ## 真实观察
 
-一次隔离的 `reconstructive-move-page --keep-worksite` 运行完成了目标 Page 子树复制，随后对源 Page 子树执行非永久删除。人工检查 OneNote UI 时，已删除的 List/Tag 子 Page 能在“已删除的笔记”中看到；但程序经过多次有界 `include_recycle_bin=true` hierarchy 观察，仍无法通过旧 ID 找到该 Page，最终因缺少 `is_in_recycle_bin=true` 而误报 partial failure。
+一次隔离的 `move-page --keep-worksite` 运行完成了目标 Page 子树复制，随后对源 Page 子树执行非永久删除。人工检查 OneNote UI 时，已删除的 List/Tag 子 Page 能在“已删除的笔记”中看到；但程序经过多次有界 `include_recycle_bin=true` hierarchy 观察，仍无法通过旧 ID 找到该 Page，最终因缺少 `is_in_recycle_bin=true` 而误报 partial failure。
 
 这次观察证明了下面这个组合可以真实出现：
 
@@ -47,7 +47,7 @@ UI 的“已删除的笔记”视图与 COM hierarchy 不是可以相互替代�
 
 ## 当前设计决策
 
-重建式 Move 现在采用以下分层证据：
+Move 现在采用以下分层证据：
 
 1. mutation policy 必须允许 Delete，但永久删除权限保持关闭；
 2. 每个源 Page 只调用 `DeleteHierarchy(permanently=false)`；

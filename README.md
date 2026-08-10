@@ -13,7 +13,7 @@ A local Microsoft OneNote MCP server for Windows. It controls the OneNote deskto
 - **Safe Execution Bridge:** Inputs are passed safely through JSON-based temp files, completely avoiding PowerShell string interpolation or risk of command injections.
 - **Typed Object Surface:** Stable Notebook, SectionGroup, Section, Page, and PageContentObject contracts with ID-only mutations.
 - **Single Hierarchy Parser:** Complete hierarchy and Search fragments flow through one bridge-independent typed parser; legacy raw-attribute hierarchy models are removed.
-- **Safe-by-Default Mutations:** Writes, deletes, permanent deletes, experimental moves, and raw development tools are independently disabled by default.
+- **Safe-by-Default Mutations:** Writes, deletes, permanent deletes, experimental reorder/move/copy operations, and raw development tools are independently disabled by default.
 - **Bounded Search:** Local text scanning requires an explicit scope and enforces candidate, per-page, total-character, and time budgets.
 
 > **Design Note:** PowerShell is leveraged as a reliable COM bridge because certain Windows/Office environments expose the OneNote COM interfaces directly to PowerShell while leaving them unavailable or restricted to Python's traditional automation libraries.
@@ -62,8 +62,9 @@ Add this to your `%APPDATA%\Claude\claude_desktop_config.json`:
         "LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS": "60000",
         "LOCAL_ONENOTE_ENABLE_WRITES": "false",
         "LOCAL_ONENOTE_ENABLE_DELETES": "false",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION": "false",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY": "false",
-        "LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE": "false"
+        "LOCAL_ONENOTE_ENABLE_MOVE_PAGE": "false"
       }
     }
   }
@@ -83,8 +84,9 @@ LOCAL_ONENOTE_MCP_TIMEOUT = "90"
 LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS = "60000"
 LOCAL_ONENOTE_ENABLE_WRITES = "false"
 LOCAL_ONENOTE_ENABLE_DELETES = "false"
+LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION = "false"
 LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY = "false"
-LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE = "false"
+LOCAL_ONENOTE_ENABLE_MOVE_PAGE = "false"
 ```
 
 *Restart your MCP client. Upon first execution, the launcher automatically creates a local Python virtual environment, installs the required packages, and hosts the stdio channel.*
@@ -190,7 +192,9 @@ The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental 
 * `update_page_title` / `append_to_page` / `replace_page_body`
 * `add_image_to_page`: Add local images. Automatically infers native dimensions if only width or height is provided.
 * `rename_section_group` / `rename_section` / `reorder_page`: Typed P1 structural edits with confirmation and read-back.
-* `move_section`: Experimental same-Notebook move, protected by a separate switch and isolated validation procedure.
+* `reorder_section`: Typed same-parent, ID-preserving Section reorder with full sibling XML and Page fidelity checks; protected by its experimental policy.
+* SectionGroup reorder is deliberately unsupported and must be rejected. The local OneNote backend exposes SectionGroup siblings in a fixed ascending name order; `UpdateHierarchy` may return success while ignoring a requested `A,C,B` element order, so neither Notebook-parent nor nested-parent SectionGroups have a supported reorder contract.
+* Reparent changes an object's container parent within the same Notebook; it never crosses Notebook boundaries and never means Copy followed by source deletion. The default typed tool is `reparent_section`, with the `reparent-section` validation command and its own experimental policy. The `reparent-page` and `reparent-section-group` validation commands remain advanced raw-hierarchy capabilities pending typed tools.
 
 ### 3. File & App Control
 * `publish_object`: Export any notebook, section, or page to local PDF files.
@@ -204,14 +208,14 @@ The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental 
 * Notebook deletion is not supported.
 * Raw hierarchy/page XML mutations and legacy generic destructive tools are not registered by default. They require an explicit local development profile and still cannot bypass write/delete policy.
 
-### 5. Experimental Copy & Reconstructive Page Move
+### 5. Experimental Copy & Page Move
 
 * `plan_copy` plus typed `copy_page` / `copy_section` / `copy_section_group` / `copy_notebook` use a content-aware, stale-plan digest before any mutation.
 * Page Copy always includes the complete indentation subtree. Copy never overwrites, merges, or auto-renames a conflicting target.
 * Unknown Page XML roots are omitted; an unknown descendant causes its containing top-level content block to be omitted. Both cases are returned as structured Copy issues rather than silently passed through.
 * Validated Page content types are `Outline`, `Image`, `RichText`, `Table`, `List`, and `Tag`. Stable rich content uses strict canonical read-back; List/Tag-only pages use a semantic tier that tolerates COM reserialization while still checking visible text, list kind, tag meaning/completion, and binary content.
-* `plan_reconstructive_move_page` / `reconstructive_move_page` create new Page IDs and issue a non-permanent source delete only after the defined content and topology checks pass. Success requires every source Page to disappear from the active hierarchy; COM recycle-bin metadata is reported when available but is not an acceptance gate.
-* These tools remain disabled unless `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true`; reconstructive Move additionally requires Deletes and `LOCAL_ONENOTE_ENABLE_RECONSTRUCTIVE_MOVE_PAGE=true`.
+* `plan_move_page` / `move_page` implement Move by reconstruction: they create new Page IDs and issue a non-permanent source delete only after the defined content and topology checks pass. Success requires every source Page to disappear from the active hierarchy; COM recycle-bin metadata is reported when available but is not an acceptance gate.
+* These tools remain disabled unless `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true`; Move additionally requires Deletes and `LOCAL_ONENOTE_ENABLE_MOVE_PAGE=true`.
 * Other content types remain unverified and prevent source deletion; use the human-gated named scenarios in [`tests/manual_validation/README.md`](tests/manual_validation/README.md).
 
 > **Identifier Resolution Protocol:**
@@ -257,7 +261,7 @@ uv run python scripts\smoke_mcp.py
 .venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run --verbosity normal
 
 # The user may remove --dry-run to run every isolated scenario serially. Each
-# child creates its own Notebook/run-dir; reconstructive-move-page remains strict.
+# child creates its own Notebook/run-dir; move-page remains strict.
 ```
 
 ---
@@ -287,4 +291,4 @@ Here is a typical markdown format that can be generated dynamically:
 
 ## Limits & Boundaries
 
-This server relies on the Windows COM API and is restricted to single-user, Windows-native environments. Section Move, four-layer Copy, and reconstructive Page Move remain experimental until validated against the installed OneNote build in a disposable notebook. Reconstructive Move changes Page IDs and cannot preserve external inbound links. Page body replacement and recursive Copy/Move are multi-step and non-atomic. Writes and deletes remain disabled unless explicitly enabled in the server environment.
+This server relies on the Windows COM API and is restricted to single-user, Windows-native environments. SectionGroup reorder is not supported because the backend provides a fixed ascending name order rather than a mutable sibling order. Reparent is restricted to hierarchy changes within one Notebook. Section Reparent, four-layer Copy, and Page Move remain experimental capabilities. Move always copies and verifies the target before non-permanently deleting the source; it creates new Page IDs and cannot preserve external inbound links. Page body replacement and recursive Copy/Move are multi-step and non-atomic. Writes and deletes remain disabled unless explicitly enabled in the server environment.

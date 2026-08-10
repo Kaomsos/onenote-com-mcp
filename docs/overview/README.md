@@ -5,4 +5,4 @@
 | 文档 | 范围 | 最近评估 |
 | --- | --- | --- |
 | [OneNote 笔记本的本地存储、云端表示与双向迁移](onenote_notebook_storage_and_migration.md) | 本地 `.one`/`.onetoc2` 目录、SectionGroup 文件夹映射、Page/Subpage 在 `.one` 中的对象形态、OneDrive/SharePoint package、`.url` 入口、私有缓存、备份以及本地与云端之间的安全迁移方法 | 2026-08-06 |
-| [Local OneNote MCP 对象模型审计与重构建议](onenote_object_model_assessment.md) | MCP 工具、COM bridge、对象模型和安全边界的阶段性审计 | 2026-08-04 |
+| [Local OneNote MCP 对象模型阶段性复审](onenote_object_model_assessment.md) | 从 `42092e5` 历史审计基线复核 typed 对象模型、工具矩阵、安全边界、Copy/Move 证据和剩余差距 | 2026-08-10 |

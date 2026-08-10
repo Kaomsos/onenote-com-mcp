@@ -1,7 +1,7 @@
 # OneNote 对象模型（P0/P1 实现版）
 
 > 状态：实现契约
-> 更新日期：2026-08-04
+> 更新日期：2026-08-10
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
@@ -116,7 +116,11 @@ Page 不公开 `name`，统一使用 `title`：
 | 显式范围正文搜索和硬预算 | P0 已实现 |
 | Metadata Query、Path、Tree、Page 缩进树 | P1 已实现 |
 | SectionGroup/Section Rename、Page Reorder | P1 已实现，默认关闭写入 |
-| Section 同 Notebook Move | P1 实验实现；真实 COM 隔离验证前由独立开关禁用 |
-| 四层 Copy、Page 重建式 Move | P2 实验实现；Copy 允许显式有损，Move 仅在保真验证通过后回收源；真实场景确认前独立开关禁用 |
+| Section 同父级 Reorder | P1 typed 实验实现；由独立开关 fail closed，已有用户确认的真实 UI 排序证据 |
+| SectionGroup 同父级 Reorder | 明确不支持并拒绝；后端仅提供按名称固定升序，不提供可变 sibling order |
+| Section 同 Notebook Move | P1 实验实现；保持 Section ID；真实 COM 隔离验证前由独立开关禁用 |
+| Reparent | 只表示同一 Notebook 内的容器换父级；Page、Section、SectionGroup 三类场景均已通过用户验收。Section 使用 typed `reparent_section`；Page/SectionGroup 当前仍是 [advanced raw-hierarchy 探针](advanced_operations.md#3-reparent-探针与产品能力边界)。 |
+| Section 跨 Notebook 转移 | 不属于 Reparent；若未来交付，应作为 Move 新建 Copy→验证→非永久删除源合同并产生新 ID。 |
+| 四层 Copy、Page Move | P2 实验实现；Move 天然采用 Copy→验证→非永久删除源的重建语义，仅在保真验证通过后处理源对象。 |
 | Notebook/Section/Page Export、导航、Notebook Sync/Close | P1 typed 契约已实现 |
 | Notebook Delete、SectionGroup Export | 不承诺 |
