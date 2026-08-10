@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ...mcp_stdio_client import (
@@ -17,6 +17,7 @@ from ...mcp_stdio_client import (
 )
 from .config import (
     COPY_NOTEBOOK_TOOLS,
+    COPY_PAGE_TOOLS,
     COPY_TOOLS,
     CREATE_TOOLS,
     DELETE_TOOLS,
@@ -57,6 +58,7 @@ class ScenarioSpec:
     fixture: FixtureProfile
     policy: ScenarioPolicy
     tool_allowlist: frozenset[str]
+    execution_contract: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +66,7 @@ class ScenarioSpec:
             "fixture_profile": self.fixture.as_dict(),
             "mutation_policy": self.policy.as_dict(),
             "tool_allowlist": sorted(self.tool_allowlist),
+            "execution_contract": dict(self.execution_contract),
         }
 
 
@@ -371,24 +374,48 @@ SCENARIO_SPECS = {
         _profile(
             "rich-page-copy",
             (
-                "Source/Rich-Page[strict rich text+table+image]",
-                "Source/Rich-Page/List-Tag-Page[semantic list+tag]",
-                "Destination",
+                "00-Description/00-Copy-Page-Description[original + two target states]",
+                "Source/01-Source-Parent[strict rich text+table+image]",
+                "Source/01-Source-Parent/02-Source-Child[semantic list+tag]",
+                "Destination[initially empty; receives both Copy targets]",
             ),
-            ("source_section", "parent_page", "semantic_page", "disposable_section"),
-            {"create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
+            (
+                "description_section",
+                "description_page",
+                "source_section",
+                "parent_page",
+                "semantic_page",
+                "disposable_section",
+            ),
+            {"create_section", "get_page_text"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
             checks=(
-                "strict parent uses canonical read-back verification",
-                "semantic child uses List/Tag semantic read-back verification",
+                "Description Page states the original and both expected target states",
+                "default omitted scope maps only the strict parent",
+                "explicit true scope maps the complete parent/child subtree",
+                "source parent and child remain unchanged after both copies",
             ),
         ),
         COPY_POLICY,
         frozenset(
-            COPY_TOOLS
-            | {"create_section"}
+            COPY_PAGE_TOOLS
+            | {"create_section", "get_page_text"}
             | LAYERED_PAGE_FIXTURE_TOOLS
         ),
+        {
+            "cases": [
+                {
+                    "name": "root-only-default",
+                    "include_descendants": "omitted",
+                    "expected_page_count": 1,
+                },
+                {
+                    "name": "full-subtree",
+                    "include_descendants": True,
+                    "expected_page_count": 2,
+                },
+            ]
+        },
     ),
     "copy-section": ScenarioSpec(
         "copy-section",

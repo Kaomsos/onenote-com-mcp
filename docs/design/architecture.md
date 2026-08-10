@@ -1,7 +1,7 @@
 # Local OneNote MCP 当前设计架构
 
 > 状态：当前实现态
-> 更新日期：2026-08-04
+> 更新日期：2026-08-10
 > 相关契约：[对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md)
 
 ## 1. 架构结论
@@ -176,9 +176,9 @@ classDiagram
 | `BaseService` | `services.base` | 提供 bridge 错误归一化和 enum 校验。 |
 | `HierarchyService` | `services.hierarchy` | 获取 typed snapshot，完成 List/Get/Query/Path/Tree、ID/路径解析、层级更新 XML。 |
 | `PageService` | `services.pages` | 读取 Page XML/text/object/binary，确认 Page，计算内容摘要。 |
-| `SearchService` | `services.search` | 执行有显式 scope 和硬预算的 local scan 或 OneNote index 搜索。 |
+| `SearchService` | `services.search` | 执行 typed scope 或全部已打开 Notebook scope 的 local scan / OneNote index 搜索；一次调用共享 hierarchy 快照、结果上限和硬预算。 |
 | `MutationService` | `services.mutations` | typed 创建、修改、删除；策略检查、乐观确认和操作后回读均在此。 |
-| `CopyService` | `services.copying` | 无状态 Copy 计划、四层递归复制、Page XML 保真报告和 Move 删除门。 |
+| `CopyService` | `services.copying` | 无状态 Copy 计划、默认单页/显式 Page 子树范围、递归容器复制、Page XML 保真报告和 Move 删除门。 |
 | `OperationsService` | `services.operations` | 特殊目录、超链接、父级、导出、导航、同步、关闭及高级应用操作。 |
 | `MutationPolicy` | `policy` | 从环境变量生成不可变权限快照。 |
 | `SearchBudget` | `policy` | 从环境变量生成不可变搜索预算。 |
@@ -354,8 +354,8 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 
 ### 5.3 Search
 
-- `local_scan`：typed hierarchy → 显式 scope → 候选数预检查 → 在字符/耗时预算内顺序读取 Page。
-- `onenote_index`：COM FindPages → 局部 XML → 用完整 typed catalog hydration → 可选正文 snippet。
+- `local_scan`：单次完整 typed hierarchy → typed scope 或全部已打开 Notebook 合成 scope → 全局候选数预检查 → 在调用级字符/耗时/结果预算内顺序读取 Page。
+- `onenote_index`：typed scope ID 或全局空 `start_id` → COM FindPages → 局部 XML → 用同一次完整 typed catalog hydration → 在调用级页数/字符/耗时预算内可选读取正文 snippet。
 - 两个后端不会静默 fallback。
 
 ## 6. 运行时生命周期与并发

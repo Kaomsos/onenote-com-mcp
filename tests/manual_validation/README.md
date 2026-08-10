@@ -34,12 +34,12 @@
 `--keep-worksite` 会隐含保持源 Notebook 打开，并在成功 read-back 验证后保留该 action 的现场：`rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 跳过反向恢复，Copy 跳过目标 cleanup，`create/delete/move-page` 保留其原本最终状态以供查看。精确目标 ID、原/现 predecessor、现场状态和人工清理说明写入 `worksite.json`。Page reparent 若由 OneNote 重映射 ID，会同时记录 `target_id`、`current_target_id` 与完整 `id_history`。该选项不会扩权；Copy 场景反而从 policy/tool allowlist 移除不再需要的 Delete/Close cleanup 权限。默认不传时仍执行各 scenario 原有的 restore/cleanup 与生命周期策略。`reorder-section`、`reorder-section-group`、`reparent-page` 和 `reparent-section-group` 不进入 `all`，但仍全部进入注册 dry-run 自动测试。
 
 所有会通过 COM 复制 Page XML 的具名场景（四个 Copy 层级以及
-`move-page`）都自动创建两页组成的完整 Page 子树：
+`move-page`）都自动创建两页组成的完整 Page fixture。Section/Group/Notebook Copy 与 Move 使用通用名称；Page Copy 为便于 UI 对照，使用等价的编号名称：
 
-- `Rich-Page`（父页）：只含已确认的 `Outline/RichText/Table/Image`，使用严格 canonical 验收；
-- `List-Tag-Page`（子页）：程序通过受限 HTML 自动生成三个编号/项目符号与 To Do 标签混合项（完成、未完成、完成），使用 `semantic_list_tag` 验收。
+- `Rich-Page` / `01-Source-Parent`（父页）：只含已确认的 `Outline/RichText/Table/Image`，使用严格 canonical 验收；
+- `List-Tag-Page` / `02-Source-Child`（子页）：程序通过受限 HTML 自动生成三个编号/项目符号与 To Do 标签混合项（完成、未完成、完成），使用 `semantic_list_tag` 验收。
 
-整个过程不暂停、不要求用户编辑，也不启用 raw XML。第二层忽略 COM 重新编号 `TagDef`、列表序号状态和 Outline 布局重排，但仍严格比较可见文本、列表种类、标签类型、完成状态和二进制内容。`List/Tag` 已进入 validated/lossless allowlist；这表示其保真结论由 `semantic_list_tag` 而不是 canonical XML 相等来证明。`MeetingInfo` 暂不属于验证范围。
+`copy-page` 在一次隔离运行中依次执行两个独立 case：`root-only-default` 在 plan 与 execute 中都省略 `include_descendants`，证明默认值只复制 `01-Source-Parent`，且 `02-Source-Child` 仍以原 ID、父 Page、level、order 和内容 hash 留在源 Section；`full-subtree` 显式提交 `include_descendants=true`，证明 Parent 与 Child 都进入 plan snapshot 和 `id_map`，并在目标中保持父子关系与相对层级。fixture 另建 `00-Description/00-Copy-Page-Description`，逐项说明原始状态、两种目标状态和默认清理状态。使用 `--keep-worksite` 时，`01-Root-Only-Copy-*` 与 `02-Full-Subtree-Copy-*` 会同时保留供 UI 对照。Section/SectionGroup/Notebook Copy 与 Page Move 仍选择完整两页子树。整个过程不暂停、不要求用户编辑，也不启用 raw XML。第二层忽略 COM 重新编号 `TagDef`、列表序号状态和 Outline 布局重排，但仍严格比较可见文本、列表种类、标签类型、完成状态和二进制内容。`List/Tag` 已进入 validated/lossless allowlist；这表示其保真结论由 `semantic_list_tag` 而不是 canonical XML 相等来证明。`MeetingInfo` 暂不属于验证范围。
 
 唯一特殊入口 `all` 会按显式 `included_in_all` 资格的顺序串行启动其中的 scenario：
 
@@ -235,7 +235,8 @@ Delete-Sandbox
 | `reparent-page` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_page` 提交精确 ID 与 confirmation，不要求 Raw XML。`00-Description/00-Reparent-Page-Description` 解释原生 `UpdateHierarchy` 与 ID 重映射；`01-Source-Section/01-Reparent-Page` 同页包含 Rich Text、Table、List、Tag、Image，再请求改属 `02-Destination-Section`，编号锚点保持无关。工具与 runner 双层验证 Page/内容对象一对一映射、富内容和无关对象；默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
 | `reparent-section-group` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_section_group` 提交精确 ID 与 confirmation，不要求 Raw XML。三组编号 Group/Section/Page 覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；要求目标及后代 ID、关系、Page 内容保持。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级。 |
 | `delete` | Delete-Sandbox 与 allowlisted disposable group；写入加非永久 Delete，永久删除关闭；`--keep-worksite` 保持 Notebook 打开并记录回收站目标 |
-| Page/Section/Group Copy | 对应最小源和目标；每个源容器均含严格富内容父页与三个混合 List/Tag 项的语义子页；默认执行可恢复清理，显式 `--keep-worksite` 在 after/mapping 验证后保留精确目标 ID |
+| Page Copy | `00-Copy-Page-Description` 明示原始与两种目标状态；case 1 省略参数验收默认仅根页，case 2 显式 `include_descendants=true` 验收完整两页子树；每个 case 分别稳定 plan、执行、回读并断言源端不变；默认清理两个目标，`--keep-worksite` 同时保留两种目标供 UI 对照 |
+| Section/Group Copy | 对应最小源和目标；源容器含严格富内容父页与三个混合 List/Tag 项的语义子页，并继续递归复制完整子树；默认执行可恢复清理，显式 `--keep-worksite` 在 after/mapping 验证后保留精确目标 ID |
 | Notebook Copy | 最小 Notebook 同样包含严格父页和 List/Tag 语义子页；Copy 开启、Delete 关闭，默认关闭副本；显式 `--keep-worksite` 保持副本打开并记录路径 |
 | Page Move | disposable 源 Page 与目标 Section；仅开放专用 experimental/copy/delete 闭包；`--keep-worksite` 记录 active Copy、非永久删除的 source ID 与回收站诊断状态 |
 | Report | 只读取本地 artifacts，不启动 MCP |
@@ -302,13 +303,14 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\inspect_current_
 └─ scenarios/<scenario>/
    ├─ before.json
    ├─ plan-attempts.json / plan.json / copy-result.json
+   ├─ copy-page: plans.json + plan/before/copy-result/after-<case>.json
    ├─ after.json / restored.json / worksite.json
    └─ result.json 或 failure.json
 ```
 
 唯一 MCP 的 content-free bridge audit 位于 `scenario-mcp/bridge-calls.jsonl`；只记录 operation、成功状态、时间和耗时，不记录参数、OneNote 内容或返回值。`fixture-result.json` 的 `validation` 段记录 profile topology/content invariants 的实际通过证据。
 
-Copy mutation 前会有界执行最多三次只读 `plan_copy`，只有连续两次 `plan_digest` 完全一致才继续；每次摘要和 source modified 写入 `plan-attempts.json`。这用于等待 fixture 写入引发的 COM 容器时间延迟传播，不重试任何 mutation；三次仍不稳定就会在写入前 fail closed。
+Copy mutation 前会有界执行最多三次只读 `plan_copy`，只有连续两次 `plan_digest` 完全一致才继续；每次摘要、source modified 和有效 `include_descendants` 写入 plan-attempts 证据。`copy-page` 为 `root-only-default` 与 `full-subtree` 分别写入 `plan-attempts-<case>.json`、`plan-<case>.json`、`before-<case>.json.plan_binding` 和 `copy-result-<case>.json`；前者在 plan/execute 参数中均省略范围值，并要求回显有效值为 `false`，后者显式提交并要求回显 `true`。Runner 在每次 mutation 前复核范围，并在第一次 after 快照上再规划第二个 case，从而把两个目标的影响相互隔离。这用于等待 fixture 写入引发的 COM 容器时间延迟传播，不重试任何 mutation；任一 case 三次仍不稳定就会在该次写入前 fail closed。
 
 随后 `before.json` 与稳定的 `plan.snapshots.source` 显式绑定：容器 `modified` 采用受 `plan_digest` 保护的值，而不是 fixture 刚写完时可能仍在被 COM 延迟更新的 pre-plan 值。生产 plan 的 raw XML SHA-256 单独保存在 `plan_binding.raw_page_hashes`；Runner 的 `before/after.page_hashes` 使用稳定内容 hash：忽略 Page 根级 hierarchy 字段以及 OneNote 在任意内容节点上延迟补写的时钟、作者、选择和视图元数据，但仍保留内容对象 ID、格式、文本和二进制内容。`page_canonical_hashes` 忽略 Page/内容对象 ID，作为诊断摘要；Page reparent 的成功门限使用更精确的 `page_reparent_hashes`，额外把 Tag index 解析成类型/符号语义，同时保留 Rich Text、Table、List、Tag 状态、Image Data 和其他结构。原始 XML SHA-256 另记在 `page_xml_hashes`，只用于诊断 COM 重序列化，不作为内容变化成功门限；`page_objects` 仍独立记录内容对象投影。执行 confirmation 使用 plan-bound 容器状态，复制后“源未变化”检查和默认 cleanup 恢复比较使用一致的 Runner 内容 hash；执行工具仍会独立重算稳定 digest，任何稳定内容的真实变化都会 fail closed。
 

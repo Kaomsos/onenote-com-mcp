@@ -21,6 +21,7 @@ from tests.manual_validation.scenarios.base import Scenario
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.scenarios.common.specs import SCENARIO_SPECS
 from tests.manual_validation.scenarios.fixture_recipes import delete as delete_fixture
+from tests.manual_validation.scenarios.fixture_recipes.copy_page import DESCRIPTION as COPY_PAGE_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reorder_page import DESCRIPTION as REORDER_PAGE_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reorder_section import DESCRIPTION as REORDER_SECTION_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reorder_section_group import DESCRIPTION as REORDER_SECTION_GROUP_DESCRIPTION
@@ -234,6 +235,99 @@ def test_reorder_page_fixture_description_makes_order_visually_explicit() -> Non
     assert "操作前（顺序 01,02,03）" in REORDER_PAGE_DESCRIPTION
     assert "预期操作后（顺序 01,03,02）" in REORDER_PAGE_DESCRIPTION
     assert "默认恢复后（顺序 01,02,03）" in REORDER_PAGE_DESCRIPTION
+
+
+def test_copy_page_fixture_description_covers_both_copy_scopes() -> None:
+    spec = SCENARIO_SPECS["copy-page"]
+
+    assert {"description_section", "description_page"} <= set(
+        spec.fixture.manifest_keys
+    )
+    assert "get_page_text" in spec.tool_allowlist
+    assert "00-Copy-Page-Description" in spec.fixture.expected_structure[0]
+    assert "01-Source-Parent" in spec.fixture.expected_structure[1]
+    assert "02-Source-Child" in spec.fixture.expected_structure[2]
+    assert "原始状态：" in COPY_PAGE_DESCRIPTION
+    assert "默认范围（省略 include_descendants）" in COPY_PAGE_DESCRIPTION
+    assert "完整子树（include_descendants=true）" in COPY_PAGE_DESCRIPTION
+    assert "默认运行会在自动 read-back 验证后清理两个目标" in COPY_PAGE_DESCRIPTION
+
+
+def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree() -> None:
+    structure = {
+        "description_section": {"id": "description-section"},
+        "description_page": {"id": "description-page"},
+        "source_section": {"id": "source-section"},
+        "parent_page": {"id": "parent-page"},
+        "semantic_page": {"id": "child-page"},
+        "disposable_section": {"id": "destination-section"},
+    }
+    items = [
+        {
+            "id": "description-section",
+            "resource_type": "section",
+            "name": "00-Description",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "description-page",
+            "resource_type": "page",
+            "title": "00-Copy-Page-Description",
+            "section_id": "description-section",
+            "parent_id": "description-section",
+            "page_level": 1,
+            "parent_page_id": None,
+        },
+        {
+            "id": "source-section",
+            "resource_type": "section",
+            "name": "Source",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "destination-section",
+            "resource_type": "section",
+            "name": "Destination",
+            "parent_id": "notebook",
+        },
+        {
+            "id": "parent-page",
+            "resource_type": "page",
+            "title": "01-Source-Parent",
+            "section_id": "source-section",
+            "parent_id": "source-section",
+            "page_level": 1,
+            "parent_page_id": None,
+        },
+        {
+            "id": "child-page",
+            "resource_type": "page",
+            "title": "02-Source-Child",
+            "section_id": "source-section",
+            "parent_id": "source-section",
+            "page_level": 2,
+            "parent_page_id": "parent-page",
+        },
+    ]
+    copy_fixture = {
+        "page_id": "parent-page",
+        "automated_content": ["rich_text", "table", "image", "list", "tag"],
+        "semantic_page": {
+            "page_id": "child-page",
+            "observed_capabilities": ["List", "Tag"],
+            "observed_counts": {"List": 3, "Tag": 3, "TagDef": 1},
+        },
+    }
+
+    checks = _validate_fixture_snapshot(
+        "copy-page", {"items": items}, structure, copy_fixture
+    )
+    assert "Description Page belongs to the fixture Description Section" in checks
+    assert "Description and source Pages use stable 00/01/02 prefixes" in checks
+
+    items[-1]["title"] = "Source-Child"
+    with pytest.raises(runtime.InvariantFailure, match="stable Description/Source numbering"):
+        _validate_fixture_snapshot("copy-page", {"items": items}, structure, copy_fixture)
 
 
 def test_reorder_section_fixture_description_covers_both_parent_types() -> None:

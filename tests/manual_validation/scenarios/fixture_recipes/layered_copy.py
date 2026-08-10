@@ -29,6 +29,7 @@ class LayeredFixtureKind(Enum):
 class LayeredFixtureConfig:
     kind: LayeredFixtureKind
     parent_title: str = "Rich-Page"
+    semantic_title: str = "List-Tag-Page"
 
 
 class LayeredCopyFixtureRecipe(RecipeBase):
@@ -40,7 +41,12 @@ class LayeredCopyFixtureRecipe(RecipeBase):
         r = context.recorder
         parent_key = "disposable_page" if self.config.kind is LayeredFixtureKind.MOVE else "parent_page"
         parent = await ensure_page(context.client, section["id"], self.config.parent_title, f"Copy token: {context.token}")
-        semantic = await ensure_page(context.client, section["id"], "List-Tag-Page", f"Semantic copy token: {context.token}")
+        semantic = await ensure_page(
+            context.client,
+            section["id"],
+            self.config.semantic_title,
+            f"Semantic copy token: {context.token}",
+        )
         r.record_structure(parent_key, parent)
         r.record_structure("semantic_page", semantic)
         parent, copy_fixture = await ensure_copy_rich_fixture(context.client, parent, context.options.run_dir)

@@ -67,6 +67,14 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
     scenario = SCENARIO_REGISTRY.get(scenario_name)
     recipe = scenario.fixture_recipe
     module = importlib.import_module(inspect.getmodule(recipe.build).__name__)
+    recipe_modules = {
+        module,
+        *(
+            importlib.import_module(inspect.getmodule(base.build).__name__)
+            for base in type(recipe).__mro__
+            if hasattr(base, "build") and inspect.getmodule(base.build) is not None
+        ),
+    }
     calls: list[str] = []
     sequence = iter(range(1, 1000))
 
@@ -121,21 +129,23 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
             "observed_counts": {"List": 3, "Tag": 3, "TagDef": 1},
         }
 
-    for name, replacement in {
-        "ensure_group": ensure_group,
-        "ensure_section": ensure_section,
-        "ensure_page": ensure_page,
-        "enforce_page_position": enforce,
-        "ensure_copy_rich_fixture": rich,
-        "ensure_reparent_page_rich_fixture": rich,
-        "ensure_copy_list_tag_fixture": list_tag,
-    }.items():
-        if hasattr(module, name):
-            monkeypatch.setattr(module, name, replacement)
+    for target_module in recipe_modules:
+        for name, replacement in {
+            "ensure_group": ensure_group,
+            "ensure_section": ensure_section,
+            "ensure_page": ensure_page,
+            "enforce_page_position": enforce,
+            "ensure_copy_rich_fixture": rich,
+            "ensure_reparent_page_rich_fixture": rich,
+            "ensure_copy_list_tag_fixture": list_tag,
+        }.items():
+            if hasattr(target_module, name):
+                monkeypatch.setattr(target_module, name, replacement)
 
     descriptions = "\n".join(
         importlib.import_module(f"tests.manual_validation.scenarios.fixture_recipes.{name}").DESCRIPTION
         for name in (
+            "copy_page",
             "reorder_page",
             "reorder_section",
             "reorder_section_group",

@@ -1,10 +1,10 @@
 # 005：Page Copy 默认仅复制单页，可选包含缩进子树
 
 > ID：005
-> 状态：待办
+> 状态：已完成
 > 优先级：P2
 > 类型：公开工具契约 / Copy 语义
-> 更新日期：2026-08-10
+> 更新日期：2026-08-11
 
 ## 背景
 
@@ -55,3 +55,12 @@
 - 具名 manual-validation scenario、dry-run、权限/tool allowlist 和证据字段齐全；
 - 用户在 disposable Notebook 中显式确认真实 OneNote 单页 Copy 行为后，记录 OneNote/Office 版本与证据；
 - 当前设计文档、README、人工验证文档和 TODO 索引同步更新。
+
+## 实施与验证记录
+
+- 2026-08-10：`plan_copy` 与 `copy_page` 已增加默认 `false` 的 `include_descendants`。Page source 默认 snapshot/估算/预算/步骤只包含根 Page；显式 `true` 保留完整缩进子树。Section、SectionGroup、Notebook Copy 继续递归，Page Move 继续强制完整子树。
+- 2026-08-10：摘要 schema 已绑定有效范围值。计划与执行值不一致会在任何目标创建前返回 stale-plan 错误；`id_map`、`created_ids`、计数、Page 结果和链接改写输入只覆盖已选择 Page，指向排除后代的链接保留原目标。
+- 2026-08-11：具名 human-gated `copy-page` 场景扩展为一次运行覆盖两种情况。`root-only-default` 在 plan/execute 中均省略 `include_descendants`，独立断言只有 Parent 进入 plan/id_map、目标只新增一个 level-1 Page、Child 在源 Section 的 ID/父级/level/order/内容 hash 保持不变；`full-subtree` 显式提交 `include_descendants=true`，独立断言 Parent/Child 均被映射，且目标父子关系、相对层级、顺序和内容语义保持。两个 case 分别稳定 plan、绑定 before、保存 mutation response 和 after；默认逆序清理两个目标，`--keep-worksite` 同时保留两种目标。
+- 2026-08-11：fixture 新增 `00-Description/00-Copy-Page-Description`，在 OneNote UI 内直接说明原始 `Source/01-Source-Parent/02-Source-Child` 拓扑、默认仅根页目标、显式完整子树目标和默认清理后的状态；创建阶段会回读说明页并检查关键状态标记。聚焦 manual-validation 纯合同已通过；真实 OneNote mutation 未由智能体执行。
+- 2026-08-11：人工验收使用 `.venv\Scripts\python.exe tests\manual_validation\run.py copy-page --keep-worksite`，先打开 Description Page，再在 Destination 对照 `01-Root-Only-Copy-*`（无子页）与 `02-Full-Subtree-Copy-*`（含 level-2 Child），并确认 Source Parent/Child 均保持原层级。
+- 2026-08-11：用户明确确认 TODO 005 已通过人工验收。真实运行证据位于 `.local-validation/run-20260810T160750Z/`：scenario/result 与 run-state 均为 `passed`，`worksite_preserved=true`；`root-only-default` 映射 1 个 Page，`full-subtree` 映射 2 个 Page，两个 Copy report 均为 `verified=true`、`lossless=true`。验收环境为 local-onenote-mcp `0.1.0`，本机 OneNote Desktop `16.0.20228.20158`（`Office16/ONENOTE.EXE`）。据此完成定义中的真实 OneNote 证据门已满足，本 TODO 标记为“已完成”。

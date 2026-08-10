@@ -92,6 +92,21 @@ def test_registered_named_case_round_trips_through_guarded_cli(
     assert payload["ordered_steps"][0]["step"] == "create-source-notebook"
     assert payload["ordered_steps"][1]["tool_allowlist"] == sorted(spec.tool_allowlist)
     assert payload["filesystem_cleanup"]["enabled"] is False
+    if case.scenario_name == "copy-page":
+        assert payload["scenario_spec"]["execution_contract"] == {
+            "cases": [
+                {
+                    "name": "root-only-default",
+                    "include_descendants": "omitted",
+                    "expected_page_count": 1,
+                },
+                {
+                    "name": "full-subtree",
+                    "include_descendants": True,
+                    "expected_page_count": 2,
+                },
+            ]
+        }
     assert not run_dir.exists()
 
 

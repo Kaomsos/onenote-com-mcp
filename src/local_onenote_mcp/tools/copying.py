@@ -13,6 +13,7 @@ async def plan_copy(
     destination_parent_id: str = "",
     destination_name: str = "",
     destination_base_folder: str = "",
+    include_descendants: bool = False,
 ) -> dict[str, Any]:
     """Build a read-only, content-aware Copy plan and deterministic digest."""
 
@@ -22,6 +23,7 @@ async def plan_copy(
             destination_parent_id,
             destination_name,
             destination_base_folder,
+            include_descendants,
         )
     )
 
@@ -34,8 +36,9 @@ async def copy_page(
     plan_digest: str,
     expected_modified: str | None = None,
     destination_title: str = "",
+    include_descendants: bool = False,
 ) -> dict[str, Any]:
-    """Copy a complete Page indentation subtree to a Section."""
+    """Copy one Page by default, or its indentation subtree when explicitly requested."""
 
     return invoke(
         lambda: get_services().copying.copy_resource(
@@ -48,6 +51,7 @@ async def copy_page(
             expected_section_id,
             expected_modified,
             plan_digest,
+            include_descendants,
         )
     )
 

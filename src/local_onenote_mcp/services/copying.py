@@ -83,12 +83,15 @@ class CopyService(BaseService):
         self,
         source_id: str,
         items: list[dict[str, Any]],
+        include_descendants: bool = True,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         by_id = {item["id"]: item for item in items}
         source = by_id.get(source_id)
         if source is None:
             raise ValueError(f"No active object found for ID '{source_id}'.")
         if source["resource_type"] == "page":
+            if not include_descendants:
+                return source, [source]
             section_pages = sorted(
                 (
                     item
@@ -124,9 +127,15 @@ class CopyService(BaseService):
             stack.extend(reversed(children_by_parent.get(item["id"], [])))
         return source, ordered
 
-    def _capture_source(self, source_id: str, budget: CopyBudget, started: float) -> dict[str, Any]:
+    def _capture_source(
+        self,
+        source_id: str,
+        budget: CopyBudget,
+        started: float,
+        include_descendants: bool = True,
+    ) -> dict[str, Any]:
         items = self.hierarchy.resources(include_recycle_bin=False)
-        source, resources = self._source_resources(source_id, items)
+        source, resources = self._source_resources(source_id, items, include_descendants)
         if len(resources) > budget.max_resources:
             raise ValueError(
                 f"Copy plan contains {len(resources)} resources; limit is {budget.max_resources}."
@@ -276,10 +285,16 @@ class CopyService(BaseService):
         destination_base_folder: str = "",
         *,
         operation: str = "copy",
+        include_descendants: bool = False,
     ) -> dict[str, Any]:
         started = time.monotonic()
         budget = CopyBudget.current()
-        bundle = self._capture_source(source_id, budget, started)
+        bundle = self._capture_source(source_id, budget, started, include_descendants)
+        effective_include_descendants = (
+            bool(include_descendants)
+            if bundle["source"]["resource_type"] == "page"
+            else True
+        )
         items = self.hierarchy.resources(include_recycle_bin=False)
         destination = self._destination(
             bundle["source"],
@@ -291,8 +306,9 @@ class CopyService(BaseService):
         if time.monotonic() - started > budget.max_plan_seconds:
             raise ValueError(f"Copy planning exceeded {budget.max_plan_seconds} seconds.")
         digest_payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "operation": operation,
+            "options": {"include_descendants": effective_include_descendants},
             "source_snapshot": bundle["source_snapshot"],
             "destination": destination,
             "copyability": {
@@ -313,6 +329,7 @@ class CopyService(BaseService):
         return {
             **bundle,
             "operation": operation,
+            "include_descendants": effective_include_descendants,
             "destination": destination,
             "plan_digest": plan_digest,
             "steps": steps,
@@ -333,6 +350,7 @@ class CopyService(BaseService):
             )
         return {
             "operation": plan["operation"],
+            "include_descendants": plan["include_descendants"],
             "plan_digest": plan["plan_digest"],
             "source_snapshot_digest": plan["source_digest"],
             "source": CopyService._stable_resource(plan["source"]),
@@ -358,6 +376,7 @@ class CopyService(BaseService):
         destination_parent_id: str = "",
         destination_name: str = "",
         destination_base_folder: str = "",
+        include_descendants: bool = False,
     ) -> dict[str, Any]:
         return self._public_plan(
             self._build_plan(
@@ -365,6 +384,7 @@ class CopyService(BaseService):
                 destination_parent_id,
                 destination_name,
                 destination_base_folder,
+                include_descendants=include_descendants,
             )
         )
 
@@ -379,6 +399,7 @@ class CopyService(BaseService):
             destination_section_id,
             destination_title,
             operation="move_page",
+            include_descendants=True,
         )
         if plan["source"]["resource_type"] != "page":
             raise ValueError("page_id must identify a Page.")
@@ -699,6 +720,7 @@ class CopyService(BaseService):
         expected_parent_id: str | None,
         expected_modified: str | None,
         plan_digest: str,
+        include_descendants: bool = False,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_experimental_copy()
         self._confirm_source(
@@ -713,6 +735,7 @@ class CopyService(BaseService):
             destination_parent_id,
             destination_name,
             destination_base_folder,
+            include_descendants=include_descendants,
         )
         if plan["source"]["resource_type"] != resource_type:
             raise ValueError(f"source_id must identify a {resource_type}.")
@@ -743,6 +766,7 @@ class CopyService(BaseService):
             destination_section_id,
             destination_title,
             operation="move_page",
+            include_descendants=True,
         )
         if not plan_digest or plan_digest != plan["plan_digest"]:
             raise ValueError(

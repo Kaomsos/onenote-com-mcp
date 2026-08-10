@@ -14,6 +14,7 @@ AUTOMATED_COPY_CAPABILITIES = {
     "Table",
     "Tag",
 }
+ROOT_PAGE_COPY_CAPABILITIES = {"Image", "Outline", "RichText", "Table"}
 RELAXED_COPY_CAPABILITIES = {"List", "Tag"}
 
 READ_TOOLS = {
@@ -78,6 +79,8 @@ COPY_TOOLS = READ_TOOLS | {
     "delete_section_group",
 }
 COPY_PRESERVE_TOOLS = COPY_TOOLS - COPY_CLEANUP_TOOLS
+COPY_PAGE_TOOLS = READ_TOOLS | {"plan_copy", "copy_page", "delete_page"}
+COPY_PAGE_PRESERVE_TOOLS = COPY_PAGE_TOOLS - {"delete_page"}
 COPY_NOTEBOOK_TOOLS = READ_TOOLS | {"plan_copy", "copy_notebook", "close_notebook"}
 COPY_NOTEBOOK_PRESERVE_TOOLS = COPY_NOTEBOOK_TOOLS - {"close_notebook"}
 MOVE_PAGE_TOOLS = READ_TOOLS | {

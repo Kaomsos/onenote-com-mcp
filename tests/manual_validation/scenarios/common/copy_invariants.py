@@ -11,6 +11,7 @@ from .config import AUTOMATED_COPY_CAPABILITIES
 def expected_copy_source_items(
     snapshot: dict[str, Any],
     source_id: str,
+    include_descendants: bool = True,
 ) -> list[dict[str, Any]]:
     items = snapshot.get("items", [])
     by_id = {item["id"]: item for item in items}
@@ -18,6 +19,8 @@ def expected_copy_source_items(
     if source is None:
         raise InvariantFailure(f"Copy source '{source_id}' is missing from the before snapshot.")
     if source["resource_type"] == "page":
+        if not include_descendants:
+            return [source]
         pages = sorted(
             (
                 item
@@ -57,11 +60,12 @@ def assert_copy_mapping(
     destination_parent_id: str | None,
     destination_name: str,
     copied: dict[str, Any],
+    include_descendants: bool = True,
 ) -> None:
     id_map = copied.get("copy_report", {}).get("id_map")
     if not isinstance(id_map, dict) or not id_map:
         raise InvariantFailure("Copy response does not contain a non-empty id_map.")
-    source_items = expected_copy_source_items(before, source_id)
+    source_items = expected_copy_source_items(before, source_id, include_descendants)
     source_by_id = {item["id"]: item for item in source_items}
     if set(id_map) != set(source_by_id):
         raise InvariantFailure("Copy id_map source IDs do not exactly match the planned source subtree.")
@@ -78,6 +82,25 @@ def assert_copy_mapping(
         raise InvariantFailure(
             f"Copy created active objects outside id_map: {sorted(unexpected_new_ids)}"
         )
+
+    if source_items[0]["resource_type"] == "page" and not include_descendants:
+        excluded = expected_copy_source_items(before, source_id, True)[1:]
+        stable_fields = (
+            "resource_type",
+            "title",
+            "section_id",
+            "parent_page_id",
+            "page_level",
+            "order",
+        )
+        for original in excluded:
+            current = after_by_id.get(original["id"])
+            if current is None or any(
+                current.get(field) != original.get(field) for field in stable_fields
+            ):
+                raise InvariantFailure(
+                    "Root-only Page Copy changed or removed an excluded source descendant."
+                )
 
     source_root = source_by_id[source_id]
     target_root = after_by_id[id_map[source_id]]
@@ -145,9 +168,13 @@ def assert_copy_mapping(
 def assert_copy_fixture_capabilities(
     planned: dict[str, Any],
     required_capabilities: set[str] | None = None,
+    *,
+    include_automated_defaults: bool = True,
 ) -> None:
     capabilities = set(planned.get("content_capabilities", []))
-    required = AUTOMATED_COPY_CAPABILITIES | (required_capabilities or set())
+    required = set(required_capabilities or set())
+    if include_automated_defaults:
+        required |= AUTOMATED_COPY_CAPABILITIES
     missing = sorted(required - capabilities)
     if missing:
         raise InvariantFailure(

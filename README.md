@@ -184,7 +184,7 @@ The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental 
 * `query_hierarchy` / `get_path` / `get_tree`: Query typed metadata and rebuild Page indentation trees.
 * `get_page` returns metadata only; `get_page_text` / `get_page_xml` read content explicitly.
 * `get_page_objects` / `get_binary_content`: Query and extract sub-elements (like tables, images, ink, or file attachment payloads).
-* `search_pages`: Search an explicit Notebook, SectionGroup, or Section using either bounded local scan or OneNote index; there is no silent backend fallback.
+* `search_pages`: Search an explicit Notebook, SectionGroup, or Section, or use `scope_type="all_open_notebooks"` with the default empty `scope_id` to search one hierarchy snapshot across every open Notebook. Both local scan and OneNote index use one call-wide result/budget boundary; there is no silent backend fallback.
 
 ### 2. Creation & Structural Edits
 * `create_notebook` / `create_section` / `create_section_group`
@@ -211,12 +211,14 @@ The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental 
 ### 5. Experimental Copy & Page Move
 
 * `plan_copy` plus typed `copy_page` / `copy_section` / `copy_section_group` / `copy_notebook` use a content-aware, stale-plan digest before any mutation.
-* Page Copy always includes the complete indentation subtree. Copy never overwrites, merges, or auto-renames a conflicting target.
+* Page Copy defaults to the single selected Page. Pass `include_descendants=true` to both `plan_copy` and `copy_page` only when the complete indentation subtree is intended; the option is bound into `plan_digest`. Section, SectionGroup, and Notebook Copy remain fully recursive, while Page Move always moves the complete subtree. Copy never overwrites, merges, or auto-renames a conflicting target.
 * Unknown Page XML roots are omitted; an unknown descendant causes its containing top-level content block to be omitted. Both cases are returned as structured Copy issues rather than silently passed through.
 * Validated Page content types are `Outline`, `Image`, `RichText`, `Table`, `List`, and `Tag`. Stable rich content uses strict canonical read-back; List/Tag-only pages use a semantic tier that tolerates COM reserialization while still checking visible text, list kind, tag meaning/completion, and binary content.
 * `plan_move_page` / `move_page` implement Move by reconstruction: they create new Page IDs and issue a non-permanent source delete only after the defined content and topology checks pass. Success requires every source Page to disappear from the active hierarchy; COM recycle-bin metadata is reported when available but is not an acceptance gate.
 * These tools remain disabled unless `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true`; Move additionally requires Deletes and `LOCAL_ONENOTE_ENABLE_MOVE_PAGE=true`.
 * Other content types remain unverified and prevent source deletion; use the human-gated named scenarios in [`tests/manual_validation/README.md`](tests/manual_validation/README.md).
+
+Migration note (2026-08-10): callers that previously omitted a Page Copy scope received the full indentation subtree. Omission now means root Page only. To preserve the old behavior, create the plan with `include_descendants=true` and submit the same value to `copy_page`; reusing a digest with a different value is rejected before mutation.
 
 > **Identifier Resolution Protocol:**
 > `resolve_identifier` and the compatible read-only hierarchy listing try identifiers in this priority:
@@ -253,7 +255,7 @@ uv run python scripts\smoke_mcp.py
 
 # Every named action accepts --keep-worksite. It keeps the source Notebook open,
 # preserves that action's verified post-mutation state, and records exact IDs plus
-# manual cleanup guidance. For example, preserve a Page Copy target for UI review:
+# manual cleanup guidance. For example, preserve both Page Copy scope targets for UI review:
 .venv\Scripts\python.exe tests\manual_validation\run.py copy-page --keep-worksite
 
 # Review every explicitly registered test-scenario plan serially. Exploratory

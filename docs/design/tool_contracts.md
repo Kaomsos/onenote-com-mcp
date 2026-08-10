@@ -36,7 +36,7 @@
 
 | 工具 | 参数 | 成功时的主要返回 |
 | --- | --- | --- |
-| `health_check` | 无 | 运行时位置、统计、`mutation_policy`、`search_budget`、`copy_budget`。 |
+| `health_check` | 无 | 运行时位置、统计、`mutation_policy`、`search_backends`、`search_scope_types`、`search_budget`、`copy_budget`。 |
 | `resolve_identifier` | `identifier`, `item_type=""` | `item`、`identifier_resolution_order`；仅只读辅助。 |
 | `list_notebooks` | `include_recycle_bin=false` | `notebooks`, `count`。 |
 | `get_notebook` | `notebook_id` | `item: Notebook`。 |
@@ -63,9 +63,11 @@
 | `get_page_xml` | `page_id`, `page_info="basic"` | `xml`。`page_info` 见下方枚举。 |
 | `get_page_objects` | `page_id` | `objects: PageContentObject[]`, `count`。 |
 | `get_binary_content` | `page_id`, `callback_id` | 已复核的 `object`、`base64`。 |
-| `search_pages` | `query`, `scope_type`, `scope_id`, `backend="local_scan"`, `max_results=20`, `include_snippets=true`, `include_recycle_bin=false` | `pages`, `count`, `scope`, `search_backend`, `scan_budget`。 |
+| `search_pages` | `query`, `scope_type`, `scope_id=""`, `backend="local_scan"`, `max_results=20`, `include_snippets=true`, `include_recycle_bin=false` | `pages`, `count`, `scope`, `search_backend`, `scan_budget`。 |
 
-`scope_type` 只取 `notebook/section_group/section`，不允许空范围。`backend` 只取 `local_scan/onenote_index`；index 失败不会静默回退。本地扫描在读取首个 Page 正文前检查候选页数量，并限制单页字符、总字符和总耗时。
+`scope_type` 取 `all_open_notebooks/notebook/section_group/section`。前三种 typed 对象 scope 必须提交非空且类型匹配的 `scope_id`；`all_open_notebooks` 必须使用默认空 ID，并返回不伪造 COM ID 的合成 `scope={resource_type, notebook_count}`。全局 scope 只覆盖同一次完整 hierarchy 快照中 `is_open` 不为 false 的 Notebook，不扫描已关闭 Notebook、备份目录或 `.one` 文件。
+
+`backend` 只取 `local_scan/onenote_index`，index 失败不会静默回退。全局 `local_scan` 先合并全部候选 Page，再在读取首个正文前执行一次 `max_pages` 检查；页字符、总字符、耗时和 `max_results` 都按整个调用累计。全局 `onenote_index` 对 COM `FindPages` 传空 `start_id`，用同一完整 catalog 补全 Notebook、父级与路径；index snippet hydration 同样受页数、单页字符、总字符和耗时限制。`include_recycle_bin` 只控制已打开 Notebook 中的回收站结果，不会把已关闭 Notebook 纳入范围。空 hierarchy 正常返回空结果。空 `start_id` 与 Desktop `Ctrl+E` 的完全等价性仍需真实环境逐版本验证。
 
 `page_info`：`basic/binary/selection/binary_selection/file_type/binary_file_type/selection_file_type/all`。
 
@@ -120,12 +122,12 @@ Notebook 没有 Delete 工具。
 
 ## 7. P2 Copy 与 Page Move（实验）
 
-计划工具只读；执行工具除现有确认字段外必须提交刚生成的 `plan_digest`。摘要包含源树、每页完整 XML hash、目标直属子项、名称和执行模式；执行前重算不一致即在 mutation 前拒绝。计划返回的 `snapshots.source` 公开稳定资源列表与 Page hash、`snapshots.destination` 公开目标直属快照，但不返回原始 Page XML。
+计划工具只读；执行工具除现有确认字段外必须提交刚生成的 `plan_digest`。摘要包含源树、每页完整 XML hash、目标直属子项、名称、执行模式和 Page Copy 的 `include_descendants`；执行前重算不一致即在 mutation 前拒绝。计划返回的 `snapshots.source` 公开稳定资源列表与 Page hash、`snapshots.destination` 公开目标直属快照，但不返回原始 Page XML。
 
 | 工具 | 参数 | 成功时的主要返回/验证 |
 | --- | --- | --- |
-| `plan_copy` | `source_id`, `destination_parent_id=""`, `destination_name=""`, `destination_base_folder=""` | `plan_digest`, `source`, `destination`, `estimated`, `copyability`, `steps`, `execute_tool`。 |
-| `copy_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `plan_digest`, `expected_modified=null`, `destination_title=""` | 完整缩进子树的 `item`, `copy_report`, `created_ids`；目标根追加为 level 1。 |
+| `plan_copy` | `source_id`, `destination_parent_id=""`, `destination_name=""`, `destination_base_folder=""`, `include_descendants=false` | `plan_digest`, `include_descendants`, `source`, `destination`, `estimated`, `copyability`, `steps`, `execute_tool`。 |
+| `copy_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `plan_digest`, `expected_modified=null`, `destination_title=""`, `include_descendants=false` | 实际选择范围的 `item`, `copy_report`, `created_ids`；目标根追加为 level 1。 |
 | `copy_section` | `section_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `plan_digest`, `expected_modified=null`, `destination_name=""` | 递归创建 Section 与全部 Page。 |
 | `copy_section_group` | `section_group_id`, 其余确认/目标字段同上 | 递归创建 SectionGroup、Section 和 Page。 |
 | `copy_notebook` | `notebook_id`, `expected_name`, `plan_digest`, `expected_modified=null`, `destination_name=""`, `destination_base_folder=""` | 新 Notebook 及全部后代；不提供 Notebook 删除回滚。 |
@@ -134,7 +136,9 @@ Notebook 没有 Delete 工具。
 
 `copy_report` 固定包含 `id_map/copied_counts/skipped_content/issues/lossless/verified/page_results`；Notebook Copy 还包含经过创建返回值核对的 `destination_path`。已知有损但执行完整的 Copy 可返回成功和 warning；运行中失败保留已创建目标，返回 `created_ids/completed_steps/failed_step`，不做破坏性自动回滚。
 
-Page Copy 始终包含完整子树。名称冲突按直属子项 case-insensitive 拒绝；没有覆盖、合并或自动后缀。范围内已识别 ID 引用会改写，范围外出站链接保留；Move 的语义天然是重建，它不扫描外部入站链接且始终返回 old→new ID。
+Page Copy 省略 `include_descendants` 或显式为 `false` 时只选择根 Page；显式为 `true` 时才选择完整缩进子树。计划的 source snapshot、估算、步骤、预算以及执行的 `id_map/created_ids/copied_counts/page_results` 都只覆盖实际选择范围；计划与执行值不一致时在创建目标前拒绝。单页目标根归一化为 level 1，被排除的源后代及其缩进关系保持不变，指向它们的链接作为范围外链接保留原目标。Section、SectionGroup、Notebook Copy 继续递归，`include_descendants` 不改变其范围；Page Move 继续固定处理完整子树。
+
+名称冲突按直属子项 case-insensitive 拒绝；没有覆盖、合并或自动后缀。范围内已识别 ID 引用会改写，范围外出站链接保留；Move 的语义天然是重建，它不扫描外部入站链接且始终返回 old→new ID。
 
 递归容器按源 hierarchy snapshot 的确定性深度优先顺序创建。Page 的顺序和相对 `page_level` 必须回读验证；Section/SectionGroup 没有稳定 COM 顺序字段，因此只承诺并验证父子结构，不声明容器顺序保真。Notebook 名称冲突只在解析后的目标 `destination_base_folder/name` 路径上判断，不因其他目录存在同名已打开 Notebook 而误拒绝。
 
@@ -179,10 +183,10 @@ Move 对每个源 Page 调用 `DeleteHierarchy(permanently=false)`。通用删�
 | `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY` | `false` | 四层 Copy；不能替代写开关。 |
 | `LOCAL_ONENOTE_ENABLE_MOVE_PAGE` | `false` | Page Move；还要求 Writes、Deletes 和 Experimental Copy。Move 天然采用重建语义。 |
 | `LOCAL_ONENOTE_ENABLE_RAW_XML` | `false` | 启动时注册剩余 6 个开发 profile 工具；不能开放 raw hierarchy mutation。 |
-| `LOCAL_ONENOTE_MAX_SEARCH_PAGES` | `200` | 本地扫描候选 Page 上限。 |
+| `LOCAL_ONENOTE_MAX_SEARCH_PAGES` | `200` | 本地扫描候选 Page 上限，也是 index snippet hydration 的 Page 上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS` | `100000` | 单 Page 扫描字符上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS` | `2000000` | 单次扫描总字符上限。 |
-| `LOCAL_ONENOTE_MAX_SEARCH_SECONDS` | `30` | 单次本地扫描秒数上限。 |
+| `LOCAL_ONENOTE_MAX_SEARCH_SECONDS` | `30` | 单次本地扫描或 index snippet hydration 秒数上限。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_SNIPPET_CHARS` | `400` | snippet 上限。 |
 | `LOCAL_ONENOTE_MAX_COPY_RESOURCES` | `1000` | 单次 Copy 的层级对象上限。 |
 | `LOCAL_ONENOTE_MAX_COPY_PAGES` | `200` | 单次 Copy 的 Page 上限。 |

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .common.copy_runtime import execute_copy
+from .common.copy_runtime import execute_copy_page
 from .copy_scenario_base import CopyScenario
 from .common.registry import SCENARIO_REGISTRY
 from .fixture_recipes.copy_page import RECIPE
@@ -13,10 +13,10 @@ class CopyPageScenario(CopyScenario):
     name = "copy-page"
     fixture_recipe = RECIPE
     help_text = (
-        "GATED: create and copy the prepared Page subtree; clean up by default or "
-        "preserve the verified worksite for inspection."
+        "GATED: verify both default root-only Page Copy and explicit full-subtree Copy; "
+        "clean up both targets by default or preserve them together for UI inspection."
     )
 
-    execute_copy = staticmethod(execute_copy)
+    execute_copy = staticmethod(execute_copy_page)
 
 __all__ = ["CopyPageScenario"]

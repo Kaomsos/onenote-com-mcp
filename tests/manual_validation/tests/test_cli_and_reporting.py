@@ -229,7 +229,7 @@ def test_page_copy_dry_runs_declare_layered_automatic_fixture(
         payload["fixture_profile"]["content_capabilities"]
     )
     assert any(
-        "List-Tag-Page" in path
+        ("02-Source-Child" if scenario == "copy-page" else "List-Tag-Page") in path
         for path in payload["fixture_profile"]["expected_structure"]
     )
     assert "reorder_page" in payload["scenario_spec"]["tool_allowlist"]
@@ -367,6 +367,17 @@ def test_internal_report_renders_scenario_evidence_without_collecting_environmen
         },
     )
     test_utils.write_json(
+        scenario / "plan-root-only-default.json",
+        {
+            "content_capabilities": ["Image", "Outline", "RichText", "Table"],
+            "copyability": {"lossless_candidate": True},
+        },
+    )
+    test_utils.write_json(
+        scenario / "copy-result-root-only-default.json",
+        {"copy_report": {"verified": True, "lossless": True}},
+    )
+    test_utils.write_json(
         scenario / "result.json",
         {
             "scenario": "copy-page",
@@ -393,6 +404,11 @@ def test_internal_report_renders_scenario_evidence_without_collecting_environmen
     assert "Semantic capabilities: `List, Tag`" in report
     assert "Semantic acceptance tier: `semantic_list_tag`" in report
     assert "Copy verified: `True`" in report
+    assert "Copy case `root-only-default` verified: `True`" in report
+    assert (
+        "Copy case `root-only-default` planned content capabilities: "
+        "`Image, Outline, RichText, Table`"
+    ) in report
     assert "tier `strict_canonical`, equivalent `True`" in report
     assert "tier `semantic_list_tag`, equivalent `True`" in report
     assert "Worksite preserved: `True`" in report

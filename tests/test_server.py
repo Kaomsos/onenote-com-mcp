@@ -30,6 +30,13 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
     assert result["server"] == "local-onenote"
     assert result["identifier_resolution_order"] == ["id", "exact_path", "unique_name"]
     assert result["search_default_backend"] == "local_scan"
+    assert result["search_backends"] == ["local_scan", "onenote_index"]
+    assert result["search_scope_types"] == [
+        "all_open_notebooks",
+        "notebook",
+        "section_group",
+        "section",
+    ]
     assert result["content_formats"] == ["plain", "html", "markdown"]
     assert result["copy_budget"]["max_pages"] > 0
     assert result["python_executable"]
@@ -78,16 +85,29 @@ def test_without_recycle_bin_removes_container_and_children():
 
 def test_search_pages_uses_explicit_local_scan_without_index_fallback(monkeypatch):
     expected_scope = {"resource_type": "section", "id": "section-id", "name": "Sec"}
-    monkeypatch.setattr(server.services.hierarchy, "resource", lambda object_id, resource_type=None: expected_scope)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [expected_scope],
+    )
 
     def fake_local_text_search(
-        start_id, query, max_results, include_recycle_bin, budget=None, include_snippets=True
+        start_id,
+        query,
+        max_results,
+        include_recycle_bin,
+        budget=None,
+        include_snippets=True,
+        catalog=None,
+        notebook_ids=None,
     ):
         assert start_id == "section-id"
         assert query == "needle"
         assert max_results == 3
         assert include_recycle_bin is False
         assert include_snippets is False
+        assert catalog is not None
+        assert notebook_ids is None
         return ([{"resource_type": "page", "id": "page-id", "title": "Found"}], {"scanned_pages": 1})
 
     monkeypatch.setattr(server.services.search, "local_text_search", fake_local_text_search)
@@ -137,6 +157,13 @@ def test_local_search_rejects_candidate_overflow_before_page_reads(monkeypatch):
 
     with pytest.raises(ValueError, match="candidate pages"):
         server.services.search.local_text_search("section-id", "needle", 10, False, budget)
+
+
+def test_search_pages_schema_allows_omitted_scope_id():
+    schema = server.mcp._tool_manager._tools["search_pages"].parameters
+
+    assert set(schema.get("required", [])) == {"query", "scope_type"}
+    assert schema["properties"]["scope_id"]["default"] == ""
 
 
 def test_default_tool_profile_excludes_generic_raw_mutations():
@@ -259,6 +286,10 @@ def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
         assert set(tools[name].parameters.get("required", [])) == required
     assert "destination_parent_id" not in tools["copy_notebook"].parameters["properties"]
     assert tools["plan_copy"].parameters["properties"]["destination_base_folder"]["default"] == ""
+    assert tools["plan_copy"].parameters["properties"]["include_descendants"]["default"] is False
+    assert tools["copy_page"].parameters["properties"]["include_descendants"]["default"] is False
+    for name in ("copy_section", "copy_section_group", "copy_notebook", "move_page"):
+        assert "include_descendants" not in tools[name].parameters["properties"]
 
 
 def test_container_reorder_tool_schemas_require_exact_confirmation():

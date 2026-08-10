@@ -124,24 +124,46 @@ def render_report(run_dir: Path) -> Path:
                         "",
                     ]
                 )
-            plan_path = scenario_path / "plan.json"
-            if plan_path.exists():
+            plan_paths = [scenario_path / "plan.json"]
+            plan_paths.extend(sorted(scenario_path.glob("plan-*.json")))
+            plan_paths = [
+                path
+                for path in plan_paths
+                if path.exists() and not path.name.startswith("plan-attempts")
+            ]
+            for plan_path in plan_paths:
                 planned = read_json(plan_path)
+                case_label = (
+                    plan_path.stem.removeprefix("plan-")
+                    if plan_path.name != "plan.json"
+                    else ""
+                )
+                label = (
+                    f"Copy case `{case_label}` planned" if case_label else "Planned"
+                )
                 lines.extend(
                     [
-                        f"- Planned content capabilities: `{', '.join(planned.get('content_capabilities', []))}`",
-                        f"- Planned lossless candidate: `{planned.get('copyability', {}).get('lossless_candidate', 'n/a')}`",
+                        f"- {label} content capabilities: `{', '.join(planned.get('content_capabilities', []))}`",
+                        f"- {label} lossless candidate: `{planned.get('copyability', {}).get('lossless_candidate', 'n/a')}`",
                     ]
                 )
-            copy_result_path = scenario_path / "copy-result.json"
-            if copy_result_path.exists():
+            copy_result_paths = [scenario_path / "copy-result.json"]
+            copy_result_paths.extend(sorted(scenario_path.glob("copy-result-*.json")))
+            copy_result_paths = [path for path in copy_result_paths if path.exists()]
+            for copy_result_path in copy_result_paths:
                 copy_result = read_json(copy_result_path)
                 copy_report = copy_result.get("copy_report", {})
+                case_label = (
+                    copy_result_path.stem.removeprefix("copy-result-")
+                    if copy_result_path.name != "copy-result.json"
+                    else ""
+                )
+                prefix = f"Copy case `{case_label}` " if case_label else "Copy "
                 lines.extend(
                     [
-                        f"- Copy verified: `{copy_report.get('verified', 'n/a')}`",
-                        f"- Copy lossless: `{copy_report.get('lossless', 'n/a')}`",
-                        f"- Copy outcome: `{copy_result.get('outcome', 'copy')}`",
+                        f"- {prefix}verified: `{copy_report.get('verified', 'n/a')}`",
+                        f"- {prefix}lossless: `{copy_report.get('lossless', 'n/a')}`",
+                        f"- {prefix}outcome: `{copy_result.get('outcome', 'copy')}`",
                     ]
                 )
                 for page_result in copy_report.get("page_results", []):
@@ -153,7 +175,7 @@ def render_report(run_dir: Path) -> Path:
                         f"tier `{equivalence.get('verification_tier', '')}`, "
                         f"equivalent `{equivalence.get('equivalent', False)}`"
                     )
-            if plan_path.exists() or copy_result_path.exists():
+            if plan_paths or copy_result_paths:
                 lines.append("")
             if result.get("error"):
                 lines.extend([f"Error: {result['error']}", ""])

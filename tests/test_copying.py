@@ -584,7 +584,7 @@ def test_default_validated_copy_types_are_lossless_candidates():
     assert not any(issue["code"] == "content_type_unverified" for issue in result["issues"])
 
 
-def test_plan_copy_is_stable_and_includes_complete_page_subtree(monkeypatch):
+def test_plan_copy_defaults_to_only_the_selected_page(monkeypatch):
     install_plan_fakes(monkeypatch)
 
     first = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
@@ -593,15 +593,38 @@ def test_plan_copy_is_stable_and_includes_complete_page_subtree(monkeypatch):
     assert first["ok"] is True
     assert first["plan_digest"] == second["plan_digest"]
     assert first["source_snapshot_digest"] == second["source_snapshot_digest"]
-    assert [item["id"] for item in first["snapshots"]["source"]["resources"]] == [
+    assert first["include_descendants"] is False
+    assert [item["id"] for item in first["snapshots"]["source"]["resources"]] == ["parent"]
+    assert set(first["snapshots"]["source"]["page_hashes"]) == {"parent"}
+    assert first["snapshots"]["destination"] == first["destination"]
+    assert first["estimated"]["resources"] == 1
+    assert first["estimated"]["pages"] == 1
+    assert first["execute_tool"] == "copy_page"
+    assert first["copyability"]["lossless_candidate"] is True
+
+
+def test_plan_copy_explicitly_includes_complete_page_subtree_and_changes_digest(monkeypatch):
+    install_plan_fakes(monkeypatch)
+
+    root_only = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    subtree = asyncio.run(
+        plan_copy(
+            "parent",
+            "destination-section",
+            "Copied Parent",
+            include_descendants=True,
+        )
+    )
+
+    assert subtree["ok"] is True
+    assert subtree["include_descendants"] is True
+    assert subtree["plan_digest"] != root_only["plan_digest"]
+    assert [item["id"] for item in subtree["snapshots"]["source"]["resources"]] == [
         "parent",
         "child",
     ]
-    assert set(first["snapshots"]["source"]["page_hashes"]) == {"parent", "child"}
-    assert first["snapshots"]["destination"] == first["destination"]
-    assert first["estimated"]["pages"] == 2
-    assert first["execute_tool"] == "copy_page"
-    assert first["copyability"]["lossless_candidate"] is True
+    assert set(subtree["snapshots"]["source"]["page_hashes"]) == {"parent", "child"}
+    assert subtree["estimated"]["pages"] == 2
 
 
 def test_plan_copy_rejects_case_insensitive_direct_name_conflict(monkeypatch):
@@ -720,6 +743,28 @@ def test_container_source_selection_normalizes_parent_before_child():
     assert [item["id"] for item in selected] == ["g", "gs", "gp"]
 
 
+def test_include_descendants_does_not_change_container_copy_scope(monkeypatch):
+    install_recursive_execute_fakes(monkeypatch)
+
+    default_plan = server.services.copying._build_plan(
+        "source-section", "destination-notebook", "Section Copy"
+    )
+    explicit_plan = server.services.copying._build_plan(
+        "source-section",
+        "destination-notebook",
+        "Section Copy",
+        include_descendants=True,
+    )
+
+    assert default_plan["include_descendants"] is True
+    assert explicit_plan["include_descendants"] is True
+    assert default_plan["plan_digest"] == explicit_plan["plan_digest"]
+    assert [item["id"] for item in default_plan["resources"]] == [
+        "source-section",
+        "source-page",
+    ]
+
+
 def test_section_group_plan_rejects_destination_inside_source_tree(monkeypatch):
     items = hierarchy_items()
     group = {
@@ -759,7 +804,14 @@ def test_plan_budget_rejects_subtree_before_reading_page_xml(monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Page XML must not be read")),
     )
 
-    result = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    result = asyncio.run(
+        plan_copy(
+            "parent",
+            "destination-section",
+            "Copied Parent",
+            include_descendants=True,
+        )
+    )
 
     assert state["items"]
     assert result["ok"] is False
@@ -836,10 +888,49 @@ def test_copy_rejects_changed_destination_snapshot_before_create(monkeypatch):
     assert "stale" in result["error"]
 
 
+@pytest.mark.write_contract
+@pytest.mark.parametrize(("planned_scope", "executed_scope"), [(True, False), (False, True)])
+def test_copy_rejects_include_descendants_mismatch_before_create(
+    monkeypatch, planned_scope, executed_scope
+):
+    install_plan_fakes(monkeypatch, body="")
+    planned = asyncio.run(
+        plan_copy(
+            "parent",
+            "destination-section",
+            "Copied Parent",
+            include_descendants=planned_scope,
+        )
+    )
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        server.services.mutations,
+        "create_page",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("No mutation is allowed")),
+    )
+
+    result = asyncio.run(
+        copy_page(
+            "parent",
+            "destination-section",
+            "Parent",
+            "source-section",
+            planned["plan_digest"],
+            destination_title="Copied Parent",
+            include_descendants=executed_scope,
+        )
+    )
+
+    assert result["ok"] is False
+    assert "stale" in result["error"]
+
+
 def test_partial_create_reports_created_ids_without_rollback(monkeypatch):
     install_plan_fakes(monkeypatch)
     plan = server.services.copying._build_plan(
-        "parent", "destination-section", "Copied Parent"
+        "parent", "destination-section", "Copied Parent", include_descendants=True
     )
     calls = []
 
@@ -988,10 +1079,11 @@ def test_notebook_copy_path_mismatch_is_partial_and_reports_allocated_id(monkeyp
 
 
 @pytest.mark.write_contract
-def test_page_subtree_copy_creates_new_ids_restores_relative_levels_and_verifies(monkeypatch):
+@pytest.mark.parametrize("include_descendants", [False, True])
+def test_page_copy_scope_creates_only_selected_ids_and_verifies(monkeypatch, include_descendants):
     state = hierarchy_items()
     xml_store = {
-        "parent": page_xml("parent", "Parent"),
+        "parent": page_xml("parent", "Parent", '<a href="onenote:#child">Child</a>'),
         "child": page_xml("child", "Child"),
     }
     monkeypatch.setattr(
@@ -1005,7 +1097,10 @@ def test_page_subtree_copy_creates_new_ids_restores_relative_levels_and_verifies
         lambda page_id, page_info="basic": xml_store[page_id],
     )
     plan = server.services.copying._build_plan(
-        "parent", "destination-section", "Copied Parent"
+        "parent",
+        "destination-section",
+        "Copied Parent",
+        include_descendants=include_descendants,
     )
     created = []
 
@@ -1051,9 +1146,23 @@ def test_page_subtree_copy_creates_new_ids_restores_relative_levels_and_verifies
 
     assert result["copy_report"]["verified"] is True
     assert result["copy_report"]["lossless"] is True
-    assert result["copy_report"]["id_map"] == {"parent": "new-1", "child": "new-2"}
+    expected_map = {"parent": "new-1"}
+    if include_descendants:
+        expected_map["child"] = "new-2"
+    assert result["copy_report"]["id_map"] == expected_map
+    assert result["created_ids"] == list(expected_map.values())
+    assert result["copy_report"]["copied_counts"] == {
+        "resources": len(expected_map),
+        "pages": len(expected_map),
+    }
     assert created[0]["page_level"] == 1
-    assert created[1]["page_level"] == 2
+    if include_descendants:
+        assert created[1]["page_level"] == 2
+        assert "#new-2" in xml_store["new-1"]
+        assert "#child" not in xml_store["new-1"]
+    else:
+        assert len(created) == 1
+        assert "#child" in xml_store["new-1"]
 
 
 @pytest.mark.write_contract
