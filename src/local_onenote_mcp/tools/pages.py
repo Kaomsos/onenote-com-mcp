@@ -42,13 +42,13 @@ async def get_binary_content(page_id: str, callback_id: str) -> dict[str, Any]:
 async def search_pages(
     query: str,
     scope_type: str,
-    scope_id: str,
+    scope_id: str = "",
     backend: str = "local_scan",
     max_results: int = 20,
     include_snippets: bool = True,
     include_recycle_bin: bool = False,
 ) -> dict[str, Any]:
-    """Search Page text in an explicit typed scope."""
+    """Search Page text in a typed scope or across all open Notebooks."""
 
     return invoke(
         lambda: get_services().search.search(

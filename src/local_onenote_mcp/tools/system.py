@@ -7,7 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from ..policy import CopyBudget, MutationPolicy, SearchBudget
-from ..services import IDENTIFIER_RESOLUTION_ORDER, RESOURCE_TYPES
+from ..services import (
+    IDENTIFIER_RESOLUTION_ORDER,
+    RESOURCE_TYPES,
+    SEARCH_BACKENDS,
+    SEARCH_SCOPE_TYPES,
+)
 from ..settings import MCP_NAME
 from .context import get_services
 from .responses import invoke
@@ -32,6 +37,8 @@ async def health_check() -> dict[str, Any]:
             "max_text_chars": services.pages.max_text_chars,
             "identifier_resolution_order": IDENTIFIER_RESOLUTION_ORDER,
             "search_default_backend": "local_scan",
+            "search_backends": list(SEARCH_BACKENDS),
+            "search_scope_types": list(SEARCH_SCOPE_TYPES),
             "content_formats": ["plain", "html", "markdown"],
             "mutation_policy": {
                 "writes_enabled": policy.writes_enabled,

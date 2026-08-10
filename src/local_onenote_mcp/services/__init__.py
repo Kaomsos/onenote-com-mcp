@@ -7,7 +7,7 @@ from .hierarchy import HierarchyService, IDENTIFIER_RESOLUTION_ORDER, RESOURCE_T
 from .mutations import MutationService
 from .operations import OperationsService
 from .pages import PageService
-from .search import SearchService
+from .search import SEARCH_BACKENDS, SEARCH_SCOPE_TYPES, SearchService
 
 __all__ = [
     "HierarchyService",
@@ -18,6 +18,8 @@ __all__ = [
     "PageService",
     "PartialFailure",
     "RESOURCE_TYPES",
+    "SEARCH_BACKENDS",
+    "SEARCH_SCOPE_TYPES",
     "SearchService",
     "ServiceContainer",
 ]
