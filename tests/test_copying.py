@@ -7,7 +7,9 @@ import pytest
 
 from local_onenote_mcp import server
 from local_onenote_mcp.page import (
+    canonical_page_digest,
     copy_verification_tier,
+    page_content_capability_projection,
     page_equivalence,
     transform_page_for_copy,
 )
@@ -27,6 +29,64 @@ def page_xml(page_id: str, title: str, body: str = "") -> str:
         f'ID="{page_id}" lastModifiedTime="clock"><one:Title><one:OE><one:T>{title}</one:T>'
         f"</one:OE></one:Title>{outline}</one:Page>"
     )
+
+
+def test_canonical_page_digest_ignores_only_empty_selection_text_placeholders():
+    baseline = page_xml("page", "Title")
+    selected_placeholder = baseline.replace(
+        "</one:Title>",
+        '<one:T selected="all" /></one:Title>',
+    )
+    ordinary_empty_text = baseline.replace("</one:Title>", "<one:T /></one:Title>")
+    selected_visible_text = baseline.replace(
+        "</one:Title>",
+        '<one:T selected="all">visible</one:T></one:Title>',
+    )
+
+    assert canonical_page_digest(baseline) == canonical_page_digest(
+        selected_placeholder
+    )
+    assert canonical_page_digest(baseline) != canonical_page_digest(
+        ordinary_empty_text
+    )
+    assert canonical_page_digest(baseline) != canonical_page_digest(
+        selected_visible_text
+    )
+
+
+def test_page_content_capability_projection_is_content_free_and_kind_counted():
+    source = page_xml("page", "Secret title", "Sensitive body").replace(
+        "</one:Page>",
+        '<one:InsertedFile objectID="inserted-id" path="C:/private/file.txt"/>'
+        "</one:Page>",
+    )
+
+    projection = page_content_capability_projection(source)
+
+    assert projection == {
+        "schema_version": 1,
+        "capabilities": ["InsertedFile", "Outline"],
+        "object_kind_counts": {"InsertedFile": 1, "OE": 1, "Outline": 1},
+        "unknown_nodes": [],
+        "unsupported_page_roots": [],
+        "complete": True,
+    }
+    assert "Sensitive" not in str(projection)
+    assert "private" not in str(projection)
+    assert "inserted-id" not in str(projection)
+
+
+def test_page_content_capability_projection_fails_closed_on_unknown_nested_node():
+    source = page_xml("page", "Title", "Body").replace(
+        "</one:Outline>", "<one:FutureThing/></one:Outline>"
+    )
+
+    projection = page_content_capability_projection(source)
+
+    assert projection["complete"] is False
+    assert projection["unknown_nodes"] == [
+        "{http://schemas.microsoft.com/office/onenote/2013/onenote}FutureThing"
+    ]
 
 
 def hierarchy_items(modified: str = "m1") -> list[dict]:
@@ -118,7 +178,7 @@ def install_plan_fakes(monkeypatch, *, body: str = "Body"):
     return state
 
 
-def install_recursive_execute_fakes(monkeypatch):
+def install_recursive_execute_fakes(monkeypatch, *, duplicate_page_titles: bool = False):
     state = [
         {
             "resource_type": "notebook",
@@ -171,7 +231,24 @@ def install_recursive_execute_fakes(monkeypatch):
             "parent_id": None,
         },
     ]
-    xml_store = {"source-page": page_xml("source-page", "Page")}
+    xml_store = {"source-page": page_xml("source-page", "Page", "first body")}
+    if duplicate_page_titles:
+        duplicate = {
+            "resource_type": "page",
+            "id": "source-page-2",
+            "title": "Page",
+            "path": "Source Notebook/Source Group/Inner Group/Notes/Page",
+            "parent_id": "source-section",
+            "notebook_id": "source-notebook",
+            "section_id": "source-section",
+            "parent_page_id": None,
+            "page_level": 1,
+            "order": 1,
+        }
+        state.insert(-1, duplicate)
+        xml_store["source-page-2"] = page_xml(
+            "source-page-2", "Page", "second body"
+        )
     counters = {"notebook": 0, "section_group": 0, "section": 0, "page": 0}
 
     def resources(include_recycle_bin=False):
@@ -206,13 +283,19 @@ def install_recursive_execute_fakes(monkeypatch):
             "parent_id": None,
         }
         state.append(item)
-        return {"item": item, "path": str(Path(base_folder) / name)}
+        return {
+            "item": item,
+            "path": str(Path(base_folder) / name),
+            "allocated_id": item["id"],
+        }
 
     def create_group(parent_id, name):
-        return {"section_group": append_container("section_group", parent_id, name)}
+        item = append_container("section_group", parent_id, name)
+        return {"section_group": item, "allocated_id": item["id"]}
 
     def create_section(parent_id, name):
-        return {"section": append_container("section", parent_id, name)}
+        item = append_container("section", parent_id, name)
+        return {"section": item, "allocated_id": item["id"]}
 
     def create_page(section_id, title, *args, **kwargs):
         counters["page"] += 1
@@ -235,7 +318,7 @@ def install_recursive_execute_fakes(monkeypatch):
         }
         state.append(item)
         xml_store[page_id] = page_xml(page_id, title)
-        return {"page": item}
+        return {"page": item, "allocated_id": item["id"]}
 
     def call(operation, **params):
         if operation == "update_page_content":
@@ -356,6 +439,44 @@ def test_transform_preserves_stable_page_attributes_settings_and_escapes_title_o
     title = next(node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "T")
     assert title.text == "A & B < C"
     assert not any(issue["code"] == "unsupported_page_root" for issue in result["issues"])
+
+
+def test_transform_removes_empty_selection_marker_before_replacing_title():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote"
+      ID="source" name="Old">
+      <one:Title><one:OE>
+        <one:T selected="all"/>
+        <one:T>Old</one:T>
+      </one:OE></one:Title>
+      <one:Outline><one:OEChildren><one:OE>
+        <one:T selected="all">Visible selected body</one:T>
+        <one:T/>
+      </one:OE></one:OEChildren></one:Outline>
+    </one:Page>"""
+
+    result = transform_page_for_copy(
+        source,
+        "target",
+        {"source": "target"},
+        title="New",
+    )
+    root = ET.fromstring(result["xml"])
+    title = next(node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Title")
+    title_texts = [
+        node.text or ""
+        for node in title.iter()
+        if node.tag.rsplit("}", 1)[-1] == "T"
+    ]
+    all_texts = [
+        node.text or ""
+        for node in root.iter()
+        if node.tag.rsplit("}", 1)[-1] == "T"
+    ]
+
+    assert title_texts == ["New"]
+    assert "Old" not in all_texts
+    assert "Visible selected body" in all_texts
+    assert "" in all_texts
 
 
 def test_transform_omits_whole_content_block_with_unknown_nested_node():
@@ -969,6 +1090,104 @@ def test_partial_create_reports_created_ids_without_rollback(monkeypatch):
     assert caught.value.details["failed_step"] == "initialize_created_page"
 
 
+def test_copy_rejects_create_readback_that_aliases_a_source_page(monkeypatch):
+    install_plan_fakes(monkeypatch)
+    plan = server.services.copying._build_plan(
+        "parent", "destination-section", "Copied Parent", include_descendants=True
+    )
+    calls = []
+
+    def create(section_id, title, *args, **kwargs):
+        calls.append(title)
+        target_id = "new-parent" if len(calls) == 1 else "child"
+        return {
+            "page": {
+                "resource_type": "page",
+                "id": target_id,
+                "title": title,
+                "section_id": section_id,
+                "parent_id": section_id,
+                "page_level": 1,
+                "order": len(calls) - 1,
+            }
+        }
+
+    monkeypatch.setattr(server.services.mutations, "create_page", create)
+
+    with pytest.raises(PartialFailure, match="existing Copy source ID") as caught:
+        server.services.copying._execute_copy(plan)
+
+    assert caught.value.details["created_ids"] == ["new-parent"]
+    assert caught.value.details["id_map"] == {"parent": "new-parent"}
+    assert caught.value.details["failed_step"] == "create_resources"
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [
+        (
+            {
+                "resource_type": "section",
+                "id": "new-target",
+                "name": "Wrong Type",
+                "parent_id": "destination-section",
+            },
+            "mismatched target resource",
+        ),
+        (
+            {
+                "resource_type": "page",
+                "id": "new-target",
+                "title": "Copied Parent",
+                "section_id": "wrong-section",
+                "parent_id": "wrong-section",
+            },
+            "planned destination Section",
+        ),
+        (
+            {
+                "resource_type": "page",
+                "id": "new-target",
+                "title": "Copied Parent",
+                "section_id": "destination-section",
+                "parent_id": "destination-section",
+                "is_in_recycle_bin": True,
+            },
+            "recycled",
+        ),
+    ],
+)
+def test_copy_rejects_invalid_created_target_before_content_or_reorder(
+    monkeypatch, target, message
+):
+    install_plan_fakes(monkeypatch)
+    plan = server.services.copying._build_plan(
+        "parent", "destination-section", "Copied Parent"
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "create_page",
+        lambda *args, **kwargs: {"allocated_id": "new-target", "page": target},
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "call",
+        lambda operation, **params: (_ for _ in ()).throw(
+            AssertionError("content/topology mutation must not start")
+        ),
+    )
+
+    with pytest.raises(PartialFailure, match=message) as caught:
+        server.services.copying._execute_copy(plan)
+
+    assert caught.value.details["allocated_ids"] == ["new-target"]
+    assert caught.value.details["resolved_target_ids"] == []
+    assert caught.value.details["id_map"] == {}
+    assert caught.value.details["failed_step"] == "create_resources"
+    assert caught.value.details["source_touched"] is False
+    assert caught.value.details["topology_touched"] is False
+
+
 def test_created_page_wins_over_contextual_parent_section():
     result = {
         "page": {"id": "new-page", "resource_type": "page"},
@@ -1052,6 +1271,102 @@ def test_recursive_notebook_copy_creates_new_root_and_verifies(monkeypatch, tmp_
     assert result["copy_report"]["destination_path"] == str(tmp_path / "Notebook Copy")
     assert result["copy_report"]["verified"] is True
     assert result["copy_report"]["lossless"] is True
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize(
+    ("source_id", "destination_parent_id", "destination_name", "destination_base_folder"),
+    [
+        ("source-section", "destination-notebook", "Section Copy", ""),
+        ("source-group", "destination-notebook", "Group Copy", ""),
+        ("source-notebook", "", "Notebook Copy", "{tmp}"),
+    ],
+)
+def test_container_copy_preserves_two_same_title_pages_as_fresh_distinct_targets(
+    monkeypatch,
+    tmp_path,
+    source_id,
+    destination_parent_id,
+    destination_name,
+    destination_base_folder,
+):
+    state = install_recursive_execute_fakes(monkeypatch, duplicate_page_titles=True)
+    base_folder = str(tmp_path) if destination_base_folder else ""
+    before_ids = {item["id"] for item in state}
+    source_items_before = {
+        item["id"]: dict(item)
+        for item in state
+        if item["id"] in {"source-page", "source-page-2"}
+    }
+    source_xml_before = {
+        page_id: server.services.pages.xml(page_id, "all")
+        for page_id in source_items_before
+    }
+    plan = server.services.copying._build_plan(
+        source_id,
+        destination_parent_id,
+        destination_name,
+        base_folder,
+    )
+
+    result = server.services.copying._execute_copy(plan)
+
+    id_map = result["copy_report"]["id_map"]
+    target_ids = [id_map["source-page"], id_map["source-page-2"]]
+    assert len(set(target_ids)) == 2
+    assert set(target_ids).isdisjoint(before_ids)
+    targets = [next(item for item in state if item["id"] == target_id) for target_id in target_ids]
+    assert [item["title"] for item in targets] == ["Page", "Page"]
+    assert [item["order"] for item in targets] == sorted(item["order"] for item in targets)
+    assert result["copy_report"]["verified"] is True
+    assert result["copy_report"]["lossless"] is True
+    assert result["copy_report"]["resolved_target_ids"] == list(id_map.values())
+    assert result["copy_report"]["allocated_ids"] == list(id_map.values())
+    for page_id, before_item in source_items_before.items():
+        assert next(item for item in state if item["id"] == page_id) == before_item
+        assert server.services.pages.xml(page_id, "all") == source_xml_before[page_id]
+
+
+def test_copy_rejects_reused_previous_target_before_content_or_reorder(monkeypatch):
+    install_plan_fakes(monkeypatch)
+    plan = server.services.copying._build_plan(
+        "parent", "destination-section", "Copied Parent", include_descendants=True
+    )
+    calls = []
+
+    def create(section_id, title, *args, **kwargs):
+        calls.append(title)
+        return {
+            "allocated_id": "new-parent",
+            "page": {
+                "resource_type": "page",
+                "id": "new-parent",
+                "title": title,
+                "section_id": section_id,
+                "parent_id": section_id,
+                "page_level": 1,
+                "order": 0,
+            },
+        }
+
+    monkeypatch.setattr(server.services.mutations, "create_page", create)
+    monkeypatch.setattr(
+        server.services.copying,
+        "call",
+        lambda operation, **params: (_ for _ in ()).throw(
+            AssertionError("content/topology mutation must not start")
+        ),
+    )
+
+    with pytest.raises(PartialFailure, match="same target ID") as caught:
+        server.services.copying._execute_copy(plan)
+
+    assert calls == ["Copied Parent", "Child"]
+    assert caught.value.details["resolved_target_ids"] == ["new-parent"]
+    assert caught.value.details["allocated_ids"] == ["new-parent", "new-parent"]
+    assert caught.value.details["source_touched"] is False
+    assert caught.value.details["source_untouched"] is True
+    assert caught.value.details["manual_recovery_required"] is True
 
 
 @pytest.mark.write_contract
@@ -1248,6 +1563,77 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
     assert caught.value.details["source_deleted"] is False
     assert caught.value.details["copy_report"] == report
     assert caught.value.details["created_ids"] == ["new-parent"]
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize("failure_mode", ["source_alias", "ambiguous_readback"])
+def test_move_page_actual_copy_identity_failure_blocks_all_source_deletes(
+    monkeypatch, failure_mode
+):
+    install_plan_fakes(monkeypatch, body="")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    planned = server.services.copying.plan_move_page(
+        "parent", "destination-section", "Moved Parent"
+    )
+
+    def create_page(section_id, title, *args, **kwargs):
+        if failure_mode == "source_alias":
+            return {
+                "allocated_id": "parent",
+                "page": {
+                    "resource_type": "page",
+                    "id": "parent",
+                    "title": title,
+                    "section_id": section_id,
+                    "parent_id": section_id,
+                },
+            }
+        raise PartialFailure(
+            "created Page path remained ambiguous",
+            partial=True,
+            allocated_ids=["new-ambiguous-page"],
+            resolved_target_ids=[],
+            created_ids=["new-ambiguous-page"],
+            source_touched=False,
+            topology_touched=True,
+            manual_recovery_required=True,
+            failed_step="verify_created_page",
+        )
+
+    monkeypatch.setattr(server.services.mutations, "create_page", create_page)
+    monkeypatch.setattr(
+        server.services.copying,
+        "call",
+        lambda operation, **params: (_ for _ in ()).throw(
+            AssertionError("content/topology mutation must not start")
+        ),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "delete_page",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("source delete must remain blocked")
+        ),
+    )
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.move_page(
+            "parent",
+            "destination-section",
+            "Parent",
+            "source-section",
+            planned["plan_digest"],
+            destination_title="Moved Parent",
+        )
+
+    assert caught.value.details["outcome"] == "copy_only"
+    assert caught.value.details["source_deleted"] is False
+    assert caught.value.details["source_touched"] is False
+    assert caught.value.details["resolved_target_ids"] == []
 
 
 @pytest.mark.write_contract

@@ -439,13 +439,55 @@ class CopyService(BaseService):
                 return value
         raise RuntimeError("Create operation returned no typed item.")
 
+    @staticmethod
+    def _validate_created_target(
+        target: dict[str, Any],
+        *,
+        resource_type: str,
+        expected_parent_id: str | None,
+        source_ids: set[str],
+        resolved_target_ids: set[str],
+    ) -> str:
+        """Validate one created target before any Copy content/topology mutation."""
+
+        target_id = target.get("id")
+        if (
+            not isinstance(target_id, str)
+            or not target_id
+            or target.get("resource_type") != resource_type
+            or target.get("is_in_recycle_bin") is True
+        ):
+            raise RuntimeError(
+                "Create operation returned an untyped, recycled, or mismatched target resource."
+            )
+        if target_id in source_ids:
+            raise RuntimeError("Create operation resolved to an existing Copy source ID.")
+        if target_id in resolved_target_ids:
+            raise RuntimeError(
+                "Create operation resolved two Copy resources to the same target ID."
+            )
+        if resource_type == "page" and target.get("section_id") != expected_parent_id:
+            raise RuntimeError(
+                "Created Page read-back differs from the planned destination Section."
+            )
+        if resource_type in {"section", "section_group"} and target.get("parent_id") != expected_parent_id:
+            raise RuntimeError(
+                "Created hierarchy item read-back differs from its planned parent."
+            )
+        if resource_type == "notebook" and target.get("parent_id") is not None:
+            raise RuntimeError("Created Notebook read-back unexpectedly has a hierarchy parent.")
+        return target_id
+
     def _execute_copy(self, plan: dict[str, Any]) -> dict[str, Any]:
         started = time.monotonic()
         budget = CopyBudget.current()
         resources = plan["resources"]
         source = plan["source"]
         destination = plan["destination"]
+        source_ids = {item["id"] for item in resources}
         id_map: dict[str, str] = {}
+        allocated_ids: list[str] = []
+        resolved_target_ids: list[str] = []
         created: list[dict[str, Any]] = []
         created_items: dict[str, dict[str, Any]] = {}
         completed_steps: list[dict[str, Any]] = []
@@ -476,9 +518,41 @@ class CopyService(BaseService):
                         section_id = destination["parent"]["id"]
                     else:
                         section_id = id_map[item["section_id"]]
-                    result = self.mutations.create_page(section_id, target_name)
+                    result = self.mutations.create_page(
+                        section_id,
+                        target_name,
+                        forbidden_ids=source_ids | set(resolved_target_ids),
+                    )
+                allocated_id = str(
+                    result.get("allocated_id")
+                    or result.get("page_id")
+                    or result.get("section_id")
+                    or result.get("section_group_id")
+                    or result.get("notebook_id")
+                    or ""
+                )
+                if allocated_id:
+                    allocated_ids.append(allocated_id)
                 target = self._created_item(result)
-                id_map[item["id"]] = target["id"]
+                if not allocated_id and target.get("id"):
+                    allocated_id = str(target["id"])
+                    allocated_ids.append(allocated_id)
+                expected_parent_id = (
+                    section_id
+                    if kind == "page"
+                    else parent_id
+                    if kind in {"section", "section_group"}
+                    else None
+                )
+                target_id = self._validate_created_target(
+                    target,
+                    resource_type=kind,
+                    expected_parent_id=expected_parent_id,
+                    source_ids=source_ids,
+                    resolved_target_ids=set(resolved_target_ids),
+                )
+                resolved_target_ids.append(target_id)
+                id_map[item["id"]] = target_id
                 created_items[item["id"]] = target
                 created.append(
                     {
@@ -640,6 +714,8 @@ class CopyService(BaseService):
             warnings = sorted({issue["reason"] for issue in issues})
             copy_report = {
                 "id_map": id_map,
+                "allocated_ids": list(allocated_ids),
+                "resolved_target_ids": list(resolved_target_ids),
                 "copied_counts": {
                     "resources": len(created),
                     "pages": len(page_results),
@@ -658,10 +734,15 @@ class CopyService(BaseService):
                     partial=True,
                     outcome="copy_unverified",
                     source_untouched=True,
+                    source_touched=False,
+                    topology_touched=True,
+                    manual_recovery_required=True,
                     source_deleted=False,
                     destination=target_root,
                     copy_report=copy_report,
                     created_ids=[item["target_id"] for item in created],
+                    allocated_ids=list(allocated_ids),
+                    resolved_target_ids=list(resolved_target_ids),
                     completed_steps=completed_steps,
                     failed_step=failed_step,
                 )
@@ -669,6 +750,8 @@ class CopyService(BaseService):
                 "item": target_root,
                 "copy_report": copy_report,
                 "created_ids": [item["target_id"] for item in created],
+                "allocated_ids": list(allocated_ids),
+                "resolved_target_ids": list(resolved_target_ids),
                 "partial": False,
                 "warnings": warnings,
                 **(
@@ -681,6 +764,12 @@ class CopyService(BaseService):
             details = dict(exc.details)
             if "copy_report" in details:
                 raise
+            nested_allocated = [str(value) for value in details.get("allocated_ids", [])]
+            nested_resolved = [str(value) for value in details.get("resolved_target_ids", [])]
+            details["allocated_ids"] = list(dict.fromkeys([*allocated_ids, *nested_allocated]))
+            details["resolved_target_ids"] = list(
+                dict.fromkeys([*resolved_target_ids, *nested_resolved])
+            )
             combined_ids = [item["target_id"] for item in created]
             combined_ids.extend(str(value) for value in details.get("created_ids", []))
             details["created_ids"] = list(dict.fromkeys(combined_ids))
@@ -691,18 +780,39 @@ class CopyService(BaseService):
             details["completed_steps"] = [*completed_steps, *nested_steps]
             details.setdefault("id_map", dict(id_map))
             details.setdefault("failed_step", failed_step)
-            details.setdefault("source_untouched", True)
+            details["source_touched"] = bool(details.get("source_touched", False))
+            details["source_untouched"] = not details["source_touched"]
+            details.setdefault("topology_touched", bool(details["allocated_ids"]))
+            details.setdefault("manual_recovery_required", bool(details["allocated_ids"]))
+            details.setdefault(
+                "possibly_untracked_allocated_ids",
+                [
+                    value
+                    for value in details["allocated_ids"]
+                    if value not in details["resolved_target_ids"]
+                ],
+            )
             details.setdefault("partial", True)
             raise PartialFailure(str(exc), **details) from exc
         except Exception as exc:
-            if created:
+            if created or allocated_ids:
                 raise PartialFailure(
                     str(exc),
                     partial=True,
                     outcome="copy_unverified",
                     source_untouched=True,
+                    source_touched=False,
+                    topology_touched=bool(created),
+                    manual_recovery_required=any(
+                        value not in source_ids for value in allocated_ids
+                    ),
                     source_deleted=False,
                     created_ids=[item["target_id"] for item in created],
+                    allocated_ids=list(allocated_ids),
+                    resolved_target_ids=list(resolved_target_ids),
+                    possibly_untracked_allocated_ids=[
+                        value for value in allocated_ids if value not in resolved_target_ids
+                    ],
                     id_map=id_map,
                     completed_steps=completed_steps,
                     failed_step=failed_step,

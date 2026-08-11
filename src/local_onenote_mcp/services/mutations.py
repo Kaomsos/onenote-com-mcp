@@ -81,20 +81,28 @@ class MutationService(BaseService):
         normalized_create_type = create_type.strip().casefold() or "none"
         relative_to_id = ""
         expected_path = path.replace("\\", "/").strip("/")
+        expected_parent_id: str | None = None
         if relative_to_identifier:
             parent = self.hierarchy.resolve(relative_to_identifier)
             relative_to_id = parent["id"]
+            expected_parent_id = parent["id"]
             expected_path = self.hierarchy.friendly_child_path(parent["path"], path)
         if normalized_create_type == "none":
-            existing = self.hierarchy.find_path(expected_path)
+            existing = self.hierarchy.find_unique_path(expected_path)
             if existing:
                 return {"object_id": existing["id"], "item": existing, "opened_existing": True}
             if not relative_to_identifier:
                 try:
                     existing = self.hierarchy.resolve(path)
                     return {"object_id": existing["id"], "item": existing, "opened_existing": True}
-                except Exception:
-                    pass
+                except ValueError as exc:
+                    if not str(exc).startswith("No "):
+                        raise
+        before_ids = {
+            str(item["id"])
+            for item in self.hierarchy.resources(include_recycle_bin=True)
+            if item.get("id")
+        }
         MutationPolicy.current().require_write()
         result = self.call(
             "open_hierarchy",
@@ -104,13 +112,32 @@ class MutationService(BaseService):
         )
         resource_type = self.create_resource_type(normalized_create_type)
         item = (
-            self.hierarchy.wait_for_created(expected_path, resource_type, result["object_id"])
+            self.hierarchy.wait_for_created(
+                expected_path,
+                resource_type,
+                result["object_id"],
+                expected_parent_id=expected_parent_id,
+                validate_parent=True,
+                before_ids=before_ids,
+            )
             if resource_type
             else None
         )
+        if resource_type and item is None:
+            raise PartialFailure(
+                "OpenHierarchy returned success, but the requested created target could not be uniquely verified.",
+                partial=True,
+                allocated_ids=[result["object_id"]],
+                resolved_target_ids=[],
+                created_ids=[result["object_id"]] if result["object_id"] not in before_ids else [],
+                completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
+                failed_step="verify_created_hierarchy",
+            )
         data: dict[str, Any] = {
             "object_id": item["id"] if item else result["object_id"],
             "opened_existing": False,
+            "allocated_id": result["object_id"],
+            "identity_remapped": bool(item and item["id"] != result["object_id"]),
         }
         if item:
             data["item"] = item
@@ -118,6 +145,11 @@ class MutationService(BaseService):
 
     def create_notebook(self, name_or_path: str, base_folder: str = "") -> dict[str, Any]:
         MutationPolicy.current().require_write()
+        before_ids = {
+            str(item["id"])
+            for item in self.hierarchy.resources(include_recycle_bin=True)
+            if item.get("id")
+        }
         raw = Path(name_or_path)
         if raw.is_absolute():
             notebook_path = raw
@@ -134,22 +166,42 @@ class MutationService(BaseService):
             relative_to_id="",
             create_file_type=CREATE_FILE_TYPES["notebook"],
         )
-        notebook = self.hierarchy.wait_for_created(notebook_path.name, "notebook", result["object_id"])
+        notebook = self.hierarchy.wait_for_created(
+            notebook_path.name,
+            "notebook",
+            result["object_id"],
+            expected_parent_id=None,
+            validate_parent=True,
+            before_ids=before_ids,
+        )
         if notebook is None:
             raise PartialFailure(
                 "Notebook creation returned success, but the new notebook could not be verified.",
                 partial=True,
-                created_ids=[result["object_id"]],
+                allocated_ids=[result["object_id"]],
+                resolved_target_ids=[],
+                created_ids=[result["object_id"]] if result["object_id"] not in before_ids else [],
                 completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
                 failed_step="verify_created_notebook",
             )
-        return {"path": str(notebook_path), "notebook_id": result["object_id"], "item": notebook}
+        return {
+            "path": str(notebook_path),
+            "notebook_id": notebook["id"],
+            "allocated_id": result["object_id"],
+            "identity_remapped": notebook["id"] != result["object_id"],
+            "item": notebook,
+        }
 
     def create_section(self, parent_id: str, section_name: str) -> dict[str, Any]:
         MutationPolicy.current().require_write()
         parent = self.hierarchy.resource(parent_id)
         if parent["resource_type"] not in {"notebook", "section_group"}:
             raise ValueError("parent_id must identify a notebook or section_group.")
+        before_ids = {
+            str(item["id"])
+            for item in self.hierarchy.resources(include_recycle_bin=True)
+            if item.get("id")
+        }
         filename = self.safe_leaf_name(section_name)
         if not filename.lower().endswith(".one"):
             filename += ".one"
@@ -160,12 +212,21 @@ class MutationService(BaseService):
             create_file_type=CREATE_FILE_TYPES["section"],
         )
         expected_path = self.hierarchy.friendly_child_path(parent["path"], filename)
-        section = self.hierarchy.wait_for_created(expected_path, "section", result["object_id"])
+        section = self.hierarchy.wait_for_created(
+            expected_path,
+            "section",
+            result["object_id"],
+            expected_parent_id=parent["id"],
+            validate_parent=True,
+            before_ids=before_ids,
+        )
         if section is None:
             raise PartialFailure(
                 "Section creation returned success, but the new section could not be verified.",
                 partial=True,
-                created_ids=[result["object_id"]],
+                allocated_ids=[result["object_id"]],
+                resolved_target_ids=[],
+                created_ids=[result["object_id"]] if result["object_id"] not in before_ids else [],
                 completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
                 failed_step="verify_created_section",
             )
@@ -173,6 +234,8 @@ class MutationService(BaseService):
             "parent": parent,
             "section": section,
             "section_id": section["id"],
+            "allocated_id": result["object_id"],
+            "identity_remapped": section["id"] != result["object_id"],
             "name": section_name,
             "path": expected_path,
         }
@@ -182,6 +245,11 @@ class MutationService(BaseService):
         parent = self.hierarchy.resource(parent_id)
         if parent["resource_type"] not in {"notebook", "section_group"}:
             raise ValueError("parent_id must identify a notebook or section_group.")
+        before_ids = {
+            str(item["id"])
+            for item in self.hierarchy.resources(include_recycle_bin=True)
+            if item.get("id")
+        }
         result = self.call(
             "open_hierarchy",
             path=self.safe_leaf_name(group_name),
@@ -189,12 +257,21 @@ class MutationService(BaseService):
             create_file_type=CREATE_FILE_TYPES["section_group"],
         )
         expected_path = self.hierarchy.friendly_child_path(parent["path"], group_name)
-        group = self.hierarchy.wait_for_created(expected_path, "section_group", result["object_id"])
+        group = self.hierarchy.wait_for_created(
+            expected_path,
+            "section_group",
+            result["object_id"],
+            expected_parent_id=parent["id"],
+            validate_parent=True,
+            before_ids=before_ids,
+        )
         if group is None:
             raise PartialFailure(
                 "Section-group creation returned success, but the new group could not be verified.",
                 partial=True,
-                created_ids=[result["object_id"]],
+                allocated_ids=[result["object_id"]],
+                resolved_target_ids=[],
+                created_ids=[result["object_id"]] if result["object_id"] not in before_ids else [],
                 completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
                 failed_step="verify_created_section_group",
             )
@@ -202,6 +279,8 @@ class MutationService(BaseService):
             "parent": parent,
             "section_group": group,
             "section_group_id": group["id"],
+            "allocated_id": result["object_id"],
+            "identity_remapped": group["id"] != result["object_id"],
             "name": group_name,
             "path": expected_path,
         }
@@ -213,28 +292,54 @@ class MutationService(BaseService):
         content: str = "",
         content_format: str = "plain",
         new_page_style: str = "blank_with_title",
+        *,
+        forbidden_ids: set[str] | None = None,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_write()
         section = self.hierarchy.resource(section_id, "section")
+        before_ids = {
+            str(item["id"])
+            for item in self.hierarchy.resources(include_recycle_bin=True)
+            if item.get("id")
+        }
         page_id = self.call(
             "create_new_page",
             section_id=section["id"],
             new_page_style=self.enum("new_page_style", new_page_style, NEW_PAGE_STYLES),
         )["page_id"]
+        page_is_fresh_allocation = (
+            page_id not in before_ids and page_id not in (forbidden_ids or set())
+        )
         completed_steps = [{"operation": "create_new_page", "object_id": page_id}]
         try:
+            if not page_is_fresh_allocation:
+                raise RuntimeError(
+                    "CreateNewPage returned an ID that was already active or forbidden for this operation."
+                )
             xml = build_page_update_xml(page_id, title=title, content=content, content_format=content_format)
             self.call("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
             completed_steps.append({"operation": "update_page_content", "object_id": page_id})
             expected_path = self.hierarchy.friendly_child_path(section["path"], title)
-            page = self.hierarchy.wait_for_created(expected_path, "page", page_id)
+            page = self.hierarchy.wait_for_created(
+                expected_path,
+                "page",
+                page_id,
+                expected_parent_id=section["id"],
+                validate_parent=True,
+                before_ids=before_ids,
+            )
             if page is None:
                 raise RuntimeError("Page creation returned success, but the new page could not be verified.")
         except Exception as exc:
             raise PartialFailure(
                 str(exc),
                 partial=True,
-                created_ids=[page_id],
+                allocated_ids=[page_id],
+                resolved_target_ids=[],
+                created_ids=[page_id] if page_is_fresh_allocation else [],
+                source_touched=False,
+                topology_touched=page_is_fresh_allocation,
+                manual_recovery_required=page_is_fresh_allocation,
                 completed_steps=completed_steps,
                 failed_step=(
                     "verify_created_page"
@@ -242,7 +347,15 @@ class MutationService(BaseService):
                     else "initialize_created_page"
                 ),
             ) from exc
-        return {"page_id": page["id"], "page": page, "section": section, "title": title, "path": expected_path}
+        return {
+            "page_id": page["id"],
+            "allocated_id": page_id,
+            "identity_remapped": page["id"] != page_id,
+            "page": page,
+            "section": section,
+            "title": title,
+            "path": expected_path,
+        }
 
     def update_page_title(
         self,
@@ -1172,33 +1285,6 @@ class MutationService(BaseService):
         return self.delete_resource(
             page_id, "page", page["title"], page["parent_id"], expected_modified, permanently
         )
-
-    def delete_hierarchy(self, object_identifier: str, permanently: bool = False) -> dict[str, Any]:
-        policy = MutationPolicy.current()
-        policy.require_raw_xml()
-        policy.require_delete(permanently=permanently)
-        item = self.hierarchy.resolve(object_identifier)
-        if item["resource_type"] == "notebook":
-            raise ValueError("Notebook deletion is unsupported; close_notebook is not deletion.")
-        deleted_ids = []
-        for attempt in range(4):
-            object_id = item["id"]
-            self.call("delete_hierarchy", object_id=object_id, permanently=permanently)
-            deleted_ids.append(object_id)
-            time.sleep(0.5)
-            remaining = self.hierarchy.find_path(item["path"], item["resource_type"])
-            if not remaining:
-                return {
-                    "object_id": object_id,
-                    "deleted_ids": deleted_ids,
-                    "permanently": permanently,
-                    "deleted": True,
-                    "verified_gone": True,
-                }
-            item = remaining
-            if attempt == 3:
-                raise RuntimeError(f"Delete returned success, but '{item['path']}' still exists with ID {item['id']}.")
-        raise RuntimeError("Delete did not complete.")
 
     def update_page_xml(self, xml: str) -> dict[str, Any]:
         policy = MutationPolicy.current()

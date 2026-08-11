@@ -103,6 +103,7 @@ VOLATILE_ATTRIBUTES = {
     "sourcePath",
     "localFilePath",
 }
+EMPTY_SELECTION_ATTRIBUTES = {"selected", "isSelected"}
 IGNORED_ATTRIBUTES = GENERATED_OBJECT_ATTRIBUTES | VOLATILE_ATTRIBUTES
 ROOT_REGENERATED_ATTRIBUTES = {"ID", "name", "pageLevel"}
 LINK_ATTRIBUTE_NAMES = {
@@ -120,6 +121,18 @@ LINK_ATTRIBUTE_NAMES = {
     "uri",
     "url",
 }
+
+
+def is_empty_selection_text_node(node: ET.Element) -> bool:
+    """Return whether OneNote emitted a content-free selection placeholder."""
+
+    return (
+        local_name(node.tag) == "T"
+        and not list(node)
+        and not (node.text or "").strip()
+        and bool(node.attrib)
+        and set(node.attrib) <= EMPTY_SELECTION_ATTRIBUTES
+    )
 
 
 def _replace_ids(value: str | None, id_map: dict[str, str]) -> str | None:
@@ -157,6 +170,13 @@ def _strip_identity_and_rewrite(node: ET.Element, id_map: dict[str, str]) -> Non
     if node.text and ("onenote:" in node.text.casefold() or "href=" in node.text.casefold()):
         node.text = _replace_ids(node.text, id_map)
     for child in list(node):
+        # OneNote can place an empty selection marker before the real Title T.
+        # Remove it before stripping volatile attributes; otherwise it becomes
+        # an indistinguishable empty T and _set_title may rename the marker
+        # while leaving the old visible title in the outbound payload.
+        if is_empty_selection_text_node(child):
+            node.remove(child)
+            continue
         _strip_identity_and_rewrite(child, id_map)
 
 
@@ -411,7 +431,11 @@ def _canonical_node(node: ET.Element, *, is_root: bool = False) -> list[Any]:
         local_name(node.tag),
         attributes,
         text,
-        [_canonical_node(child) for child in list(node)],
+        [
+            _canonical_node(child)
+            for child in list(node)
+            if not is_empty_selection_text_node(child)
+        ],
     ]
 
 

@@ -1,7 +1,7 @@
 # OneNote 对象模型（P0/P1 实现版）
 
 > 状态：实现契约
-> 更新日期：2026-08-10
+> 更新日期：2026-08-11
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
@@ -89,9 +89,15 @@ Page 不公开 `name`，统一使用 `title`：
 | `can_delete` | boolean | 当前对象能否被 COM 直接删除。 |
 | `delete_target_id` | string/null | 可删除目标；子对象可能指向可删容器。 |
 
+公开 Page 对象只使用 `kind`。Page XML parser 为 element local name 使用的内部中间字段 `type` 不属于公开合同；domain mapper 会把它映射到 `PageContentObject.kind`。调用方、manual-validation snapshot、detector 和 comparator 不得接受 `type` fallback，缺少 `kind` 或公开形状中残留 `type` 时应 fail closed。
+
+`FileAttachment` 与 `InsertedFile` 是不同的 XML element local name 和不同的公开 `kind`，不得互设别名。2026-08-11 在一个 OneNote `16.0.20228.20158`、Office x64 环境中，菜单“插入 → 文件附件”的三份机器回读都只观察到 `InsertedFile`；这意味着该环境没有通过此 UI 路径观察到独立 `FileAttachment`，不改变跨版本对象模型。证据边界和环境详情见 [`lesson/onenote_page_object_kind_and_file_attachment_representation.md`](../lesson/onenote_page_object_kind_and_file_attachment_representation.md)。
+
 `get_binary_content` 会在当前 Page 的最新对象快照中再次校验 `callback_id`，不把它当作全局句柄。`delete_page_content` 同样要求对象仍存在且 `can_delete=true`。
 
 ## 4. 关系与树重建
+
+`path` 是面向显示和兼容只读发现的 friendly 字段，不是唯一键。同一 Section 中多个 Page 可以拥有相同 title/path；mutation 目标必须使用 exact ID。创建回读只在 COM allocated ID 不可见且同路径恰有一个新出现、type/parent 均正确的候选时接受 remap，重复 path 必须 fail closed。
 
 - Notebook、SectionGroup、Section 的直接关系来自 XML 嵌套，`relationship_source=com`。
 - Page 的 `order/page_level/parent_page_id/has_children` 需要同 Section 的完整有序列表，`relationship_source=derived`。

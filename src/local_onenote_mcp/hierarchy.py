@@ -237,6 +237,39 @@ def find_resource_by_path(
     )
 
 
+def find_resources_by_path(
+    items: Iterable[dict[str, Any]],
+    path: str,
+    resource_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return every typed exact-path match without choosing an occurrence."""
+
+    target = path.casefold()
+    return [
+        item
+        for item in items
+        if item.get("path", "").casefold() == target
+        and (resource_type is None or item.get("resource_type") == resource_type)
+    ]
+
+
+def find_unique_resource_by_path(
+    items: Iterable[dict[str, Any]],
+    path: str,
+    resource_type: str | None = None,
+) -> dict[str, Any] | None:
+    """Return one exact-path match, fail closed when the path is ambiguous."""
+
+    matches = find_resources_by_path(items, path, resource_type)
+    if len(matches) > 1:
+        label = resource_type or "object"
+        ids = ", ".join(str(item.get("id", "")) for item in matches[:10])
+        raise ValueError(
+            f"Ambiguous {label} path '{path}'. Use an exact object ID. Matching IDs: {ids}"
+        )
+    return matches[0] if matches else None
+
+
 def resolve_resource(
     items: Iterable[dict[str, Any]],
     identifier: str,
