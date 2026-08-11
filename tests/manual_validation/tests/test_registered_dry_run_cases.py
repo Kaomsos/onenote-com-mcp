@@ -58,6 +58,8 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "reorder-section-group",
         "reparent-page",
         "reparent-section-group",
+        "move-section",
+        "move-section-group",
         "bootstrap-inserted-file-fixture",
         "bootstrap-ink-drawing-fixture",
         "bootstrap-media-file-fixture",

@@ -1,38 +1,30 @@
-"""Verified copy plus non-permanent source deletion Page move scenario."""
+"""Cross-Notebook root-only and full-subtree Page Move safety scenario."""
 
 from __future__ import annotations
 
 import argparse
 from typing import Any
 
-from ..mcp_stdio_client import (
-    MCPStdioClient,
-    MOVE_PAGE_POLICY,
-    scenario_client,
-)
+from ..mcp_stdio_client import MCPStdioClient, MOVE_PAGE_POLICY, scenario_client
 from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
+from ..run_identity import run_safe_timestamp
 from ..test_utils import (
     capture_snapshot,
     display_name,
     find_snapshot_item,
     resolve_manifest_item,
     scenario_dir,
-    snapshot_ids,
     validate_manifest_notebook,
     write_json,
 )
-from ..run_identity import run_safe_timestamp
 from .base import Scenario
-from .common.registry import SCENARIO_REGISTRY
-from .fixture_recipes.move_page import RECIPE
 from .common.config import MOVE_PAGE_TOOLS
-from .common.copy_invariants import (
-    assert_copy_fixture_capabilities,
-    assert_copy_mapping,
-    expected_copy_source_items,
-)
+from .common.copy_invariants import expected_copy_source_items
 from .common.copy_runtime import call_with_result_evidence
+from .common.registry import SCENARIO_REGISTRY
 from .common.report import render_report
+from .common.specs import get_scenario_spec
+from .fixture_recipes.move_page import RECIPE
 
 
 async def _execute_move_page(
@@ -42,11 +34,32 @@ async def _execute_move_page(
     *,
     client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
-    notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
-    source = resolve_manifest_item(manifest, "disposable_page")
+    validate_manifest_notebook(manifest, args.notebook_name)
+    notebooks = manifest.get("notebooks")
+    if not isinstance(notebooks, dict) or set(notebooks) != {"destination", "source"}:
+        raise RunnerFailure("Move Page requires exact source/destination Notebook roles.")
     destination = resolve_manifest_item(manifest, "destination_section")
-    collision_anchor = resolve_manifest_item(manifest, "collision_anchor")
-    destination_title = f"Moved-Disposable-{run_safe_timestamp(args)}"
+    cases = get_scenario_spec("move-page").execution_contract.get("cases")
+    if not isinstance(cases, list) or len(cases) != 2:
+        raise RunnerFailure("Move Page requires its two declared cross-Notebook cases.")
+
+    async def capture_bundle(active_client: MCPStdioClient) -> dict[str, Any]:
+        roles = {
+            role: await capture_snapshot(active_client, str(notebooks[role]["id"]))
+            for role in ("source", "destination")
+        }
+        merged: dict[str, Any] = {
+            "notebook_id": str(notebooks["source"]["id"]),
+            "notebook_ids": {role: str(notebooks[role]["id"]) for role in roles},
+            "roles": roles,
+            "items": [],
+            "page_hashes": {},
+        }
+        for role in ("source", "destination"):
+            merged["items"].extend(roles[role].get("items", []))
+            merged["page_hashes"].update(roles[role].get("page_hashes", {}))
+        return merged
+
     out = scenario_dir(options.run_dir, "move-page")
     async with scenario_client(
         client,
@@ -56,118 +69,143 @@ async def _execute_move_page(
         timeout_seconds=options.timeout,
         client_factory=MCPStdioClient,
     ) as client:
-        before = await capture_snapshot(client, notebook_id)
-        write_json(out / "before.json", before)
-        current = find_snapshot_item(before, source["id"])
-        if current is None:
-            raise RunnerFailure("Disposable Page is not active; run create to replenish the fixture.")
-        anchor_before = find_snapshot_item(before, collision_anchor["id"])
-        if anchor_before is None:
-            raise RunnerFailure("Move collision anchor is missing from the destination Section.")
-        planned = await client.call_tool(
-            "plan_move_page",
-            {
-                "page_id": current["id"],
+        current_snapshot = await capture_bundle(client)
+        write_json(out / "before.json", current_snapshot)
+        case_results: list[dict[str, Any]] = []
+        all_target_ids: list[str] = []
+
+        for index, case in enumerate(cases, start=1):
+            case_name = str(case["name"])
+            source = resolve_manifest_item(manifest, str(case["source_key"]))
+            child = resolve_manifest_item(manifest, str(case["child_key"]))
+            current_source = find_snapshot_item(current_snapshot, str(source["id"]))
+            if current_source is None:
+                raise RunnerFailure(f"Move source is missing before case '{case_name}'.")
+            include_descendants = case.get("include_descendants") is True
+            selected = expected_copy_source_items(
+                current_snapshot,
+                str(current_source["id"]),
+                include_descendants,
+            )
+            expected_source_ids = [str(item["id"]) for item in selected]
+            destination_title = (
+                f"{index:02d}-Moved-{'Subtree' if include_descendants else 'Root-Only'}-"
+                f"{run_safe_timestamp(args)}"
+            )
+            plan_arguments = {
+                "page_id": current_source["id"],
                 "destination_section_id": destination["id"],
                 "destination_title": destination_title,
-            },
-        )
-        write_json(out / "plan.json", planned)
-        assert_copy_fixture_capabilities(planned)
-        move_result = await call_with_result_evidence(
-            client,
-            "move_page",
-            {
-                "page_id": current["id"],
+            }
+            if include_descendants:
+                plan_arguments["include_descendants"] = True
+            planned = await client.call_tool("plan_move_page", plan_arguments)
+            write_json(out / f"plan-{case_name}.json", planned)
+            if planned.get("include_descendants") is not include_descendants:
+                raise InvariantFailure(f"Move plan scope differs for case '{case_name}'.")
+            planned_ids = [
+                str(item["id"])
+                for item in planned.get("snapshots", {}).get("source", {}).get("resources", [])
+            ]
+            if planned_ids != expected_source_ids:
+                raise InvariantFailure(f"Move plan selected the wrong Pages for case '{case_name}'.")
+
+            before = current_snapshot
+            write_json(out / f"before-{case_name}.json", before)
+            move_arguments = {
+                "page_id": current_source["id"],
                 "destination_section_id": destination["id"],
-                "expected_title": display_name(current),
-                "expected_section_id": current["section_id"],
-                "expected_modified": current.get("modified"),
+                "expected_title": display_name(current_source),
+                "expected_section_id": current_source["section_id"],
+                "expected_modified": current_source.get("modified"),
                 "destination_title": destination_title,
                 "plan_digest": planned["plan_digest"],
-            },
-            out / "copy-result.json",
-        )
-        after = await capture_snapshot(client, notebook_id)
-        write_json(out / "after.json", after)
-        source_subtree_ids = {
-            item["id"] for item in expected_copy_source_items(before, current["id"])
-        }
-        remaining_source_ids = source_subtree_ids & snapshot_ids(after)
-        if remaining_source_ids:
-            raise InvariantFailure(
-                f"Move source subtree remains active: {sorted(remaining_source_ids)}"
+            }
+            if include_descendants:
+                move_arguments["include_descendants"] = True
+            moved = await call_with_result_evidence(
+                client,
+                "move_page",
+                move_arguments,
+                out / f"copy-result-{case_name}.json",
             )
-        target_id = move_result.get("item", {}).get("id")
-        if not target_id or find_snapshot_item(after, target_id) is None:
-            raise InvariantFailure("Move target is missing from the active snapshot.")
-        assert_copy_mapping(
-            before,
-            after,
-            current["id"],
-            destination["id"],
-            destination_title,
-            move_result,
-        )
-        anchor_after = find_snapshot_item(after, collision_anchor["id"])
-        stable_anchor_fields = (
-            "resource_type",
-            "title",
-            "section_id",
-            "parent_page_id",
-            "page_level",
-            "order",
-        )
-        if anchor_after is None or any(
-            anchor_after.get(field) != anchor_before.get(field)
-            for field in stable_anchor_fields
-        ):
-            raise InvariantFailure("Move changed or reordered the duplicate-title anchor.")
-        if after.get("page_hashes", {}).get(collision_anchor["id"]) != before.get(
-            "page_hashes", {}
-        ).get(collision_anchor["id"]):
-            raise InvariantFailure("Move changed the duplicate-title anchor body.")
-        id_map = move_result.get("copy_report", {}).get("id_map", {})
-        target_ids = list(id_map.values()) if isinstance(id_map, dict) else []
-        if (
-            set(target_ids) & (source_subtree_ids | {collision_anchor["id"]})
-            or len(target_ids) != len(set(target_ids))
-        ):
-            raise InvariantFailure(
-                "Move target IDs are not fresh, unique, and disjoint from source/anchor IDs."
+            report = moved.get("copy_report", {})
+            if report.get("verified") is not True or report.get("lossless") is not True:
+                raise InvariantFailure(f"Move Copy gate failed for case '{case_name}'.")
+            if moved.get("source_deleted_nonpermanently") is not True:
+                raise InvariantFailure(f"Move did not report non-permanent deletion for '{case_name}'.")
+            if moved.get("include_descendants") is not include_descendants:
+                raise InvariantFailure(f"Move result scope differs for case '{case_name}'.")
+            id_map = report.get("id_map")
+            if not isinstance(id_map, dict) or list(id_map) != expected_source_ids:
+                raise InvariantFailure(f"Move id_map scope differs for case '{case_name}'.")
+            target_ids = [str(id_map[value]) for value in expected_source_ids]
+            if moved.get("attempted_source_ids") != list(reversed(expected_source_ids)):
+                raise InvariantFailure(f"Move deletion order is not leaf-to-root for '{case_name}'.")
+            if moved.get("deleted_source_ids") != list(reversed(expected_source_ids)):
+                raise InvariantFailure(f"Move deleted the wrong source IDs for '{case_name}'.")
+
+            after = await capture_bundle(client)
+            write_json(out / f"after-{case_name}.json", after)
+            after_by_id = {str(item["id"]): item for item in after.get("items", [])}
+            if set(expected_source_ids) & set(after_by_id):
+                raise InvariantFailure(f"Moved source remains active for case '{case_name}'.")
+            if any(
+                target_id not in after_by_id
+                or str(after_by_id[target_id].get("section_id")) != str(destination["id"])
+                for target_id in target_ids
+            ):
+                raise InvariantFailure(f"Move target escaped the destination Notebook for '{case_name}'.")
+            if display_name(after_by_id[target_ids[0]]) != destination_title:
+                raise InvariantFailure(f"Move target title differs for case '{case_name}'.")
+
+            preservation = moved.get("preserved_descendants", {})
+            if include_descendants:
+                if preservation.get("preserved_descendant_ids"):
+                    raise InvariantFailure("Subtree Move unexpectedly preserved a selected descendant.")
+            else:
+                child_before = find_snapshot_item(before, str(child["id"]))
+                child_after = after_by_id.get(str(child["id"]))
+                if child_before is None or child_after is None:
+                    raise InvariantFailure("Root-only Move removed its excluded child.")
+                if (
+                    int(child_after.get("page_level", 0))
+                    != int(current_source.get("page_level", 1))
+                    or child_after.get("parent_page_id") != current_source.get("parent_page_id")
+                    or after.get("page_hashes", {}).get(str(child["id"]))
+                    != before.get("page_hashes", {}).get(str(child["id"]))
+                ):
+                    raise InvariantFailure("Root-only Move did not safely promote its excluded child.")
+                if preservation.get("preserved_descendant_ids") != [str(child["id"])]:
+                    raise InvariantFailure("Root-only Move preservation evidence is incomplete.")
+
+            case_results.append(
+                {
+                    "case": case_name,
+                    "parameter": "omitted" if not include_descendants else True,
+                    "effective_include_descendants": include_descendants,
+                    "source_ids": expected_source_ids,
+                    "target_ids": target_ids,
+                    "copy_verified": True,
+                    "source_deleted_nonpermanently": True,
+                    "preserved_descendant_ids": preservation.get(
+                        "preserved_descendant_ids", []
+                    ),
+                    "recycle_bin_verification": moved.get("recycle_bin_verification"),
+                }
             )
-        attempted_source_ids = move_result.get("attempted_source_ids", [])
-        expected_attempts = [
-            item["id"]
-            for item in reversed(expected_copy_source_items(before, current["id"]))
-        ]
-        if attempted_source_ids != expected_attempts:
-            raise InvariantFailure(
-                "Move source deletion evidence does not match leaf-to-root source IDs."
-            )
+            all_target_ids.extend(target_ids)
+            current_snapshot = after
+
+        write_json(out / "after.json", current_snapshot)
         remaining = {
-            "status": "source_subtree_removed_nonpermanently",
-            "source_id": current["id"],
-            "source_ids": sorted(source_subtree_ids),
-            "target_id": target_id,
-            "target_ids": target_ids,
-            "collision_anchor_id": collision_anchor["id"],
-            "collision_anchor_unchanged": True,
-            "recycle_bin_verification": move_result.get(
-                "recycle_bin_verification", "not_reported"
-            ),
-            "recycled_source_ids": move_result.get("recycled_source_ids", []),
-            "recycle_unverified_source_ids": move_result.get(
-                "recycle_unverified_source_ids", []
-            ),
+            "status": "two_cross_notebook_moves_completed",
+            "target_ids": all_target_ids,
+            "cases": case_results,
             "manual_cleanup_required": True,
-            "cleanup": (
-                "Inspect the active copied target. In OneNote UI, restore or remove any "
-                "disposable source Pages shown in Deleted Notes, then remove the copied target."
-            ),
             "reason": (
-                "The source subtree is absent from the active hierarchy after non-permanent "
-                "DeleteHierarchy; recycle-bin visibility is not an acceptance requirement."
+                "Both disposable sources were removed non-permanently after verified Copy; "
+                "the copied targets remain for inspection."
             ),
         }
         write_json(out / "restored.json", remaining)
@@ -177,14 +215,12 @@ async def _execute_move_page(
         result = {
             "scenario": "move-page",
             "status": "passed",
-            "target_id": current["id"],
-            "new_target_id": target_id,
+            "target_ids": all_target_ids,
             "restored": False,
             "worksite_preserved": keep_worksite,
             "source_deleted_nonpermanently": True,
-            "recycle_bin_verification": remaining["recycle_bin_verification"],
             "remaining_state": remaining,
-            "copy_report": move_result["copy_report"],
+            "case_results": case_results,
         }
         write_json(out / "result.json", result)
         render_report(options.run_dir)
@@ -196,12 +232,12 @@ class MovePageScenario(Scenario):
     name = "move-page"
     fixture_recipe = RECIPE
     help_text = (
-        "GATED: create, strictly move the disposable Page by verified Copy plus "
-        "non-permanent source removal, report, then close or keep."
+        "GATED: move two disposable Pages across Notebooks, once without descendants "
+        "and once with the complete subtree; verify Copy then non-permanent source removal."
     )
     timeout_default = 1_800
     included_in_all = True
-    worksite_dry_run_action = "preserve-copy-and-nonpermanently-deleted-source"
+    worksite_dry_run_action = "preserve-two-cross-notebook-move-targets"
 
     async def execute(
         self,
@@ -213,3 +249,6 @@ class MovePageScenario(Scenario):
         fixture_result: dict[str, Any],
     ) -> dict[str, Any]:
         return await _execute_move_page(args, options, manifest, client=client)
+
+
+__all__ = ["MovePageScenario"]

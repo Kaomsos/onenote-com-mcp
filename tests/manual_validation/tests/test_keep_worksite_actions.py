@@ -439,23 +439,32 @@ def test_reparent_section_default_restores_three_cases_in_reverse_order(monkeypa
 def test_move_page_accepts_active_absence_without_recycle_lookup(
     monkeypatch, tmp_path
 ) -> None:
-    notebook = {"resource_type": "notebook", "id": "notebook", "name": "Notebook"}
+    source_notebook = {
+        "resource_type": "notebook",
+        "id": "source-notebook",
+        "name": "Source Notebook",
+    }
+    destination_notebook = {
+        "resource_type": "notebook",
+        "id": "destination-notebook",
+        "name": "Destination Notebook",
+    }
     source_section = {
         "resource_type": "section",
         "id": "source-section",
         "name": "Source",
-        "parent_id": "notebook",
+        "parent_id": "source-notebook",
     }
     destination = {
         "resource_type": "section",
         "id": "destination-section",
         "name": "Destination",
-        "parent_id": "notebook",
+        "parent_id": "destination-notebook",
     }
-    source = {
+    root_only = {
         "resource_type": "page",
-        "id": "source-page",
-        "title": "Disposable",
+        "id": "root-only",
+        "title": "01-Root-Only",
         "section_id": "source-section",
         "parent_id": "source-section",
         "parent_page_id": None,
@@ -463,49 +472,48 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         "order": 0,
         "modified": "before",
     }
-    source_child = {
-        **source,
-        "id": "source-child",
-        "title": "List-Tag-Page",
-        "parent_page_id": "source-page",
+    root_child = {
+        **root_only,
+        "id": "root-child",
+        "title": "02-Root-Only-Child",
+        "parent_page_id": "root-only",
         "page_level": 2,
         "order": 1,
     }
-    target = {
-        **source,
-        "id": "target-page",
-        "title": "Moved-Disposable-stamp",
-        "section_id": "destination-section",
-        "parent_id": "destination-section",
-    }
-    target_child = {
-        **source_child,
-        "id": "target-child",
-        "section_id": "destination-section",
-        "parent_id": "destination-section",
-        "parent_page_id": "target-page",
-    }
-    anchor = {
-        **source_child,
-        "id": "collision-anchor",
-        "section_id": "destination-section",
-        "parent_id": "destination-section",
+    subtree = {
+        **root_only,
+        "id": "subtree",
+        "title": "03-Subtree",
         "parent_page_id": None,
         "page_level": 1,
-        "order": 0,
+        "order": 2,
     }
-    before = {
-        "items": [notebook, source_section, source, source_child, destination, anchor],
-        "page_hashes": {"collision-anchor": "anchor-hash"},
+    subtree_child = {
+        **root_child,
+        "id": "subtree-child",
+        "title": "04-Subtree-Child",
+        "parent_page_id": "subtree",
+        "order": 3,
     }
-    after = {
-        "items": [notebook, source_section, destination, anchor, target, target_child],
-        "page_hashes": {"collision-anchor": "anchor-hash"},
+    state = {
+        "source": [source_notebook, source_section, root_only, root_child, subtree, subtree_child],
+        "destination": [destination_notebook, destination],
+        "hashes": {
+            "root-only": "root-hash",
+            "root-child": "root-child-hash",
+            "subtree": "subtree-hash",
+            "subtree-child": "subtree-child-hash",
+        },
     }
-    snapshots = iter([before, after])
 
-    async def fake_snapshot(_client, _notebook_id):
-        return next(snapshots)
+    async def fake_snapshot(_client, notebook_id):
+        role = "source" if notebook_id == "source-notebook" else "destination"
+        ids = {item["id"] for item in state[role] if item.get("resource_type") == "page"}
+        return {
+            "notebook_id": notebook_id,
+            "items": [dict(item) for item in state[role]],
+            "page_hashes": {key: value for key, value in state["hashes"].items() if key in ids},
+        }
 
     class FakeMovePageClient:
         policy = move_page_scenario.MOVE_PAGE_POLICY
@@ -520,43 +528,87 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         async def call_tool(self, name: str, arguments: dict) -> dict:
             self.calls.append(name)
             if name == "plan_move_page":
+                include_descendants = arguments.get("include_descendants", False)
+                ids = (
+                    ["subtree", "subtree-child"]
+                    if include_descendants
+                    else ["root-only"]
+                )
                 return {
-                    "plan_digest": "digest",
-                    "content_capabilities": [
-                        "Image",
-                        "List",
-                        "Outline",
-                        "RichText",
-                        "Table",
-                        "Tag",
-                    ],
+                    "plan_digest": f"digest-{include_descendants}",
+                    "include_descendants": include_descendants,
+                    "snapshots": {
+                        "source": {
+                            "resources": [
+                                next(item for item in state["source"] if item["id"] == value)
+                                for value in ids
+                            ]
+                        }
+                    },
                 }
             assert name == "move_page"
+            include_descendants = arguments.get("include_descendants", False)
+            if include_descendants:
+                source_ids = ["subtree", "subtree-child"]
+                target_ids = ["target-subtree", "target-subtree-child"]
+            else:
+                source_ids = ["root-only"]
+                target_ids = ["target-root"]
+                child = next(item for item in state["source"] if item["id"] == "root-child")
+                child.update(page_level=1, parent_page_id=None, order=0)
+            state["source"] = [item for item in state["source"] if item["id"] not in source_ids]
+            for index, (source_id, target_id) in enumerate(zip(source_ids, target_ids)):
+                original = root_only if source_id == "root-only" else (
+                    subtree if source_id == "subtree" else subtree_child
+                )
+                state["destination"].append(
+                    {
+                        **original,
+                        "id": target_id,
+                        "title": arguments["destination_title"] if index == 0 else original["title"],
+                        "section_id": "destination-section",
+                        "parent_id": "destination-section",
+                        "parent_page_id": target_ids[0] if index else None,
+                        "page_level": index + 1,
+                        "order": index,
+                    }
+                )
+                state["hashes"][target_id] = state["hashes"][source_id]
             return {
-                "item": target,
-                "created_ids": ["target-page", "target-child"],
+                "item": next(item for item in state["destination"] if item["id"] == target_ids[0]),
+                "created_ids": target_ids,
                 "copy_report": {
                     "verified": True,
                     "lossless": True,
-                    "id_map": {
-                        "source-page": "target-page",
-                        "source-child": "target-child",
-                    },
+                    "id_map": dict(zip(source_ids, target_ids)),
                 },
+                "include_descendants": include_descendants,
                 "source_deleted_nonpermanently": True,
                 "recycle_bin_verification": "not_required_com_unavailable",
                 "recycled_source_ids": [],
-                "recycle_unverified_source_ids": ["source-child", "source-page"],
-                "attempted_source_ids": ["source-child", "source-page"],
+                "recycle_unverified_source_ids": list(reversed(source_ids)),
+                "attempted_source_ids": list(reversed(source_ids)),
+                "deleted_source_ids": list(reversed(source_ids)),
+                "preserved_descendants": {
+                    "promoted": not include_descendants,
+                    "preserved_descendant_ids": [] if include_descendants else ["root-child"],
+                },
             }
 
     manifest = {
         "schema_version": 1,
-        "notebook": notebook,
+        "notebook": source_notebook,
+        "notebooks": {
+            "source": source_notebook,
+            "destination": destination_notebook,
+        },
         "structure": {
-            "disposable_page": source,
+            "source_section": source_section,
+            "root_only_page": root_only,
+            "root_only_child": root_child,
+            "subtree_page": subtree,
+            "subtree_child": subtree_child,
             "destination_section": destination,
-            "collision_anchor": anchor,
         },
     }
     client = FakeMovePageClient()
@@ -577,11 +629,20 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
     assert client.calls == [
         "plan_move_page",
         "move_page",
+        "plan_move_page",
+        "move_page",
     ]
     assert result["status"] == "passed"
     assert result["source_deleted_nonpermanently"] is True
-    assert result["recycle_bin_verification"] == "not_required_com_unavailable"
+    assert [case["effective_include_descendants"] for case in result["case_results"]] == [
+        False,
+        True,
+    ]
     worksite = test_utils.read_json(
         tmp_path / "scenarios" / "move-page" / "worksite.json"
     )
-    assert worksite["source_ids"] == ["source-child", "source-page"]
+    assert worksite["target_ids"] == [
+        "target-root",
+        "target-subtree",
+        "target-subtree-child",
+    ]

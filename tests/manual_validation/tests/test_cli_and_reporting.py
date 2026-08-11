@@ -129,7 +129,7 @@ def test_p2_scenarios_default_to_copy_execute_timeout() -> None:
     assert rename_args.timeout == 180
 
 
-@pytest.mark.parametrize("legacy_name", ["move-section", "reconstructive-move-page"])
+@pytest.mark.parametrize("legacy_name", ["reconstructive-move-page"])
 def test_legacy_scenario_names_are_not_registered(legacy_name) -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args([legacy_name, "--dry-run"])
@@ -241,6 +241,17 @@ def test_page_copy_dry_runs_declare_layered_automatic_fixture(
 
     payload = json.loads(capsys.readouterr().out)
     assert "human_checkpoint" not in payload
+    if scenario == "move-page":
+        assert set(payload["fixture_profile"]["content_capabilities"]) == {
+            "Outline",
+            "RichText",
+        }
+        assert set(payload["cache"]["roles"]) == {"destination", "source"}
+        assert [
+            case["include_descendants"]
+            for case in payload["scenario_spec"]["execution_contract"]["cases"]
+        ] == ["omitted", True]
+        return
     assert {"Image", "List", "Outline", "RichText", "Table", "Tag"} <= set(
         payload["fixture_profile"]["content_capabilities"]
     )

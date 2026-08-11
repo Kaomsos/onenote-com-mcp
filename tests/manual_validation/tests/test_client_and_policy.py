@@ -19,6 +19,7 @@ from tests.manual_validation.mcp_stdio_client import (
     REORDER_SECTION_GROUP_POLICY,
     REORDER_SECTION_POLICY,
     MOVE_PAGE_POLICY,
+    MOVE_CONTAINERS_POLICY,
     WRITE_POLICY,
     MCPStdioClient,
     build_server_env,
@@ -86,6 +87,7 @@ def test_static_policy_matrix_is_minimal() -> None:
         "experimental_reorder_section_group_enabled": False,
         "experimental_copy_enabled": False,
         "move_page_enabled": False,
+        "move_containers_enabled": False,
         "raw_xml_enabled": False,
     }
     assert WRITE_POLICY.writes_enabled is True
@@ -102,6 +104,7 @@ def test_static_policy_matrix_is_minimal() -> None:
     assert COPY_POLICY.deletes_enabled is True
     assert COPY_NO_DELETE_POLICY.deletes_enabled is False
     assert MOVE_PAGE_POLICY.move_page_enabled is True
+    assert MOVE_CONTAINERS_POLICY.move_containers_enabled is True
     for policy in (
         READ_ONLY_POLICY,
         WRITE_POLICY,
@@ -112,6 +115,7 @@ def test_static_policy_matrix_is_minimal() -> None:
         COPY_POLICY,
         COPY_NO_DELETE_POLICY,
         MOVE_PAGE_POLICY,
+        MOVE_CONTAINERS_POLICY,
     ):
         assert policy.permanent_deletes_enabled is False
         assert policy.raw_xml_enabled is False
@@ -131,6 +135,7 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
     assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_MOVE_PAGE"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_RAW_XML"] == "false"
     assert env["TEMP"] == env["TMP"]
     assert env["LOCAL_ONENOTE_MCP_TIMEOUT"] == "1800"

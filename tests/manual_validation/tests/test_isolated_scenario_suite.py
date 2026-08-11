@@ -1042,10 +1042,14 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
     assert FakeLifecycle.instances[0].closed is True
     assert result["metrics"]["observed_mcp_process_starts"] == 1
     assert result["ordered_steps"] == [
-        "create-notebook-bundle" if scenario == "copy-page" else "create-source-notebook",
+        "create-notebook-bundle"
+            if scenario in {"copy-page", "move-page", "move-section", "move-section-group"}
+        else "create-source-notebook",
         scenario,
         "report",
-        "close-notebook-bundle" if scenario == "copy-page" else "close-source-notebook",
+        "close-notebook-bundle"
+            if scenario in {"copy-page", "move-page", "move-section", "move-section-group"}
+        else "close-source-notebook",
     ]
 
 

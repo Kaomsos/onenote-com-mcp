@@ -9,6 +9,7 @@ from ...mcp_stdio_client import (
     COPY_NO_DELETE_POLICY,
     COPY_POLICY,
     MOVE_PAGE_POLICY,
+    MOVE_CONTAINERS_POLICY,
     REPARENT_POLICY,
     REORDER_SECTION_GROUP_POLICY,
     REORDER_SECTION_POLICY,
@@ -22,6 +23,8 @@ from .config import (
     CREATE_TOOLS,
     DELETE_TOOLS,
     MOVE_PAGE_TOOLS,
+    MOVE_SECTION_GROUP_TOOLS,
+    MOVE_SECTION_TOOLS,
     REPARENT_PAGE_TOOLS,
     REPARENT_SECTION_TOOLS,
     REPARENT_SECTION_GROUP_TOOLS,
@@ -541,30 +544,94 @@ SCENARIO_SPECS = {
         _profile(
             "disposable-page-move",
             (
-                "Source/Disposable-Page[strict rich text+table+image]",
-                "Source/Disposable-Page/List-Tag-Page[semantic list+tag]",
-                "Destination/List-Tag-Page[duplicate-title collision anchor]",
+                "source:Source/01-Root-Only/02-Root-Only-Child",
+                "source:Source/03-Subtree/04-Subtree-Child",
+                "destination:Destination",
             ),
             (
-                "disposable_page",
-                "semantic_page",
+                "source_section",
+                "root_only_page",
+                "root_only_child",
+                "subtree_page",
+                "subtree_child",
                 "destination_section",
-                "collision_anchor",
             ),
-            {"create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
-            content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
+            {"create_section", "create_page", "reorder_page"},
+            content=("Outline", "RichText"),
             checks=(
-                "strict parent uses canonical read-back verification",
-                "semantic child uses List/Tag semantic read-back verification",
-                "destination collision anchor remains byte-stable and in place",
+                "root-only Move copies one Page and preserves/promotes its excluded child",
+                "subtree Move copies and removes exactly the two selected Pages",
+                "both cases use cross-Notebook destination and non-permanent source deletion",
             ),
         ),
         MOVE_PAGE_POLICY,
         frozenset(
             MOVE_PAGE_TOOLS
-            | {"create_section"}
-            | LAYERED_PAGE_FIXTURE_TOOLS
+            | {"create_section", "create_page", "reorder_page"}
         ),
+        {
+            "cases": [
+                {
+                    "name": "cross-notebook-root-only",
+                    "source_key": "root_only_page",
+                    "child_key": "root_only_child",
+                    "include_descendants": "omitted",
+                    "expected_page_count": 1,
+                },
+                {
+                    "name": "cross-notebook-subtree",
+                    "source_key": "subtree_page",
+                    "child_key": "subtree_child",
+                    "include_descendants": True,
+                    "expected_page_count": 2,
+                },
+            ]
+        },
+    ),
+    "move-section": ScenarioSpec(
+        "move-section",
+        _profile(
+            "disposable-cross-notebook-section-move",
+            (
+                "source:Move-Section-Source/Move-Section-Page",
+                "destination:Notebook root",
+            ),
+            ("source_section", "source_page"),
+            {"create_section", "create_page"},
+            content=("Outline", "RichText"),
+            checks=(
+                "one complete Section subtree is copied into another Notebook",
+                "exactly one non-permanent source Section root delete is authorized after Copy verification",
+                "all original source subtree IDs become inactive",
+            ),
+        ),
+        MOVE_CONTAINERS_POLICY,
+        frozenset(MOVE_SECTION_TOOLS | {"create_section", "create_page"}),
+        {"source_key": "source_section", "destination_role": "destination"},
+    ),
+    "move-section-group": ScenarioSpec(
+        "move-section-group",
+        _profile(
+            "disposable-cross-notebook-section-group-move",
+            (
+                "source:Move-Group-Source/Move-Group-Section/Move-Group-Page",
+                "destination:Notebook root",
+            ),
+            ("source_group", "source_section", "source_page"),
+            {"create_section_group", "create_section", "create_page"},
+            content=("Outline", "RichText"),
+            checks=(
+                "one complete SectionGroup subtree is copied into another Notebook",
+                "exactly one non-permanent source SectionGroup root delete is authorized after Copy verification",
+                "all original source subtree IDs become inactive",
+            ),
+        ),
+        MOVE_CONTAINERS_POLICY,
+        frozenset(
+            MOVE_SECTION_GROUP_TOOLS
+            | {"create_section_group", "create_section", "create_page"}
+        ),
+        {"source_key": "source_group", "destination_role": "destination"},
     ),
 }
 

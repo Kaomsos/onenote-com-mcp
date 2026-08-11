@@ -39,6 +39,8 @@ SCENARIO_MODULES = {
     "copy_section_group": "CopySectionGroupScenario",
     "copy_notebook": "CopyNotebookScenario",
     "move_page": "MovePageScenario",
+    "move_section": "MoveSectionScenario",
+    "move_section_group": "MoveSectionGroupScenario",
     "bootstrap_inserted_file_fixture": "BootstrapInsertedFileFixtureScenario",
     "bootstrap_ink_drawing_fixture": "BootstrapInkDrawingFixtureScenario",
     "bootstrap_media_file_fixture": "BootstrapMediaFileFixtureScenario",
@@ -51,6 +53,7 @@ SCENARIO_INFRASTRUCTURE_MODULES = {
     "__init__",
     "base",
     "copy_scenario_base",
+    "container_move_scenario",
 }
 
 

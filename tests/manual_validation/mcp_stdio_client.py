@@ -28,6 +28,7 @@ POLICY_ENV_NAMES = {
     ),
     "experimental_copy_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
     "move_page_enabled": "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
+    "move_containers_enabled": "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
     "raw_xml_enabled": "LOCAL_ONENOTE_ENABLE_RAW_XML",
 }
 COPY_BUDGET_ENV = {
@@ -75,6 +76,7 @@ class ScenarioPolicy:
     experimental_reorder_section_group_enabled: bool = False
     experimental_copy_enabled: bool = False
     move_page_enabled: bool = False
+    move_containers_enabled: bool = False
     raw_xml_enabled: bool = False
 
     def as_dict(self) -> dict[str, bool]:
@@ -89,6 +91,7 @@ class ScenarioPolicy:
             ),
             "experimental_copy_enabled": self.experimental_copy_enabled,
             "move_page_enabled": self.move_page_enabled,
+            "move_containers_enabled": self.move_containers_enabled,
             "raw_xml_enabled": self.raw_xml_enabled,
         }
 
@@ -122,6 +125,12 @@ MOVE_PAGE_POLICY = ScenarioPolicy(
     deletes_enabled=True,
     experimental_copy_enabled=True,
     move_page_enabled=True,
+)
+MOVE_CONTAINERS_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    deletes_enabled=True,
+    experimental_copy_enabled=True,
+    move_containers_enabled=True,
 )
 
 

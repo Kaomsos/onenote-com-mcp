@@ -26,6 +26,8 @@ from .copy_section import CopySectionScenario
 from .copy_section_group import CopySectionGroupScenario
 from .copy_notebook import CopyNotebookScenario
 from .move_page import MovePageScenario
+from .move_section import MoveSectionScenario
+from .move_section_group import MoveSectionGroupScenario
 from .bootstrap_inserted_file_fixture import BootstrapInsertedFileFixtureScenario
 from .bootstrap_ink_drawing_fixture import BootstrapInkDrawingFixtureScenario
 from .bootstrap_media_file_fixture import BootstrapMediaFileFixtureScenario
@@ -102,6 +104,8 @@ __all__ = [
     "CopySectionGroupScenario",
     "CopyNotebookScenario",
     "MovePageScenario",
+    "MoveSectionScenario",
+    "MoveSectionGroupScenario",
     "BootstrapInsertedFileFixtureScenario",
     "BootstrapInkDrawingFixtureScenario",
     "BootstrapMediaFileFixtureScenario",

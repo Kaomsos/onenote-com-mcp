@@ -88,3 +88,11 @@ MOVE_PAGE_TOOLS = READ_TOOLS | {
     "plan_move_page",
     "move_page",
 }
+MOVE_SECTION_TOOLS = READ_TOOLS | {
+    "plan_move_section",
+    "move_section",
+}
+MOVE_SECTION_GROUP_TOOLS = READ_TOOLS | {
+    "plan_move_section_group",
+    "move_section_group",
+}
