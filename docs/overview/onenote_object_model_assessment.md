@@ -5,8 +5,9 @@
 > 变更范围：基线之后 33 个 commit
 > 方法：静态检查生产代码、当前设计契约、自动化测试与已保存的人工验证记录；未操作真实 OneNote 数据。
 > 结论补充：2026-08-10 用户触发的 Reorder 隔离验证；Section 保留，SectionGroup 明确拒绝。
-> 合同同步：2026-08-10 后续工作树已实现全部已打开 Notebook 搜索与默认单页 Page Copy；两项新真实验收仍待用户确认。
+> 合同同步：2026-08-10 后续工作树已实现全部已打开 Notebook 搜索与默认单页 Page Copy；Page Copy 已获用户真实证据，全局搜索仍待独立验收。
 > 取证范围同步：2026-08-11 后续 Copy 内容取证聚焦 InkDrawing、UI Shape、MediaFile；FileAttachment 与 MeetingInfo 排除。
+> Move 同步：2026-08-11 用户确认更新后的 Page root-only/subtree 以及跨 Notebook Section/SectionGroup 三个 Move 场景全部通过；证据分别来自 `run-2026-08-11-20-29-19`、`run-2026-08-11-20-31-28`、`run-2026-08-11-20-33-29`。
 
 ## 核心阅读入口
 
@@ -27,7 +28,7 @@
 
 ## 1. 结论先行
 
-2026-08-04 审计提出的核心方向——“对象模型优先，COM adapter 居后”——已经成为当前架构，而不再只是重构建议。默认 MCP profile 现有 54 个工具，另有 6 个只在显式启用时注册的 advanced 工具。Notebook、SectionGroup、Section、Page 和 PageContentObject 已有独立 typed model；业务规则从 `server.py` 移入 services；默认 mutation 使用精确 ID、confirmation fields、独立 policy 和操作后回读。
+2026-08-04 审计提出的核心方向——“对象模型优先，COM adapter 居后”——已经成为当前架构，而不再只是重构建议。默认 MCP profile 现有 58 个工具，另有 6 个只在显式启用时注册的 advanced 工具。Notebook、SectionGroup、Section、Page 和 PageContentObject 已有独立 typed model；业务规则从 `server.py` 移入 services；默认 mutation 使用精确 ID、confirmation fields、独立 policy 和操作后回读。
 
 原审计列出的主要产品边界也大多已经落实：
 
@@ -35,11 +36,11 @@
 - Page 元数据、XML、文本、内容对象和二进制已拆分读取；
 - SectionGroup/Section Rename、Page Reorder 和三类 typed Delete 已实现；Section 同父级 Reorder 已有用户确认的真实 UI 证据；SectionGroup Reorder 因后端只支持按名称固定升序而明确拒绝；
 - Search 要求显式 scope，local scan 具有候选 Page、单页字符、总字符和总耗时硬预算，且不会静默切换 backend；
-- Writes、Deletes、Permanent Deletes、统一 Reparent、Copy、Page Move 和 raw XML 分别 fail closed；
+- Writes、Deletes、Permanent Deletes、统一 Reparent、Copy、Page Move、容器 Move 和 raw XML 分别 fail closed；
 - raw XML 与 legacy generic destructive 工具不进入默认 profile；
-- 四层 Copy 与 Page Move 已有实验实现、plan digest、预算和部分失败语义；Move 的定义天然包含 Copy、验证与源处理，不再添加额外的操作名前缀。
+- 四层 Copy、Page Move 与跨 Notebook Section/SectionGroup Move 已有实验实现、Move 专属 plan digest、预算和部分失败语义；容器 Move 只允许跨 Notebook，并只在 verified/lossless Copy、完整单射映射和源重校验通过后执行一次非永久根删除。
 
-项目当前的主要差距已从“缺少稳定对象模型”转移到“扩展能力与跨环境证据”：用户已确认四层 Copy、最终 Page Move 和三类迁移后的 typed Reparent 场景在当前环境完成真实闭环；附件、插入文件、墨迹、媒体和 MeetingInfo 仍不在已验证保真集合。后续内容 Copy 取证只聚焦 InkDrawing、OneNote UI Shape 和 MediaFile（在线视频）；FileAttachment 因当前 GUI 无法生成独立表示而排除，MeetingInfo 因小众、难生成且价值低而排除。Shape 的实际公开 kind/XML 投影尚待观察。SectionGroup Reorder 已依据后端固定名称升序结束评估，不再等待正向复跑。COM bridge 也仍然每次调用启动 PowerShell 并创建 `OneNote.Application`，尚未用正式基准证明是否值得引入长驻 broker。
+项目当前的主要差距已从“缺少稳定对象模型”转移到“扩展能力与跨环境证据”：用户已确认四层 Copy、默认单页/显式子树 Page Copy、更新后的 Page Move、跨 Notebook Section/SectionGroup Move 和三类迁移后的 typed Reparent 场景在当前环境完成真实闭环。容器 Move 的证据覆盖最小 Outline/RichText 子树与严格 Copy→单次非永久根删除编排，不扩大附件、插入文件、墨迹、媒体和 MeetingInfo 的保真集合。后续内容 Copy 取证只聚焦 InkDrawing、OneNote UI Shape 和 MediaFile（在线视频）；FileAttachment 因当前 GUI 无法生成独立表示而排除，MeetingInfo 因小众、难生成且价值低而排除。Shape 的实际公开 kind/XML 投影尚待观察。SectionGroup Reorder 已依据后端固定名称升序结束评估，不再等待正向复跑。COM bridge 也仍然每次调用启动 PowerShell 并创建 `OneNote.Application`，尚未用正式基准证明是否值得引入长驻 broker。
 
 ## 2. 复审范围与证据等级
 
@@ -52,7 +53,7 @@
 | 用户确认的真实证据 | 指定 OneNote/Office 环境中的真实 COM 副作用或 UI 结果 | TODO 中记录的 run、manual-validation evidence、Lesson |
 | 尚未确认           | 只有实现、Mock、dry-run 或工程推断                    | 进行中/待办 TODO 和未进入保真 allowlist 的类型        |
 
-当前记录的完整纯自动化测试结果为 `305 passed`。该结果证明离线合同通过，不证明真实 OneNote mutation 已普遍通过。复审过程没有由 Agent 运行真实 `tests/manual_validation/run.py <scenario>` 或 `run.py all`；仅执行了无副作用 dry-run。Section/SectionGroup Reorder、三类 Reparent、四层 Copy 与最终 Page Move 的真实结果来自用户本人显式启动的隔离场景；用户已确认其中受支持能力在当前环境完成验收，SectionGroup Reorder 则以固定名称升序的负能力证据结束评估。
+当前记录的完整纯自动化测试结果为 `584 passed`。该结果证明离线合同通过，不证明真实 OneNote mutation 已普遍通过。复审过程没有由 Agent 运行真实 `tests/manual_validation/run.py <scenario>` 或 `run.py all`；仅执行了无副作用 dry-run。Section/SectionGroup Reorder、三类 Reparent、四层 Copy、更新后的 Page Move 与 Section/SectionGroup Move 的真实结果都来自用户本人显式启动的隔离场景；用户已确认其中受支持能力在当前环境完成验收，SectionGroup Reorder 则以固定名称升序的负能力证据结束评估。
 
 ### 2.2 历史基线问题的完成度
 
@@ -67,7 +68,7 @@
 | raw Page/Hierarchy XML 默认暴露                                | raw Page XML 只在 6-tool advanced profile 显式启用；raw hierarchy MCP 工具已从所有生产 profile 移除，内部 bridge operation 仅供受约束 service 使用                                      | 已解决                                        |
 | `replace_page_body` 容易被理解为原子 Replace                 | 当前合同明确为非原子，失败返回`partial_failure/completed_steps`                                                                                                                     | 已解决；尚无独立执行计划                      |
 | SectionGroup 缺 typed List/Get，四层缺 Query/Get Tree          | 对称 List/Get、Query、Path、Tree 已实现                                                                                                                                               | 已解决                                        |
-| Rename、Reorder、Reparent、Move 和 Copy 缺稳定能力边界         | Rename 已 typed；Page/Section Reorder 有明确契约，SectionGroup Reorder 因后端固定名称升序而拒绝；三类同 Notebook Reparent 已 typed、独立门控并由用户确认当前环境真实通过；四层 Copy 与 Page Move 已实验实现 | 能力边界已明确；Copy/Move 验证仍未全部完成 |
+| Rename、Reorder、Reparent、Move 和 Copy 缺稳定能力边界         | Rename 已 typed；Page/Section Reorder 有明确契约，SectionGroup Reorder 因后端固定名称升序而拒绝；三类同 Notebook Reparent 已 typed、独立门控并由用户确认当前环境真实通过；四层 Copy、Page Move 和跨 Notebook 容器 Move 已实验实现且取得当前环境真实证据 | 能力与证据边界已明确 |
 
 ## 3. 当前架构与对象模型
 
@@ -128,7 +129,7 @@ Section → Page → PageContentObject
 - **Reorder**：对象保持在同一容器父级内并保持 ID，只改变兄弟顺序；Page Reorder 还可以改变 `page_level`，从而改变派生的 `parent_page_id`。Section Reorder 由独立实验开关保护。SectionGroup 后端集合只有按名称固定升序，没有可变 sibling order，因此无论父级是 Notebook 还是 SectionGroup 都拒绝 reorder；Rename 或 Copy/Delete 不能作为隐式排序替代品。真实证据和最终处置见 [TODO 006](../todo/006_typed_section_and_section_group_reorder.md)。
 - **Copy**：按对象类型选择允许的目标容器并创建新 ID；Page 的目标是 Section，Section 的目标是 Notebook 或 SectionGroup，SectionGroup 的目标是 Notebook 或 SectionGroup（不得为自身或后代），Notebook Copy 创建独立 Notebook。
 - **Reparent**：只在同一 Notebook 内改变对象的容器父级，不使用 Copy/Delete，也不等同于同父级 Reorder。OneNote 可在 Page Reparent 时重映射 Page 和内容对象 ID，因此 Reparent 不承诺所有对象类型都保持 ID；具体返回与验证以对象—操作矩阵为准。
-- **Move**：表示 Copy、完整验证目标，再对源执行非永久删除；可创建新 ID。当前只交付 Page Move。
+- **Move**：表示 Copy、完整验证目标，再对源执行非永久删除；可创建新 ID。Page Move 支持 root-only/完整缩进子树；Section/SectionGroup Move 只允许跨 Notebook、始终选择完整容器子树，并只调用一次源根非永久删除。同 Notebook 容器位置变化继续使用 Reparent。
 
 ### 3.4 标识符与 mutation 一致性
 
@@ -173,7 +174,7 @@ Section → Page → PageContentObject
 | `D` | 删除               | `delete_*` / `delete_page_content`                                               | `X`：Close 不等于 Delete | `T`                   | `T`                | `T`：另含内容对象删除          | 此处`delete_*` 只展开为 hierarchy 对象删除工具。                                                |
 | `O` | 复制               | `copy_*`                                                                           | `E`                      | `E`                   | `E`                | `E`：复制完整缩进子树          | 可跨允许的目标容器，始终创建新 ID。                                                               |
 | `O` | 换父级（Reparent） | `reparent_page` / `reparent_section` / `reparent_section_group`                  | `—`                     | `E`：仅同 Notebook    | `E`：仅同 Notebook | `E`：仅同 Notebook、可重映射 ID | 三类工具共用 Reparent 实验门；Page 返回 Page/内容对象 `id_map`。                                   |
-| `O` | 移动（Move）       | `move_page`                                                                        | `—`                     | `—`                  | `—`               | `E`：新 ID，验证后非永久删除源 | Move 天然采用重建语义：Copy、验证目标，再处理源对象。                                             |
+| `O` | 移动（Move）       | `move_page` / `move_section` / `move_section_group`                                | `—`                     | `E`：仅跨 Notebook、新 ID | `E`：仅跨 Notebook、新 ID | `E`：新 ID，验证后非永久删除源 | 容器 Move 完整递归、只删除一次源根；同 Notebook 容器变更使用 Reparent。三类 Move 均有当前环境真实证据。 |
 | `O` | 导出               | `publish_object`                                                                   | `T`                      | `X`                   | `T`                | `T`                            | —                                                                                                |
 | `O` | 获取超链接         | `get_hyperlink`                                                                    | `T`                      | `T`                   | `T`                | `T`：可定位内容对象            | —                                                                                                |
 | `O` | 导航               | `navigate_to` / `navigate_to_url`                                                | `T`                      | `T`                   | `T`                | `T`：可定位内容对象            | —                                                                                                |
@@ -205,9 +206,10 @@ Advanced profile 用于开发、诊断和受控能力探测，不属于默认 ty
 - 实验 Page/Section/SectionGroup Reparent；
 - 实验 Copy；
 - Page Move；
+- Section/SectionGroup Move（共用独立容器 Move 开关）；
 - raw XML/advanced profile。
 
-注册工具不等于取得执行权限。Permanent Delete 不能替代普通 Delete 开关，Move 需要 Writes、Deletes、Copy 和自身开关的完整闭包。SectionGroup Reorder 不属于可授权的实验能力：后端只提供固定名称升序，遗留开关必须保持关闭。默认 typed 工具不暴露 `force`；Notebook Delete 在 typed 和 advanced generic 路径均被拒绝。
+注册工具不等于取得执行权限。Permanent Delete 不能替代普通 Delete 开关，Move 需要 Writes、Deletes、Copy 和对应自身开关的完整闭包；Page 与容器 Move 的开关互不替代。SectionGroup Reorder 不属于可授权的实验能力：后端只提供固定名称升序，遗留开关必须保持关闭。默认 typed 工具不暴露 `force`；Notebook Delete 在 typed 和 advanced generic 路径均被拒绝。
 
 ### 6.3 Query 与 Search
 
@@ -232,15 +234,16 @@ Metadata Query 与 Page 正文 Search 已分离。Search 具有以下当前边�
 
 ### 7.1 当前实验实现
 
-四层 Copy 和 Page Move 已不再是概念性 P2 路线，而是默认注册、独立门控的实验工具。Move 语义天然包含重建：
+四层 Copy、Page Move 和跨 Notebook Section/SectionGroup Move 已不再是概念性 P2 路线，而是默认注册、独立门控的实验工具。Move 语义天然包含重建；生产合同与当前环境真实证据共同确认以下编排：
 
 - `plan_copy` 与 execute 工具使用无状态 `plan_digest` 绑定源、目标、选项和预算；
 - Copy 预算限制层级对象、Page、内容对象、单页/总 XML 字节以及计划/执行时间；
-- Page Copy 包含完整缩进子树，并返回 old→new `id_map`；
+- Page Copy 默认选择根 Page，可显式选择完整缩进子树，并返回所选范围的 old→new `id_map`；
 - 名称冲突拒绝覆盖、合并或自动后缀；
 - 未知根节点或未知后代节点产生结构化 issue，不静默透传；
 - 运行中失败保留已创建目标和部分失败证据，不执行破坏性猜测回滚；
 - Move 只有在每页按对应 tier 验证、拓扑一致且源未变化后，才从叶到根执行 `DeleteHierarchy(permanently=false)`。
+- 容器 Move 复用同一 Copy gate，但只对 Section/SectionGroup 源根执行一次 `DeleteHierarchy(permanently=false)`；随后要求计划中的全部源子树 ID 不再活动，并复核目标子树 digest 未在删除阶段变化。
 
 Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `is_in_recycle_bin=true`，它是正向诊断证据；真实环境已观察到 UI 能显示已删除 Page、但 COM 不再枚举旧 ID，因此缺少回收站标记不能单独判定删除失败。详见 [OneNote COM 回收站可见性](../lesson/onenote_com_recycle_bin_visibility.md)。
 
@@ -261,7 +264,8 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | Section Reparent                                                        | 已覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup 三种同 Notebook 父级变化，含编号 Page、逐步回读和逆序恢复 | 用户真实运行确认三条路线成功                                                                                    | 保留 typed 实验门控               |
 | Page Reparent                                                           | typed service 与 runner 已覆盖精确 confirmation、同 Notebook、Page/内容对象 ID 一对一重映射、Tag-index 归一化富内容、无关对象和逻辑恢复 | 用户确认迁移后的 `reparent_page` 场景在当前环境真实通过                                                       | typed 实验工具；仍不进入`all`   |
 | SectionGroup Reparent                                                   | typed service 与 runner 已覆盖防循环、三种父级路线、后代 ID/拓扑、Page 内容、无关对象和逆序恢复                                         | 用户确认迁移后的 `reparent_section_group` 场景在当前环境真实通过                                              | typed 实验工具；仍不进入`all`   |
-| 原完整双页子树模式的 Page/Section/SectionGroup/Notebook Copy 与最终 Move | 已覆盖 Runner 与生产合同                                                                                                                   | 用户确认五个原场景均完成真实闭环；新默认单页 Page Copy 场景尚待真实验收                                        | 原模式当前环境已完成              |
+| Page/Section/SectionGroup/Notebook Copy 与 Page Move                    | 已覆盖 root-only/subtree、递归容器、Runner 与生产合同                                                                                       | 用户已确认四层 Copy、默认单页/完整子树 Page Copy；`run-2026-08-11-20-29-19` 再确认 Page Move 两种范围、保留后代和非永久删除 | 当前环境真实闭环已完成            |
+| 跨 Notebook Section/SectionGroup Move                                  | 已覆盖专属 digest、独立 policy、完整单射映射、源重校验、单次根删除、源子树 inactive、目标复核和双 Notebook 场景                           | `run-2026-08-11-20-31-28` 与 `run-2026-08-11-20-33-29` 均由用户运行通过；完整源子树 inactive，双 role lease 关闭 | 当前环境真实闭环已完成            |
 | FileAttachment/InsertedFile/InkDrawing/MediaFile/MeetingInfo；UI Shape 待确认实际投影 | 已知 XML 类型有识别和 fail-closed 分支；Shape 尚不能预设公开 kind | 当前只计划补齐 InkDrawing、UI Shape、MediaFile；FileAttachment/MeetingInfo 已排除，InsertedFile 仅保留 fixture/cache 证据 | 全部未获 Copy 证据的能力保持 unverified，阻止 Move 删除源 |
 
 `Outline/Image/RichText/Table/List/Tag` 的证据只适用于已记录的真实环境与验证 tier，不应改写为 OneNote COM 的跨版本普遍保证。
@@ -281,24 +285,22 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | [007：跨版本兼容性证据与环境元数据](../todo/007_cross_version_compatibility_evidence.md)                     | 待办   | 后续补充非阻塞的跨版本证据，不重开 SectionGroup Reorder 能力结论    |
 | [008：全部已打开 Notebook 的全局 Page 搜索](../todo/008_all_open_notebooks_search_scope.md)                  | 进行中 | 实现与纯合同已交付；下一步开发程序化双 Notebook 验证 scenario       |
 | [009：Typed Reparent 工具与隐藏 Raw Hierarchy XML](../todo/009_typed_reparent_tools_and_hide_raw_hierarchy_xml.md) | 已完成 | typed 工具、生产隐藏和纯合同已交付；用户确认三个迁移场景全部通过    |
-| [010：Manual Validation Dry-run 自动测试用例注册](../todo/010_registered_dry_run_test_cases.md)              | 待办   | 将 dry-run 参数组合收敛为结构化 registry case 与零副作用合同        |
-| [011：Scenario 自管理 Fixture Recipe](../todo/011_scenario_owned_fixture_recipes.md)                         | 待办   | 拆分中央 fixture switch，让 Scenario 显式拥有 recipe                |
-| [012：跨 Notebook 容器重建式 Move](../todo/012_reconstructive_section_and_section_group_move.md)            | 待办   | 在已验证容器 Copy 上增加严格跨 Notebook Copy-Verify-Delete          |
+| [010：Manual Validation Dry-run 自动测试用例注册](../todo/010_registered_dry_run_test_cases.md)              | 已完成 | registry case、正式 parser 与零副作用 sentinel 合同已交付           |
+| [011：Scenario 自管理 Fixture Recipe](../todo/011_scenario_owned_fixture_recipes.md)                         | 已完成 | Scenario-owned recipe、增量 recorder 和共享 typed primitive 已交付  |
+| [012：跨 Notebook 容器重建式 Move](../todo/012_reconstructive_section_and_section_group_move.md)            | 已完成 | 四个 typed 工具、独立门控与双 Notebook 场景已交付；用户确认 Section/SectionGroup 真实 Move 均通过 |
 | [013：Reparent 默认落点合同](../todo/013_reparent_default_placement_contract.md)                             | 待办   | 固化 Page/Section 默认落点并向 Agent 返回结构化 placement            |
 
 ### 8.2 优先事项
 
-1. 先实施 TODO 011 的 Scenario-owned Fixture Recipe 骨架和分阶段迁移，再实施 TODO 010 的结构化 dry-run case catalog；两者共用现有 Scenario registry，不建立第二权威来源。
-2. 完成 TODO 008 的双 Notebook 只读真实验收，核对两种 backend 的归属与错误行为，不把空 `start_id` 未经证据地等同于 Desktop `Ctrl+E`。
-3. 完成 TODO 005 的 human-gated 单页 Copy 真实验收，并继续推进 TODO 013 的 Reparent 默认落点合同。
-4. TODO 012 只在已完成的容器 Copy 证据与严格保真门上增加跨 Notebook 重建式 Move；同 Notebook 继续使用 typed Reparent。
-5. 实施 TODO 004 的交互式、非 `all` 场景，为未验证内容分别建立机器 comparator 与用户 UI verdict；不能用运行时输入动态扩展生产 allowlist。
-6. 继续保持统一 Reparent、Copy、Page Move 和未来容器 Move 的独立实验开关；SectionGroup Reorder 的遗留开关保持关闭。若 Page body replacement 的审查需求提高，再为 Replace 设计独立 plan/execute。只有在收集正式基准后才评估长驻单线程 COM broker。
+1. 完成 TODO 008 的双 Notebook 只读真实验收，核对两种 backend 的归属与错误行为，不把空 `start_id` 未经证据地等同于 Desktop `Ctrl+E`。
+2. 推进 TODO 013 的 Reparent 默认落点合同。
+3. 实施 TODO 004 的交互式、非 `all` 场景，为未验证内容分别建立机器 comparator 与用户 UI verdict；不能用运行时输入动态扩展生产 allowlist。
+4. 继续保持统一 Reparent、Copy、Page Move 和容器 Move 的独立实验开关；SectionGroup Reorder 的遗留开关保持关闭。若 Page body replacement 的审查需求提高，再为 Replace 设计独立 plan/execute。只有在收集正式基准后才评估长驻单线程 COM broker。
 
 ## 9. 最终判断
 
 原审计的架构取舍已经实施：项目现在是 local-only、COM-first、typed-object-first 的 MCP，而不是把 COM 方法和 raw XML 直接当成产品模型。P0/P1 的主要对象、查询、安全和 mutation 边界已有代码与自动化合同，README 中模糊的“Full CRUD”也已被具体能力目录取代。
 
-下一阶段不需要再次设计一套对象模型。四层 Copy/Move 的原完整子树分场景真实闭环已经由用户确认完成；全局搜索与默认单页 Copy 的实现和纯合同现已交付，仍需完成各自的新真实验收。接下来还应推进默认落点、容器 Move，并为墨迹、UI 形状和在线视频建立可审查的保真比较。FileAttachment/MeetingInfo 的排除原因见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。特定 Office 环境中的成功仍不能外推为普遍产品承诺。
+下一阶段不需要再次设计一套对象模型。四层 Copy、默认单页/完整子树 Page Copy、更新后的 Page Move 和两个跨 Notebook 容器 Move 都已由用户确认完成当前环境真实闭环；全局搜索仍需独立真实验收。接下来应推进默认落点，并为墨迹、UI 形状和在线视频建立可审查的保真比较。FileAttachment/MeetingInfo 的排除原因见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。特定 Office 环境中的成功仍不能外推为普遍产品承诺。
 
 仍应坚持的长期边界包括：Notebook Delete 不受支持，Close 不等于 Delete；SectionGroup 只按名称固定升序，Reorder 请求必须拒绝；路径只用于展示和只读解析；Replace 与递归 Copy/Move 是多步、非原子操作；raw XML 不能进入默认工具面；真实 OneNote mutation 只能由用户通过具名、隔离、最小权限的 scenario 显式启动。

@@ -126,6 +126,7 @@ classDiagram
         +require_experimental_reparent()
         +require_experimental_copy()
         +require_move_page()
+        +require_move_containers()
         +require_raw_xml()
     }
     class SearchBudget {
@@ -380,7 +381,7 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 
 Manual-validation fixture 架构位于生产 MCP 之外，但同样遵守 local-only 与 fail-closed 边界。每个公开 Scenario 唯一拥有一个 `RecipeBase`；Recipe 用有序 Notebook role 集合、完整 profile/manifest/validator 声明构建稳定 cache identity。公共 cache runtime 独占 index、锁、opaque copy、byte inventory、publish、materialize、lease 和精确失效清理，Recipe 本身不得执行文件系统或 lifecycle 操作。
 
-普通运行默认 fresh 且零 cache access。显式 `--use-cache` 的数据流固定为 `closed validated disposable bundle → managed immutable template → new run-scoped working bundle → exact path assertion → bounded SectionGroup/.one open → exact object/type/name/parent proof → typed old→live ID rebinding → current live validation → scenario mutation`。层级打开参数只允许两种有序形式：`absolute working path + empty relative ID`，或兼容回退 `child filename + exact parent ID`；绝对 path 与非空 parent ID 的组合被禁止。全局 hierarchy snapshot 暂时不可见时，只有同一 COM 返回 ID 的 exact-self XML 同时证明预期类型、名称、非回收站状态和精确 parent，才能继续进入完整 live validation。OneNote 只打开 working path；template bytes 不接受 mutation、restore、keep-worksite 或失败现场回写。Working-copy Notebook shell/child activation 失败属于 run-local retryable failure：保留 working Notebook、实际 live-ID lease 和诊断，关闭该 working Notebook 后可重试，不能反向污染已验证 template。地址映射缺失/歧义或 validator 失败时，exact entry 转为保留证据但不可命中的 `invalid`。InteractiveFixtureRecipe 与 UserAuthoredRecipe 只能通过各自静态注册、排除于 `all` 的 human-gated bootstrap Scenario 发布；cache-only consumer 的 miss 只返回 `interactive_bootstrap_required`。
+普通运行默认 fresh 且零 cache access。显式 `--use-cache` 的数据流固定为 `closed validated disposable bundle → managed immutable template → new run-scoped working bundle → exact path assertion → bounded SectionGroup/.one open → exact object/type/name/parent proof → typed old→live ID rebinding → current live validation → scenario mutation`。层级打开参数只允许两种有序形式：`absolute working path + empty relative ID`，或兼容回退 `child filename + exact parent ID`；绝对 path 与非空 parent ID 的组合被禁止。全局 hierarchy snapshot 暂时不可见时，只有同一 COM 返回 ID 的 exact-self XML 同时证明预期类型、名称、非回收站状态和精确 parent，才能继续进入完整 live validation。OneNote 只打开 working path；template bytes 不接受 mutation、restore、keep-worksite 或失败现场回写。相同 fingerprint/instance 不是 working lease 的排他键：多个 validated hit 可以从同一 immutable entry materialize 到各自唯一的 run-scoped paths，并在实际 live Notebook ID 全部互异时并存。Lease 只拒绝实际 ID 集相交、同 ID 异路径、role 内重复或尚未可靠重绑定的身份；但任一 active lease 都会阻止对应 cache entry 的 invalidation/cleanup。Working-copy Notebook shell/child activation 失败属于 run-local retryable failure：保留 working Notebook、实际 live-ID lease 和诊断，关闭该 working Notebook 后可重试，不能反向污染已验证 template。地址映射缺失/歧义或 validator 失败时，exact entry 转为保留证据但不可命中的 `invalid`。InteractiveFixtureRecipe 与 UserAuthoredRecipe 只能通过各自静态注册、排除于 `all` 的 human-gated bootstrap Scenario 发布；cache-only consumer 的 miss 只返回 `interactive_bootstrap_required`。
 
 ## 8. 已知演进边界
 

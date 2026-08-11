@@ -124,9 +124,9 @@ Page 不公开 `name`，统一使用 `title`：
 | SectionGroup/Section Rename、Page Reorder | P1 已实现，默认关闭写入 |
 | Section 同父级 Reorder | P1 typed 实验实现；由独立开关 fail closed，已有用户确认的真实 UI 排序证据 |
 | SectionGroup 同父级 Reorder | 明确不支持并拒绝；后端仅提供按名称固定升序，不提供可变 sibling order |
-| Section 同 Notebook Move | P1 实验实现；保持 Section ID；真实 COM 隔离验证前由独立开关禁用 |
+| Section 同 Notebook 换父级（历史 Move 语义） | 已收敛为 typed `reparent_section`；保持 Section ID，由独立 Reparent 开关 fail closed，已有用户确认的真实 COM 证据 |
 | Reparent | 只表示同一 Notebook 内的容器换父级；默认 profile 注册 typed `reparent_page`、`reparent_section`、`reparent_section_group`，共用 Writes + Reparent 实验门。Page 显式返回原生 ID 映射；Section/SectionGroup 验证自身、后代拓扑和 Page 内容。生产 MCP 不暴露 raw hierarchy XML。 |
-| Section 跨 Notebook 转移 | 不属于 Reparent；若未来交付，应作为 Move 新建 Copy→验证→非永久删除源合同并产生新 ID。 |
-| 四层 Copy、Page Move | P2 实验实现；Page Copy 默认只复制根 Page，可显式选择完整缩进子树；容器 Copy 始终递归。Move 天然采用完整子树 Copy→验证→非永久删除源的重建语义，仅在保真验证通过后处理源对象。 |
+| Section/SectionGroup 跨 Notebook 转移 | P2 实验实现；不属于 Reparent。完整子树 Copy 与验证后只对源容器根执行一次非永久删除，全部后代获得新 ID；同 Notebook 请求 fail closed。用户已确认当前环境的两个真实 COM 场景通过，独立实验门继续默认关闭。 |
+| 四层 Copy、Page/容器 Move | P2 实验实现；Page Copy/Move 默认只选择根 Page，可显式选择完整缩进子树；容器 Copy/Move 始终递归。Move 采用选定范围 Copy→验证→非永久删除源的重建语义；root-only Page Move 会先提升并保留被排除后代，容器 Move 则只允许跨 Notebook 且一次删除源根。 |
 | Notebook/Section/Page Export、导航、Notebook Sync/Close | P1 typed 契约已实现 |
 | Notebook Delete、SectionGroup Export | 不承诺 |

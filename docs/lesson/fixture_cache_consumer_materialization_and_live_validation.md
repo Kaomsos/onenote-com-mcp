@@ -2,7 +2,7 @@
 
 > 状态：当前有效的工程经验<br>
 > 观察日期：2026-08-11<br>
-> 范围：Windows OneNote Desktop、本地 COM、隔离的 InsertedFile fixture cache consumer<br>
+> 范围：Windows OneNote Desktop、本地 COM、隔离的 InsertedFile fixture cache consumer 与双 Notebook Copy cache consumer<br>
 > 当前架构：[`../design/architecture.md`](../design/architecture.md)<br>
 > 验证流程：[`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md)、[`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md)<br>
 > 相关对象表示经验：[`onenote_page_object_kind_and_file_attachment_representation.md`](onenote_page_object_kind_and_file_attachment_representation.md)
@@ -24,6 +24,7 @@
 5. hierarchy 激活失败发生在实际 working Notebook ID 写回 cache lease 之前，遗留 lease 只持有 template 内部 ID，后续运行因此被 active-lease 门限阻止。将实际 ID/path 在 Notebook folder 打开并完成 exact-path 证明后立即持久化，才使 stale reconciliation 可判定。
 6. 最终由用户执行的 cache-only consumer 命中既有 ready entry，只打开新 working copy，完成 live hierarchy 加载、ID 重绑定和实时 detector；机器投影精确观察到一个 `InsertedFile`，template 未打开，场景通过。用户显式选择保留现场，因此 working Notebook 和 active lease 按设计继续存在。
 7. 后续命名改动把固定长前缀、毫秒和 UTC offset 一并写入物理 Notebook 目录；两次新 working path 均在 Notebook folder 的首次 `OpenHierarchy` 返回 `0x80042006`，当时 working 目录路径长度为 184。将名称改为由双下划线包裹的 scenario、可选 `CACHED` 和本地秒级时间戳后，working 目录路径缩短为 143；用户连续执行的两次 consumer 均命中同一 ready entry、完成 hierarchy/live validation 并精确观察到 `InsertedFile=1`。第一次正常关闭 working Notebook，第二次由用户显式选择 `--keep-worksite` 并按契约保持打开。
+8. 后续双 Notebook Copy 复验推翻了“同 fingerprint/instance 的 active lease 必然阻止下一次 consumer”这一过度推断。`run-2026-08-11-19-07-17` 保留第一组 source/destination working bundle 后，`run-2026-08-11-19-10-38` 从相同 entry 再次命中并 materialize 第二组路径；OneNote 为第二组生成了与第一组全部互异的 live Notebook ID。第二组独立完成业务验证、恢复和关闭，第一组 lease 仍保持 active。另一次 activation failure 则保留了尚未完成独立 live identity 建立的 ID，后续 claim 因真实 ID 集相交而拒绝，并在用户关闭旧 Notebook 后恢复成功。这两个分支共同表明 lease 冲突的真相是实际 identity/path 冲突，而不是 fingerprint/instance 相同。
 
 上述成功只证明当前 OneNote/Office/Windows 环境中的这一个 InsertedFile Recipe consumer 链路。连续的失败/成功对照支持“较短物理名称解决了当前环境的打开回归”，但同时改变了路径长度和时间戳字符集，因而不能推导出 OneNote 的通用长度上限，也不能把 184 解释为所有版本的固定阈值。环境版本和附件表示范围记录在相关 [`kind`/附件表示 Lesson](onenote_page_object_kind_and_file_attachment_representation.md#观察环境) 中。pytest 和 `--dry-run` 只证明编排与状态机合同，不被当作真实 OneNote 行为证据。本文不记录 Page 正文、附件名称、Notebook 名称、对象 ID、用户路径或二进制内容。
 
@@ -64,9 +65,9 @@ Notebook folder 的打开还表明，Windows 文件系统能看到 `.one`/`.onet
 
 consumer 在打开 Notebook folder 并证明 `actual_path == working_path` 后，就已经拥有可持久化的实际 Notebook ID/path。若等到全部 child hierarchy 激活成功才写 lease，中途失败会只留下 materialization 前的 template ID，后续进程无法精确判断哪个 Notebook 仍然打开。
 
-因此应尽早保存实际 identity，并让失败 evidence、lifecycle lease 和 cache working lease 能互相补足。下一次 claim 只能在 exact ID/path probe 证明旧 Notebook 已关闭后把遗留 lease 标记为 stale；不能通过删除 lease 文件、忽略冲突或复用同一 working directory 绕过安全门。
+因此应尽早保存实际 identity，并让失败 evidence、lifecycle lease 和 cache working lease 能互相补足。若遗留 lease 的实际 ID/path 与新 claim 相交，下一次 claim 只能在 exact ID/path probe 证明旧 Notebook 已关闭后把它标记为 stale；不能通过删除 lease 文件、忽略冲突或复用同一 working directory 绕过安全门。若新 materialization 使用唯一 working paths，且打开后得到的全部 live Notebook ID 与现有 active leases 不相交，则相同 fingerprint/instance 的 lease 可以并存。
 
-`--keep-worksite` 是这一状态机的显式分支：成功后 Notebook 和 active lease 都应保留，便于 UI 检查；它们不是泄漏。下一次 consumer 必须等用户关闭该 exact working Notebook，并完成 stale reconciliation 后才能继续。
+`--keep-worksite` 是这一状态机的显式分支：成功后 Notebook 和 active lease 都应保留，便于 UI 检查；它们不是泄漏，也不是 cache entry 的排他锁。后续 consumer 可以从同一 immutable entry 创建身份互异的隔离 working bundle，但不得关闭、接管或修改已保留 worksite。只有实际 ID/path 冲突的重试，或对该 entry 的 invalidation/cleanup，才必须先等待用户关闭相关 exact working Notebook 并完成 stale reconciliation。
 
 ## Consumer 应是独立的可执行回归边界
 
@@ -90,6 +91,7 @@ validated cache lookup
 - hierarchy-open evidence 只需要路径角色、请求形式、返回 ID、actual parent、对象计数和状态，不需要 Page 正文或二进制。
 - cache failure evidence 应明确记录失败属于 open、remap、validator 还是 consumer action，以及 template 是否仍可命中。
 - lease 冲突应报告精确旧 run 和 working role，使用户能关闭正确现场；模糊的“内部 ID 已占用”会迫使用户猜测。
+- 成功的 active lease 只保护其 working identity，并阻止对应 entry 的 invalidation/cleanup；它不能被误用为 fingerprint/instance 级 consumer 互斥锁。
 - 成功报告应同时证明 cache decision、live revalidation、template 未打开、working path 和 lifecycle 结果，不能只返回业务 detector 的最终布尔值。
 
 ## 不可靠的实现捷径

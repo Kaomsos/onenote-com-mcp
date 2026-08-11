@@ -17,11 +17,12 @@
 | 009 | [Typed Reparent 工具与隐藏 Raw Hierarchy XML](009_typed_reparent_tools_and_hide_raw_hierarchy_xml.md) | 已完成 | P1 | 三个 typed 工具、统一门控与生产隐藏已交付；用户确认三个迁移后的具名场景全部通过。 |
 | 010 | [Manual Validation Dry-run 自动测试用例注册](010_registered_dry_run_test_cases.md) | 已完成 | P1 | 32 个冻结 registry case、纯 plan builder、正式 parser/CLI sentinel harness 与 README 投影合同已交付；真实 `all` allowlist 未扩大。 |
 | 011 | [Scenario 自管理 Fixture Recipe 与拆分集中式 Fixtures](011_scenario_owned_fixture_recipes.md) | 已完成 | P1 | 14 个 Scenario 已各自拥有唯一 recipe；中央 1439 行 fixture switch 已由增量 recorder、无分支 runtime、场景 validator 和共享 typed primitive 取代。 |
-| 012 | [跨 Notebook Section 与 SectionGroup 重建式 Move](012_reconstructive_section_and_section_group_move.md) | 待办 | P2 | 基于现有容器 Copy 与 typed Delete，设计只允许跨 Notebook、严格 Copy-Verify-Delete、独立门控的 `move_section` / `move_section_group`。 |
+| 012 | [跨 Notebook Section 与 SectionGroup 重建式 Move](012_reconstructive_section_and_section_group_move.md) | 已完成 | P2 | typed 工具、独立门控与严格单次根删除已交付；用户确认 Section/SectionGroup 两个跨 Notebook 真实场景均通过。 |
 | 013 | [Reparent 默认落点与 Agent 可见顺序合同](013_reparent_default_placement_contract.md) | 待办 | P2 | 先验证并固化 Page/Section 的默认末位合同，通过 tool 描述和结构化响应告知 Agent；自定义位置继续显式调用独立 Reorder。 |
-| 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 进行中 | P2 | A 单 role矩阵与 B 双 Notebook 六 case、精确失效及 InsertedFile bootstrap/consumer 已有真实证据；连续冲突恢复、三类目标 Copy 和 C–F 其余验收仍待完成。 |
+| 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 进行中 | P2 | A–C 已闭合 fresh/cold/hit、双 Notebook Copy、同 entry 多 working-bundle 隔离、真实 ID 冲突恢复、精确失效及 InsertedFile 证据；三类目标 Copy 与 D–F 其余验收仍待完成。 |
 | 015 | [Mutation 目标精确定位收尾与重名 Page 回归](015_mutation_target_identity_hardening_and_duplicate_page_regression.md) | 已完成 | P1 | allocated-ID-first、四类 Copy/Move/Advanced 精确身份合同已交付；Create、v4 六 case Copy 和 Move 均有用户真实成功证据，最终 Copy 完成 9 targets cleanup/restore、双 Notebook close 与 cache template unchanged。 |
 | 016 | [Page Copy 人工验证只读取证降本](016_copy_page_manual_validation_read_evidence_efficiency.md) | 待办 | P3 | 复用单次 Page XML 生成 hash、能力与对象证据，优先消除 75 次重复 `get_page_objects`/COM 读取；不得削弱六 case、plan/tree 稳定、保护对象或 cleanup/restore 门。 |
+| 017 | [Page Move 可选子树与跨 Notebook 双范围验收](017_page_move_selectable_subtree_and_cross_notebook_validation.md) | 已完成 | P1 | 默认 root-only 与显式 subtree 已交付；用户确认修复后的跨 Notebook 双 case、保留后代和非永久删除均通过。 |
 
 ## 文件命名
 

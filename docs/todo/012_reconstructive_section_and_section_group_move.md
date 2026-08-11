@@ -1,10 +1,10 @@
 # 012：跨 Notebook Section 与 SectionGroup 重建式 Move
 
 > ID：012
-> 状态：待办
+> 状态：已完成
 > 优先级：P2
 > 类型：公开 mutation 契约 / 容器级 Copy-Verify-Delete
-> 更新日期：2026-08-10
+> 更新日期：2026-08-11
 
 ## 背景
 
@@ -20,14 +20,35 @@
 
 同时必须避免重新混淆历史术语。此前 `move-section` 表示同 Notebook 父级变化，已经迁移并更名为 `reparent-section` / `reparent_section`。本 TODO 中的新 `move_section`、`move_section_group` 只表示**跨 Notebook、创建新 ID 的重建式转移**，不是旧行为的别名或恢复。
 
+## 2026-08-11 实施进展
+
+已完成代码与离线合同：
+
+- 默认注册 `plan_move_section` / `move_section` / `plan_move_section_group` / `move_section_group`；
+- 新增独立、默认关闭的 `LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS` 与 health-check 字段；
+- plan 强制绑定不同的源/目标 Notebook ID，同 Notebook 在 mutation 前拒绝并指向对应 `reparent_*`；
+- execute 复用生产 Copy gate，要求完整单射 `id_map`、`verified=true`、`lossless=true`、无 skipped content 和稳定源 digest；
+- Section/SectionGroup 均只调用一次 typed 根删除，`permanently=false` 固定在 service 内；删除后验证全部计划源 ID 不再活动，并比较删除前后的目标子树 digest；
+- 已注册 `move-section` 与 `move-section-group` 双 Notebook 场景，均设置 `included_in_all=False`，fixture 只使用 Outline/RichText，场景只审计 verified Copy→安全根删除，不重复未验证内容类型 comparator；
+- 聚焦生产测试、manual-validation 纯合同和注册 dry-run 已覆盖；Agent 未运行真实 scenario。
+
+2026-08-11，用户本人依次运行两个真实场景，完成本 TODO 的最终后端验收：
+
+- `run-2026-08-11-20-31-28`（`move-section --use-cache`）：`copy_report.verified=true/lossless=true`，两项源对象得到完整单射映射；执行只尝试并删除一次 Section 根，`source_deleted_nonpermanently=true`、`source_deleted_to_recycle_bin=true`，根与 Page 两个源 ID 均退出活动树，`remaining_source_ids=[]`；source/destination lease 最终均为 `closed`；
+- `run-2026-08-11-20-33-29`（`move-section-group --use-cache`）：`copy_report.verified=true/lossless=true`，Group/Section/Page 三项源对象得到完整单射映射；执行只尝试并删除一次 SectionGroup 根，三项源 ID 均退出活动树，`remaining_source_ids=[]`，source/destination lease 最终均为 `closed`；
+- SectionGroup 运行中 COM 未暴露回收站标记，因此结果为 `recycle_bin_verification=not_required_com_unavailable`；这与既定合同一致：非永久 Delete 已执行且完整源子树从活动 hierarchy 消失，但不据此虚构 `is_in_recycle_bin=true`；
+- 两个场景都只使用最小 Outline/RichText fixture，证明的是“已验证 Copy + 安全单次根删除”的 Move 编排，不扩大其他内容类型的保真 allowlist。
+
+代码、离线合同、具名双 Notebook 场景和用户确认的真实结果均满足完成定义，本 TODO 正式标记为“已完成”。该结论只适用于已记录环境，不取消独立的实验 policy，也不外推为所有 OneNote/Office 版本保证。
+
 ## 可行性结论
 
 结论分为两层：
 
 - **代码实现可行性：高。** 现有 CopyService 已能捕获有界源子树、生成稳定 digest、递归创建目标、返回完整 old→new `id_map`，并按 Page 类型执行严格/语义保真验证；typed container Delete 也已存在；
-- **安全交付可行性：中等。** Section、SectionGroup Copy 的统一真实 fixture 闭环仍未全部由用户确认。容器 Move 可以先实现为默认关闭的实验工具，但在 Copy fidelity 与跨 Notebook Runner 证据完成前，不能把源删除成功路径视为已验证产品能力。
+- **安全交付可行性：已在当前环境得到正向证据。** Section、SectionGroup 的最小容器子树均完成跨 Notebook verified/lossless Copy、单次非永久根删除、完整源子树活动态缺席和生命周期关闭；独立实验门、内容保真门与跨版本证据边界继续保留。
 
-建议实施，但必须依赖严格的 Copy gate，不得因为 Copy/Delete 两个单项工具存在就直接开放组合删除。
+实现继续依赖严格的 Copy gate，不得因为 Copy/Delete 两个单项工具存在就绕过组合操作的独立验证与 policy。
 
 ## 术语和范围决策
 
@@ -138,7 +159,7 @@ Page Move 需要从叶到根逐个删除 Page 缩进子树；Section/SectionGrou
 
 ## Policy 与注册
 
-不建议复用名称和风险范围都只针对 Page 的 `LOCAL_ONENOTE_ENABLE_MOVE_PAGE`。建议新增：
+实现不复用名称和风险范围都只针对 Page 的 `LOCAL_ONENOTE_ENABLE_MOVE_PAGE`，而是使用：
 
 ```text
 LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS=true
@@ -208,7 +229,7 @@ move_section_group
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section-group --dry-run --json
 ```
 
-真实命令仍只能由用户本人显式启动。两个场景初始设置 `included_in_all=False`，在容器 Copy 与失败语义完成真实评审前不得进入 `all`。
+真实命令仍只能由用户本人显式启动。两个场景保持 `included_in_all=False`；本次真实评审完成不等于自动取得 `all` 批处理资格，后续若要纳入仍需独立权限与稳定性审查。
 
 ### 双 Notebook fixture
 

@@ -29,6 +29,7 @@
 ## 隔离、权限和生命周期
 
 - 每个真实 scenario 都获得全新的 run-scoped disposable working Notebook bundle 和全新或空的 evidence directory：默认 fresh 路径直接创建；显式 `--use-cache` 只能从已关闭 immutable template opaque-copy 后打开新的 working paths。Notebook 名称冲突或非空 run directory 必须被拒绝。
+- 相同 cache fingerprint/template instance 不是 working lease 的排他键。多个 scenario 可以从同一 immutable entry materialize 各自唯一的 run-scoped working bundle；只有实际 live Notebook ID 集相交、同 ID 异路径、role 内重复或身份尚未可靠重绑定时才拒绝。任一 active lease 都必须阻止对应 cache entry 的 invalidation/cleanup，但不得仅因 fingerprint/instance 相同而阻止 live identity 互异的新 consumer。
 - 一个 scenario 最多启动一个 MCP child process。其静态 spec 只能包含该 scenario 的 fixture、mutation、evidence read 和 restore/cleanup 所必需的完整最小权限闭包。
 - Fixture 创建前，通过一次 `health_check` 核对精确的 policy、tool allowlist、timeout 和适用的 Copy budget。绝不能合并不同 scenario 的权限，也不能在启动后扩权。
 - Working Notebook 的 create/open/get/close 只属于窄 lifecycle wrapper，并受精确 ID/name/path/role lease 约束；cache path 必须额外证明 `actual_path == working_path`、`actual_path != template_path`。Fixture 创建必须留在 scenario MCP process 内。
