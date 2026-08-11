@@ -6,23 +6,15 @@
 > 类型：真实后端验证 / Page 内容保真
 > 更新日期：2026-08-11
 
-> 2026-08-11 进展：后续 Copy 取证只明确尝试 `InkDrawing`（墨迹）、`Shape`（OneNote UI 形状）和 `MediaFile`（在线视频）。`FileAttachment` 因当前版本 GUI 多次只生成 `InsertedFile`、无法形成独立 fixture 而排除；`MeetingInfo` 因小众、难生成且价值低而排除。两者的专属 bootstrap、Recipe、注册项和合同测试均已删除，保持 unverified 且不修改生产 allowlist。FileAttachment 的历史证据、环境与 `kind` 字段边界只保留在 [`lesson/onenote_page_object_kind_and_file_attachment_representation.md`](../lesson/onenote_page_object_kind_and_file_attachment_representation.md)。现有 `InsertedFile` bootstrap/cache 证据继续保留，但不代替三类目标的 Copy 证据。逐类型 Copy consumer、comparator 和用户验收尚未完成，因此本 TODO 保持进行中。
-
 ## 背景与证据边界
 
-当前静态保真 allowlist 已包含 `Outline`、`Image`、`RichText`、`Table`、`List` 和 `Tag`。本 TODO 当前只对以下三类内容建立新的真实 OneNote Copy/Move 保真结论：
+当前静态保真 allowlist 已包含 `Outline`、`Image`、`RichText`、`Table`、`List` 和 `Tag`。以下由 Page XML 转换器识别并尽力保留的内容能力仍没有真实 OneNote Copy/Move 保真结论：
 
 | 待验证能力 | 对应 OneNote XML/对象 | 验证重点 |
 | --- | --- | --- |
 | 墨迹 | `InkDrawing`（内部可能含 `Ink`） | 可见笔迹、位置/尺寸和可提取数据；COM 重写对象 ID 时不得误判。 |
-| 形状 | OneNote UI `Shape`（真实公开 `kind`/XML 投影待观察） | 先确认 GUI 形状在当前 COM/Page XML 中的实际表示，再比较形状种类、几何、样式、位置和可见结果；不得预设存在字面量 `kind=Shape`。 |
-| 在线视频 | `MediaFile`（内部可能含 `MediaPlaylist`） | 在线视频对象的显示、链接/媒体元数据、可播放性，以及 COM 可回读的稳定字段。 |
-
-以下项目明确不再作为本 TODO 的 Copy 取证完成条件：
-
-- `FileAttachment`：当前 OneNote `16.0.20228.20158` GUI 的“插入 → 文件附件”多次只生成 `InsertedFile`，没有可重复生成独立 `FileAttachment` 的方法；继续投入没有实际验证价值。它保持独立、unverified，不设别名，也不进入 Move 放行集合。
-- `MeetingInfo`：内容小众、GUI 生成困难且当前价值低，排除出本轮 Copy/Move 取证。
-- `InsertedFile`：既有 bootstrap、publish、materialization 和 cache consumer 证据继续有效，但这些证据只验证 fixture/cache 链路；它不属于本轮明确尝试的三类 Copy 内容，也不因此获得 Copy/Move 放权。
+| 媒体 | `MediaFile`（内部可能含 `MediaPlaylist`） | 音频/视频对象的显示、可播放性、文件元数据及可取得的二进制 hash。 |
+| 会议详情 | `MeetingInfo` / `MeetingInfoItem` | 标题、时间、地点和合成的非敏感参与者字段；先观察 COM 规范化行为，再决定比较 tier。 |
 
 未知 namespace、未来扩展节点和 `unsupported_nested_page_node` 不属于本 TODO 的放行范围。它们继续 fail closed，不得通过一次人工点击确认加入静态 allowlist。`Title`、`PageSettings`、`QuickStyleDef` 和 `TagDef` 是支撑节点，也不作为独立内容类型验收。
 
@@ -67,7 +59,7 @@ lifecycle create fresh disposable Notebook
 → perform the scenario's declared cleanup, or preserve the exact worksite when --keep-worksite is explicit
 ```
 
-每个类型使用独立 Page，避免一个宽松 comparator 掩盖另一个稳定类型的丢失。用户只能在 manifest 绑定的 fixture Page 中添加内容；Runner 不接受外部 Notebook/Page ID，也不按名称猜测目标。墨迹和形状只使用最小、可辨识的 synthetic 图样；在线视频只使用无敏感信息、可公开访问的测试媒体，不把账号、私人链接或业务内容写入证据。
+每个类型使用独立 Page，避免一个宽松 comparator 掩盖另一个稳定类型的丢失。用户只能在 manifest 绑定的 fixture Page 中添加内容；Runner 不接受外部 Notebook/Page ID，也不按名称猜测目标。墨迹和形状只使用最小、可辨识的 synthetic 图样；在线视频只使用无敏感信息的公开测试媒体，不把账号、私人链接或业务内容写入证据。
 
 交互等待必须有独立、可配置但有上限的 timeout。EOF、超时、取消、确认短语不匹配、检测不到所选类型或出现额外未知节点时，都必须在 Copy/Move 前 fail closed，保持 Notebook 打开并保存 checkpoint 和失败交接。Bridge audit 继续 content-free；允许保存内容的本地 evidence 必须明确标注为 synthetic fixture，并留在忽略目录中。
 
@@ -79,7 +71,7 @@ Copy 场景允许预期的 `content_type_unverified`，因为它的职责正是�
 
 - 能稳定往返的 XML 与对象结构继续使用 `strict_canonical`；
 - 墨迹需要保留可见结果，并基于实际证据决定 XML、二进制或几何语义投影；
-- 形状必须先记录 GUI 操作产生的真实公开 `kind` 和 content-free XML capability projection，再决定几何/样式语义投影；若实际表示不是独立能力，仍按观察结果 fail closed，不伪造 `Shape` 类型；
+- 形状必须先记录 GUI 操作产生的真实公开 `kind` 和 content-free XML capability projection，再决定几何/样式语义投影；实际表示不明确时继续 fail closed，不伪造 `Shape` 类型；
 - 在线视频优先要求链接/媒体元数据、显示与播放行为等价；只有 COM 确实暴露二进制时才要求二进制 SHA-256；
 - 任一无法建立可自动回读 invariant 的类型继续保持 unverified，不进入 Move 放行集合。
 
@@ -106,7 +98,7 @@ Copy 场景允许预期的 `content_type_unverified`，因为它的职责正是�
 
 1. 新增两个独立 `Scenario` 子类并显式注册，均设置 `included_in_all = False`；不得新增 `prepare/resume/inspect` 等公开 helper action。
 2. 为交互 checkpoint、run-bound confirmation、timeout、取消和 stdin EOF 建立可测试的 runtime abstraction，合同测试不得真实等待用户输入。
-3. 为 `InkDrawing`、UI `Shape` 和 `MediaFile` 分别创建独立 scaffold Page 和 exact-ID manifest；fixture 构建本身不得伪造 raw XML 内容，待验证对象必须由用户在 OneNote UI 中加入。`Shape` 在首次真实观察前只表示 UI 操作类别，不得预注册未经证实的公开 `kind`。
+3. 为 `InkDrawing`、UI `Shape` 和 `MediaFile` 分别创建独立 scaffold Page 和 exact-ID manifest；fixture 构建本身不得伪造 raw XML 内容，待验证对象必须由用户在 OneNote UI 中加入。Shape 在首次真实观察前只表示 UI 操作类别，不得预注册未经证实的公开 `kind`。
 4. 新增内容检测器，输出 requested/observed/missing/unexpected 类型和对象计数；检测不到精确类型时禁止 Copy/Move。
 5. Copy 取证写入 `checkpoint.json`、`before.json`、`copy-result.json`、逐类型机器比较、`human-acceptance.json`、`worksite.json` 和报告。
 6. 基于真实证据分别实现或收紧墨迹、形状和在线视频 comparator，并覆盖成功、规范化差异、稳定字段不一致、对象丢失和未知节点分支。
@@ -142,7 +134,7 @@ Copy 场景允许预期的 `content_type_unverified`，因为它的职责正是�
 ## 完成定义
 
 - [ ] `InkDrawing`、OneNote UI `Shape` 和 `MediaFile` 均已获得隔离的逐类型 Copy 证据，或根据真实观察被明确记录为无法安全验证并继续保持 unverified；
-- [x] `FileAttachment` 已因当前版本 GUI 无法生成独立表示而排除，`MeetingInfo` 已因低价值和高生成成本而排除；两者继续保持 unverified，不阻塞本 TODO 完成，也不获得 Move 放权；
+- [x] FileAttachment/MeetingInfo 的专属测试入口和完成门已删除，排除原因已记录；两者继续保持 unverified，不获得 Move 放权；
 - [ ] 两个交互场景、静态最小权限、checkpoint、timeout、失败保留和 evidence schema 均有纯合同测试；
 - [ ] 每个获准类型都有针对实际 COM 规范化行为的自动 comparator，不能仅依赖用户点击确认；
 - [ ] 只有满足 Copy 证据、自动 comparator 和文档要求的类型进入静态 allowlist；

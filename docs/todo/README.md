@@ -9,7 +9,7 @@
 | 001 | [本地程序化 OneNote 隔离验证 Runner](001_programmatic_isolated_mutation_runner.md) | 已完成 | P1 | 扁平 scenario 唯一入口、单命令隔离闭环、最小权限、证据和保留式生命周期已交付；用户确认真实验收矩阵完成。 |
 | 002 | [P2 四层 Copy 与 Page Move](002_p2_copy_and_reconstructive_page_move.md) | 已完成 | P2 | 四层 Copy 与严格 Page Move 已交付；用户确认五个统一 fixture 场景全部完成真实成功闭环。 |
 | 003 | [Scenario 独立 Fixture 与单 MCP 进程闭环](003_scenario_scoped_mcp_and_fixtures.md) | 已完成 | P2 | 单 MCP/最小 fixture 架构、性能实测和修复后的严格 `copy_only` 安全门均已验证。 |
-| 004 | [交互式 Copy/Move 未验证内容保真验收](004_interactive_copy_move_content_fidelity_validation.md) | 待办 | P2 | 由用户在隔离 fixture Page 中加入附件、墨迹、媒体和会议详情，分离完成 Copy 取证与严格 Move 发布门。 |
+| 004 | [交互式 Copy/Move 未验证内容保真验收](004_interactive_copy_move_content_fidelity_validation.md) | 待办 | P2 | 当前只取证 InkDrawing、UI Shape、MediaFile；FileAttachment/MeetingInfo 专属入口已排除。 |
 | 005 | [Page Copy 默认仅复制单页，可选包含缩进子树](005_page_copy_without_indentation_subtree.md) | 已完成 | P2 | 默认单页与显式完整子树均已交付；用户已确认双 case 真实 OneNote 人工验收通过。 |
 | 006 | [Typed Section 与 SectionGroup Reorder](006_typed_section_and_section_group_reorder.md) | 已完成 | P1 | Section typed 同父级排序已确认；SectionGroup 后端仅固定名称升序，最终契约明确不支持并拒绝。 |
 | 007 | [跨版本兼容性证据与环境元数据](007_cross_version_compatibility_evidence.md) | 待办 | P3 | 后续设计非阻塞、local-only 的环境识别与跨版本验证矩阵；当前场景不要求用户填写版本或 channel。 |

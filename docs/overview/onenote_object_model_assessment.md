@@ -299,6 +299,6 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 
 原审计的架构取舍已经实施：项目现在是 local-only、COM-first、typed-object-first 的 MCP，而不是把 COM 方法和 raw XML 直接当成产品模型。P0/P1 的主要对象、查询、安全和 mutation 边界已有代码与自动化合同，README 中模糊的“Full CRUD”也已被具体能力目录取代。
 
-下一阶段不需要再次设计一套对象模型。四层 Copy/Move 的原完整子树分场景真实闭环已经由用户确认完成；全局搜索与默认单页 Copy 的实现和纯合同现已交付，仍需完成各自的新真实验收。接下来还应推进默认落点、容器 Move，并为附件、墨迹、媒体和会议内容建立可审查的保真比较。特定 Office 环境中的成功仍不能外推为普遍产品承诺。
+下一阶段不需要再次设计一套对象模型。四层 Copy/Move 的原完整子树分场景真实闭环已经由用户确认完成；全局搜索与默认单页 Copy 的实现和纯合同现已交付，仍需完成各自的新真实验收。接下来还应推进默认落点、容器 Move，并为墨迹、UI 形状和在线视频建立可审查的保真比较。FileAttachment/MeetingInfo 的排除原因见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。特定 Office 环境中的成功仍不能外推为普遍产品承诺。
 
 仍应坚持的长期边界包括：Notebook Delete 不受支持，Close 不等于 Delete；SectionGroup 只按名称固定升序，Reorder 请求必须拒绝；路径只用于展示和只读解析；Replace 与递归 Copy/Move 是多步、非原子操作；raw XML 不能进入默认工具面；真实 OneNote mutation 只能由用户通过具名、隔离、最小权限的 scenario 显式启动。

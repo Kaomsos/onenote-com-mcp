@@ -138,16 +138,18 @@ class UserAuthoredRecipe(InteractiveFixtureRecipe):
     ) -> AuthoredTemplateInstance: ...
 
 
+class FileAttachmentInteractiveFixtureRecipe(InteractiveFixtureRecipe): ...
 class InsertedFileInteractiveFixtureRecipe(InteractiveFixtureRecipe): ...
 class InkDrawingInteractiveFixtureRecipe(InteractiveFixtureRecipe): ...
+class ShapeInteractiveFixtureRecipe(InteractiveFixtureRecipe): ...
 class MediaFileInteractiveFixtureRecipe(InteractiveFixtureRecipe): ...
 ```
 
 #### `InteractiveFixtureRecipe`
 
-`InteractiveFixtureRecipe` 明确面向 [TODO 004](004_interactive_copy_move_content_fidelity_validation.md)，用于必须由用户通过 OneNote UI 创建、但预期位置、类型和验证目标仍由 Recipe 严格声明的内容：
+`InteractiveFixtureRecipe` 明确面向 [TODO 004](004_interactive_copy_move_content_fidelity_validation.md)，用于墨迹、形状和在线视频等必须由用户通过 OneNote UI 创建、但预期位置、类型和验证目标仍由 Recipe 严格声明的内容：
 
-- `InteractiveFixtureRecipe` 本身是抽象基类；保留的具体 inventory 包括 `InsertedFileInteractiveFixtureRecipe`、`InkDrawingInteractiveFixtureRecipe` 和 `MediaFileInteractiveFixtureRecipe`。当前 Copy 取证范围是 `InkDrawing`、UI `Shape`、`MediaFile`；Shape 的实际公开 kind/XML 投影经真实观察确认后，应以独立 recipe 表示，不能通过字符串开关复用其他类型。FileAttachment/MeetingInfo 的专属 recipe 已按排除决策删除；
+- `InteractiveFixtureRecipe` 本身是抽象基类；TODO 004 的每一种具体 fixture 都由独立子类表示，当前只包括 `InkDrawingInteractiveFixtureRecipe`、`ShapeInteractiveFixtureRecipe` 和 `MediaFileInteractiveFixtureRecipe`。Shape 在真实 bootstrap 观察前只是 UI 类别，不得预设字面量 `kind=Shape`；
 - 每个具体子类只负责一个清晰 fixture 合同，包括自己的 role/Canvas、程序化 scaffold、用户操作说明、requested/observed 检测、对象计数、binary/semantic comparator、human verdict 字段和失败证据；不得在基类或 common runtime 中通过 `content_type` 字符串 switch 实现不同 fixture；
 - Scenario 必须显式拥有具体 Recipe 实例。若确需一次验证多种内容，应声明一个具名、静态组合 Recipe，明确列出其具体子 Recipe/组件及合并后的 profile/allowlist/budget；不得由任意 CLI 字符串动态构造未审查组合，也不得形成第二个 Recipe registry；
 - 完整的 `notebook_roles`、role profile、manifest schema、内容能力和 `validate_live()`，因此模板不是“任意人工 Notebook”；
@@ -444,9 +446,7 @@ create fresh disposable Notebook bundle for all declared roles
 
 ### D. TODO 004 的具体 InteractiveFixtureRecipe
 
-当前真实进度（2026-08-11）：InsertedFile 已完成独立 bootstrap/publish、首次 post-publish materialization、多次 cache-only validated hit 和 live detector，包括缩短命名后的连续 close/keep-worksite 成功分支；这些证据保留为 cache runtime 证明，但 InsertedFile 不属于当前明确尝试的三类 Copy 内容。当前 Copy 取证范围是 `InkDrawing`（墨迹）、OneNote UI `Shape`（形状）和 `MediaFile`（在线视频）。FileAttachment 因当前环境 GUI 无法生成独立表示而排除，MeetingInfo 因小众、难生成且价值低而排除；两者保持 unverified 且不扩展 Copy/Move allowlist。InkDrawing、Shape、MediaFile 尚未闭合，因此 D 仍未闭合。
-
-[TODO 004](004_interactive_copy_move_content_fidelity_validation.md) 当前三个目标必须分别获得用户 bootstrap 和 Copy 证据，不能只运行一个混合场景后把全部类型记为通过。目标具名 bootstrap Scenario 至少包括：
+[TODO 004](004_interactive_copy_move_content_fidelity_validation.md) 的三个目标 Recipe 子类都必须分别获得用户 bootstrap 和 Copy 证据，不能只运行一个混合场景后把全部类型记为通过。目标具名 bootstrap Scenario 至少包括：
 
 ```text
 bootstrap-ink-drawing-fixture
@@ -454,7 +454,7 @@ bootstrap-shape-fixture
 bootstrap-media-file-fixture
 ```
 
-其中 `bootstrap-shape-fixture` 目前尚未实现；它声明的是 OneNote UI 形状操作，首次真实 bootstrap 必须记录 GUI 生成对象的实际公开 `kind` 和 content-free Page XML capability projection。未观察前不得假定存在字面量 `kind=Shape`，也不得据此修改生产 allowlist。FileAttachment/MeetingInfo 不再具有可执行 bootstrap/Recipe；排除原因分别由 TODO 004 与附件表示 Lesson 记录。
+FileAttachment/MeetingInfo 不得重新加入注册表或 catalog；排除原因只记录在 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。
 
 每个具体子类的用户验收流程都是：
 
@@ -560,7 +560,7 @@ class RecipeContractCase:
 | 多 role / 跨 Notebook | role 顺序 canonicalization、重复/缺失/额外 role、两个 role 映射到同一 ID、同 ID 异路径、部分 materialization、任一 role open/close/validate 失败、bundle invariant 失败、source/destination plan digest 任一侧 stale、整个 bundle lease/失败保留；同时证明 common runtime 不按 Notebook 数量分派。 |
 | 静态组合 Recipe | 组件清单固定、组件 Recipe 唯一归属、profile/allowlist/budget/invariant 的确定性合并、冲突拒绝、逐组件证据可追踪；拒绝动态 CLI content string、共同基类 content-type switch 和第二 registry。 |
 | 每个具体 `InteractiveFixtureRecipe` | bootstrap binding 存在且 `registered_for_all=False`；普通 miss/invalid 只返回 `interactive_bootstrap_required`，不调用 scaffold、不读 stdin；scaffold 只能由绑定的 bootstrap Scenario 调用；checkpoint timeout/EOF/cancel/错误确认短语、requested content 缺失/额外/错位/未知、机器 comparator mismatch、负向 human verdict、任一 role 未关闭和 `--keep-worksite` 均禁止发布；成功发布后必须从母本 materialize 第二份工作 bundle 并再次验证，且母本从未打开。 |
-| TODO 004 当前三个 Copy 目标 | `InkDrawing`、UI `Shape`、`MediaFile` 分别具有 detector/comparator 的成功与失败 fixture、自己的 Canvas/manifest/capability 断言和独立 case IDs；Shape 还必须覆盖“实际公开 kind 未确认/与预期不同”的 fail-closed discovery case。基类测试不能替代具体目标测试，某一目标缺失即 collection 失败。 |
+| TODO 004 的五个具体子类 | `FileAttachment`、`InsertedFile`、`InkDrawing`、`MediaFile`、`MeetingInfo` 每个子类分别具有 detector/comparator 的成功与失败 fixture、自己的 Canvas/manifest/capability 断言和独立 case IDs；基类测试不能替代具体子类测试，某一子类缺失即 collection 失败。 |
 | `UserAuthoredRecipe` | zone 内允许的创建/删除/重命名/重排、zone 外修改拒绝、系统 marker 修改拒绝、冻结后不可漂移、同一 fingerprint 多 instance 共存、精确 instance 选择、缺失/歧义/未知 instance 拒绝、`ready` 与 `evidence_only` 分级、未知能力阻止 mutation/Move source deletion、invalid instance 要求重新 bootstrap。 |
 
 ### Cache、CLI 与非执行式边界
@@ -589,8 +589,8 @@ class RecipeContractCase:
 6. 实现 local bundle cache index、随机 staging、per-role/bundle byte inventory、原子 publish、fingerprint 级独占锁、全 cache internal-ID claim、角色化 working-copy lease、root-level tombstone 和 crash recovery evidence；
 7. 扩展 branch-free fixture runtime：一般 cold path 为 `fresh bundle build → validate roles/bundle → close all → stage copy → inventory → publish → materialize`，hit path 为 `lookup → validate bundle entry → materialize all roles`，交互 Recipe miss path 只返回 `interactive_bootstrap_required`；common 层不得出现 scenario 名称、Recipe 子类名称或 Notebook 数量分派；
 8. 扩展 lifecycle wrapper 接受冻结的 role→working-path 集合，逐 role 打开后回读实际路径和 ID，断言路径只指向 working copy、全部 role ID 互异，并拒绝全 cache 范围内的同 ID 异路径冲突；
-9. 先以 `copy-page` version 2 的单 role recipe 验证 fresh/cold/hit 基础状态机；阶段 A 真实闭合后，将同一 `copy-page` recipe 提升到 version 3，使用 source/destination 两个 role 和 3×2 六 case Copy 矩阵证明同一合同无需多 Notebook 子类或平行 cache scenario；
-10. 以 TODO 004 当前范围实现 `InkDrawing`、UI `Shape` 和 `MediaFile` 三个 Copy 目标的精确 Canvas、专属或静态组合 bootstrap scenario、checkpoint、timeout、独立机器 comparator、人类 verdict、关闭、发布、首次 materialize 和失效后重新 bootstrap；Shape 先通过真实 bootstrap 确认实际公开 kind/XML 投影，再冻结 recipe 合同。FileAttachment/MeetingInfo 不再实现专属入口，非目标 InsertedFile 不属于本轮 Copy 完成门。所有相关 scenario 均不进入 `all`，common runtime 中不存在 content-type switch；
+9. 先把现有 `copy-page` 接入一个仅含单 role、可程序构建且成本较高的 Recipe cache，以验证 fresh/cold/hit 基础状态机；随后实现固定、`registered_for_all=False` 的 `cache-two-notebook-copy`，由一个至少含 source/destination 两个 role 的非交互式 `RecipeBase` 实现证明同一合同无需多 Notebook 子类；
+10. 以 TODO 004 为首批 `InteractiveFixtureRecipe` 具体子类，分别实现 FileAttachment、InsertedFile、InkDrawing、MediaFile 和 MeetingInfo fixture 的精确 Canvas、专属或静态组合 bootstrap scenario、checkpoint、timeout、独立机器 comparator、人类 verdict、关闭、发布、首次 materialize 和失效后重新 bootstrap；所有相关 scenario 均不进入 `all`，common runtime 中不存在 content-type switch；
 11. 实现一个 `UserAuthoredRecipe` 和独立具名 bootstrap scenario，覆盖多 authoring zones、用户新增/删除/重排局部对象、实例冻结、多个 `template_instance_id`、`ready`/`evidence_only` 分级和显式实例选择；该 scenario 不进入 `all`；
 12. 实现固定、`registered_for_all=False` 且只操作自己受管测试 entry 的 `cache-invalidation` Scenario，覆盖真实版本/inventory 失效、精确 cleanup、cold rebuild 和可选 cleanup-failure 停止；它不接受任意 fingerprint、instance 或路径参数；
 13. 实现稳定 ID 的 `RecipeContractCase` catalog 和 pytest collection completeness gate：从唯一 Scenario registry 枚举 Recipe，按基础、多 role、静态组合、具体 Interactive 子类和 UserAuthored 特征自动计算必需维度；重复/孤儿 case、所有权不一致、非法字段或任一缺失维度都在 collection 阶段 fail closed；
@@ -621,7 +621,7 @@ class RecipeContractCase:
 - 现有 `fixture_recipes.recipe_base.RecipeBase` 被保留并成为唯一 Recipe 基类；原 `common.fixture_models.FixtureRecipe` 合同已迁入并统一改名，Scenario/runtime/type annotation 不再暴露并行的 `FixtureRecipe` 基础类型；现有一般 fixture 创建全部继续由对应 Scenario 的唯一 `RecipeBase` 具体实现接管，所有 RecipeBase 实现固有支持 cache 和多 Notebook bundle，公共 canonical builder 从完整结构化 identity 计算 fingerprint，recipe 不自行管理 index、文件复制、锁、lease 或清理；
 - `run.py` 的全部具名 Scenario 和 `all` 都接受唯一全局选项 `--use-cache`；默认无 flag 时零 cache access，传入时一般 Recipe 确定性执行 validated hit 或 cold build→publish→materialize，`all` 串行精确透传，且不存在 `--reuse-fixture-cache` 等别名；
 - manual-validation README 和开发指南把 `--use-cache` 作为反复调试复杂 fixture 的推荐方式，同时明确 fresh/cold 对照、缓存实现验收和发布前最终验证应省略该选项；CLI 默认值继续保持 fresh；
-- `InteractiveFixtureRecipe` 是抽象交互基类；TODO 004 当前 Copy 取证至少具有 `InkDrawing`、UI `Shape` 和 `MediaFile` 三个独立目标，每个目标拥有精确 Canvas、role/profile/manifest/live-validator、机器 comparator、人类 verdict 和失败证据，不在基类/common runtime 中按内容类型分派；FileAttachment 与 MeetingInfo 的排除不改变其 unverified 状态，InsertedFile 的既有 cache 证据不继承为 Copy 证据；
+- `InteractiveFixtureRecipe` 是抽象交互基类；TODO 004 至少具有 FileAttachment、InsertedFile、InkDrawing、MediaFile 和 MeetingInfo 五个具体 Recipe 子类，每个子类独立拥有精确 Canvas、role/profile/manifest/live-validator、机器 comparator、人类 verdict 和失败证据，不在基类/common runtime 中按内容类型分派；
 - 每个具体交互 Recipe 都由具名 bootstrap Scenario 或显式静态组合 Scenario 拥有；普通 scenario 的 miss/invalid 返回 `interactive_bootstrap_required`，只有用户显式运行且不进入 `all` 的具名 scenario 才能发布或重新发布；动态 CLI 内容字符串不得创建未注册的 Recipe 组合；
 - `UserAuthoredRecipe` 继承 InteractiveFixtureRecipe，并支持受控 authoring zones、用户创建/删除/重排局部对象、实例冻结、多个显式 `template_instance_id` 以及 `ready`/`evidence_only` 分级；它不得接受用户业务 Notebook、任意外部 path 或 zone 外修改；
 - 两类交互 Recipe 的 bootstrap 都使用本次创建的 fresh disposable role Notebook、精确 checkpoint 和 synthetic 内容边界；timeout、EOF、取消、越界编辑、验证失败、任一 role 未关闭或 `--keep-worksite` 保留打开时均不得发布 `ready`；
@@ -636,7 +636,7 @@ class RecipeContractCase:
 - 任一模板内部 Notebook ID 已从另一条路径打开、存在未决 working-copy lease，或本次 bundle 内两个 role 被解析为同一 ID 时，新的 materialization fail closed；真实 disposable 证据覆盖 OneNote 对单/多 Notebook 克隆身份的行为；
 - cache 复用不增加 MCP 进程、不动态扩张 policy/tool allowlist、不启用 raw XML，也不改变 HUMAN-GATED 真实执行授权；
 - dry-run case 覆盖所有公开 Scenario 的 `--use-cache`、`all --use-cache`、单/多 role cache、InteractiveFixtureRecipe、UserAuthoredRecipe、实例选择、template/working paths 和 miss/hit/bootstrap-required 计划，但 dry-run 不读取真实 cache 或声称实际命中，并由 sentinel 证明零目录、零 cache lookup/cleanup、零 stdin、零 MCP、零 bridge 和零 lifecycle 副作用；
-- 每个已注册公开 Scenario/Recipe 都有全局唯一、稳定 ID 的 `RecipeContractCase`；pytest collector 从唯一 Scenario registry 自动计算基础以及多 role、静态组合、具体 Interactive 子类、UserAuthored 特征追加矩阵，缺失/重复/孤儿 case、所有权不一致或非法字段均在 collection 阶段 fail closed；TODO 004 当前三个 Copy 目标分别具有 detector/comparator 成功与失败 case；
+- 每个已注册公开 Scenario/Recipe 都有全局唯一、稳定 ID 的 `RecipeContractCase`；pytest collector 从唯一 Scenario registry 自动计算基础以及多 role、静态组合、具体 Interactive 子类、UserAuthored 特征追加矩阵，缺失/重复/孤儿 case、所有权不一致或非法字段均在 collection 阶段 fail closed；TODO 004 五个具体子类分别具有 detector/comparator 成功与失败 case；
 - 纯合同 sentinel 明确证明 Recipe 不执行 Scenario mutation/restore/cleanup、Notebook open/close、cache lookup/copy/publish/delete、bridge 或 subprocess；recording fake/临时文件系统 case 覆盖单/多 role hit、一般 miss、两类交互 Recipe miss/bootstrap、UserAuthored instance freeze/selection、invalidation/exact cleanup/rebuild/materialization/path assertion/ID conflict/lock/recovery，catalog completeness、manual-validation 纯测试与完整 pytest 全部通过；
-- 用户本人按本文件 A–F 矩阵完成并确认：一般 Recipe fresh/cold/hit、单 Notebook ID 冲突与恢复、`cache-invalidation` 精确清理重建、多 Notebook cold/hit、TODO 004 当前三个目标的独立 bootstrap/Copy 与获准类型 Move、UserAuthored ready/evidence-only/多实例/越界拒绝、`all --use-cache` 串行回归；证据确认所有 cache masters 从未被 OneNote 打开，Agent 未执行任何真实场景；
+- 用户本人按本文件 A–F 矩阵完成并确认：一般 Recipe fresh/cold/hit、单 Notebook ID 冲突与恢复、`cache-invalidation` 精确清理重建、多 Notebook cold/hit、TODO 004 五个具体 Recipe 的独立 bootstrap/Copy 与获准类型 Move、UserAuthored ready/evidence-only/多实例/越界拒绝、`all --use-cache` 串行回归；证据确认所有 cache masters 从未被 OneNote 打开，Agent 未执行任何真实场景；
 - manual-validation AGENTS、README、TODO 004、开发验证文档、当前架构文档、两类交互 bootstrap scenario 文档和 TODO 索引与最终实现一致。

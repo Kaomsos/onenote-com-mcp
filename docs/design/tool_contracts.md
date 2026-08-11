@@ -144,7 +144,7 @@ Page Copy 省略 `include_descendants` 或显式为 `false` 时只选择根 Page
 
 Move 删除阶段的部分失败分别返回 `attempted_source_ids`、已从活动树移除的 `deleted_source_ids`、其中带回收站标记的 `recycled_source_ids`、未暴露回收站元数据的 `recycle_unverified_source_ids` 和尚未完成步骤的 `remaining_source_ids`。只有 `deleted_source_ids` 参与源删除完成判断，未取得标记的 ID 不得计入 `recycled_source_ids`。
 
-当前候选 XML 内容会尽力保留；能力清单除 Outline/Image/附件/墨迹/媒体对象外，还单独识别 `RichText/Table/List/Tag/MeetingInfo`。基于用户确认的隔离真实后端证据，`Outline/Image/RichText/Table/List/Tag` 已进入保真 allowlist；其余尚未确认的类型产生 `content_type_unverified`，使 `lossless=false` 并阻止 Move 删除源。已知顶层内容块内只要出现不在 OneNote 2013 静态节点 allowlist 的后代节点，整个顶层块即省略并返回 `unsupported_nested_page_node`，不会静默透传未来扩展。
+当前候选 XML 内容会尽力保留；能力清单除 Outline/Image/附件/墨迹/媒体对象外，还单独识别 `RichText/Table/List/Tag/MeetingInfo`。基于用户确认的隔离真实后端证据，`Outline/Image/RichText/Table/List/Tag` 已进入保真 allowlist；其余尚未确认的类型产生 `content_type_unverified`，使 `lossless=false` 并阻止 Move 删除源。后续专属取证只覆盖 `InkDrawing`、OneNote UI Shape 和 `MediaFile`（在线视频）。`FileAttachment` 因当前 GUI 无法生成独立表示而排除，`MeetingInfo` 因小众、难生成且价值低而排除；两者没有专属测试入口，但仍保持 unverified/fail-closed。详见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。已知顶层内容块内只要出现不在 OneNote 2013 静态节点 allowlist 的后代节点，整个顶层块即省略并返回 `unsupported_nested_page_node`，不会静默透传未来扩展。
 
 Page 回读采用按页面内容组合选择的分层验收：
 
@@ -153,7 +153,7 @@ Page 回读采用按页面内容组合选择的分层验收：
 
 这个分层是 OneNote COM 复制语义的一部分，而不只是测试便利：`UpdatePageContent` 会重新生成或规范化 `TagDef` index、列表序号状态、对象 ID、Outline/OE 分块和部分属性，因此视觉及行为完全相同的 List/Tag 页面可能无法 canonical 相等。若对所有内容统一使用严格 XML，会把成功复制误报为失败；若对整页统一放宽，又可能掩盖 Table/Image 等稳定结构的真实丢失。把两类内容放在独立 Page，并逐页选择验收 tier，可以同时保留稳定类型的强门禁和 List/Tag 的 COM 等价性。
 
-`List/Tag` 已是 validated/lossless 类型；“语义 tier”描述的是证明保真的方法，不代表它仍未验证。只要每页按其 tier 等价且拓扑回读通过，Copy 可报告 `lossless=true`；Move 仍要求整棵子树每页通过且源快照未变化，才允许回收源 Page。四个 Copy scenario 与 `move-page` 都自动创建严格父 Page 和 List/Tag 语义子 Page，以在每个容器层级重复验证同一合同。`MeetingInfo` 暂不属于验证范围。验证流程见 `tests/manual_validation/README.md`。
+`List/Tag` 已是 validated/lossless 类型；“语义 tier”描述的是证明保真的方法，不代表它仍未验证。只要每页按其 tier 等价且拓扑回读通过，Copy 可报告 `lossless=true`；Move 仍要求整棵子树每页通过且源快照未变化，才允许回收源 Page。四个 Copy scenario 与 `move-page` 都自动创建严格父 Page 和 List/Tag 语义子 Page，以在每个容器层级重复验证同一合同。`FileAttachment` 与 `MeetingInfo` 不属于当前取证范围，但仍保持 unverified。验证流程见 `tests/manual_validation/README.md`。
 
 Move 对每个源 Page 调用 `DeleteHierarchy(permanently=false)`。通用删除服务会有界回读：对象必须从活动 hierarchy 消失，或者明确回读为 `is_in_recycle_bin=true`；若仍处于活动树则失败。全部源 Page 通过这一关口后，Move 可成功，manual scenario 还会以 after snapshot 独立确认整棵源子树不再活动。COM 是否再次暴露旧 ID 及其回收站标记不是验收条件，因为实际 OneNote UI 可能已在“已删除的笔记”中显示页面，而 COM hierarchy 仍不返回对应对象。返回中的 `recycle_bin_verification=verified|not_required_com_unavailable`、`recycled_source_ids` 和 `recycle_unverified_source_ids` 只表达诊断置信度，不改变非永久删除与活动树缺失的成功语义。该限制的观察证据、错误验收模型和可复用结论见 [`lesson/onenote_com_recycle_bin_visibility.md`](../lesson/onenote_com_recycle_bin_visibility.md)。
 
