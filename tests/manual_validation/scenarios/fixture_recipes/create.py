@@ -19,6 +19,8 @@ from .recipe_base import RecipeBase
 
 
 class CreateFixtureRecipe(RecipeBase):
+    recipe_version = 2
+
     def __init__(self) -> None:
         super().__init__("create")
 
@@ -28,6 +30,14 @@ class CreateFixtureRecipe(RecipeBase):
         r.record_structure("group_b", await ensure_group(context.client, context.notebook_id, "Group-B"))
         delete_sandbox = r.record_structure("delete_sandbox", await ensure_group(context.client, context.notebook_id, "Delete-Sandbox"))
         content_section = r.record_structure("content_section", await ensure_section(context.client, group_a["id"], "Content-Section"))
+        r.record_structure(
+            "duplicate_title_section",
+            await ensure_section(
+                context.client,
+                group_a["id"],
+                "Duplicate-Title-Target",
+            ),
+        )
         r.record_structure("disposable_group", await ensure_group(context.client, delete_sandbox["id"], "Disposable-Group"))
         disposable_section = r.record_structure("disposable_section", await ensure_section(context.client, delete_sandbox["id"], "Disposable-Section"))
         parent = await ensure_page(context.client, content_section["id"], "Parent", f"Parent smoke token: {context.token}")
@@ -67,6 +77,12 @@ class CreateFixtureRecipe(RecipeBase):
             "Page levels and derived parent relationships match the profile",
         )
         checks.require(section.get("parent_id") == resolved["group_a"]["id"], "Create fixture Content-Section is outside Group-A.", "Content-Section is a child of Group-A")
+        checks.require(
+            resolved["duplicate_title_section"].get("parent_id")
+            == resolved["group_a"]["id"],
+            "Create fixture Duplicate-Title-Target is outside Group-A.",
+            "Duplicate-Title-Target is an empty manifest-bound child of Group-A",
+        )
         checks.require(
             resolved["disposable_group"].get("parent_id") == resolved["delete_sandbox"]["id"]
             and resolved["disposable_section"].get("parent_id") == resolved["delete_sandbox"]["id"]

@@ -13,8 +13,9 @@ from ..common.fixture_builders import (
     ensure_page,
     ensure_section,
 )
+from ..common.config import RELAXED_COPY_CAPABILITIES, ROOT_PAGE_COPY_CAPABILITIES
 from ..common.fixture_models import FixtureBuildResult, FixtureContext, FixtureValidationContext, resolve_active_structure
-from .recipe_base import RecipeBase, evidence
+from .recipe_base import NotebookRoleSpec, RecipeBase, evidence
 
 
 class LayeredFixtureKind(Enum):
@@ -33,8 +34,19 @@ class LayeredFixtureConfig:
 
 
 class LayeredCopyFixtureRecipe(RecipeBase):
-    def __init__(self, scenario_name: str, config: LayeredFixtureConfig) -> None:
-        super().__init__(scenario_name)
+    # Version 2 makes the live Page XML capability projection part of the
+    # fixture contract.  Version 1 could accept stale build-time List/Tag
+    # evidence even when a materialized Page no longer exposed those nodes.
+    recipe_version = 2
+
+    def __init__(
+        self,
+        scenario_name: str,
+        config: LayeredFixtureConfig,
+        *,
+        notebook_roles: tuple[NotebookRoleSpec, ...] | None = None,
+    ) -> None:
+        super().__init__(scenario_name, notebook_roles=notebook_roles)
         self.config = config
 
     async def _pages(self, context: FixtureContext, section: dict) -> tuple[dict, dict, dict]:
@@ -77,7 +89,19 @@ class LayeredCopyFixtureRecipe(RecipeBase):
             source = r.record_structure("source_section", await ensure_section(context.client, context.notebook_id, "Source-Section"))
         elif kind is LayeredFixtureKind.MOVE:
             source = await ensure_section(context.client, context.notebook_id, "Source")
-            r.record_structure("destination_section", await ensure_section(context.client, context.notebook_id, "Destination"))
+            destination = r.record_structure(
+                "destination_section",
+                await ensure_section(context.client, context.notebook_id, "Destination"),
+            )
+            r.record_structure(
+                "collision_anchor",
+                await ensure_page(
+                    context.client,
+                    destination["id"],
+                    self.config.semantic_title,
+                    f"Move collision anchor token: {context.token}",
+                ),
+            )
         else:  # pragma: no cover - closed enum
             raise AssertionError(kind)
         await self._pages(context, source)
@@ -96,6 +120,14 @@ class LayeredCopyFixtureRecipe(RecipeBase):
             checks.require(resolved["parent_page"].get("section_id") == resolved["source_section"]["id"], "Copy Notebook fixture rich Page escaped its source Section.", "rich source Page is contained by the source Notebook Section")
         elif kind is LayeredFixtureKind.MOVE:
             checks.require(resolved["disposable_page"].get("section_id") != resolved["destination_section"]["id"], "Move source Page already belongs to the destination Section.", "Move source Page and destination Section are distinct")
+            checks.require(
+                resolved["collision_anchor"].get("section_id")
+                == resolved["destination_section"]["id"]
+                and resolved["collision_anchor"].get("title")
+                == resolved["semantic_page"].get("title"),
+                "Move duplicate-title collision anchor is missing or outside Destination.",
+                "Destination contains a same-title anchor with an independently captured body",
+            )
         parent = resolved["disposable_page" if kind is LayeredFixtureKind.MOVE else "parent_page"]
         semantic = resolved["semantic_page"]
         checks.require(parent.get("section_id") == semantic.get("section_id") and int(parent.get("page_level", 0)) == 1 and int(semantic.get("page_level", 0)) == 2 and semantic.get("parent_page_id") == parent["id"], "Layered Copy fixture Page topology is invalid.", "strict parent and semantic child form an isolated two-page subtree")
@@ -104,6 +136,37 @@ class LayeredCopyFixtureRecipe(RecipeBase):
         checks.require({"rich_text", "table", "image"}.issubset(automated), "Rich Copy fixture is missing a required automated content capability.", "rich text, table, and image capabilities were created and observed")
         semantic_evidence = (copy_fixture or {}).get("semantic_page")
         checks.require(isinstance(semantic_evidence, dict) and {"List", "Tag"}.issubset(semantic_evidence.get("observed_capabilities", [])) and semantic_evidence.get("observed_counts", {}).get("List") == 3 and semantic_evidence.get("observed_counts", {}).get("Tag") == 3, "Semantic Copy fixture is missing the three generated List/Tag items.", "semantic child contains three generated mixed List/Tag items")
+        projections = context.snapshot.get("page_capability_projections")
+        parent_projection = (
+            projections.get(parent["id"])
+            if isinstance(projections, dict)
+            else None
+        )
+        semantic_projection = (
+            projections.get(semantic["id"])
+            if isinstance(projections, dict)
+            else None
+        )
+
+        def has_live_capabilities(projection: object, required: set[str]) -> bool:
+            return (
+                isinstance(projection, dict)
+                and projection.get("complete") is True
+                and required.issubset(
+                    {str(value) for value in projection.get("capabilities", [])}
+                )
+            )
+
+        checks.require(
+            has_live_capabilities(parent_projection, ROOT_PAGE_COPY_CAPABILITIES),
+            "Rich Copy fixture live Page XML is missing a required capability.",
+            "rich parent live Page XML exposes the capabilities required by Copy planning",
+        )
+        checks.require(
+            has_live_capabilities(semantic_projection, RELAXED_COPY_CAPABILITIES),
+            "Semantic Copy fixture live Page XML is missing List/Tag capabilities.",
+            "semantic child live Page XML exposes List/Tag to Copy planning",
+        )
         return tuple(checks.checks)
 
 

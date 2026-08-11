@@ -4,24 +4,23 @@
 
 ## 1. 注册与安全边界
 
-只有在进程启动前设置 `LOCAL_ONENOTE_ENABLE_RAW_XML=true`，`tools.advanced` 中剩余的 6 个工具才会注册。注册只改变可见工具面，不授予 mutation 权限；service 层仍按操作复核 Writes、Deletes、Permanent Deletes 与 raw XML policy。该开关不能注册 raw hierarchy mutation。
+只有在进程启动前设置 `LOCAL_ONENOTE_ENABLE_RAW_XML=true`，`tools.advanced` 中剩余的 5 个工具才会注册。注册只改变可见工具面，不授予 mutation 权限；service 层仍按操作复核 Writes 与 raw XML policy。该开关不能注册 generic delete 或 raw hierarchy mutation。
 
-Advanced 工具允许路径、generic identifier 或原始 XML 等低层输入，不具有默认 typed mutation 的统一精确 ID、对象类型、confirmation fields 和操作后语义验证合同。不得用 advanced 工具绕过 typed 工具的拒绝结论，也不得将 raw XML 成功等同于稳定对象能力。
+Advanced 工具保留路径、底层 COM operation 或原始 Page XML 等低层输入，不具有默认 typed mutation 的完整 confirmation 与操作后语义验证合同。涉及 hierarchy mutation 的保留入口已收紧为 exact typed ID；不得用 advanced 工具绕过 typed 工具的拒绝结论，也不得将 raw XML 成功等同于稳定对象能力。
 
 ## 2. 工具目录
 
 | 工具 | 低层用途 | 执行门限与边界 |
 | --- | --- | --- |
 | `find_meta` | 从已解析的 hierarchy 起点调用 OneNote metadata search，并返回底层 XML 映射结果 | 只读诊断；不是 typed Query/Search 的替代品 |
-| `open_hierarchy` | 按路径打开 hierarchy；指定创建类型时也可创建对象 | 创建或未找到后继续打开时要求 Writes；允许路径定位，不作为 typed mutation 目标合同 |
-| `delete_hierarchy` | 使用 generic hierarchy 标识符删除对象 | 要求 raw XML 与 Deletes；永久删除还要求 Permanent Deletes；Notebook 删除仍被拒绝 |
+| `open_hierarchy` | 按路径打开 hierarchy；指定创建类型时也可创建对象 | existing path 必须唯一，重复 typed path fail closed；创建或未找到后继续打开时要求 Writes |
 | `update_page_xml` | 直接提交原始 Page XML | 要求 raw XML 与 Writes；绕过 typed Page 操作形状，但不绕过 policy |
-| `merge_sections` | 调用底层 Section 合并操作 | 要求 raw XML 与 Writes；没有稳定 typed Merge 契约 |
-| `set_filing_location` | 设置 OneNote filing location | 要求 Writes；仅因属于 advanced 工具集而受 advanced profile 注册条件限制 |
+| `merge_sections` | 以 `source_section_id/destination_section_id` 调用底层 Section 合并操作 | 只接受两个互异 exact Section ID；要求 raw XML 与 Writes；没有稳定 typed Merge 契约 |
+| `set_filing_location` | 以 `section_or_page_id` 设置 OneNote filing location | 只接受 exact Section/Page ID；要求 Writes；仅因属于 advanced 工具集而受 advanced profile 注册条件限制 |
 
 当前注册列表以 `src/local_onenote_mcp/tools/advanced.py` 为准；profile 组合逻辑位于 `src/local_onenote_mcp/tools/__init__.py`。公开 typed 工具的参数和 policy 见 [工具参数与返回格式](tool_contracts.md)。
 
-`update_hierarchy_xml` 已从 `ADVANCED_TOOLS`、service 公共入口和所有生产注册路径移除；即使 Raw XML 开关为 `true`，客户端也不能枚举或调用它。bridge 内部的 `update_hierarchy` COM operation 仍保留，仅由 Reorder/Reparent 等受约束 typed service 构造 XML 后调用。
+`delete_hierarchy` 与 `update_hierarchy_xml` 已从 `ADVANCED_TOOLS`、service 公共入口和所有生产注册路径移除；即使 Raw XML 开关为 `true`，客户端也不能枚举或调用它们。bridge 内部的同名 COM operation 仍保留，仅由 typed Delete、Move、Reorder/Reparent 等受约束 service 以精确 ID 或内部构造 XML 调用。移除 generic delete 避免删除一个 ID 后再按相同 friendly path 追删合法重名 sibling。
 
 ## 3. Reparent typed 迁移与证据边界
 

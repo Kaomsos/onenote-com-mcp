@@ -15,6 +15,7 @@ from ..page import (
     text_from_page_xml,
     title_from_page_xml,
 )
+from ..page.copying import is_empty_selection_text_node
 from .base import BaseService
 from .hierarchy import HierarchyService
 
@@ -45,6 +46,10 @@ def stable_page_content_digest(xml: str) -> str:
     """Hash in-place Page content while ignoring OneNote-owned clocks/view metadata."""
 
     root = ET.fromstring(xml)
+    for parent in root.iter():
+        for child in list(parent):
+            if is_empty_selection_text_node(child):
+                parent.remove(child)
     for node in root.iter():
         for attribute in VOLATILE_PAGE_ATTRIBUTES:
             node.attrib.pop(attribute, None)

@@ -1,7 +1,7 @@
 # 独立层级解析器设计
 
 > 状态：已实现  
-> 更新日期：2026-08-04  
+> 更新日期：2026-08-11
 > 实现：`src/local_onenote_mcp/hierarchy.py`
 
 ## 1. 模块边界
@@ -15,7 +15,7 @@ OneNote COM XML
 hierarchy.parse_hierarchy
       │ stable typed resources
       ├─ resolve_resource
-      ├─ find_resource_by_id / find_resource_by_path
+      ├─ find_resource_by_id / find_resource(s)_by_path / find_unique_resource_by_path
       ├─ filter_resources
       └─ HierarchyService / mutation confirmation / search
 ```
@@ -29,7 +29,9 @@ hierarchy.parse_hierarchy
 | `parse_hierarchy(xml, catalog=None)` | 完整或局部 COM hierarchy XML；可选完整 typed catalog | 稳定 `dict[]`，只含对象模型白名单字段。 |
 | `resolve_resource(items, identifier, resource_type=None)` | typed snapshot、ID/路径/名称、可选类型 | 按 ID → 精确路径 → 唯一显示名解析。 |
 | `find_resource_by_id(...)` | typed snapshot、ID、可选类型 | 单项或 `None`。 |
-| `find_resource_by_path(...)` | typed snapshot、路径、可选类型 | 单项或 `None`。 |
+| `find_resource_by_path(...)` | typed snapshot、路径、可选类型 | 兼容只读便利接口；返回首项或 `None`，不得用于 mutation target。 |
+| `find_resources_by_path(...)` | typed snapshot、路径、可选类型 | 返回全部 exact path matches，不选择 occurrence。 |
+| `find_unique_resource_by_path(...)` | typed snapshot、路径、可选类型 | 零项返回 `None`、一项返回对象、多项报歧义；创建兼容回读和 advanced existing-path 使用此接口。 |
 | `filter_resources(...)` | typed snapshot、对象类型 | 同类型对象列表。 |
 | `display_name(item)` | 任意 typed resource | 容器 `name` 或 Page `title`。 |
 

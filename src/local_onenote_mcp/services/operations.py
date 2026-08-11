@@ -114,27 +114,39 @@ class OperationsService(BaseService):
                 time.sleep(0.5)
         raise RuntimeError("Close returned success, but the Notebook still appears open after read-back verification.")
 
-    def merge_sections(self, source_identifier: str, destination_identifier: str) -> dict[str, Any]:
+    def merge_sections(self, source_section_id: str, destination_section_id: str) -> dict[str, Any]:
         policy = MutationPolicy.current()
         policy.require_raw_xml()
         policy.require_write()
-        source_id = self.hierarchy.resolve(source_identifier, "section")["id"]
-        destination_id = self.hierarchy.resolve(destination_identifier, "section")["id"]
-        self.call("merge_sections", source_section_id=source_id, destination_section_id=destination_id)
-        return {"source_section_id": source_id, "destination_section_id": destination_id, "merged": True}
+        source = self.hierarchy.resource(source_section_id, "section")
+        destination = self.hierarchy.resource(destination_section_id, "section")
+        if source["id"] == destination["id"]:
+            raise ValueError("source_section_id and destination_section_id must be different exact IDs.")
+        self.call(
+            "merge_sections",
+            source_section_id=source["id"],
+            destination_section_id=destination["id"],
+        )
+        return {
+            "source_section_id": source["id"],
+            "destination_section_id": destination["id"],
+            "merged": True,
+        }
 
     def set_filing_location(
         self,
         filing_location: str,
         filing_location_type: str,
-        section_or_page_identifier: str,
+        section_or_page_id: str,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_write()
-        object_id = self.hierarchy.resolve(section_or_page_identifier)["id"]
+        item = self.hierarchy.resource(section_or_page_id)
+        if item["resource_type"] not in {"section", "page"}:
+            raise ValueError("section_or_page_id must identify an exact Section or Page ID.")
         self.call(
             "set_filing_location",
             filing_location=self.enum("filing_location", filing_location, FILING_LOCATIONS),
             filing_location_type=self.enum("filing_location_type", filing_location_type, FILING_LOCATION_TYPES),
-            section_or_page_id=object_id,
+            section_or_page_id=item["id"],
         )
-        return {"object_id": object_id, "updated": True}
+        return {"object_id": item["id"], "updated": True}

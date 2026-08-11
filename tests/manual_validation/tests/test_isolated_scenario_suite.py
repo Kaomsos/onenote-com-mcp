@@ -106,17 +106,39 @@ def test_each_dry_run_declares_one_process_and_scenario_fixture(
     assert payload["command"] == scenario
     assert payload["server_started"] is False
     assert payload["agent_execution_prohibited"] is True
-    assert payload["expected_mcp_process_starts"] == 1
+    consumer_cache_required = SCENARIO_REGISTRY.get(
+        scenario
+    ).fixture_recipe.consumer_scenario
+    assert payload["expected_mcp_process_starts"] == (
+        0 if consumer_cache_required else 1
+    )
     assert payload["fixture_profile"]["name"] == SCENARIO_SPECS[scenario].fixture.name
     assert payload["scenario_spec"]["tool_allowlist"] == sorted(
         SCENARIO_SPECS[scenario].tool_allowlist
     )
-    assert [step["step"] for step in payload["ordered_steps"]] == [
-        "create-source-notebook",
+    if consumer_cache_required:
+        assert [step["step"] for step in payload["ordered_steps"]] == [
+            "preflight-cache-required"
+        ]
+        assert payload["cache"]["decision"] == "rejected_missing_use_cache"
+        assert payload["ordered_steps"][0]["allowed_operations"] == []
+        assert not run_dir.exists()
+        return
+    multi_role = len(
+        SCENARIO_REGISTRY.get(scenario).fixture_recipe.cache_identity.notebook_roles
+    ) > 1
+    expected_steps = [
+        "create-notebook-bundle" if multi_role else "create-source-notebook",
         scenario,
-        "report",
-        "close-source-notebook",
     ]
+    if scenario.startswith("bootstrap-"):
+        expected_steps.extend(
+            ["interactive-checkpoint", "close-stage-publish-materialize-live-validate"]
+        )
+    expected_steps.extend(
+        ["report", "close-notebook-bundle" if multi_role else "close-source-notebook"]
+    )
+    assert [step["step"] for step in payload["ordered_steps"]] == expected_steps
     assert payload["ordered_steps"][0]["allowed_operations"] == [
         "create_fresh_notebook"
     ]
@@ -136,7 +158,21 @@ def test_fixture_profiles_are_scenario_specific() -> None:
     assert names["reparent-page"] == "typed-page-reparent"
     assert names["reparent-section-group"] == "typed-section-group-reparent"
     assert names["copy-page"] == "rich-page-copy"
-    assert len(set(names.values())) == len(names)
+    duplicates = {
+        profile: {scenario for scenario, value in names.items() if value == profile}
+        for profile in set(names.values())
+        if list(names.values()).count(profile) > 1
+    }
+    assert duplicates == {
+        "user-authored-zone": {
+            "bootstrap-user-authored-fixture",
+            "user-authored-fixture-consumer",
+        },
+        "interactive-insertedfile": {
+            "bootstrap-inserted-file-fixture",
+            "inserted-file-fixture-consumer",
+        },
+    }
     assert "create_notebook" not in SCENARIO_SPECS["create"].tool_allowlist
     assert "reparent_section" not in SCENARIO_SPECS["rename"].tool_allowlist
     assert "delete_section_group" not in SCENARIO_SPECS["reparent-section"].tool_allowlist
@@ -145,6 +181,10 @@ def test_fixture_profiles_are_scenario_specific() -> None:
 def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
     for name, spec in SCENARIO_SPECS.items():
         missing = spec.fixture.creation_tools - spec.tool_allowlist
+        recipe = SCENARIO_REGISTRY.get(name).fixture_recipe
+        if recipe.consumer_scenario:
+            assert spec.policy.writes_enabled is False
+            continue
         assert not missing, f"{name} fixture tools missing from allowlist: {sorted(missing)}"
 
 
@@ -237,7 +277,7 @@ def test_reorder_page_fixture_description_makes_order_visually_explicit() -> Non
     assert "默认恢复后（顺序 01,02,03）" in REORDER_PAGE_DESCRIPTION
 
 
-def test_copy_page_fixture_description_covers_both_copy_scopes() -> None:
+def test_copy_page_fixture_description_covers_six_case_bundle_matrix() -> None:
     spec = SCENARIO_SPECS["copy-page"]
 
     assert {"description_section", "description_page"} <= set(
@@ -248,12 +288,18 @@ def test_copy_page_fixture_description_covers_both_copy_scopes() -> None:
     assert "01-Source-Parent" in spec.fixture.expected_structure[1]
     assert "02-Source-Child" in spec.fixture.expected_structure[2]
     assert "原始状态：" in COPY_PAGE_DESCRIPTION
-    assert "默认范围（省略 include_descendants）" in COPY_PAGE_DESCRIPTION
-    assert "完整子树（include_descendants=true）" in COPY_PAGE_DESCRIPTION
-    assert "默认运行会在自动 read-back 验证后清理两个目标" in COPY_PAGE_DESCRIPTION
+    assert "同 Section、跨 Section、跨 Notebook" in COPY_PAGE_DESCRIPTION
+    assert "不带子树" in COPY_PAGE_DESCRIPTION
+    assert "带子树" in COPY_PAGE_DESCRIPTION
+    assert "默认运行会在自动 read-back 验证后清理六个目标" in COPY_PAGE_DESCRIPTION
 
 
 def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree() -> None:
+    assert SCENARIO_REGISTRY.get("copy-page").fixture_recipe.recipe_version == 4
+    assert tuple(
+        role.role
+        for role in SCENARIO_REGISTRY.get("copy-page").fixture_recipe.cache_identity.notebook_roles
+    ) == ("destination", "source")
     structure = {
         "description_section": {"id": "description-section"},
         "description_page": {"id": "description-page"},
@@ -261,6 +307,7 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
         "parent_page": {"id": "parent-page"},
         "semantic_page": {"id": "child-page"},
         "disposable_section": {"id": "destination-section"},
+        "cross_section_anchor": {"id": "cross-section-anchor"},
     }
     items = [
         {
@@ -300,6 +347,15 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
             "parent_page_id": None,
         },
         {
+            "id": "cross-section-anchor",
+            "resource_type": "page",
+            "title": "02-Source-Child",
+            "section_id": "destination-section",
+            "parent_id": "destination-section",
+            "page_level": 1,
+            "parent_page_id": None,
+        },
+        {
             "id": "child-page",
             "resource_type": "page",
             "title": "02-Source-Child",
@@ -319,15 +375,59 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
         },
     }
 
-    checks = _validate_fixture_snapshot(
-        "copy-page", {"items": items}, structure, copy_fixture
-    )
+    snapshot = {
+        "items": items,
+        "page_hashes": {
+            "child-page": "source-child-hash",
+            "cross-section-anchor": "cross-section-anchor-hash",
+        },
+        "page_capability_projections": {
+            "parent-page": {
+                "schema_version": 1,
+                "capabilities": ["Image", "Outline", "RichText", "Table"],
+                "complete": True,
+            },
+            "child-page": {
+                "schema_version": 1,
+                "capabilities": ["List", "Outline", "RichText", "Tag"],
+                "complete": True,
+            },
+        },
+    }
+    checks = _validate_fixture_snapshot("copy-page", snapshot, structure, copy_fixture)
     assert "Description Page belongs to the fixture Description Section" in checks
     assert "Description and source Pages use stable 00/01/02 prefixes" in checks
+    assert (
+        "semantic child live Page XML exposes List/Tag to Copy planning" in checks
+    )
+    assert "cross-Section destination contains a distinct same-title anchor" in checks
+    assert (
+        "cross-Section anchor body hash differs from the same-title source Child"
+        in checks
+    )
+
+    stale_evidence_snapshot = {
+        **snapshot,
+        "page_capability_projections": {
+            **snapshot["page_capability_projections"],
+            "child-page": {
+                "schema_version": 1,
+                "capabilities": ["Outline"],
+                "complete": True,
+            },
+        },
+    }
+    with pytest.raises(
+        runtime.InvariantFailure,
+        match="live Page XML is missing List/Tag capabilities",
+    ):
+        _validate_fixture_snapshot(
+            "copy-page", stale_evidence_snapshot, structure, copy_fixture
+        )
 
     items[-1]["title"] = "Source-Child"
     with pytest.raises(runtime.InvariantFailure, match="stable Description/Source numbering"):
-        _validate_fixture_snapshot("copy-page", {"items": items}, structure, copy_fixture)
+        _validate_fixture_snapshot("copy-page", snapshot, structure, copy_fixture)
 
 
 def test_reorder_section_fixture_description_covers_both_parent_types() -> None:
@@ -725,11 +825,13 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
 def test_default_identity_uses_one_timestamp(capsys) -> None:
     assert main(["rename", "--dry-run", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    match = re.fullmatch(
-        r"__LOCAL_MCP_TEST_ISOLATED__(\d{8}T\d{6}Z)", payload["notebook_name"]
+    safe_timestamp = payload["run_identity"]["safe_timestamp"]
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}",
+        safe_timestamp,
     )
-    assert match is not None
-    assert Path(payload["run_dir"]).name == f"run-{match.group(1)}"
+    assert payload["notebook_name"] == f"__rename-{safe_timestamp}__"
+    assert Path(payload["run_dir"]).name == f"run-{safe_timestamp}"
 
 
 def test_keep_dry_run_omits_close(capsys, tmp_path) -> None:
@@ -737,8 +839,8 @@ def test_keep_dry_run_omits_close(capsys, tmp_path) -> None:
     assert main(
         [
             "reparent-section",
-            "--notebook-name",
-            "__CUSTOM__",
+            "--notebook-label",
+            "custom",
             "--run-dir",
             str(run_dir),
             "--keep-notebook",
@@ -789,9 +891,9 @@ def test_keep_worksite_preserves_source_lifecycle_after_copy_success(
         )
     )
 
-    assert FakeLifecycle.instances[0].closed is False
+    assert all(wrapper.closed is False for wrapper in FakeLifecycle.instances)
     assert result["lifecycle"]["status"] == "preserved_open"
-    assert result["ordered_steps"][-1] == "preserve-source-notebook"
+    assert result["ordered_steps"][-1] == "preserve-notebook-bundle"
 
 
 def test_cli_exposes_flat_scenarios_and_special_all_entry() -> None:
@@ -809,10 +911,13 @@ def test_cli_exposes_flat_scenarios_and_special_all_entry() -> None:
 class FakeLifecycle:
     instances: list["FakeLifecycle"] = []
 
-    def __init__(self, run_dir: Path, *, timeout_seconds: int) -> None:
+    def __init__(self, run_dir: Path, *, timeout_seconds: int, role: str = "source") -> None:
         self.run_dir = run_dir
         self.timeout_seconds = timeout_seconds
-        self.lease_path = run_dir / "lifecycle-lease.json"
+        self.role = role
+        self.lease_path = run_dir / (
+            "lifecycle-lease.json" if role == "source" else f"lifecycle-lease-{role}.json"
+        )
         self.closed = False
         self.preserved = False
         self.__class__.instances.append(self)
@@ -820,13 +925,14 @@ class FakeLifecycle:
     def create_fresh_notebook(self, name: str):
         path = (self.run_dir / "notebooks" / name).resolve()
         path.mkdir(parents=True)
+        notebook_id = "notebook-id" if self.role == "source" else f"{self.role}-notebook-id"
         lease = {
-            "notebook_id": "notebook-id",
+            "notebook_id": notebook_id,
             "expected_name": name,
             "expected_local_path": str(path),
         }
         test_utils.write_json(self.lease_path, {"schema_version": 1, **lease})
-        return {"id": "notebook-id", "name": name}, lease
+        return {"id": notebook_id, "name": name}, lease
 
     def get_exact_notebook(self, lease=None):
         lease = lease or test_utils.read_json(self.lease_path)
@@ -834,7 +940,8 @@ class FakeLifecycle:
 
     def close_exact_notebook(self):
         self.closed = True
-        return {"closed": True, "close_before": {"id": "notebook-id"}}
+        notebook_id = "notebook-id" if self.role == "source" else f"{self.role}-notebook-id"
+        return {"closed": True, "close_before": {"id": notebook_id}}
 
 class FakeMCP:
     starts = 0
@@ -869,11 +976,24 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
         test_utils.write_json(options.run_dir / "manifest.json", manifest)
         return manifest, {"profile": spec.fixture.name}
 
+    async def fake_fixture_bundle(scenario, args, options, client, notebooks, paths, spec):
+        assert client is FakeMCP.active
+        calls.append("fixture")
+        manifest = _manifest(options.run_dir, notebooks["source"]["name"])
+        manifest["notebook"] = dict(notebooks["source"])
+        manifest["notebooks"] = {role: dict(value) for role, value in notebooks.items()}
+        manifest["notebook_paths"] = dict(paths)
+        manifest["disposable_targets"].update(
+            {f"{role}_notebook_path": path for role, path in paths.items()}
+        )
+        test_utils.write_json(options.run_dir / "manifest.json", manifest)
+        return manifest, {"profile": spec.fixture.name}
+
     def fake_report(run_dir):
         calls.append("report")
         return run_dir / "report.md"
 
-    monkeypatch.setattr(validation, "prepare_fixture", fake_fixture)
+    monkeypatch.setattr(validation, "prepare_fixture_bundle", fake_fixture_bundle)
     monkeypatch.setattr(validation, "render_report", fake_report)
 
 
@@ -882,22 +1002,32 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
     calls: list[str] = []
     _install_orchestration_fakes(monkeypatch, calls)
 
-    if scenario != "create":
-        async def fake_scenario(
-            args,
-            _options,
-            _manifest_value,
-            *,
-            client=None,
-            fixture_result=None,
-        ):
-            assert client is FakeMCP.active
-            calls.append(args.scenario)
-            if args.scenario == "delete":
-                assert args.delete_target_id == "disposable-group"
-            return {"scenario": args.scenario, "status": "passed"}
+    if SCENARIO_REGISTRY.get(scenario).fixture_recipe.consumer_scenario:
+        with pytest.raises(runtime.RunnerFailure, match="require --use-cache"):
+            asyncio.run(
+                validation.run_validate(
+                    _args(tmp_path / scenario, scenario),
+                    RuntimeOptions(tmp_path / scenario, 1_800, False, False),
+                )
+            )
+        assert FakeMCP.starts == 0
+        return
 
-        monkeypatch.setattr(SCENARIO_REGISTRY.get(scenario), "execute", fake_scenario)
+    async def fake_scenario(
+        args,
+        _options,
+        _manifest_value,
+        *,
+        client=None,
+        fixture_result=None,
+    ):
+        assert client is FakeMCP.active
+        calls.append(args.scenario)
+        if args.scenario == "delete":
+            assert args.delete_target_id == "disposable-group"
+        return {"scenario": args.scenario, "status": "passed"}
+
+    monkeypatch.setattr(SCENARIO_REGISTRY.get(scenario), "execute", fake_scenario)
 
     result = asyncio.run(
         validation.run_validate(
@@ -908,15 +1038,14 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
 
     assert FakeMCP.starts == 1
     assert calls[0] == "fixture"
-    if scenario != "create":
-        assert calls[1] == scenario
+    assert calls[1] == scenario
     assert FakeLifecycle.instances[0].closed is True
     assert result["metrics"]["observed_mcp_process_starts"] == 1
     assert result["ordered_steps"] == [
-        "create-source-notebook",
+        "create-notebook-bundle" if scenario == "copy-page" else "create-source-notebook",
         scenario,
         "report",
-        "close-source-notebook",
+        "close-notebook-bundle" if scenario == "copy-page" else "close-source-notebook",
     ]
 
 
@@ -936,6 +1065,42 @@ def test_failure_preserves_open_and_stops_before_report(monkeypatch, tmp_path) -
     assert FakeLifecycle.instances[0].closed is False
     state = test_utils.read_json(args.run_dir / "run-state.json")
     assert state["current_step"] == "rename"
+    assert state["finalization_started"] is False
+
+
+def test_interactive_detection_failure_does_not_initialize_cache_or_close(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[str] = []
+    cache_initializations: list[str] = []
+    _install_orchestration_fakes(monkeypatch, calls)
+
+    class ForbiddenCacheStore:
+        def __init__(self, *_args, **_kwargs) -> None:
+            cache_initializations.append("constructed")
+
+    async def failing(*_args, **_kwargs):
+        calls.append("interactive-detector")
+        raise runtime.InvariantFailure("requested InkDrawing=1; observed=0")
+
+    scenario = SCENARIO_REGISTRY.get("bootstrap-ink-drawing-fixture")
+    monkeypatch.setattr(scenario, "execute", failing)
+    monkeypatch.setattr(validation, "BundleCacheStore", ForbiddenCacheStore)
+    args = _args(tmp_path / "run", scenario.name)
+
+    with pytest.raises(runtime.InvariantFailure, match="InkDrawing"):
+        asyncio.run(
+            validation.run_validate(
+                args,
+                RuntimeOptions(args.run_dir, 1_800, False, False),
+            )
+        )
+
+    assert calls == ["fixture", "interactive-detector"]
+    assert cache_initializations == []
+    assert FakeLifecycle.instances[0].closed is False
+    state = test_utils.read_json(args.run_dir / "run-state.json")
+    assert state["current_step"] == scenario.name
     assert state["finalization_started"] is False
 
 
@@ -1015,6 +1180,49 @@ def test_finalize_uses_lifecycle_lease_and_never_starts_mcp(tmp_path) -> None:
     assert wrapper.closed is True
     assert result["status"] == "closed_preserved"
     assert Path(manifest["disposable_targets"]["source_notebook_path"]).exists()
+
+
+def test_bundle_finalization_failure_records_completed_roles_and_preserves_paths(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    destination = FakeLifecycle(run_dir, timeout_seconds=180, role="destination")
+    source = FakeLifecycle(run_dir, timeout_seconds=180)
+    destination_notebook, destination_lease = destination.create_fresh_notebook(
+        "Destination"
+    )
+    source_notebook, source_lease = source.create_fresh_notebook("Source")
+    manifest = _manifest(run_dir, "Source")
+    manifest["notebook"] = source_notebook
+    manifest["notebooks"] = {
+        "destination": destination_notebook,
+        "source": source_notebook,
+    }
+    manifest["disposable_targets"].update(
+        destination_notebook_path=destination_lease["expected_local_path"],
+        source_notebook_path=source_lease["expected_local_path"],
+    )
+
+    def fail_source_close():
+        raise runtime.RestoreFailure("injected source close failure")
+
+    source.close_exact_notebook = fail_source_close
+
+    with pytest.raises(runtime.RestoreFailure, match="injected source close failure"):
+        asyncio.run(
+            validation.finalize_bundle(
+                _args(run_dir, "copy-page"),
+                RuntimeOptions(run_dir, 180, False, False),
+                manifest,
+                wrappers={"destination": destination, "source": source},
+                roles=("destination", "source"),
+            )
+        )
+
+    evidence = test_utils.read_json(run_dir / "lifecycle-bundle.json")
+    assert evidence["status"] == "failed_preserved_bundle"
+    assert evidence["completed_roles"] == ["destination"]
+    assert evidence["filesystem_deleted"] is False
+    assert Path(destination_lease["expected_local_path"]).exists()
+    assert Path(source_lease["expected_local_path"]).exists()
 
 
 def test_copy_notebook_finalization_closes_source_lease_and_preserves_both_paths(tmp_path) -> None:
@@ -1103,13 +1311,13 @@ def test_nonempty_run_dir_and_unsafe_name_fail_without_mutation(tmp_path, capsys
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "existing.txt").write_text("preserve", encoding="utf-8")
-    assert main(["rename", "--notebook-name", "__ISOLATED__", "--run-dir", str(run_dir), "--json"]) == 2
+    assert main(["rename", "--notebook-label", "isolated", "--run-dir", str(run_dir), "--json"]) == 2
     assert "absent or empty" in capsys.readouterr().out
     assert sorted(path.name for path in run_dir.iterdir()) == ["existing.txt"]
 
     unsafe = tmp_path / "unsafe"
-    assert main(["rename", "--notebook-name", "unsafe/name", "--run-dir", str(unsafe), "--dry-run", "--json"]) == 2
-    assert "Windows-safe leaf name" in capsys.readouterr().out
+    assert main(["rename", "--notebook-label", "unsafe/name", "--run-dir", str(unsafe), "--dry-run", "--json"]) == 2
+    assert "lowercase kebab-case" in capsys.readouterr().out
     assert not unsafe.exists()
 
 

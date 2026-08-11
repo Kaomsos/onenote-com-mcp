@@ -1,12 +1,13 @@
 import asyncio
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
 from local_onenote_mcp import server
 from local_onenote_mcp.policy import SearchBudget
 from local_onenote_mcp.services import PartialFailure
-from local_onenote_mcp.tools.advanced import delete_hierarchy, open_hierarchy
+from local_onenote_mcp.tools.advanced import merge_sections, open_hierarchy, set_filing_location
 from local_onenote_mcp.tools.hierarchy import list_hierarchy
 from local_onenote_mcp.tools.mutations import create_page, create_section, delete_page_content
 from local_onenote_mcp.tools.operations import publish_object
@@ -321,6 +322,32 @@ def test_page_content_digest_ignores_page_clock_and_hierarchy_metadata():
     assert server.services.pages.digest(first) != server.services.pages.digest(changed_object)
 
 
+def test_page_content_digest_ignores_only_empty_selection_text_placeholders():
+    baseline = '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p"><one:Outline objectID="o"><one:OE objectID="oe" /></one:Outline></one:Page>'
+    selected_placeholder = baseline.replace(
+        '<one:OE objectID="oe" />',
+        '<one:OE objectID="oe"><one:T selected="all" /></one:OE>',
+    )
+    ordinary_empty_text = baseline.replace(
+        '<one:OE objectID="oe" />',
+        '<one:OE objectID="oe"><one:T /></one:OE>',
+    )
+    selected_visible_text = baseline.replace(
+        '<one:OE objectID="oe" />',
+        '<one:OE objectID="oe"><one:T selected="all">visible</one:T></one:OE>',
+    )
+
+    assert server.services.pages.digest(baseline) == server.services.pages.digest(
+        selected_placeholder
+    )
+    assert server.services.pages.digest(baseline) != server.services.pages.digest(
+        ordinary_empty_text
+    )
+    assert server.services.pages.digest(baseline) != server.services.pages.digest(
+        selected_visible_text
+    )
+
+
 def test_list_hierarchy_children_returns_only_direct_typed_children(monkeypatch):
     xml = """<one:Notebooks xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">
       <one:Notebook name="NB" ID="n"><one:SectionGroup name="G" ID="g"><one:Section name="S" ID="s" /></one:SectionGroup></one:Notebook>
@@ -336,7 +363,7 @@ def test_list_hierarchy_children_returns_only_direct_typed_children(monkeypatch)
 
 def test_open_hierarchy_resolves_existing_friendly_path_without_bridge(monkeypatch):
     expected = {"resource_type": "section", "id": "section-id", "path": "Notebook/Group/Sec", "name": "Sec"}
-    monkeypatch.setattr(server.services.hierarchy, "find_path", lambda path, resource_type=None: expected)
+    monkeypatch.setattr(server.services.hierarchy, "find_unique_path", lambda path, resource_type=None: expected)
     monkeypatch.setattr(
         server.services.mutations,
         "call",
@@ -379,6 +406,7 @@ def test_create_section_returns_refreshed_current_section_id(monkeypatch):
     refreshed = {"resource_type": "section", "id": "current-section-id", "path": "Notebook/Group/New Sec", "name": "New Sec"}
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda object_id, resource_type=None: parent)
+    monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
     monkeypatch.setattr(server.services.mutations, "call", lambda operation, **params: {"object_id": "stale-id"})
     monkeypatch.setattr(server.services.hierarchy, "wait_for_created", lambda *args, **kwargs: refreshed)
 
@@ -386,6 +414,190 @@ def test_create_section_returns_refreshed_current_section_id(monkeypatch):
 
     assert result["ok"] is True
     assert result["section_id"] == "current-section-id"
+
+
+def test_created_page_readback_prefers_allocated_id_over_duplicate_title_path(
+    monkeypatch,
+):
+    duplicate_path = "Notebook/Section/Duplicate"
+    existing = {
+        "resource_type": "page",
+        "id": "existing-page-id",
+        "path": duplicate_path,
+    }
+    allocated = {
+        "resource_type": "page",
+        "id": "allocated-page-id",
+        "path": duplicate_path,
+    }
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [existing, allocated],
+    )
+
+    result = server.services.hierarchy.wait_for_created(
+        duplicate_path,
+        "page",
+        "allocated-page-id",
+        retries=1,
+        delay_seconds=0,
+    )
+
+    assert result == allocated
+
+
+def test_created_page_readback_rejects_ambiguous_path_without_allocated_id(
+    monkeypatch,
+):
+    duplicate_path = "Notebook/Section/Duplicate"
+    candidates = [
+        {"resource_type": "page", "id": page_id, "path": duplicate_path}
+        for page_id in ("first-page-id", "second-page-id")
+    ]
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: candidates,
+    )
+
+    result = server.services.hierarchy.wait_for_created(
+        duplicate_path,
+        "page",
+        "missing-allocated-id",
+        retries=1,
+        delay_seconds=0,
+    )
+
+    assert result is None
+
+
+def test_created_target_readback_accepts_only_one_fresh_path_remap(monkeypatch):
+    path = "Notebook/Section/New"
+    old = {"resource_type": "page", "id": "old", "path": "Notebook/Section/Old"}
+    remapped = {
+        "resource_type": "page",
+        "id": "remapped",
+        "path": path,
+        "parent_id": "section-id",
+        "is_in_recycle_bin": False,
+    }
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [old, remapped],
+    )
+
+    result = server.services.hierarchy.wait_for_created(
+        path,
+        "page",
+        "missing-allocated-id",
+        expected_parent_id="section-id",
+        validate_parent=True,
+        before_ids={"old"},
+        retries=1,
+        delay_seconds=0,
+    )
+
+    assert result == remapped
+
+
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {
+            "resource_type": "section",
+            "id": "allocated",
+            "path": "Notebook/Section/New",
+            "parent_id": "notebook-id",
+        },
+        {
+            "resource_type": "page",
+            "id": "allocated",
+            "path": "Notebook/Section/New",
+            "parent_id": "wrong-section",
+        },
+        {
+            "resource_type": "page",
+            "id": "allocated",
+            "path": "Notebook/Section/New",
+            "parent_id": "section-id",
+            "is_in_recycle_bin": True,
+        },
+    ],
+)
+def test_created_target_readback_rejects_wrong_type_parent_or_recycle_state(
+    monkeypatch, candidate
+):
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [candidate],
+    )
+
+    assert (
+        server.services.hierarchy.wait_for_created(
+            "Notebook/Section/New",
+            "page",
+            "allocated",
+            expected_parent_id="section-id",
+            validate_parent=True,
+            retries=1,
+            delay_seconds=0,
+        )
+        is None
+    )
+
+
+@pytest.mark.write_contract
+def test_create_page_twice_with_duplicate_title_returns_distinct_allocated_ids(monkeypatch):
+    section = {
+        "resource_type": "section",
+        "id": "section-id",
+        "path": "Notebook/Section",
+        "name": "Section",
+    }
+    state = [section]
+    allocated = []
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: section)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [dict(item) for item in state],
+    )
+
+    def fake_call(operation, **params):
+        if operation == "create_new_page":
+            page_id = f"allocated-{len(allocated) + 1}"
+            allocated.append(page_id)
+            return {"page_id": page_id}
+        if operation == "update_page_content":
+            root = ET.fromstring(params["xml"])
+            page_id = root.attrib["ID"]
+            state.append(
+                {
+                    "resource_type": "page",
+                    "id": page_id,
+                    "title": "Duplicate",
+                    "path": "Notebook/Section/Duplicate",
+                    "parent_id": "section-id",
+                    "section_id": "section-id",
+                    "is_in_recycle_bin": False,
+                }
+            )
+            return {"updated": True}
+        raise AssertionError(operation)
+
+    monkeypatch.setattr(server.services.mutations, "call", fake_call)
+
+    first = asyncio.run(create_page("section-id", "Duplicate", content="first"))
+    second = asyncio.run(create_page("section-id", "Duplicate", content="second"))
+
+    assert first["ok"] is True and second["ok"] is True
+    assert first["page_id"] == "allocated-1"
+    assert second["page_id"] == "allocated-2"
+    assert first["page_id"] != second["page_id"]
 
 
 @pytest.mark.write_contract
@@ -398,6 +610,7 @@ def test_create_page_reports_allocated_id_when_initial_content_write_fails(monke
     }
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: section)
+    monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
 
     def fake_call(operation, **params):
         if operation == "create_new_page":
@@ -415,6 +628,45 @@ def test_create_page_reports_allocated_id_when_initial_content_write_fails(monke
 
 
 @pytest.mark.write_contract
+def test_create_page_rejects_preexisting_allocated_id_before_content_write(monkeypatch):
+    section = {
+        "resource_type": "section",
+        "id": "section-id",
+        "path": "Notebook/Section",
+        "name": "Section",
+    }
+    existing = {
+        "resource_type": "page",
+        "id": "existing-page-id",
+        "path": "Notebook/Section/Existing",
+        "section_id": "section-id",
+        "parent_id": "section-id",
+    }
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: section)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [section, existing],
+    )
+
+    def fake_call(operation, **params):
+        assert operation == "create_new_page"
+        return {"page_id": "existing-page-id"}
+
+    monkeypatch.setattr(server.services.mutations, "call", fake_call)
+
+    result = asyncio.run(create_page("section-id", "Duplicate"))
+
+    assert result["ok"] is False
+    assert result["allocated_ids"] == ["existing-page-id"]
+    assert result["created_ids"] == []
+    assert result["source_touched"] is False
+    assert result["topology_touched"] is False
+    assert result["manual_recovery_required"] is False
+
+
+@pytest.mark.write_contract
 @pytest.mark.parametrize("kind", ["notebook", "section_group", "section"])
 def test_create_container_reports_allocated_id_when_readback_fails(monkeypatch, tmp_path, kind):
     parent = {
@@ -425,6 +677,7 @@ def test_create_container_reports_allocated_id_when_readback_fails(monkeypatch, 
     }
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
+    monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
     monkeypatch.setattr(
         server.services.mutations,
         "call",
@@ -445,6 +698,153 @@ def test_create_container_reports_allocated_id_when_readback_fails(monkeypatch, 
 
 
 @pytest.mark.write_contract
+@pytest.mark.parametrize("kind", ["notebook", "section_group", "section"])
+def test_create_container_accepts_only_one_fresh_path_remap(monkeypatch, tmp_path, kind):
+    parent = {
+        "resource_type": "notebook",
+        "id": "parent-id",
+        "path": "Notebook",
+        "name": "Notebook",
+        "parent_id": None,
+    }
+    candidate = {
+        "resource_type": kind,
+        "id": f"remapped-{kind}-id",
+        "path": "Copy" if kind == "notebook" else "Notebook/Copy",
+        "name": "Copy",
+        "parent_id": None if kind == "notebook" else "parent-id",
+        "is_in_recycle_bin": False,
+    }
+    state = {"called": False}
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [parent, candidate]
+        if state["called"]
+        else [parent],
+    )
+
+    def fake_call(operation, **params):
+        state["called"] = True
+        return {"object_id": f"stale-{kind}-id"}
+
+    monkeypatch.setattr(server.services.mutations, "call", fake_call)
+
+    if kind == "notebook":
+        result = server.services.mutations.create_notebook("Copy", str(tmp_path))
+        result_id = result["notebook_id"]
+    elif kind == "section_group":
+        result = server.services.mutations.create_section_group("parent-id", "Copy")
+        result_id = result["section_group_id"]
+    else:
+        result = server.services.mutations.create_section("parent-id", "Copy")
+        result_id = result["section_id"]
+
+    assert result_id == candidate["id"]
+    assert result["allocated_id"] == f"stale-{kind}-id"
+    assert result["identity_remapped"] is True
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize("kind", ["notebook", "section_group", "section"])
+def test_create_container_rejects_preexisting_returned_id(monkeypatch, tmp_path, kind):
+    parent = {
+        "resource_type": "notebook",
+        "id": "parent-id",
+        "path": "Notebook",
+        "name": "Notebook",
+        "parent_id": None,
+    }
+    existing = {
+        "resource_type": kind,
+        "id": f"existing-{kind}-id",
+        "path": "Copy" if kind == "notebook" else "Notebook/Copy",
+        "name": "Copy",
+        "parent_id": None if kind == "notebook" else "parent-id",
+        "is_in_recycle_bin": False,
+    }
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [parent, existing],
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda operation, **params: {"object_id": existing["id"]},
+    )
+    monkeypatch.setattr("local_onenote_mcp.services.hierarchy.time.sleep", lambda seconds: None)
+
+    with pytest.raises(PartialFailure) as caught:
+        if kind == "notebook":
+            server.services.mutations.create_notebook("Copy", str(tmp_path))
+        elif kind == "section_group":
+            server.services.mutations.create_section_group("parent-id", "Copy")
+        else:
+            server.services.mutations.create_section("parent-id", "Copy")
+
+    assert caught.value.details["allocated_ids"] == [existing["id"]]
+    assert caught.value.details["resolved_target_ids"] == []
+    assert caught.value.details["created_ids"] == []
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize("kind", ["notebook", "section_group", "section"])
+def test_create_container_rejects_ambiguous_fresh_path_remap(monkeypatch, tmp_path, kind):
+    parent = {
+        "resource_type": "notebook",
+        "id": "parent-id",
+        "path": "Notebook",
+        "name": "Notebook",
+        "parent_id": None,
+    }
+    path = "Copy" if kind == "notebook" else "Notebook/Copy"
+    candidates = [
+        {
+            "resource_type": kind,
+            "id": f"remapped-{kind}-{index}",
+            "path": path,
+            "name": "Copy",
+            "parent_id": None if kind == "notebook" else "parent-id",
+            "is_in_recycle_bin": False,
+        }
+        for index in (1, 2)
+    ]
+    state = {"called": False}
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [parent, *candidates]
+        if state["called"]
+        else [parent],
+    )
+
+    def fake_call(operation, **params):
+        state["called"] = True
+        return {"object_id": f"missing-{kind}-id"}
+
+    monkeypatch.setattr(server.services.mutations, "call", fake_call)
+    monkeypatch.setattr("local_onenote_mcp.services.hierarchy.time.sleep", lambda seconds: None)
+
+    with pytest.raises(PartialFailure) as caught:
+        if kind == "notebook":
+            server.services.mutations.create_notebook("Copy", str(tmp_path))
+        elif kind == "section_group":
+            server.services.mutations.create_section_group("parent-id", "Copy")
+        else:
+            server.services.mutations.create_section("parent-id", "Copy")
+
+    assert caught.value.details["allocated_ids"] == [f"missing-{kind}-id"]
+    assert caught.value.details["resolved_target_ids"] == []
+
+
+@pytest.mark.write_contract
 def test_delete_page_content_rejects_non_deletable_child_with_parent_suggestion(monkeypatch):
     page_xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
     <one:Outline objectID="outline-id"><one:OEChildren><one:OE objectID="oe-id"><one:T>hello</one:T>
@@ -460,28 +860,114 @@ def test_delete_page_content_rejects_non_deletable_child_with_parent_suggestion(
     assert "outline-id" in result["error"]
 
 
-@pytest.mark.write_contract
-def test_delete_hierarchy_retries_when_same_path_reappears_with_new_id(monkeypatch):
-    calls = []
-    initial = {"resource_type": "section_group", "id": "old-id", "path": "Notebook/Test", "name": "Test"}
-    remaining = {"resource_type": "section_group", "id": "new-id", "path": "Notebook/Test", "name": "Test"}
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RAW_XML", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES", "true")
-    monkeypatch.setattr(server.services.hierarchy, "resolve", lambda identifier: initial)
+def test_generic_delete_hierarchy_is_removed_from_advanced_registration():
+    from local_onenote_mcp.tools import ADVANCED_TOOLS
+
+    assert "delete_hierarchy" not in {tool.__name__ for tool in ADVANCED_TOOLS}
+    assert not hasattr(server.services.mutations, "delete_hierarchy")
+
+
+def test_open_hierarchy_rejects_duplicate_exact_path_before_bridge(monkeypatch):
     monkeypatch.setattr(
         server.services.hierarchy,
-        "find_path",
-        lambda path, resource_type=None: remaining if len(calls) == 1 else None,
+        "find_unique_path",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ValueError("Ambiguous page path 'Notebook/Section/Duplicate'. Use an exact object ID.")
+        ),
     )
     monkeypatch.setattr(
         server.services.mutations,
         "call",
-        lambda operation, **params: calls.append(params["object_id"]) or {"deleted": True},
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("COM must not be called")),
     )
-    monkeypatch.setattr("local_onenote_mcp.services.mutations.time.sleep", lambda seconds: None)
 
-    result = asyncio.run(delete_hierarchy("Notebook/Test", permanently=True))
+    result = asyncio.run(open_hierarchy("Notebook/Section/Duplicate"))
 
-    assert result["ok"] is True
-    assert result["deleted_ids"] == ["old-id", "new-id"]
+    assert result["ok"] is False
+    assert "Ambiguous" in result["error"]
+
+
+def test_advanced_merge_and_filing_location_schemas_use_exact_id_names():
+    import inspect
+
+    assert list(inspect.signature(merge_sections).parameters) == [
+        "source_section_id",
+        "destination_section_id",
+    ]
+    assert list(inspect.signature(set_filing_location).parameters) == [
+        "filing_location",
+        "filing_location_type",
+        "section_or_page_id",
+    ]
+
+
+@pytest.mark.write_contract
+def test_advanced_merge_and_filing_location_resolve_only_exact_ids(monkeypatch):
+    items = {
+        "source-section": {
+            "resource_type": "section",
+            "id": "source-section",
+            "name": "Same",
+        },
+        "destination-section": {
+            "resource_type": "section",
+            "id": "destination-section",
+            "name": "Same",
+        },
+        "page-id": {
+            "resource_type": "page",
+            "id": "page-id",
+            "title": "Same",
+        },
+    }
+    calls = []
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RAW_XML", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resolve",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("advanced mutation must not resolve a name or path")
+        ),
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda object_id, resource_type=None: items[object_id]
+        if resource_type is None or items[object_id]["resource_type"] == resource_type
+        else (_ for _ in ()).throw(ValueError("wrong type")),
+    )
+    monkeypatch.setattr(
+        server.services.operations,
+        "call",
+        lambda operation, **params: calls.append((operation, params)) or {},
+    )
+
+    merged = asyncio.run(merge_sections("source-section", "destination-section"))
+    filed = asyncio.run(set_filing_location("email", "current_page", "page-id"))
+
+    assert merged["ok"] is True
+    assert filed["ok"] is True
+    assert calls[0][1]["source_section_id"] == "source-section"
+    assert calls[0][1]["destination_section_id"] == "destination-section"
+    assert calls[1][1]["section_or_page_id"] == "page-id"
+
+
+def test_typed_mutation_target_paths_have_no_name_or_created_path_fallback():
+    import inspect
+
+    service_type = type(server.services.mutations)
+    methods = (
+        service_type.update_page_title,
+        service_type.append_to_page,
+        service_type.replace_page_body,
+        service_type.reorder_page,
+        service_type._reorder_container,
+        service_type._reparent,
+        service_type.delete_resource,
+        service_type.delete_page_content,
+    )
+    forbidden = (".find_path(", ".resolve(", ".wait_for_created(")
+    for method in methods:
+        source = inspect.getsource(method)
+        assert not any(token in source for token in forbidden), method.__name__

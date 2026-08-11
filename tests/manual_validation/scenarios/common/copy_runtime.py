@@ -22,10 +22,10 @@ from ...test_utils import (
     flatten_tree,
     resolve_manifest_item,
     scenario_dir,
-    timestamp,
     validate_manifest_notebook,
     write_json,
 )
+from ...run_identity import new_run_identity, run_safe_timestamp
 from .config import (
     COPY_NOTEBOOK_PRESERVE_TOOLS,
     COPY_NOTEBOOK_TOOLS,
@@ -36,7 +36,12 @@ from .config import (
     RELAXED_COPY_CAPABILITIES,
     ROOT_PAGE_COPY_CAPABILITIES,
 )
-from .copy_invariants import assert_copy_fixture_capabilities, assert_copy_mapping
+from .copy_invariants import (
+    assert_copy_fixture_capabilities,
+    assert_copy_mapping,
+    assert_copy_page_restored,
+    assert_pages_unchanged,
+)
 from .report import render_report
 from .specs import get_scenario_spec
 
@@ -47,35 +52,64 @@ def copy_spec(
     run_dir: Path,
     *,
     keep_worksite: bool = False,
+    name_suffix: str | None = None,
 ) -> dict[str, Any]:
-    suffix = timestamp()
+    suffix = name_suffix or new_run_identity().safe_timestamp
     copy_policy = COPY_NO_DELETE_POLICY if keep_worksite else COPY_POLICY
     copy_tools = COPY_PRESERVE_TOOLS if keep_worksite else COPY_TOOLS
     if scenario == "copy-page":
         execution_contract = get_scenario_spec(scenario).execution_contract
         page_tools = COPY_PAGE_PRESERVE_TOOLS if keep_worksite else COPY_PAGE_TOOLS
+        anchor_keys = {
+            "same-section": "semantic_page",
+            "cross-section": "cross_section_anchor",
+            "cross-notebook": "cross_notebook_anchor",
+        }
         cases = []
-        for case in execution_contract.get("cases", []):
+        for index, case in enumerate(execution_contract.get("cases", []), start=1):
             declared_scope = case.get("include_descendants")
+            destination_scope = str(case["destination_scope"])
+            scope_label = {
+                "same-section": "Same-Section",
+                "cross-section": "Cross-Section",
+                "cross-notebook": "Cross-Notebook",
+            }.get(destination_scope)
+            if scope_label is None:
+                raise RunnerFailure(f"Unknown Copy Page destination scope: {destination_scope}")
             cases.append(
                 {
                     "name": str(case["name"]),
-                    "destination_name": (
-                        f"01-Root-Only-Copy-{suffix}"
-                        if declared_scope == "omitted"
-                        else f"02-Full-Subtree-Copy-{suffix}"
+                    "destination": resolve_manifest_item(
+                        manifest, str(case["destination_key"])
                     ),
+                    "destination_role": str(case["destination_role"]),
+                    "destination_scope": destination_scope,
+                    "collision_anchor": resolve_manifest_item(
+                        manifest, anchor_keys[destination_scope]
+                    ),
+                    "destination_name": f"{index:02d}-{scope_label}-"
+                    + ("Root-Only" if declared_scope == "omitted" else "Subtree")
+                    + f"-Copy-{suffix}",
                     "include_descendants": (
                         None if declared_scope == "omitted" else bool(declared_scope)
                     ),
                     "expected_page_count": int(case["expected_page_count"]),
                 }
             )
-        if len(cases) != 2:
-            raise RunnerFailure("Copy Page execution contract must declare exactly two cases.")
+        if len(cases) != 6:
+            raise RunnerFailure("Copy Page execution contract must declare exactly six cases.")
         return {
             "source": resolve_manifest_item(manifest, "parent_page"),
-            "destination": resolve_manifest_item(manifest, "disposable_section"),
+            "protected_page_ids": [
+                str(resolve_manifest_item(manifest, key)["id"])
+                for key in (
+                    "parent_page",
+                    "semantic_page",
+                    "cross_section_anchor",
+                    "cross_notebook_anchor",
+                )
+            ],
+            "notebooks": dict(manifest.get("notebooks", {"source": manifest["notebook"]})),
             "tool": "copy_page",
             "cases": cases,
             "policy": copy_policy,
@@ -173,14 +207,29 @@ def plan_bound_before_snapshot(
     before: dict[str, Any],
     planned: dict[str, Any],
 ) -> dict[str, Any]:
-    """Align runner evidence with the source snapshot protected by plan_digest."""
+    """Align runner evidence with the source and destination protected by plan_digest."""
 
     planned_source = planned.get("source")
-    source_snapshot = planned.get("snapshots", {}).get("source")
+    snapshots = planned.get("snapshots", {})
+    source_snapshot = snapshots.get("source")
+    destination_snapshot = snapshots.get("destination")
     if not isinstance(planned_source, dict) or not planned_source.get("id"):
         raise InvariantFailure("Copy plan is missing its typed source snapshot.")
     if not isinstance(source_snapshot, dict):
         raise InvariantFailure("Copy plan is missing source snapshot evidence.")
+    if not isinstance(destination_snapshot, dict):
+        raise InvariantFailure("Copy plan is missing destination snapshot evidence.")
+    destination_parent = destination_snapshot.get("parent")
+    destination_is_notebook_root = (
+        destination_snapshot.get("resource_type") == "notebook_root"
+        and destination_parent is None
+    )
+    if not destination_is_notebook_root and (
+        not isinstance(destination_parent, dict) or not destination_parent.get("id")
+    ):
+        raise InvariantFailure(
+            "Copy plan destination is missing its typed parent snapshot evidence."
+        )
     planned_resources = source_snapshot.get("resources")
     planned_page_hashes = source_snapshot.get("page_hashes")
     if not isinstance(planned_resources, list) or not isinstance(planned_page_hashes, dict):
@@ -203,12 +252,43 @@ def plan_bound_before_snapshot(
         )
     if str(planned_source["id"]) not in planned_by_id:
         raise InvariantFailure("Copy plan source root is missing from its resource snapshot.")
+    current_destination = None
+    if isinstance(destination_parent, dict):
+        current_destination = find_snapshot_item(before, str(destination_parent["id"]))
+        if current_destination is None:
+            raise InvariantFailure(
+                "Copy plan destination parent is missing from runner before evidence."
+            )
+    stable_destination_fields = (
+        "resource_type",
+        "parent_id",
+        "notebook_id",
+        "name",
+        "title",
+    )
+    if isinstance(destination_parent, dict) and any(
+        field in destination_parent
+        and current_destination.get(field) != destination_parent.get(field)
+        for field in stable_destination_fields
+    ):
+        raise InvariantFailure(
+            "Copy plan destination parent snapshot differs from runner before evidence."
+        )
 
     items = []
     for item in before.get("items", []):
         planned_item = planned_by_id.get(str(item.get("id", "")))
         if planned_item is None:
-            items.append(item)
+            if (
+                isinstance(destination_parent, dict)
+                and str(item.get("id", "")) == str(destination_parent["id"])
+            ):
+                rebound_destination = dict(item)
+                if "modified" in destination_parent:
+                    rebound_destination["modified"] = destination_parent.get("modified")
+                items.append(rebound_destination)
+            else:
+                items.append(item)
             continue
         rebound = dict(item)
         if "modified" in planned_item:
@@ -222,6 +302,17 @@ def plan_bound_before_snapshot(
         "plan_binding": {
             "source_id": planned_source["id"],
             "source_snapshot_digest": planned.get("source_snapshot_digest"),
+            "destination_id": (
+                destination_parent["id"]
+                if isinstance(destination_parent, dict)
+                else None
+            ),
+            "destination_snapshot": dict(destination_snapshot),
+            "destination_parent_snapshot": (
+                dict(destination_parent)
+                if isinstance(destination_parent, dict)
+                else None
+            ),
             "raw_page_hashes": planned_page_hashes,
             "include_descendants": planned.get("include_descendants"),
         },
@@ -245,6 +336,13 @@ async def stable_copy_plan(
         write_json(plan_path, planned)
         digest = str(planned.get("plan_digest", ""))
         source = planned.get("source", {})
+        snapshots = planned.get("snapshots", {})
+        destination = (
+            snapshots.get("destination", {}) if isinstance(snapshots, dict) else {}
+        )
+        destination_parent = (
+            destination.get("parent") if isinstance(destination, dict) else None
+        )
         attempts.append(
             {
                 "attempt": attempt,
@@ -252,6 +350,11 @@ async def stable_copy_plan(
                 "source_snapshot_digest": planned.get("source_snapshot_digest"),
                 "source_modified": (
                     source.get("modified") if isinstance(source, dict) else None
+                ),
+                "destination_id": (
+                    destination_parent.get("id")
+                    if isinstance(destination_parent, dict)
+                    else None
                 ),
                 "include_descendants": planned.get("include_descendants"),
             }
@@ -383,7 +486,7 @@ async def execute_copy_page(
     *,
     client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
-    """Execute and independently verify default root-only and explicit subtree Copy."""
+    """Execute one source Page across three destinations and two subtree modes."""
 
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     keep_worksite = bool(getattr(args, "keep_worksite", False))
@@ -392,10 +495,48 @@ async def execute_copy_page(
         manifest,
         options.run_dir,
         keep_worksite=keep_worksite,
+        name_suffix=run_safe_timestamp(args),
     )
     cases = spec.get("cases")
-    if not isinstance(cases, list) or len(cases) != 2:
-        raise RunnerFailure("Copy Page requires its two declared execution cases.")
+    if not isinstance(cases, list) or len(cases) != 6:
+        raise RunnerFailure("Copy Page requires its six declared execution cases.")
+    notebooks = spec.get("notebooks")
+    if not isinstance(notebooks, dict) or set(notebooks) != {"destination", "source"}:
+        raise RunnerFailure("Copy Page requires exact source/destination Notebook roles.")
+    protected_page_ids = spec.get("protected_page_ids")
+    if not isinstance(protected_page_ids, list) or len(set(protected_page_ids)) != 4:
+        raise RunnerFailure(
+            "Copy Page requires exact source Parent/Child and two collision-anchor IDs."
+        )
+
+    async def capture_bundle(active_client: MCPStdioClient) -> dict[str, Any]:
+        role_snapshots = {
+            role: await capture_snapshot(active_client, str(notebooks[role]["id"]))
+            for role in ("source", "destination")
+        }
+        merged: dict[str, Any] = {
+            "notebook_id": str(notebooks["source"]["id"]),
+            "notebook_ids": {
+                role: str(notebooks[role]["id"]) for role in ("source", "destination")
+            },
+            "roles": role_snapshots,
+            "items": [],
+            "page_hashes": {},
+            "page_objects": {},
+            "page_capability_projections": {},
+        }
+        for role in ("source", "destination"):
+            snapshot = role_snapshots[role]
+            merged["items"].extend(snapshot.get("items", []))
+            for field in (
+                "page_hashes",
+                "page_objects",
+                "page_capability_projections",
+            ):
+                value = snapshot.get(field, {})
+                if isinstance(value, dict):
+                    merged[field].update(value)
+        return merged
     out = scenario_dir(options.run_dir, "copy-page")
     async with scenario_client(
         client,
@@ -405,7 +546,7 @@ async def execute_copy_page(
         timeout_seconds=options.timeout,
         client_factory=MCPStdioClient,
     ) as client:
-        original_before = await capture_snapshot(client, notebook_id)
+        original_before = await capture_bundle(client)
         write_json(out / "before.json", original_before)
         current_snapshot = original_before
         copied_results: list[dict[str, Any]] = []
@@ -423,12 +564,14 @@ async def execute_copy_page(
                 )
             case_spec = {
                 **spec,
+                "destination": dict(case["destination"]),
                 "destination_name": str(case["destination_name"]),
+                "collision_anchor": dict(case["collision_anchor"]),
                 "include_descendants": include_descendants,
             }
             plan_arguments = {
                 "source_id": pre_plan_source["id"],
-                "destination_parent_id": spec["destination"]["id"],
+                "destination_parent_id": case_spec["destination"]["id"],
                 "destination_name": case_spec["destination_name"],
             }
             if include_descendants is not None:
@@ -456,6 +599,14 @@ async def execute_copy_page(
             if find_snapshot_item(case_before, str(planned["source"]["id"])) is None:
                 raise InvariantFailure(
                     f"Plan-bound Copy source is missing before case '{case_name}'."
+                )
+            collision_anchor = dict(case_spec["collision_anchor"])
+            anchor_before = find_snapshot_item(
+                case_before, str(collision_anchor["id"])
+            )
+            if anchor_before is None:
+                raise InvariantFailure(
+                    f"Copy case '{case_name}' is missing its same-title collision anchor."
                 )
             current_source = dict(planned["source"])
             copied = await call_with_result_evidence(
@@ -489,22 +640,48 @@ async def execute_copy_page(
                     f"expected {case['expected_page_count']}."
                 )
 
-            case_after = await capture_snapshot(client, notebook_id)
+            case_after = await capture_bundle(client)
             write_json(out / f"after-{case_name}.json", case_after)
             assert_copy_mapping(
                 case_before,
                 case_after,
                 current_source["id"],
-                spec["destination"]["id"],
+                case_spec["destination"]["id"],
                 case_spec["destination_name"],
                 copied,
                 include_descendants=effective_scope,
             )
-            for source_id, source_hash in case_before["page_hashes"].items():
-                if case_after["page_hashes"].get(source_id) != source_hash:
-                    raise InvariantFailure(
-                        f"Copy case '{case_name}' changed a pre-existing Page XML hash."
-                    )
+            anchor_after = find_snapshot_item(
+                case_after, str(collision_anchor["id"])
+            )
+            stable_fields = (
+                "resource_type",
+                "name",
+                "title",
+                "parent_id",
+                "section_id",
+                "parent_page_id",
+                "page_level",
+                "order",
+            )
+            if anchor_after is None or any(
+                anchor_after.get(field) != anchor_before.get(field)
+                for field in stable_fields
+            ):
+                raise InvariantFailure(
+                    f"Copy case '{case_name}' changed or reordered its collision anchor."
+                )
+            if str(collision_anchor["id"]) in {
+                str(value) for value in id_map.values()
+            }:
+                raise InvariantFailure(
+                    f"Copy case '{case_name}' reused its collision anchor as a target."
+                )
+            assert_pages_unchanged(
+                case_before,
+                case_after,
+                protected_page_ids,
+            )
             copied_results.append(copied)
             case_result = {
                 "case": case_name,
@@ -513,8 +690,13 @@ async def execute_copy_page(
                 ),
                 "effective_include_descendants": effective_scope,
                 "destination_name": case_spec["destination_name"],
+                "destination_role": case["destination_role"],
+                "destination_scope": case["destination_scope"],
+                "destination_section_id": case_spec["destination"]["id"],
                 "target_id": copied.get("item", {}).get("id"),
                 "mapped_page_count": len(id_map),
+                "collision_anchor_id": collision_anchor["id"],
+                "collision_anchor_unchanged": True,
                 "copy_report": report,
             }
             case_results.append(case_result)
@@ -547,7 +729,7 @@ async def execute_copy_page(
                 "cases": case_results,
                 "manual_cleanup_required": True,
                 "reason": (
-                    "--keep-worksite preserved both verified Page Copy scope targets."
+                    "--keep-worksite preserved all six verified Page Copy targets."
                 ),
             }
             write_json(out / "worksite.json", remaining)
@@ -568,9 +750,13 @@ async def execute_copy_page(
         deleted_ids: list[str] = []
         for copied in reversed(copied_results):
             deleted_ids.extend(await cleanup_copy(client, current_snapshot, copied))
-        restored = await capture_snapshot(client, notebook_id)
+        restored = await capture_bundle(client)
         write_json(out / "restored.json", restored)
-        assert_restored(original_before, restored)
+        assert_copy_page_restored(
+            original_before,
+            restored,
+            protected_page_ids,
+        )
         result = {
             "scenario": "copy-page",
             "status": "passed",
@@ -606,6 +792,7 @@ async def execute_copy(
         manifest,
         options.run_dir,
         keep_worksite=keep_worksite,
+        name_suffix=run_safe_timestamp(args),
     )
     if args.scenario == "copy-notebook":
         Path(spec["destination_base_folder"]).mkdir(parents=True, exist_ok=True)

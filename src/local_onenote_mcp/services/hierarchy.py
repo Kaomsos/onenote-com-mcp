@@ -13,6 +13,8 @@ from ..hierarchy import (
     filter_resources,
     find_resource_by_id,
     find_resource_by_path,
+    find_resources_by_path,
+    find_unique_resource_by_path,
     parse_hierarchy,
     resolve_resource,
 )
@@ -53,7 +55,20 @@ class HierarchyService(BaseService):
         return resolve_resource(self.resources(include_recycle_bin=True), identifier, resource_type)
 
     def find_path(self, path: str, resource_type: str | None = None) -> dict[str, Any] | None:
+        """Compatibility selector for read-only callers; returns the first exact match."""
+
         return find_resource_by_path(self.resources(include_recycle_bin=True), path, resource_type)
+
+    def find_unique_path(
+        self,
+        path: str,
+        resource_type: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Return a unique exact-path match and reject duplicate friendly paths."""
+
+        return find_unique_resource_by_path(
+            self.resources(include_recycle_bin=True), path, resource_type
+        )
 
     def wait_for(
         self,
@@ -79,26 +94,55 @@ class HierarchyService(BaseService):
         self,
         expected_path: str,
         resource_type: str,
-        fallback_id: str,
+        allocated_id: str,
         *,
+        expected_parent_id: str | None = None,
+        validate_parent: bool = False,
+        before_ids: set[str] | None = None,
         retries: int = 8,
         delay_seconds: float = 0.5,
     ) -> dict[str, Any] | None:
+        """Verify a created target by allocated ID, or by one fresh path remap.
+
+        The COM-returned ID is authoritative when it resolves to the expected active
+        type/path/parent.  A path fallback is accepted only when the allocated ID is
+        absent and exactly one eligible candidate exists; public Create callers pass
+        ``before_ids`` so that fallback also proves the candidate is newly observed.
+        """
+
         for attempt in range(retries):
-            item = next(
-                (
-                    candidate
-                    for candidate in self.resources(include_recycle_bin=True)
-                    if candidate["resource_type"] == resource_type
+            resources = self.resources(include_recycle_bin=True)
+            allocated = find_resource_by_id(resources, allocated_id)
+
+            def eligible(candidate: dict[str, Any]) -> bool:
+                return (
+                    candidate.get("resource_type") == resource_type
+                    and candidate.get("path", "").casefold() == expected_path.casefold()
+                    and candidate.get("is_in_recycle_bin") is not True
                     and (
-                        candidate["path"].casefold() == expected_path.casefold()
-                        or candidate["id"] == fallback_id
+                        not validate_parent
+                        or candidate.get("parent_id") == expected_parent_id
                     )
-                ),
-                None,
-            )
-            if item:
-                return item
+                )
+
+            if allocated is not None:
+                if eligible(allocated) and (
+                    before_ids is None or allocated_id not in before_ids
+                ):
+                    return allocated
+                # A visible allocated ID with the wrong type/path/parent/state is
+                # not evidence for remapping another same-path object.
+            else:
+                path_matches = [
+                    candidate
+                    for candidate in find_resources_by_path(
+                        resources, expected_path, resource_type
+                    )
+                    if eligible(candidate)
+                    and (before_ids is None or candidate.get("id") not in before_ids)
+                ]
+                if len(path_matches) == 1:
+                    return path_matches[0]
             if attempt + 1 < retries:
                 time.sleep(delay_seconds)
         return None
