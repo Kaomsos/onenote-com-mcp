@@ -25,7 +25,104 @@ from tests.manual_validation.scenarios.common.config import COPY_FIXTURE_MARKER
 from tests.manual_validation.scenarios.common.copy_invariants import (
     assert_copy_fixture_capabilities,
     assert_copy_mapping,
+    assert_copy_page_restored,
+    assert_pages_unchanged,
 )
+
+
+def test_protected_page_invariant_ignores_unrelated_page_but_keeps_strict_gates() -> None:
+    protected = {
+        "resource_type": "page",
+        "id": "protected",
+        "title": "Protected",
+        "parent_id": "section",
+        "section_id": "section",
+        "parent_page_id": None,
+        "page_level": 1,
+        "order": 0,
+    }
+    unrelated = {**protected, "id": "unrelated", "title": "Description", "order": 1}
+    before = {
+        "items": [protected, unrelated],
+        "page_hashes": {"protected": "stable", "unrelated": "old"},
+        "page_objects": {"protected": [{"id": "object"}], "unrelated": []},
+    }
+    after = {
+        **before,
+        "page_hashes": {"protected": "stable", "unrelated": "normalized"},
+    }
+
+    assert_pages_unchanged(before, after, ["protected"])
+
+    changed_content = {
+        **after,
+        "page_hashes": {**after["page_hashes"], "protected": "changed"},
+    }
+    with pytest.raises(InvariantFailure, match="changed stable content"):
+        assert_pages_unchanged(before, changed_content, ["protected"])
+
+    changed_objects = {
+        **after,
+        "page_objects": {**after["page_objects"], "protected": [{"id": "other"}]},
+    }
+    with pytest.raises(InvariantFailure, match="changed content-object identity"):
+        assert_pages_unchanged(before, changed_objects, ["protected"])
+
+
+def test_copy_page_restore_ignores_unrelated_text_normalization_but_keeps_bundle_gates() -> None:
+    protected = {
+        "resource_type": "page",
+        "id": "protected",
+        "title": "Protected",
+        "parent_id": "section",
+        "section_id": "section",
+        "parent_page_id": None,
+        "page_level": 1,
+        "order": 0,
+    }
+    unrelated = {
+        "resource_type": "page",
+        "id": "description",
+        "title": "Description",
+        "parent_id": "description-section",
+        "section_id": "description-section",
+        "parent_page_id": None,
+        "page_level": 1,
+        "order": 0,
+    }
+    before = {
+        "notebook_ids": {"source": "source-notebook", "destination": "destination-notebook"},
+        "items": [protected, unrelated],
+        "page_hashes": {"protected": "stable", "description": "old"},
+        "page_objects": {"protected": [{"id": "object"}], "description": []},
+        "page_capability_projections": {
+            "protected": {"capabilities": ["Outline"]},
+            "description": {"capabilities": ["Outline"]},
+        },
+    }
+    restored = {
+        **before,
+        "page_hashes": {"protected": "stable", "description": "normalized"},
+    }
+
+    assert_copy_page_restored(before, restored, ["protected"])
+
+    changed_topology = {
+        **restored,
+        "items": [
+            {**protected, "order": 1},
+            unrelated,
+        ],
+    }
+    with pytest.raises(InvariantFailure, match="identity or topology"):
+        assert_copy_page_restored(before, changed_topology, ["protected"])
+
+    changed_objects = {
+        **restored,
+        "page_objects": {**restored["page_objects"], "description": [{"id": "new"}]},
+    }
+    with pytest.raises(InvariantFailure, match="page_objects"):
+        assert_copy_page_restored(before, changed_objects, ["protected"])
 
 def test_result_evidence_is_written_for_structured_partial_failure(tmp_path) -> None:
     partial = {
@@ -87,6 +184,87 @@ def test_copy_plan_fails_closed_when_read_only_snapshots_never_stabilize(
     assert evidence["stabilized"] is False
     assert len(evidence["attempts"]) == 3
 
+
+def test_plan_bound_before_snapshot_binds_source_and_destination_evidence() -> None:
+    before = {
+        "items": [
+            {"id": "source", "resource_type": "page", "modified": "old-source"},
+            {
+                "id": "destination",
+                "resource_type": "section",
+                "parent_id": "notebook",
+                "notebook_id": "destination-notebook",
+                "name": "Destination",
+                "modified": "old-destination",
+            },
+        ],
+        "page_hashes": {"source": "stable"},
+    }
+    planned = {
+        "source": {"id": "source"},
+        "source_snapshot_digest": "source-digest",
+        "include_descendants": False,
+        "snapshots": {
+            "source": {
+                "resources": [
+                    {"id": "source", "resource_type": "page", "modified": "plan-source"}
+                ],
+                "page_hashes": {"source": "raw-source"},
+            },
+            "destination": {
+                "resource_type": "section",
+                "parent": {
+                    "id": "destination",
+                    "resource_type": "section",
+                    "parent_id": "notebook",
+                    "notebook_id": "destination-notebook",
+                    "name": "Destination",
+                    "modified": "plan-destination",
+                },
+                "name": "01-Same-Section-Root-Only-Copy",
+                "base_folder": "",
+                "target_path": "",
+                "existing_children": [],
+            },
+        },
+    }
+
+    bound = copy_runtime.plan_bound_before_snapshot(before, planned)
+
+    by_id = {item["id"]: item for item in bound["items"]}
+    assert by_id["source"]["modified"] == "plan-source"
+    assert by_id["destination"]["modified"] == "plan-destination"
+    assert bound["plan_binding"]["destination_id"] == "destination"
+    assert bound["plan_binding"]["destination_parent_snapshot"]["notebook_id"] == (
+        "destination-notebook"
+    )
+    assert bound["plan_binding"]["destination_snapshot"]["name"] == (
+        "01-Same-Section-Root-Only-Copy"
+    )
+
+
+def test_plan_bound_before_snapshot_rejects_flat_destination_resource_shape() -> None:
+    before = {
+        "items": [
+            {"id": "source", "resource_type": "page"},
+            {"id": "destination", "resource_type": "section"},
+        ],
+        "page_hashes": {"source": "stable"},
+    }
+    planned = {
+        "source": {"id": "source"},
+        "snapshots": {
+            "source": {
+                "resources": [{"id": "source", "resource_type": "page"}],
+                "page_hashes": {"source": "raw-source"},
+            },
+            "destination": {"id": "destination", "resource_type": "section"},
+        },
+    }
+
+    with pytest.raises(InvariantFailure, match="typed parent snapshot"):
+        copy_runtime.plan_bound_before_snapshot(before, planned)
+
 def test_notebook_copy_requires_exact_manifest_allowlisted_root(tmp_path) -> None:
     manifest = {
         "schema_version": 1,
@@ -103,7 +281,7 @@ def test_notebook_copy_requires_exact_manifest_allowlisted_root(tmp_path) -> Non
 
 def test_notebook_copy_uses_a_short_run_unique_destination_name(tmp_path) -> None:
     run_dir = tmp_path / "run"
-    source_name = "__LOCAL_MCP_TEST_ISOLATED__20260809T055359Z"
+    source_name = "__copy-notebook-2026-08-11-11-05-49__"
     manifest = {
         "schema_version": 1,
         "notebook": {"id": "notebook-id", "name": source_name},
@@ -113,7 +291,12 @@ def test_notebook_copy_uses_a_short_run_unique_destination_name(tmp_path) -> Non
         },
     }
 
-    spec = copy_spec("copy-notebook", manifest, run_dir)
+    spec = copy_spec(
+        "copy-notebook",
+        manifest,
+        run_dir,
+        name_suffix="2026-08-11-11-05-49",
+    )
 
     assert spec["destination_name"].startswith("Copy-Notebook-")
     assert source_name not in spec["destination_name"]
@@ -124,27 +307,61 @@ def test_keep_worksite_copy_spec_removes_cleanup_permissions(tmp_path) -> None:
     manifest = {
         "schema_version": 1,
         "notebook": {"id": "notebook-id", "name": "Notebook"},
+        "notebooks": {
+            "source": {"id": "notebook-id", "name": "Notebook"},
+            "destination": {"id": "destination-notebook-id", "name": "Destination"},
+        },
         "structure": {
             "parent_page": {"id": "page-id"},
+            "semantic_page": {"id": "source-child-id"},
+            "source_section": {"id": "source-section-id"},
             "disposable_section": {"id": "section-id"},
+            "cross_section_anchor": {"id": "cross-section-anchor-id"},
+            "cross_notebook_section": {"id": "cross-notebook-section-id"},
+            "cross_notebook_anchor": {"id": "cross-notebook-anchor-id"},
         },
     }
 
     spec = copy_spec("copy-page", manifest, tmp_path, keep_worksite=True)
 
-    assert [case["include_descendants"] for case in spec["cases"]] == [None, True]
-    assert [case["expected_page_count"] for case in spec["cases"]] == [1, 2]
+    assert [case["include_descendants"] for case in spec["cases"]] == [
+        None,
+        True,
+        None,
+        True,
+        None,
+        True,
+    ]
+    assert [case["expected_page_count"] for case in spec["cases"]] == [1, 2, 1, 2, 1, 2]
+    assert [case["destination_scope"] for case in spec["cases"]] == [
+        "same-section",
+        "same-section",
+        "cross-section",
+        "cross-section",
+        "cross-notebook",
+        "cross-notebook",
+    ]
+    assert [case["collision_anchor"]["id"] for case in spec["cases"]] == [
+        "source-child-id",
+        "source-child-id",
+        "cross-section-anchor-id",
+        "cross-section-anchor-id",
+        "cross-notebook-anchor-id",
+        "cross-notebook-anchor-id",
+    ]
+    assert spec["protected_page_ids"] == [
+        "page-id",
+        "source-child-id",
+        "cross-section-anchor-id",
+        "cross-notebook-anchor-id",
+    ]
     assert spec["policy"].deletes_enabled is False
     assert not {"delete_page", "delete_section", "delete_section_group"} & spec["tools"]
     assert {"get_tree", "copy_page", "plan_copy"} <= spec["tools"]
     assert not {"copy_section", "copy_section_group", "copy_notebook"} & spec["tools"]
 
 
-@pytest.mark.parametrize(
-    ("keep_worksite", "expected_restored", "expected_cleanup_calls"),
-    ((False, True, 2), (True, False, 0)),
-)
-def test_copy_page_covers_default_root_only_and_explicit_subtree(
+def _legacy_copy_page_two_case_fixture(
     monkeypatch,
     tmp_path,
     keep_worksite,
@@ -279,6 +496,12 @@ def test_copy_page_covers_default_root_only_and_explicit_subtree(
         "copy_spec",
         lambda *_args, **_kwargs: {
             "source": source,
+            "protected_page_ids": [
+                "source-page",
+                "source-child",
+                "cross-section-anchor",
+                "cross-notebook-anchor",
+            ],
             "destination": destination,
             "tool": "copy_page",
             "cases": [
@@ -449,6 +672,227 @@ def test_copy_page_covers_default_root_only_and_explicit_subtree(
             "root-target",
         ]
 
+
+@pytest.mark.parametrize("keep_worksite", (False, True))
+def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
+    monkeypatch,
+    tmp_path,
+    keep_worksite,
+) -> None:
+    source_notebook = {"id": "source-notebook", "name": "Source Notebook"}
+    destination_notebook = {"id": "destination-notebook", "name": "Destination Notebook"}
+    source_section = {"id": "source-section", "resource_type": "section"}
+    cross_section = {"id": "cross-section", "resource_type": "section"}
+    cross_notebook_section = {"id": "cross-notebook-section", "resource_type": "section"}
+    source = {
+        "id": "source-page",
+        "resource_type": "page",
+        "title": "01-Source-Parent",
+        "section_id": "source-section",
+        "parent_id": "source-section",
+        "parent_page_id": None,
+        "page_level": 1,
+        "order": 0,
+        "modified": "stable",
+    }
+    child = {
+        **source,
+        "id": "source-child",
+        "title": "02-Source-Child",
+        "parent_page_id": "source-page",
+        "page_level": 2,
+        "order": 1,
+    }
+    cross_section_anchor = {
+        **child,
+        "id": "cross-section-anchor",
+        "section_id": "cross-section",
+        "parent_id": "cross-section",
+        "parent_page_id": None,
+        "page_level": 1,
+        "order": 0,
+    }
+    cross_notebook_anchor = {
+        **cross_section_anchor,
+        "id": "cross-notebook-anchor",
+        "section_id": "cross-notebook-section",
+        "parent_id": "cross-notebook-section",
+    }
+    cases = []
+    expected_destinations = []
+    for scope, role, destination in (
+        ("same-section", "source", source_section),
+        ("cross-section", "source", cross_section),
+        ("cross-notebook", "destination", cross_notebook_section),
+    ):
+        for subtree in (False, True):
+            case_index = len(cases) + 1
+            cases.append(
+                {
+                    "name": f"case-{case_index}",
+                    "destination": destination,
+                    "destination_role": role,
+                    "destination_scope": scope,
+                    "collision_anchor": {
+                        "same-section": child,
+                        "cross-section": cross_section_anchor,
+                        "cross-notebook": cross_notebook_anchor,
+                    }[scope],
+                    "destination_name": f"{case_index:02d}-Copy",
+                    "include_descendants": True if subtree else None,
+                    "expected_page_count": 2 if subtree else 1,
+                }
+            )
+            expected_destinations.append(destination["id"])
+
+    monkeypatch.setattr(
+        copy_runtime,
+        "copy_spec",
+        lambda *_args, **_kwargs: {
+            "source": source,
+            "protected_page_ids": [
+                "source-page",
+                "source-child",
+                "cross-section-anchor",
+                "cross-notebook-anchor",
+            ],
+            "notebooks": {
+                "source": source_notebook,
+                "destination": destination_notebook,
+            },
+            "tool": "copy_page",
+            "cases": cases,
+            "policy": copy_runtime.COPY_POLICY,
+            "tools": copy_runtime.COPY_TOOLS,
+        },
+    )
+
+    async def fake_snapshot(_client, notebook_id):
+        if notebook_id == "source-notebook":
+            items = [
+                source_notebook,
+                source_section,
+                cross_section,
+                source,
+                child,
+                cross_section_anchor,
+            ]
+            hashes = {
+                "source-page": "parent-hash",
+                "source-child": "child-hash",
+                "cross-section-anchor": "cross-section-anchor-hash",
+            }
+        else:
+            items = [destination_notebook, cross_notebook_section, cross_notebook_anchor]
+            hashes = {"cross-notebook-anchor": "cross-notebook-anchor-hash"}
+        return {
+            "notebook_id": notebook_id,
+            "items": items,
+            "page_hashes": hashes,
+            "page_objects": {page_id: [{"id": f"object-{page_id}"}] for page_id in hashes},
+        }
+
+    async def fake_plan(_client, arguments, **_kwargs):
+        include_descendants = arguments.get("include_descendants", False)
+        resources = [source, child] if include_descendants else [source]
+        destination_by_id = {
+            item["id"]: item
+            for item in (source_section, cross_section, cross_notebook_section)
+        }
+        destination_parent = destination_by_id[arguments["destination_parent_id"]]
+        return {
+            "plan_digest": f"digest-{arguments['destination_parent_id']}-{include_descendants}",
+            "source_snapshot_digest": "source-digest",
+            "source": source,
+            "snapshots": {
+                "source": {
+                    "resources": resources,
+                    "page_hashes": {item["id"]: "raw" for item in resources},
+                },
+                "destination": {
+                    "resource_type": destination_parent["resource_type"],
+                    "parent": destination_parent,
+                    "name": arguments["destination_name"],
+                    "base_folder": "",
+                    "target_path": "",
+                    "existing_children": [],
+                },
+            },
+            "content_capabilities": ["Image", "List", "Outline", "RichText", "Table", "Tag"],
+            "include_descendants": include_descendants,
+        }
+
+    copy_arguments: list[dict] = []
+
+    class FakeClient:
+        policy = copy_runtime.COPY_POLICY
+        allowed_tools = set(copy_runtime.COPY_TOOLS) | {"health_check"}
+        timeout_seconds = 1_800
+
+        async def call_tool(self, name, arguments):
+            assert name == "copy_page"
+            copy_arguments.append(dict(arguments))
+            index = len(copy_arguments)
+            id_map = {"source-page": f"target-{index}"}
+            if arguments.get("include_descendants") is True:
+                id_map["source-child"] = f"target-child-{index}"
+            return {
+                "item": {"id": f"target-{index}", "resource_type": "page"},
+                "copy_report": {"verified": True, "id_map": id_map},
+            }
+
+    async def fake_cleanup(_client, _snapshot, copied):
+        return list(copied["copy_report"]["id_map"].values())
+
+    monkeypatch.setattr(copy_runtime, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(copy_runtime, "stable_copy_plan", fake_plan)
+    monkeypatch.setattr(copy_runtime, "assert_copy_fixture_capabilities", lambda *_a, **_k: None)
+    monkeypatch.setattr(copy_runtime, "assert_copy_mapping", lambda *_a, **_k: None)
+    monkeypatch.setattr(copy_runtime, "cleanup_copy", fake_cleanup)
+    monkeypatch.setattr(copy_runtime, "assert_restored", lambda *_a, **_k: None)
+    monkeypatch.setattr(copy_runtime, "render_report", lambda _path: None)
+
+    run_dir = tmp_path / "run"
+    (run_dir / "scenarios" / "copy-page").mkdir(parents=True)
+    result = asyncio.run(
+        copy_runtime.execute_copy_page(
+            SimpleNamespace(
+                scenario="copy-page",
+                notebook_name="Source Notebook",
+                keep_worksite=keep_worksite,
+            ),
+            RuntimeOptions(run_dir, 1_800, False, False),
+            {
+                "notebook": source_notebook,
+                "notebooks": {
+                    "source": source_notebook,
+                    "destination": destination_notebook,
+                },
+                "structure": {"parent_page": source},
+            },
+            client=FakeClient(),
+        )
+    )
+
+    assert [arguments["destination_section_id"] for arguments in copy_arguments] == expected_destinations
+    assert [arguments.get("include_descendants") for arguments in copy_arguments] == [
+        None,
+        True,
+        None,
+        True,
+        None,
+        True,
+    ]
+    assert [item["destination_scope"] for item in result["case_results"]] == [
+        "same-section",
+        "same-section",
+        "cross-section",
+        "cross-section",
+        "cross-notebook",
+        "cross-notebook",
+    ]
+    assert result["restored"] is (not keep_worksite)
+
 def test_copy_cleanup_uses_exact_ids_leaf_to_root_with_fresh_reads() -> None:
     notebook = {"resource_type": "notebook", "id": "n", "name": "Notebook"}
     targets = [
@@ -590,7 +1034,7 @@ def test_copy_rich_fixture_is_idempotent_and_records_automated_types(tmp_path) -
     assert client.mutations == ["append_to_page", "add_image_to_page"]
     assert first == second
     assert first["automated_content"] == ["rich_text", "table", "image"]
-    assert first["manual_content"] == ["file_attachment", "ink", "media"]
+    assert first["manual_content"] == ["ink", "shape", "media"]
     assert first["observed_object_types"] == ["Image"]
     assert image_dimensions(tmp_path / "fixture-assets" / "copy-fixture-1x1.png") == (1, 1)
 

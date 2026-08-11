@@ -11,10 +11,11 @@ from pathlib import Path
 import pytest
 
 from tests.manual_validation import test_utils
-from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
+from tests.manual_validation.runtime import InvariantFailure, RunnerFailure, RuntimeOptions
 from tests.manual_validation.scenarios.common.fixture_models import FixtureBuildResult, FixtureContext, FixtureRecorder
 from tests.manual_validation.scenarios.common.fixture_runtime import prepare_fixture
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
+from tests.manual_validation.scenarios.fixture_recipes.recipe_base import BuildMode
 
 
 def _args(tmp_path: Path, scenario: str) -> argparse.Namespace:
@@ -43,8 +44,52 @@ def test_every_public_scenario_uniquely_owns_a_static_recipe() -> None:
         recipe = scenario.fixture_recipe
         assert recipe.scenario_name == scenario.name
         assert recipe.profile == scenario.spec.fixture == scenario.fixture_profile
-        assert recipe.profile.creation_tools <= scenario.spec.tool_allowlist
+        assert (
+            recipe.consumer_scenario
+            or recipe.profile.creation_tools <= scenario.spec.tool_allowlist
+        )
         assert recipe.manifest_keys
+
+
+def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() -> None:
+    recipe = SCENARIO_REGISTRY.get("copy-page").fixture_recipe
+
+    assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
+        "destination",
+        "source",
+    )
+    role_specs = {role.role: role for role in recipe.cache_identity.notebook_roles}
+    assert role_specs["destination"].profile.creation_tools == {
+        "create_section",
+        "create_page",
+    }
+    assert role_specs["destination"].profile.content_capabilities == ("plain_text",)
+    assert role_specs["source"].profile.content_capabilities == (
+        "RichText",
+        "Table",
+        "Image",
+        "Outline",
+        "List",
+        "Tag",
+    )
+    assert recipe.manifest_keys_for_role("destination") == {
+        "cross_notebook_section",
+        "cross_notebook_anchor",
+    }
+    assert recipe.manifest_keys_for_role("source") == {
+        "description_section",
+        "description_page",
+        "source_section",
+        "parent_page",
+        "semantic_page",
+        "disposable_section",
+        "cross_section_anchor",
+    }
+    assert (
+        recipe.manifest_keys_for_role("destination")
+        | recipe.manifest_keys_for_role("source")
+        == recipe.manifest_keys
+    )
 
 
 def test_common_fixture_runtime_has_no_scenario_dispatch_or_second_registry() -> None:
@@ -178,8 +223,23 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
         token="token",
         recorder=recorder,
     )
-    result = asyncio.run(recipe.build(context))
-    assert set(result.structure) == set(recipe.required_manifest_keys(args))
+    if recipe.consumer_scenario:
+        with pytest.raises(RunnerFailure, match="interactive_bootstrap_required"):
+            asyncio.run(recipe.build(context))
+        assert calls == []
+        return
+    builder = (
+        recipe.build_scaffold
+        if recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED
+        else recipe.build
+    )
+    result = asyncio.run(builder(context))
+    expected_keys = (
+        recipe.manifest_keys_for_role("source")
+        if len(recipe.cache_identity.notebook_roles) > 1
+        else recipe.required_manifest_keys(args)
+    )
+    assert set(result.structure) == set(expected_keys)
     assert set(calls) <= set(scenario.spec.tool_allowlist)
     mutation_calls = {name for name in calls if name not in {"get_page_text"}}
     assert mutation_calls <= set(recipe.profile.creation_tools)

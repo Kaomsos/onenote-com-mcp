@@ -99,6 +99,7 @@ LAYERED_PAGE_FIXTURE_TOOLS = {
     "reorder_page",
 }
 
+
 SCENARIO_SPECS = {
     "create": ScenarioSpec(
         "create",
@@ -106,20 +107,22 @@ SCENARIO_SPECS = {
             "full-preset",
             (
                 "Group-A/Content-Section/{Parent,Child,Sibling}",
+                "Group-A/Duplicate-Title-Target (empty before scenario execution)",
                 "Group-B",
                 "Delete-Sandbox/Disposable-Group",
                 "Delete-Sandbox/Disposable-Section/Disposable-Page",
             ),
             (
                 "group_a", "group_b", "delete_sandbox", "content_section",
+                "duplicate_title_section",
                 "parent_page", "child_page", "sibling_page", "disposable_group",
                 "disposable_section", "disposable_page",
             ),
             CREATE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "page_tree"),
         ),
-        WRITE_POLICY,
-        frozenset(CREATE_FIXTURE_TOOLS),
+        DELETE_SCENARIO_POLICY,
+        frozenset(CREATE_FIXTURE_TOOLS | {"delete_page"}),
     ),
     "rename": ScenarioSpec(
         "rename",
@@ -375,10 +378,11 @@ SCENARIO_SPECS = {
         _profile(
             "rich-page-copy",
             (
-                "00-Description/00-Copy-Page-Description[original + two target states]",
+                "source:00-Description/00-Copy-Page-Description[3 scopes x 2 subtree modes]",
                 "Source/01-Source-Parent[strict rich text+table+image]",
                 "Source/01-Source-Parent/02-Source-Child[semantic list+tag]",
-                "Destination[initially empty; receives both Copy targets]",
+                "source:Destination/02-Source-Child[duplicate-title anchor]",
+                "destination:Cross-Notebook-Destination/02-Source-Child[duplicate-title anchor]",
             ),
             (
                 "description_section",
@@ -387,14 +391,19 @@ SCENARIO_SPECS = {
                 "parent_page",
                 "semantic_page",
                 "disposable_section",
+                "cross_section_anchor",
+                "cross_notebook_section",
+                "cross_notebook_anchor",
             ),
             {"create_section", "get_page_text"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
             checks=(
-                "Description Page states the original and both expected target states",
-                "default omitted scope maps only the strict parent",
-                "explicit true scope maps the complete parent/child subtree",
-                "source parent and child remain unchanged after both copies",
+                "Description Page states all three destination scopes and both subtree modes",
+                "every omitted scope maps only the strict parent",
+                "every explicit true scope maps the complete parent/child subtree",
+                "source parent and child remain unchanged after all six copies",
+                "same-title destination anchors remain unchanged after all six copies",
+                "cross-Notebook targets appear only in the destination role",
             ),
         ),
         COPY_POLICY,
@@ -406,12 +415,50 @@ SCENARIO_SPECS = {
         {
             "cases": [
                 {
-                    "name": "root-only-default",
+                    "name": "same-section-root-only",
+                    "destination_role": "source",
+                    "destination_key": "source_section",
+                    "destination_scope": "same-section",
                     "include_descendants": "omitted",
                     "expected_page_count": 1,
                 },
                 {
-                    "name": "full-subtree",
+                    "name": "same-section-subtree",
+                    "destination_role": "source",
+                    "destination_key": "source_section",
+                    "destination_scope": "same-section",
+                    "include_descendants": True,
+                    "expected_page_count": 2,
+                },
+                {
+                    "name": "cross-section-root-only",
+                    "destination_role": "source",
+                    "destination_key": "disposable_section",
+                    "destination_scope": "cross-section",
+                    "include_descendants": "omitted",
+                    "expected_page_count": 1,
+                },
+                {
+                    "name": "cross-section-subtree",
+                    "destination_role": "source",
+                    "destination_key": "disposable_section",
+                    "destination_scope": "cross-section",
+                    "include_descendants": True,
+                    "expected_page_count": 2,
+                },
+                {
+                    "name": "cross-notebook-root-only",
+                    "destination_role": "destination",
+                    "destination_key": "cross_notebook_section",
+                    "destination_scope": "cross-notebook",
+                    "include_descendants": "omitted",
+                    "expected_page_count": 1,
+                },
+                {
+                    "name": "cross-notebook-subtree",
+                    "destination_role": "destination",
+                    "destination_key": "cross_notebook_section",
+                    "destination_scope": "cross-notebook",
                     "include_descendants": True,
                     "expected_page_count": 2,
                 },
@@ -496,14 +543,20 @@ SCENARIO_SPECS = {
             (
                 "Source/Disposable-Page[strict rich text+table+image]",
                 "Source/Disposable-Page/List-Tag-Page[semantic list+tag]",
-                "Destination",
+                "Destination/List-Tag-Page[duplicate-title collision anchor]",
             ),
-            ("disposable_page", "semantic_page", "destination_section"),
+            (
+                "disposable_page",
+                "semantic_page",
+                "destination_section",
+                "collision_anchor",
+            ),
             {"create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
             checks=(
                 "strict parent uses canonical read-back verification",
                 "semantic child uses List/Tag semantic read-back verification",
+                "destination collision anchor remains byte-stable and in place",
             ),
         ),
         MOVE_PAGE_POLICY,

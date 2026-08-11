@@ -7,10 +7,12 @@ from types import SimpleNamespace
 
 from tests.manual_validation import test_utils
 from tests.manual_validation.runtime import RuntimeOptions
+from tests.manual_validation.scenarios import create as create_scenario
 from tests.manual_validation.scenarios import move_page as move_page_scenario
 from tests.manual_validation.scenarios import reparent_section as reparent_section_scenario
 from tests.manual_validation.scenarios import reorder_page as reorder_page_scenario
 from tests.manual_validation.scenarios.move_page import MovePageScenario
+from tests.manual_validation.scenarios.create import CreateScenario
 from tests.manual_validation.scenarios.reparent_section import ReparentSectionScenario
 from tests.manual_validation.scenarios.reorder_page import ReorderPageScenario
 
@@ -31,6 +33,86 @@ class FakeClient:
     async def call_tool(self, name: str, arguments: dict, **_: object) -> dict:
         self.calls.append((name, arguments))
         return {"ok": True, "complete": True, "item": self.response_item}
+
+
+def test_create_duplicate_title_regression_uses_fresh_ids_and_exact_cleanup(
+    monkeypatch, tmp_path
+) -> None:
+    notebook = {"resource_type": "notebook", "id": "notebook", "name": "Notebook"}
+    section = {
+        "resource_type": "section",
+        "id": "duplicate-section",
+        "name": "Duplicate-Title-Target",
+        "parent_id": "notebook",
+    }
+    pages = [
+        {
+            "resource_type": "page",
+            "id": f"page-{ordinal}",
+            "title": "Duplicate-Title-Regression",
+            "section_id": section["id"],
+            "parent_id": section["id"],
+            "page_level": 1,
+            "order": ordinal - 1,
+            "modified": f"m-{ordinal}",
+        }
+        for ordinal in (1, 2)
+    ]
+    before = {
+        "items": [notebook, section],
+        "page_hashes": {},
+        "page_objects": {},
+    }
+    after = {
+        "items": [notebook, section, *pages],
+        "page_hashes": {"page-1": "hash-1", "page-2": "hash-2"},
+        "page_objects": {"page-1": [], "page-2": []},
+    }
+    snapshots = iter([before, after, before])
+
+    async def fake_snapshot(_client, _notebook_id):
+        return next(snapshots)
+
+    class CreateClient:
+        def __init__(self) -> None:
+            self.create_count = 0
+            self.calls: list[tuple[str, dict]] = []
+
+        async def call_tool(self, name: str, arguments: dict) -> dict:
+            self.calls.append((name, arguments))
+            if name == "create_page":
+                self.create_count += 1
+                page_id = f"page-{self.create_count}"
+                return {
+                    "page_id": page_id,
+                    "allocated_id": page_id,
+                    "identity_remapped": False,
+                    "page": pages[self.create_count - 1],
+                }
+            assert name == "delete_page"
+            return {"deleted": True, "object_id": arguments["page_id"]}
+
+    monkeypatch.setattr(create_scenario, "capture_snapshot", fake_snapshot)
+    client = CreateClient()
+    result = asyncio.run(
+        CreateScenario().execute(
+            SimpleNamespace(notebook_name=None, keep_worksite=False),
+            RuntimeOptions(tmp_path, 1_800, False, False),
+            {
+                "schema_version": 1,
+                "notebook": notebook,
+                "structure": {"duplicate_title_section": section},
+            },
+            client=client,
+            fixture_result={},
+        )
+    )
+
+    assert result["duplicate_title_regression"]["fresh_and_distinct"] is True
+    assert result["restored"] is True
+    delete_calls = [arguments for name, arguments in client.calls if name == "delete_page"]
+    assert [call["page_id"] for call in delete_calls] == ["page-2", "page-1"]
+    assert all(call["permanently"] is False for call in delete_calls)
 
 
 def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
@@ -403,8 +485,23 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         "parent_id": "destination-section",
         "parent_page_id": "target-page",
     }
-    before = {"items": [notebook, source_section, source, source_child, destination]}
-    after = {"items": [notebook, source_section, destination, target, target_child]}
+    anchor = {
+        **source_child,
+        "id": "collision-anchor",
+        "section_id": "destination-section",
+        "parent_id": "destination-section",
+        "parent_page_id": None,
+        "page_level": 1,
+        "order": 0,
+    }
+    before = {
+        "items": [notebook, source_section, source, source_child, destination, anchor],
+        "page_hashes": {"collision-anchor": "anchor-hash"},
+    }
+    after = {
+        "items": [notebook, source_section, destination, anchor, target, target_child],
+        "page_hashes": {"collision-anchor": "anchor-hash"},
+    }
     snapshots = iter([before, after])
 
     async def fake_snapshot(_client, _notebook_id):
@@ -450,6 +547,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                 "recycle_bin_verification": "not_required_com_unavailable",
                 "recycled_source_ids": [],
                 "recycle_unverified_source_ids": ["source-child", "source-page"],
+                "attempted_source_ids": ["source-child", "source-page"],
             }
 
     manifest = {
@@ -458,11 +556,12 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         "structure": {
             "disposable_page": source,
             "destination_section": destination,
+            "collision_anchor": anchor,
         },
     }
     client = FakeMovePageClient()
     monkeypatch.setattr(move_page_scenario, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(move_page_scenario, "timestamp", lambda: "stamp")
+    monkeypatch.setattr(move_page_scenario, "run_safe_timestamp", lambda _args: "stamp")
     monkeypatch.setattr(move_page_scenario, "render_report", lambda _run_dir: None)
 
     result = asyncio.run(

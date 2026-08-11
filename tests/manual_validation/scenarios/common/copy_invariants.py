@@ -8,6 +8,92 @@ from ...runtime import InvariantFailure
 from ...test_utils import display_name
 from .config import AUTOMATED_COPY_CAPABILITIES
 
+
+PROTECTED_PAGE_FIELDS = (
+    "resource_type",
+    "name",
+    "title",
+    "parent_id",
+    "section_id",
+    "parent_page_id",
+    "page_level",
+    "order",
+)
+
+
+def assert_pages_unchanged(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    page_ids: list[str] | tuple[str, ...] | set[str],
+) -> None:
+    """Require exact topology, stable content, and object identity for named Pages."""
+
+    before_by_id = {str(item.get("id")): item for item in before.get("items", [])}
+    after_by_id = {str(item.get("id")): item for item in after.get("items", [])}
+    before_hashes = before.get("page_hashes")
+    after_hashes = after.get("page_hashes")
+    before_objects = before.get("page_objects")
+    after_objects = after.get("page_objects")
+    if not all(
+        isinstance(value, dict)
+        for value in (before_hashes, after_hashes, before_objects, after_objects)
+    ):
+        raise InvariantFailure("Protected Page evidence is incomplete.")
+    for page_id in sorted({str(value) for value in page_ids}):
+        original = before_by_id.get(page_id)
+        current = after_by_id.get(page_id)
+        if original is None or current is None:
+            raise InvariantFailure(f"Protected Page '{page_id}' is missing.")
+        if original.get("resource_type") != "page" or current.get("resource_type") != "page":
+            raise InvariantFailure(f"Protected object '{page_id}' is not a Page.")
+        if any(
+            original.get(field) != current.get(field)
+            for field in PROTECTED_PAGE_FIELDS
+        ):
+            raise InvariantFailure(f"Protected Page '{page_id}' changed topology.")
+        if page_id not in before_hashes or page_id not in after_hashes:
+            raise InvariantFailure(f"Protected Page '{page_id}' is missing content hash evidence.")
+        if before_hashes[page_id] != after_hashes[page_id]:
+            raise InvariantFailure(f"Protected Page '{page_id}' changed stable content.")
+        if page_id not in before_objects or page_id not in after_objects:
+            raise InvariantFailure(f"Protected Page '{page_id}' is missing object evidence.")
+        if before_objects[page_id] != after_objects[page_id]:
+            raise InvariantFailure(f"Protected Page '{page_id}' changed content-object identity.")
+
+
+def assert_copy_page_restored(
+    before: dict[str, Any],
+    restored: dict[str, Any],
+    protected_page_ids: list[str] | tuple[str, ...] | set[str],
+) -> None:
+    """Require exact bundle restoration without trusting unrelated Page text hashes."""
+
+    def stable_items(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        return sorted(
+            (
+                {key: value for key, value in item.items() if key != "modified"}
+                for item in snapshot.get("items", [])
+            ),
+            key=lambda item: str(item.get("id")),
+        )
+
+    if before.get("notebook_ids") != restored.get("notebook_ids"):
+        raise InvariantFailure("Restored Copy bundle changed a Notebook identity.")
+    if stable_items(before) != stable_items(restored):
+        raise InvariantFailure("Restored Copy bundle changed object identity or topology.")
+    for evidence_key in ("page_objects", "page_capability_projections"):
+        original = before.get(evidence_key)
+        current = restored.get(evidence_key)
+        if not isinstance(original, dict) or not isinstance(current, dict):
+            raise InvariantFailure(
+                f"Restored Copy bundle is missing {evidence_key} evidence."
+            )
+        if original != current:
+            raise InvariantFailure(
+                f"Restored Copy bundle changed {evidence_key} evidence."
+            )
+    assert_pages_unchanged(before, restored, protected_page_ids)
+
 def expected_copy_source_items(
     snapshot: dict[str, Any],
     source_id: str,

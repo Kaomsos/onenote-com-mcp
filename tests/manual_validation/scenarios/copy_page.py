@@ -13,8 +13,9 @@ class CopyPageScenario(CopyScenario):
     name = "copy-page"
     fixture_recipe = RECIPE
     help_text = (
-        "GATED: verify both default root-only Page Copy and explicit full-subtree Copy; "
-        "clean up both targets by default or preserve them together for UI inspection."
+        "GATED: copy one source Page across same-Section, cross-Section, and "
+        "cross-Notebook destinations with and without descendants; clean up all six "
+        "targets by default or preserve the two-Notebook worksite for UI inspection."
     )
 
     execute_copy = staticmethod(execute_copy_page)

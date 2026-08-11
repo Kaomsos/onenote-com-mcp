@@ -18,10 +18,10 @@ from ..test_utils import (
     resolve_manifest_item,
     scenario_dir,
     snapshot_ids,
-    timestamp,
     validate_manifest_notebook,
     write_json,
 )
+from ..run_identity import run_safe_timestamp
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
 from .fixture_recipes.move_page import RECIPE
@@ -45,7 +45,8 @@ async def _execute_move_page(
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     source = resolve_manifest_item(manifest, "disposable_page")
     destination = resolve_manifest_item(manifest, "destination_section")
-    destination_title = f"Moved-Disposable-{timestamp()}"
+    collision_anchor = resolve_manifest_item(manifest, "collision_anchor")
+    destination_title = f"Moved-Disposable-{run_safe_timestamp(args)}"
     out = scenario_dir(options.run_dir, "move-page")
     async with scenario_client(
         client,
@@ -60,6 +61,9 @@ async def _execute_move_page(
         current = find_snapshot_item(before, source["id"])
         if current is None:
             raise RunnerFailure("Disposable Page is not active; run create to replenish the fixture.")
+        anchor_before = find_snapshot_item(before, collision_anchor["id"])
+        if anchor_before is None:
+            raise RunnerFailure("Move collision anchor is missing from the destination Section.")
         planned = await client.call_tool(
             "plan_move_page",
             {
@@ -105,12 +109,50 @@ async def _execute_move_page(
             destination_title,
             move_result,
         )
+        anchor_after = find_snapshot_item(after, collision_anchor["id"])
+        stable_anchor_fields = (
+            "resource_type",
+            "title",
+            "section_id",
+            "parent_page_id",
+            "page_level",
+            "order",
+        )
+        if anchor_after is None or any(
+            anchor_after.get(field) != anchor_before.get(field)
+            for field in stable_anchor_fields
+        ):
+            raise InvariantFailure("Move changed or reordered the duplicate-title anchor.")
+        if after.get("page_hashes", {}).get(collision_anchor["id"]) != before.get(
+            "page_hashes", {}
+        ).get(collision_anchor["id"]):
+            raise InvariantFailure("Move changed the duplicate-title anchor body.")
+        id_map = move_result.get("copy_report", {}).get("id_map", {})
+        target_ids = list(id_map.values()) if isinstance(id_map, dict) else []
+        if (
+            set(target_ids) & (source_subtree_ids | {collision_anchor["id"]})
+            or len(target_ids) != len(set(target_ids))
+        ):
+            raise InvariantFailure(
+                "Move target IDs are not fresh, unique, and disjoint from source/anchor IDs."
+            )
+        attempted_source_ids = move_result.get("attempted_source_ids", [])
+        expected_attempts = [
+            item["id"]
+            for item in reversed(expected_copy_source_items(before, current["id"]))
+        ]
+        if attempted_source_ids != expected_attempts:
+            raise InvariantFailure(
+                "Move source deletion evidence does not match leaf-to-root source IDs."
+            )
         remaining = {
             "status": "source_subtree_removed_nonpermanently",
             "source_id": current["id"],
             "source_ids": sorted(source_subtree_ids),
             "target_id": target_id,
-            "target_ids": [target_id, *sorted(source_subtree_ids)],
+            "target_ids": target_ids,
+            "collision_anchor_id": collision_anchor["id"],
+            "collision_anchor_unchanged": True,
             "recycle_bin_verification": move_result.get(
                 "recycle_bin_verification", "not_reported"
             ),
