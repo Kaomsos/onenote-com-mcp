@@ -21,6 +21,7 @@
 | 013 | [Reparent 默认落点与 Agent 可见顺序合同](013_reparent_default_placement_contract.md) | 待办 | P2 | 先验证并固化 Page/Section 的默认末位合同，通过 tool 描述和结构化响应告知 Agent；自定义位置继续显式调用独立 Reorder。 |
 | 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 进行中 | P2 | A 单 role矩阵与 B 双 Notebook 六 case、精确失效及 InsertedFile bootstrap/consumer 已有真实证据；连续冲突恢复、三类目标 Copy 和 C–F 其余验收仍待完成。 |
 | 015 | [Mutation 目标精确定位收尾与重名 Page 回归](015_mutation_target_identity_hardening_and_duplicate_page_regression.md) | 已完成 | P1 | allocated-ID-first、四类 Copy/Move/Advanced 精确身份合同已交付；Create、v4 六 case Copy 和 Move 均有用户真实成功证据，最终 Copy 完成 9 targets cleanup/restore、双 Notebook close 与 cache template unchanged。 |
+| 016 | [Page Copy 人工验证只读取证降本](016_copy_page_manual_validation_read_evidence_efficiency.md) | 待办 | P3 | 复用单次 Page XML 生成 hash、能力与对象证据，优先消除 75 次重复 `get_page_objects`/COM 读取；不得削弱六 case、plan/tree 稳定、保护对象或 cleanup/restore 门。 |
 
 ## 文件命名
 
