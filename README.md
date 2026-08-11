@@ -188,7 +188,7 @@ The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental 
 
 ### 2. Creation & Structural Edits
 * `create_notebook` / `create_section` / `create_section_group`
-* `create_page`: Create formatted pages via `plain`, `html`, or `markdown`.
+* `create_page`: Create formatted pages via `plain`, `html`, or `markdown`. Create read-back is bound to the COM-allocated ID, expected type, parent, and active state; a friendly-path remap is accepted only when it is unique and newly observed. Duplicate Page titles never select an earlier Page occurrence.
 * `update_page_title` / `append_to_page` / `replace_page_body`
 * `add_image_to_page`: Add local images. Automatically infers native dimensions if only width or height is provided.
 * `rename_section_group` / `rename_section` / `reorder_page`: Typed P1 structural edits with confirmation and read-back.
@@ -206,17 +206,21 @@ The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental 
 
 * `delete_section_group` / `delete_section` / `delete_page`: Confirmed typed deletes; default destination is the OneNote recycle bin.
 * Notebook deletion is not supported.
-* Raw hierarchy/page XML mutations and legacy generic destructive tools are not registered by default. They require an explicit local development profile and still cannot bypass write/delete policy.
+* Raw Page XML mutations are not registered by default. The legacy generic `delete_hierarchy` tool has been removed from every production profile; use typed delete tools with exact IDs and confirmation fields. Remaining advanced operations require an explicit local development profile and still cannot bypass policy.
 
 ### 5. Experimental Copy & Page Move
 
 * `plan_copy` plus typed `copy_page` / `copy_section` / `copy_section_group` / `copy_notebook` use a content-aware, stale-plan digest before any mutation.
-* Page Copy defaults to the single selected Page. Pass `include_descendants=true` to both `plan_copy` and `copy_page` only when the complete indentation subtree is intended; the option is bound into `plan_digest`. Section, SectionGroup, and Notebook Copy remain fully recursive, while Page Move always moves the complete subtree. Copy never overwrites, merges, or auto-renames a conflicting target.
+* Every copied source maps to one fresh, distinct typed target ID before copied Page content or ordering is written. Success reports allocated and resolved targets; partial failures distinguish unresolved allocations, source/topology touch state, and manual recovery requirements.
+* Page Copy defaults to the single selected Page. Pass `include_descendants=true` to both `plan_copy` and `copy_page` only when the complete indentation subtree is intended; the option is bound into `plan_digest`. `destination_section_id` always names a Section rather than a parent Page: Copy preserves existing Page order, appends the newly allocated target block, normalizes its root to level 1, and restores descendant levels relative to that root. Section, SectionGroup, and Notebook Copy remain fully recursive, while Page Move always moves the complete subtree. Copy never overwrites, merges, or auto-renames a conflicting target.
+* The isolated `copy-page` regression suite exercises duplicate child titles in same-Section, cross-Section, and cross-Notebook destinations. Each target must be fresh and disjoint from both sources and pre-existing same-title anchors; anchor content and topology must remain unchanged.
 * Unknown Page XML roots are omitted; an unknown descendant causes its containing top-level content block to be omitted. Both cases are returned as structured Copy issues rather than silently passed through.
 * Validated Page content types are `Outline`, `Image`, `RichText`, `Table`, `List`, and `Tag`. Stable rich content uses strict canonical read-back; List/Tag-only pages use a semantic tier that tolerates COM reserialization while still checking visible text, list kind, tag meaning/completion, and binary content.
 * `plan_move_page` / `move_page` implement Move by reconstruction: they create new Page IDs and issue a non-permanent source delete only after the defined content and topology checks pass. Success requires every source Page to disappear from the active hierarchy; COM recycle-bin metadata is reported when available but is not an acceptance gate.
 * These tools remain disabled unless `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true`; Move additionally requires Deletes and `LOCAL_ONENOTE_ENABLE_MOVE_PAGE=true`.
 * Other content types remain unverified and prevent source deletion; use the human-gated named scenarios in [`tests/manual_validation/README.md`](tests/manual_validation/README.md).
+
+For repeated local development of complex manual-validation fixtures, the runner supports an explicit, default-off `--use-cache` mode. It stores only closed disposable Notebook bytes under the ignored `.local-validation/fixture-cache/`, materializes a new working copy for every run, proves OneNote opened that working path rather than the immutable template, and performs fresh live validation before mutation. This validation cache is not part of the MCP server surface and never accepts user/business Notebooks.
 
 Migration note (2026-08-10): callers that previously omitted a Page Copy scope received the full indentation subtree. Omission now means root Page only. To preserve the old behavior, create the plan with `include_descendants=true` and submit the same value to `copy_page`; reusing a digest with a different value is rejected before mutation.
 
@@ -250,7 +254,8 @@ uv run python scripts\smoke_mcp.py
 # Only the user may explicitly start the corresponding real scenario suite:
 .venv\Scripts\python.exe tests\manual_validation\run.py rename
 
-# The fixture-only create scenario builds the complete preset isolated tree:
+# The create scenario also verifies two same-title Pages receive distinct IDs;
+# default cleanup is exact and non-permanent:
 .venv\Scripts\python.exe tests\manual_validation\run.py create --keep-notebook
 
 # Every named action accepts --keep-worksite. It keeps the source Notebook open,

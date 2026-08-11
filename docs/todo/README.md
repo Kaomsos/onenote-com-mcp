@@ -9,7 +9,7 @@
 | 001 | [本地程序化 OneNote 隔离验证 Runner](001_programmatic_isolated_mutation_runner.md) | 已完成 | P1 | 扁平 scenario 唯一入口、单命令隔离闭环、最小权限、证据和保留式生命周期已交付；用户确认真实验收矩阵完成。 |
 | 002 | [P2 四层 Copy 与 Page Move](002_p2_copy_and_reconstructive_page_move.md) | 已完成 | P2 | 四层 Copy 与严格 Page Move 已交付；用户确认五个统一 fixture 场景全部完成真实成功闭环。 |
 | 003 | [Scenario 独立 Fixture 与单 MCP 进程闭环](003_scenario_scoped_mcp_and_fixtures.md) | 已完成 | P2 | 单 MCP/最小 fixture 架构、性能实测和修复后的严格 `copy_only` 安全门均已验证。 |
-| 004 | [交互式 Copy/Move 未验证内容保真验收](004_interactive_copy_move_content_fidelity_validation.md) | 待办 | P2 | 由用户在隔离 fixture Page 中加入附件、墨迹、媒体和会议详情，分离完成 Copy 取证与严格 Move 发布门。 |
+| 004 | [交互式 Copy/Move 未验证内容保真验收](004_interactive_copy_move_content_fidelity_validation.md) | 进行中 | P2 | 当前 Copy 取证聚焦 InkDrawing、UI Shape、MediaFile；FileAttachment 与 MeetingInfo 已明确排除，三类 consumer/comparator 和真实证据仍待完成。 |
 | 005 | [Page Copy 默认仅复制单页，可选包含缩进子树](005_page_copy_without_indentation_subtree.md) | 已完成 | P2 | 默认单页与显式完整子树均已交付；用户已确认双 case 真实 OneNote 人工验收通过。 |
 | 006 | [Typed Section 与 SectionGroup Reorder](006_typed_section_and_section_group_reorder.md) | 已完成 | P1 | Section typed 同父级排序已确认；SectionGroup 后端仅固定名称升序，最终契约明确不支持并拒绝。 |
 | 007 | [跨版本兼容性证据与环境元数据](007_cross_version_compatibility_evidence.md) | 待办 | P3 | 后续设计非阻塞、local-only 的环境识别与跨版本验证矩阵；当前场景不要求用户填写版本或 channel。 |
@@ -19,7 +19,8 @@
 | 011 | [Scenario 自管理 Fixture Recipe 与拆分集中式 Fixtures](011_scenario_owned_fixture_recipes.md) | 已完成 | P1 | 14 个 Scenario 已各自拥有唯一 recipe；中央 1439 行 fixture switch 已由增量 recorder、无分支 runtime、场景 validator 和共享 typed primitive 取代。 |
 | 012 | [跨 Notebook Section 与 SectionGroup 重建式 Move](012_reconstructive_section_and_section_group_move.md) | 待办 | P2 | 基于现有容器 Copy 与 typed Delete，设计只允许跨 Notebook、严格 Copy-Verify-Delete、独立门控的 `move_section` / `move_section_group`。 |
 | 013 | [Reparent 默认落点与 Agent 可见顺序合同](013_reparent_default_placement_contract.md) | 待办 | P2 | 先验证并固化 Page/Section 的默认末位合同，通过 tool 描述和结构化响应告知 Agent；自定义位置继续显式调用独立 Reorder。 |
-| 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 待办 | P2 | RecipeBase 统一接管一般夹具、多 Notebook bundle 与 cache；全局 `--use-cache` 积极命中或构建，交互与用户创作 Recipe 走具名 bootstrap。 |
+| 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 进行中 | P2 | A 单 role矩阵与 B 双 Notebook 六 case、精确失效及 InsertedFile bootstrap/consumer 已有真实证据；连续冲突恢复、三类目标 Copy 和 C–F 其余验收仍待完成。 |
+| 015 | [Mutation 目标精确定位收尾与重名 Page 回归](015_mutation_target_identity_hardening_and_duplicate_page_regression.md) | 已完成 | P1 | allocated-ID-first、四类 Copy/Move/Advanced 精确身份合同已交付；Create、v4 六 case Copy 和 Move 均有用户真实成功证据，最终 Copy 完成 9 targets cleanup/restore、双 Notebook close 与 cache template unchanged。 |
 
 ## 文件命名
 
