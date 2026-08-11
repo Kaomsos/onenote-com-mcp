@@ -53,7 +53,10 @@ class ScenarioRegistry:
             "-", ""
         ).isalnum():
             raise ValueError(f"Scenario {scenario.name} has an invalid worksite plan action.")
-        if not spec.fixture.creation_tools.issubset(spec.tool_allowlist):
+        if (
+            not getattr(recipe, "consumer_scenario", False)
+            and not spec.fixture.creation_tools.issubset(spec.tool_allowlist)
+        ):
             raise ValueError(
                 f"Scenario {scenario.name} fixture creation tools exceed its allowlist."
             )

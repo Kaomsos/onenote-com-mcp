@@ -64,6 +64,17 @@ def test_parser_has_no_permission_expansion_flags() -> None:
     assert "--yes" not in help_text
 
 
+def test_use_cache_is_the_single_default_off_cache_flag_for_named_and_all() -> None:
+    parser = build_parser()
+    for scenario in SCENARIO_REGISTRY.public_names:
+        assert parser.parse_args([scenario]).use_cache is False
+        assert parser.parse_args([scenario, "--use-cache"]).use_cache is True
+    assert parser.parse_args(["all"]).use_cache is False
+    assert parser.parse_args(["all", "--use-cache"]).use_cache is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["copy-page", "--reuse-fixture-cache"])
+
+
 def test_page_reorder_uses_explicit_reorder_page_entry_only() -> None:
     parser = build_parser()
 
@@ -164,7 +175,12 @@ def test_every_named_action_has_a_bounded_keep_worksite_dry_run(
         "preserved": True,
         "target_cleanup": SCENARIO_REGISTRY.get(scenario).worksite_dry_run_action,
     }
-    assert payload["ordered_steps"][-1]["step"] == "report"
+    expected_last_step = (
+        "preflight-cache-required"
+        if SCENARIO_REGISTRY.get(scenario).fixture_recipe.consumer_scenario
+        else "report"
+    )
+    assert payload["ordered_steps"][-1]["step"] == expected_last_step
     assert not run_dir.exists()
 
 
@@ -200,7 +216,7 @@ def test_keep_worksite_dry_run_preserves_targets_and_source_notebook(tmp_path, c
         "delete_section_group",
     } & set(payload["scenario_spec"]["tool_allowlist"])
     assert [step["step"] for step in payload["ordered_steps"]] == [
-        "create-source-notebook",
+        "create-notebook-bundle",
         "copy-page",
         "report",
     ]
@@ -239,8 +255,8 @@ def test_dry_run_does_not_start_mcp(tmp_path, capsys) -> None:
     exit_code = main(
         [
             "rename",
-            "--notebook-name",
-            "__DRY_RUN__",
+            "--notebook-label",
+            "dry-run",
             "--run-dir",
             str(tmp_path / "run"),
             "--dry-run",
@@ -319,7 +335,7 @@ def test_internal_report_renders_scenario_evidence_without_collecting_environmen
   "copy_fixture": {
     "page_id": "page-id",
     "automated_content": ["rich_text", "table", "image", "list", "tag"],
-    "manual_content": ["file_attachment", "ink", "media"],
+    "manual_content": ["ink", "shape", "media"],
     "observed_object_types": ["Image", "Outline"],
     "semantic_page": {
       "page_id": "semantic-page-id",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from collections import Counter
 from copy import deepcopy
 from hashlib import sha256
 import json
@@ -227,6 +228,38 @@ def _content_capabilities(
         ):
             capabilities.add("RichText")
     return sorted(capabilities)
+
+
+def page_content_capability_projection(source_xml: str) -> dict[str, Any]:
+    """Return a content-free, fail-closed capability summary for one Page.
+
+    The projection deliberately excludes text, attributes, IDs, paths, and
+    binary payloads. It shares the XML vocabulary used by experimental Copy so
+    manual-validation recipes cannot silently invent a second schema.
+    """
+
+    root = parse_xml(source_xml)
+    source_objects = collect_page_objects(source_xml)
+    object_kind_counts = Counter(
+        str(item.get("type") or "Unknown") for item in source_objects
+    )
+    unsupported_roots: set[str] = set()
+    unknown_nodes: set[str] = set()
+    for child in list(root):
+        kind = local_name(child.tag)
+        if kind not in SUPPORTING_ROOTS and kind not in COPYABLE_CONTENT_ROOTS:
+            unsupported_roots.add(kind)
+        unknown_nodes.update(_unknown_page_nodes(child))
+    return {
+        "schema_version": 1,
+        "capabilities": _content_capabilities(root, source_objects),
+        "object_kind_counts": {
+            kind: object_kind_counts[kind] for kind in sorted(object_kind_counts)
+        },
+        "unknown_nodes": sorted(unknown_nodes),
+        "unsupported_page_roots": sorted(unsupported_roots),
+        "complete": not unknown_nodes and not unsupported_roots,
+    }
 
 
 def transform_page_for_copy(

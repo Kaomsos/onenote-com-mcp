@@ -39,6 +39,13 @@ SCENARIO_MODULES = {
     "copy_section_group": "CopySectionGroupScenario",
     "copy_notebook": "CopyNotebookScenario",
     "move_page": "MovePageScenario",
+    "bootstrap_inserted_file_fixture": "BootstrapInsertedFileFixtureScenario",
+    "bootstrap_ink_drawing_fixture": "BootstrapInkDrawingFixtureScenario",
+    "bootstrap_media_file_fixture": "BootstrapMediaFileFixtureScenario",
+    "bootstrap_user_authored_fixture": "BootstrapUserAuthoredFixtureScenario",
+    "cache_invalidation": "CacheInvalidationScenario",
+    "user_authored_fixture_consumer": "UserAuthoredFixtureConsumerScenario",
+    "inserted_file_fixture_consumer": "InsertedFileFixtureConsumerScenario",
 }
 SCENARIO_INFRASTRUCTURE_MODULES = {
     "__init__",
@@ -238,6 +245,21 @@ def test_all_passes_dry_run_timeout_and_json_to_each_child(capsys) -> None:
     result_events = [event for event in events if event["event"] == "scenario-output"]
     assert [event["text"]["scenario"] for event in result_events] == ["create", "rename"]
     assert events[-1]["event"] == "all-completed"
+
+
+def test_all_passes_use_cache_to_each_independent_child() -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert run_all(
+        _args(dry_run=True, use_cache=True),
+        scenarios=("create", "copy-page"),
+        run_child=fake_run,
+    ) == 0
+    assert all(command[-2:] == ["--dry-run", "--use-cache"] for command in commands)
 
 
 def test_all_omits_timeout_to_preserve_per_scenario_defaults() -> None:

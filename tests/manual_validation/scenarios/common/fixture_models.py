@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import platform
 import sys
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping
 
 from ...mcp_stdio_client import MCPStdioClient
 from ...runtime import InvariantFailure, RuntimeOptions
@@ -32,34 +32,25 @@ class FixtureContext:
     spec: ScenarioSpec
     token: str
     recorder: "FixtureRecorder"
+    role: str = "source"
+    notebooks: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    notebook_paths: Mapping[str, str] = field(default_factory=dict)
 
     @property
     def notebook_id(self) -> str:
         return str(self.notebook["id"])
+
+    def notebook_for_role(self, role: str) -> Mapping[str, Any]:
+        try:
+            return self.notebooks[role]
+        except KeyError as exc:
+            raise InvariantFailure(f"Fixture context has no Notebook role: {role}") from exc
 
 
 @dataclass(frozen=True)
 class FixtureValidationContext:
     args: argparse.Namespace
     snapshot: Mapping[str, Any]
-
-
-class FixtureRecipe(Protocol):
-    scenario_name: str
-    profile: FixtureProfile
-    manifest_keys: frozenset[str]
-
-    def required_manifest_keys(self, args: argparse.Namespace) -> frozenset[str]: ...
-
-    def validate_registration(self, spec: ScenarioSpec) -> None: ...
-
-    async def build(self, context: FixtureContext) -> FixtureBuildResult: ...
-
-    def validate(
-        self,
-        context: FixtureValidationContext,
-        build: FixtureBuildResult,
-    ) -> tuple[str, ...]: ...
 
 
 class FixtureRecorder:
@@ -73,12 +64,14 @@ class FixtureRecorder:
         notebook_path: str,
         spec: ScenarioSpec,
         allowed_keys: frozenset[str],
+        role: str = "source",
     ) -> None:
         self.run_dir = run_dir
         self.notebook = dict(notebook)
         self.notebook_path = notebook_path
         self.spec = spec
         self.allowed_keys = allowed_keys
+        self.role = role
         self.structure: dict[str, dict[str, Any]] = {}
         self.evidence: dict[str, Any] = {}
 
@@ -119,7 +112,7 @@ class FixtureRecorder:
     def manifest(self, status: str, *, error: str | None = None) -> dict[str, Any]:
         disposable_targets = {
             "notebook_copy_root": str((self.run_dir / "notebook-copies").resolve()),
-            "source_notebook_path": str(Path(self.notebook_path).resolve()),
+            f"{self.role}_notebook_path": str(Path(self.notebook_path).resolve()),
         }
         manifest = {
             "schema_version": 1,
@@ -130,6 +123,7 @@ class FixtureRecorder:
             "python": sys.version,
             "platform": platform.platform(),
             "notebook": stable_item(self.notebook),
+            "notebook_role": self.role,
             "structure": {
                 key: stable_item(value) for key, value in self.structure.items()
             },
@@ -166,7 +160,12 @@ class FixtureRecorder:
 
     def persist(self, status: str, *, error: str | None = None) -> dict[str, Any]:
         manifest = self.manifest(status, error=error)
-        write_json(manifest_path(self.run_dir), manifest)
+        path = (
+            manifest_path(self.run_dir)
+            if self.role == "source"
+            else self.run_dir / f"fixture-role-{self.role}-manifest.json"
+        )
+        write_json(path, manifest)
         return manifest
 
 
@@ -201,7 +200,6 @@ def resolve_active_structure(
 __all__ = [
     "FixtureBuildResult",
     "FixtureContext",
-    "FixtureRecipe",
     "FixtureRecorder",
     "FixtureValidationContext",
     "ValidationCollector",

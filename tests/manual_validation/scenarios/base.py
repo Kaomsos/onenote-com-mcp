@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from ..mcp_stdio_client import MCPStdioClient
 from ..runtime import RuntimeOptions
-from .common.fixture_models import FixtureRecipe
+from .fixture_recipes.recipe_base import RecipeBase
 from .common.dry_run import DryRunCase, DryRunExpectations, DryRunVariant
 from .common.specs import ScenarioSpec, get_scenario_spec
 
@@ -23,9 +23,10 @@ class Scenario:
     timeout_default = 180
     included_in_all = False
     capability_assessment: dict[str, str] | None = None
-    fixture_recipe: FixtureRecipe
+    fixture_recipe: RecipeBase
     dry_run_variants: tuple[DryRunVariant, ...] = ()
     worksite_dry_run_action = "preserve-verified-worksite"
+    cache_invalidation_probe = False
 
     @property
     def spec(self) -> ScenarioSpec:
@@ -37,17 +38,31 @@ class Scenario:
 
     @property
     def dry_run_cases(self) -> tuple[DryRunCase, ...]:
+        no_cache_processes = (
+            0 if getattr(self.fixture_recipe, "consumer_scenario", False) else 1
+        )
         cases = [
             DryRunCase(
                 case_id=f"{self.name}.default",
                 scenario_name=self.name,
+                expected=DryRunExpectations(
+                    expected_mcp_process_starts=no_cache_processes
+                ),
                 documentation_key=f"{self.name}.default",
             ),
             DryRunCase(
                 case_id=f"{self.name}.keep-worksite",
                 scenario_name=self.name,
                 scenario_args=("--keep-worksite",),
-                expected=DryRunExpectations(lifecycle="keep"),
+                expected=DryRunExpectations(
+                    lifecycle="keep",
+                    expected_mcp_process_starts=no_cache_processes,
+                ),
+            ),
+            DryRunCase(
+                case_id=f"{self.name}.use-cache",
+                scenario_name=self.name,
+                scenario_args=("--use-cache",),
             ),
         ]
         cases.extend(
@@ -74,7 +89,20 @@ class Scenario:
     ) -> None:
         parser = subparsers.add_parser(self.name, help=self.help_text)
         self.add_arguments(parser)
-        parser.add_argument("--notebook-name")
+        parser.add_argument(
+            "--notebook-label",
+            help=(
+                "Optional lowercase kebab-case label inside the canonical validation "
+                "Notebook name; defaults to the scenario name."
+            ),
+        )
+        parser.add_argument(
+            "--notebook-name",
+            help=(
+                "Deprecated alias for --notebook-label; arbitrary complete Notebook "
+                "names are no longer accepted."
+            ),
+        )
         parser.add_argument(
             "--keep-notebook",
             action="store_true",

@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime import RunnerFailure, RuntimeOptions
-from ..test_utils import timestamp
-from .common.config import ISOLATED_SCENARIO_NOTEBOOK_PREFIX
+from ..run_identity import new_run_identity, validation_notebook_names
 
 # Importing each public scenario applies its ``@SCENARIO_REGISTRY.register``
 # wrapper.  This is the single, reviewable module list that controls discovery;
@@ -27,7 +26,15 @@ from .copy_section import CopySectionScenario
 from .copy_section_group import CopySectionGroupScenario
 from .copy_notebook import CopyNotebookScenario
 from .move_page import MovePageScenario
+from .bootstrap_inserted_file_fixture import BootstrapInsertedFileFixtureScenario
+from .bootstrap_ink_drawing_fixture import BootstrapInkDrawingFixtureScenario
+from .bootstrap_media_file_fixture import BootstrapMediaFileFixtureScenario
+from .bootstrap_user_authored_fixture import BootstrapUserAuthoredFixtureScenario
+from .cache_invalidation import CacheInvalidationScenario
+from .user_authored_fixture_consumer import UserAuthoredFixtureConsumerScenario
+from .inserted_file_fixture_consumer import InsertedFileFixtureConsumerScenario
 
+from .common.registry import SCENARIO_REGISTRY
 from .common.orchestrator import PUBLIC_SCENARIOS, run_validate
 
 
@@ -35,10 +42,37 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
     if args.command not in PUBLIC_SCENARIOS:
         raise RunnerFailure(f"Unknown isolated scenario: {args.command}")
     args.scenario = args.command
-    identity = timestamp()
-    if args.notebook_name is None:
-        args.notebook_name = f"{ISOLATED_SCENARIO_NOTEBOOK_PREFIX}{identity}"
-    run_dir = args.run_dir or Path(".local-validation") / f"run-{identity}"
+    scenario = SCENARIO_REGISTRY.get(args.scenario)
+    identity = new_run_identity()
+    notebook_label = getattr(args, "notebook_label", None)
+    legacy_label = getattr(args, "notebook_name", None)
+    if notebook_label is not None and legacy_label is not None:
+        raise RunnerFailure("Use only --notebook-label; --notebook-name is its deprecated alias.")
+    selected_label = notebook_label or legacy_label or args.scenario
+    roles = tuple(role.role for role in scenario.fixture_recipe.cache_identity.notebook_roles)
+    try:
+        fresh_names = validation_notebook_names(
+            args.scenario,
+            identity,
+            roles,
+            cached=False,
+            label=selected_label,
+        )
+        cached_names = validation_notebook_names(
+            args.scenario,
+            identity,
+            roles,
+            cached=True,
+            label=selected_label,
+        )
+    except ValueError as exc:
+        raise RunnerFailure(str(exc)) from exc
+    args.run_identity = identity
+    args.notebook_label = selected_label
+    args.fresh_notebook_names = fresh_names
+    args.cached_notebook_names = cached_names
+    args.notebook_name = fresh_names["source"]
+    run_dir = args.run_dir or Path(".local-validation") / f"run-{identity.safe_timestamp}"
     args.run_dir = run_dir
     if args.timeout < 1:
         raise RunnerFailure("--timeout must be at least 1 second.")
@@ -47,6 +81,8 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
         timeout=args.timeout,
         json_output=args.json_output,
         dry_run=args.dry_run,
+        use_cache=bool(args.use_cache),
+        cache_root=(Path(".local-validation") / "fixture-cache").resolve(),
     )
     return await run_validate(args, options)
 
@@ -66,5 +102,12 @@ __all__ = [
     "CopySectionGroupScenario",
     "CopyNotebookScenario",
     "MovePageScenario",
+    "BootstrapInsertedFileFixtureScenario",
+    "BootstrapInkDrawingFixtureScenario",
+    "BootstrapMediaFileFixtureScenario",
+    "BootstrapUserAuthoredFixtureScenario",
+    "CacheInvalidationScenario",
+    "UserAuthoredFixtureConsumerScenario",
+    "InsertedFileFixtureConsumerScenario",
     "dispatch_command",
 ]

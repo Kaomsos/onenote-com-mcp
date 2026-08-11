@@ -34,6 +34,8 @@ class RuntimeOptions:
     timeout: int
     json_output: bool
     dry_run: bool
+    use_cache: bool = False
+    cache_root: Path | None = None
 
 
 __all__ = [

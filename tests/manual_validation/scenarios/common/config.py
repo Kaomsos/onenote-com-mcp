@@ -1,6 +1,7 @@
 """Shared static command policies, fixture data, and tool allowlists."""
 
-ISOLATED_SCENARIO_NOTEBOOK_PREFIX = "__LOCAL_MCP_TEST_ISOLATED__"
+# Compatibility view for older imports; runtime names are built centrally.
+ISOLATED_SCENARIO_NOTEBOOK_PREFIX = "__"
 COPY_FIXTURE_MARKER = "LOCAL_ONENOTE_MCP_COPY_FIXTURE_V1"
 REPARENT_PAGE_FIXTURE_MARKER = "LOCAL_ONENOTE_MCP_REPARENT_PAGE_FIXTURE_V1"
 COPY_FIXTURE_PNG = (

@@ -1,13 +1,16 @@
-"""Narrow trusted wrapper for source Notebook create/get/close lifecycle only."""
+"""Narrow trusted wrapper for one exact Notebook role lifecycle only."""
 
 from __future__ import annotations
 
 from pathlib import Path
+import stat
 import time
 from typing import Any
+from urllib.parse import unquote, urlparse
+import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.bridge import OneNoteBridge
-from local_onenote_mcp.constants import CREATE_FILE_TYPES
+from local_onenote_mcp.constants import CREATE_FILE_TYPES, HIERARCHY_SCOPES, XML_SCHEMA_2013
 from local_onenote_mcp.hierarchy import display_name
 from local_onenote_mcp.services.hierarchy import HierarchyService
 
@@ -15,8 +18,21 @@ from .runtime import RestoreFailure, RunnerFailure
 from .test_utils import read_json, stable_item, utc_now, write_json
 
 
+MAX_MATERIALIZED_HIERARCHY_ENTRIES = 256
+MATERIALIZED_HIERARCHY_RETRIES = 8
+MATERIALIZED_HIERARCHY_DELAY_SECONDS = 0.75
+
+
+def _is_reparse_point(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & flag)
+
+
 class NotebookLifecycleWrapper:
-    """Expose no arbitrary COM operation beyond exact source Notebook lifecycle."""
+    """Expose no arbitrary COM operation beyond one frozen Notebook role lifecycle."""
 
     def __init__(
         self,
@@ -24,10 +40,16 @@ class NotebookLifecycleWrapper:
         *,
         timeout_seconds: int,
         bridge: OneNoteBridge | None = None,
+        role: str = "source",
     ) -> None:
         self.run_dir = run_dir.resolve()
         self.notebook_root = (self.run_dir / "notebooks").resolve()
-        self.lease_path = self.run_dir / "lifecycle-lease.json"
+        self.role = role
+        suffix = "" if role == "source" else f"-{role}"
+        self.lease_path = self.run_dir / f"lifecycle-lease{suffix}.json"
+        self.materialized_evidence_path = (
+            self.run_dir / f"materialized-hierarchy-open{suffix}.json"
+        )
         self._bridge = bridge or OneNoteBridge(
             timeout_seconds=timeout_seconds,
             audit_path=self.run_dir / "lifecycle-bridge-calls.jsonl",
@@ -72,6 +94,7 @@ class NotebookLifecycleWrapper:
         lease = {
             "schema_version": 1,
             "run_id": self.run_dir.name,
+            "role": self.role,
             "notebook_id": str(notebook["id"]),
             "expected_name": name,
             "expected_local_path": str(target_path),
@@ -87,20 +110,365 @@ class NotebookLifecycleWrapper:
         write_json(self.lease_path, lease)
         return notebook, lease
 
+    def _reported_notebook_directory(self, notebook_id: str) -> Path:
+        result = self._bridge.call(
+            "get_hierarchy",
+            start_id=notebook_id,
+            scope=HIERARCHY_SCOPES["self"],
+            schema=XML_SCHEMA_2013,
+        )
+        try:
+            root = ET.fromstring(str(result["xml"]))
+        except (KeyError, ET.ParseError) as exc:
+            raise RestoreFailure("Lifecycle could not read the opened Notebook's COM path.") from exc
+        node = next(
+            (
+                candidate
+                for candidate in root.iter()
+                if candidate.tag.rsplit("}", 1)[-1] == "Notebook"
+                and candidate.attrib.get("ID") == notebook_id
+            ),
+            None,
+        )
+        reported = "" if node is None else str(node.attrib.get("path", ""))
+        if not reported:
+            raise RestoreFailure("Opened Notebook hierarchy did not report a local path.")
+        if reported.casefold().startswith("file:"):
+            parsed = urlparse(reported)
+            reported = unquote(parsed.path).lstrip("/") if parsed.scheme else reported
+        path = Path(reported).resolve()
+        if path.suffix.casefold() == ".onetoc2":
+            path = path.parent
+        return path
+
+    def open_working_notebook(
+        self,
+        name: str,
+        working_path: Path,
+        *,
+        template_paths: tuple[Path, ...],
+        role: str = "source",
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Open one materialized working directory and prove no template was opened."""
+
+        if role != self.role:
+            raise RunnerFailure("Lifecycle role argument differs from its frozen wrapper role.")
+        working_path = working_path.resolve(strict=True)
+        if working_path.parent != self.notebook_root:
+            raise RunnerFailure("Working Notebook path escaped the run-scoped Notebook root.")
+        templates = tuple(path.resolve(strict=True) for path in template_paths)
+        if working_path in templates:
+            raise RunnerFailure("Lifecycle refuses to open a cache template path.")
+        if self.lease_path.exists():
+            previous = self._read_lease()
+            if previous.get("state") != "closed":
+                raise RunnerFailure("Lifecycle lease is active; refusing a second Notebook open.")
+            archived = self.run_dir / (
+                "lifecycle-cold-build-lease.json"
+                if self.role == "source"
+                else f"lifecycle-cold-build-lease-{self.role}.json"
+            )
+            if archived.exists():
+                raise RunnerFailure("Lifecycle cold-build lease archive already exists.")
+            self.lease_path.replace(archived)
+        opened = self._bridge.call(
+            "open_hierarchy",
+            path=str(working_path),
+            relative_to_id="",
+            create_file_type=CREATE_FILE_TYPES["none"],
+        )
+        notebook = self._hierarchy.wait_for_created(
+            name,
+            "notebook",
+            str(opened["object_id"]),
+        )
+        if notebook is None or str(notebook.get("id", "")) != str(opened["object_id"]):
+            raise RunnerFailure("Lifecycle could not bind the opened working Notebook by exact ID.")
+        actual_path = self._reported_notebook_directory(str(notebook["id"]))
+        if actual_path != working_path or actual_path in templates:
+            raise RunnerFailure("OneNote opened a path other than the exact working copy.")
+        lease = {
+            "schema_version": 2,
+            "run_id": self.run_dir.name,
+            "role": role,
+            "notebook_id": str(notebook["id"]),
+            "expected_name": display_name(notebook),
+            "expected_local_path": str(working_path),
+            "actual_local_path": str(actual_path),
+            "template_paths": [str(path) for path in templates],
+            "opened_template": False,
+            "opened_hierarchy": [],
+            "hierarchy_open_status": "running",
+            "opened_at": utc_now(),
+            "state": "active",
+            "filesystem_deleted": False,
+        }
+        write_json(self.lease_path, lease)
+        try:
+            opened_hierarchy = self._open_materialized_hierarchy(
+                working_path,
+                notebook,
+            )
+        except Exception as exc:
+            lease.update(
+                hierarchy_open_status="failed",
+                hierarchy_open_error=f"{type(exc).__name__}: {exc}",
+                hierarchy_open_failed_at=utc_now(),
+            )
+            write_json(self.lease_path, lease)
+            raise
+        lease.update(
+            opened_hierarchy=opened_hierarchy,
+            hierarchy_open_status="passed",
+            hierarchy_opened_at=utc_now(),
+        )
+        write_json(self.lease_path, lease)
+        return notebook, lease
+
+    def _open_materialized_hierarchy(
+        self,
+        working_path: Path,
+        notebook: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Open every bounded local Section/SectionGroup in its exact working parent."""
+
+        opened: list[dict[str, Any]] = []
+        attempts: list[dict[str, Any]] = []
+        evidence_path = self.materialized_evidence_path
+
+        def save_evidence(*, status: str, error: str | None = None) -> None:
+            evidence: dict[str, Any] = {
+                "schema_version": 1,
+                "status": status,
+                "working_path": str(working_path),
+                "notebook_id": str(notebook["id"]),
+                "attempts": attempts,
+                "opened": opened,
+                "content_saved": False,
+                "recorded_at": utc_now(),
+            }
+            if error is not None:
+                evidence["error"] = error
+            write_json(evidence_path, evidence)
+
+        def visit(directory: Path, parent: dict[str, Any]) -> None:
+            children = sorted(directory.iterdir(), key=lambda value: value.name.casefold())
+            hierarchy_children = [
+                child for child in children if child.is_dir() or child.suffix.casefold() == ".one"
+            ]
+            for child in hierarchy_children:
+                resolved = child.resolve(strict=True)
+                if working_path not in resolved.parents or _is_reparse_point(child):
+                    raise RunnerFailure(
+                        "Materialized Notebook hierarchy escaped its exact plain working tree."
+                    )
+                if len(opened) >= MAX_MATERIALIZED_HIERARCHY_ENTRIES:
+                    raise RunnerFailure("Materialized Notebook hierarchy exceeds its bounded budget.")
+                resource_type = "section_group" if child.is_dir() else "section"
+                parent_id = str(parent["id"])
+                expected_path = HierarchyService.friendly_child_path(
+                    str(parent["path"]),
+                    child.name,
+                )
+                item: dict[str, Any] | None = None
+                for path_mode, open_path, relative_to_id in (
+                    ("absolute", str(resolved), ""),
+                    ("parent_relative", child.name, parent_id),
+                ):
+                    attempt: dict[str, Any] = {
+                        "relative_path": child.relative_to(working_path).as_posix(),
+                        "absolute_working_path": str(resolved),
+                        "resource_type": resource_type,
+                        "path_mode": path_mode,
+                        "open_path": open_path,
+                        "requested_parent_id": parent_id,
+                        "relative_to_id": relative_to_id,
+                        "create_file_type": "none",
+                        "activated": False,
+                    }
+                    attempts.append(attempt)
+                    save_evidence(status="running")
+                    try:
+                        result = self._bridge.call(
+                            "open_hierarchy",
+                            path=open_path,
+                            relative_to_id=relative_to_id,
+                            create_file_type=CREATE_FILE_TYPES["none"],
+                        )
+                    except Exception as open_exc:
+                        attempt["bridge_error_type"] = type(open_exc).__name__
+                        attempt["bridge_error"] = str(open_exc)
+                        save_evidence(status="running")
+                        continue
+                    object_id = str(result["object_id"])
+                    attempt["returned_object_id"] = object_id
+                    item = self._hierarchy.wait_for_created(
+                        expected_path,
+                        resource_type,
+                        object_id,
+                        retries=1,
+                        delay_seconds=0,
+                    )
+                    attempt["global_snapshot_visible"] = item is not None
+                    observed_parent_id = (
+                        None if item is None else str(item.get("parent_id", ""))
+                    )
+                    if item is None or observed_parent_id != parent_id:
+                        try:
+                            observed_parent_id = str(
+                                self._bridge.call(
+                                    "get_hierarchy_parent",
+                                    object_id=object_id,
+                                ).get("parent_id", "")
+                            )
+                        except Exception as parent_exc:
+                            attempt["parent_probe_error"] = type(parent_exc).__name__
+                        attempt["observed_parent_id"] = observed_parent_id
+                        if observed_parent_id == parent_id:
+                            item, exact_probe = self._wait_for_exact_materialized_item(
+                                object_id=object_id,
+                                resource_type=resource_type,
+                                expected_name=expected_path.rsplit("/", 1)[-1],
+                                expected_path=expected_path,
+                                parent_id=parent_id,
+                            )
+                            attempt.update(exact_probe)
+                        else:
+                            item = None
+                        save_evidence(status="running")
+                        if item is None:
+                            continue
+                    attempt["activated"] = True
+                    attempt["observed_parent_id"] = observed_parent_id
+                    attempt["activation_proof"] = (
+                        "exact_object_and_parent"
+                        if attempt.get("exact_object_probe") == "passed"
+                        else "global_snapshot"
+                    )
+                    break
+                if item is None:
+                    message = (
+                        f"Materialized {resource_type} did not become active under its exact "
+                        f"working parent: {child.relative_to(working_path).as_posix()}"
+                    )
+                    save_evidence(status="failed", error=message)
+                    raise RunnerFailure(message)
+                opened.append(
+                    {
+                        "relative_path": child.relative_to(working_path).as_posix(),
+                        "resource_type": resource_type,
+                        "object_id": str(item["id"]),
+                    }
+                )
+                save_evidence(status="running")
+                if child.is_dir():
+                    visit(child, item)
+
+        try:
+            visit(working_path, notebook)
+        except Exception as exc:
+            save_evidence(
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            if isinstance(exc, RunnerFailure):
+                raise
+            raise RunnerFailure(f"Materialized hierarchy open failed: {exc}") from exc
+        save_evidence(status="passed")
+        return opened
+
+    def _wait_for_exact_materialized_item(
+        self,
+        *,
+        object_id: str,
+        resource_type: str,
+        expected_name: str,
+        expected_path: str,
+        parent_id: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        """Prove an opened child by exact COM object/type/name when global XML lags."""
+
+        expected_tag = {
+            "section": "Section",
+            "section_group": "SectionGroup",
+        }[resource_type]
+        probe: dict[str, Any] = {
+            "exact_object_probe": "failed",
+            "exact_object_probe_attempts": 0,
+            "expected_object_type": resource_type,
+        }
+        for attempt in range(MATERIALIZED_HIERARCHY_RETRIES):
+            probe["exact_object_probe_attempts"] = attempt + 1
+            try:
+                result = self._bridge.call(
+                    "get_hierarchy",
+                    start_id=object_id,
+                    scope=HIERARCHY_SCOPES["self"],
+                    schema=XML_SCHEMA_2013,
+                )
+                root = ET.fromstring(str(result["xml"]))
+            except Exception as exc:
+                probe["exact_object_probe_error"] = type(exc).__name__
+            else:
+                node = next(
+                    (
+                        candidate
+                        for candidate in root.iter()
+                        if candidate.tag.rsplit("}", 1)[-1] == expected_tag
+                        and candidate.attrib.get("ID") == object_id
+                    ),
+                    None,
+                )
+                observed_name = (
+                    ""
+                    if node is None
+                    else str(node.attrib.get("name") or node.attrib.get("nickname") or "")
+                )
+                probe["observed_object_name"] = observed_name
+                if (
+                    node is not None
+                    and observed_name.casefold() == expected_name.casefold()
+                    and str(node.attrib.get("isInRecycleBin", "false")).casefold()
+                    != "true"
+                    and str(node.attrib.get("isRecycleBin", "false")).casefold()
+                    != "true"
+                ):
+                    probe["exact_object_probe"] = "passed"
+                    probe.pop("exact_object_probe_error", None)
+                    return (
+                        {
+                            "id": object_id,
+                            "name": observed_name,
+                            "resource_type": resource_type,
+                            "path": expected_path,
+                            "parent_id": parent_id,
+                            "is_in_recycle_bin": False,
+                            "relationship_source": "exact_com_probe",
+                        },
+                        probe,
+                    )
+            if attempt + 1 < MATERIALIZED_HIERARCHY_RETRIES:
+                time.sleep(MATERIALIZED_HIERARCHY_DELAY_SECONDS)
+        return None, probe
+
     def _read_lease(self) -> dict[str, Any]:
         lease = read_json(self.lease_path)
-        if lease.get("schema_version") != 1:
+        if lease.get("schema_version") not in {1, 2}:
             raise RestoreFailure("Unsupported lifecycle lease schema.")
         return lease
 
     def get_exact_notebook(self, lease: dict[str, Any] | None = None) -> dict[str, Any]:
         lease = lease or self._read_lease()
+        if lease.get("role", self.role) != self.role:
+            raise RestoreFailure("Lifecycle lease role differs from its frozen wrapper role.")
         notebook_id = str(lease.get("notebook_id", ""))
         expected_name = str(lease.get("expected_name", ""))
         expected_path = Path(str(lease.get("expected_local_path", ""))).resolve()
         if not notebook_id or not expected_name:
             raise RestoreFailure("Lifecycle lease is missing exact Notebook identity fields.")
-        if expected_path.parent != self.notebook_root or expected_path.name != expected_name:
+        if expected_path.parent != self.notebook_root:
+            raise RestoreFailure("Lifecycle lease path/name is outside this run's exact binding.")
+        if lease.get("schema_version") == 1 and expected_path.name != expected_name:
             raise RestoreFailure("Lifecycle lease path/name is outside this run's exact binding.")
         if not expected_path.exists():
             raise RestoreFailure("Lifecycle lease local Notebook path no longer exists.")
@@ -110,7 +478,64 @@ class NotebookLifecycleWrapper:
             raise RestoreFailure("Lifecycle lease Notebook ID is no longer active.") from exc
         if str(current.get("id")) != notebook_id or display_name(current) != expected_name:
             raise RestoreFailure("Lifecycle lease ID/name binding no longer matches OneNote state.")
+        if self._reported_notebook_directory(notebook_id) != expected_path:
+            raise RestoreFailure("Lifecycle lease Notebook ID no longer reports its exact local path.")
         return current
+
+    def any_cache_source_open(self, entry: dict[str, Any]) -> bool:
+        """Read-only guard used before exact invalid-entry cleanup."""
+
+        open_ids = {
+            str(item.get("id", ""))
+            for item in self._hierarchy.list_notebooks(include_recycle_bin=True)["notebooks"]
+            if item.get("is_open") is not False
+        }
+        return any(
+            str(value.get("source_notebook", {}).get("id", "")) in open_ids
+            for value in entry.get("role_entries", {}).values()
+        )
+
+    def cache_working_lease_is_open(self, lease: dict[str, Any]) -> bool:
+        """Reconcile a cache lease against exact active Notebook IDs and local paths."""
+
+        claimed_ids = {str(value) for value in lease.get("notebook_ids", {}).values()}
+        observed_ids: set[str] = set()
+        run_id = str(lease.get("run_id", ""))
+        candidate_run = (self.run_dir.parent / run_id).resolve()
+        if run_id and candidate_run.parent == self.run_dir.parent and candidate_run.is_dir():
+            evidence_paths = tuple(candidate_run.glob("lifecycle-lease*.json")) + tuple(
+                candidate_run.glob("materialized-hierarchy-open*.json")
+            )
+            for evidence_path in evidence_paths:
+                if not evidence_path.exists():
+                    continue
+                try:
+                    evidence = read_json(evidence_path)
+                except Exception:
+                    continue
+                observed_id = str(evidence.get("notebook_id", ""))
+                if observed_id:
+                    observed_ids.add(observed_id)
+        claimed_ids.update(observed_ids)
+        working_paths = {
+            Path(str(value)).resolve() for value in lease.get("working_paths", {}).values()
+        }
+        if not claimed_ids or not working_paths:
+            return True
+        notebooks = self._hierarchy.list_notebooks(include_recycle_bin=True)["notebooks"]
+        for notebook in notebooks:
+            if notebook.get("is_open") is False:
+                continue
+            notebook_id = str(notebook.get("id", ""))
+            if notebook_id in claimed_ids:
+                return True
+            try:
+                if self._reported_notebook_directory(notebook_id) in working_paths:
+                    return True
+            except RestoreFailure:
+                if not observed_ids:
+                    return True
+        return False
 
     def close_exact_notebook(self) -> dict[str, Any]:
         lease = self._read_lease()
@@ -153,4 +578,9 @@ class NotebookLifecycleWrapper:
                 raise
             raise RestoreFailure(f"Exact source Notebook close failed: {exc}") from exc
 
-__all__ = ["NotebookLifecycleWrapper"]
+__all__ = [
+    "MATERIALIZED_HIERARCHY_DELAY_SECONDS",
+    "MATERIALIZED_HIERARCHY_RETRIES",
+    "MAX_MATERIALIZED_HIERARCHY_ENTRIES",
+    "NotebookLifecycleWrapper",
+]

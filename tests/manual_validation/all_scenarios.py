@@ -45,6 +45,11 @@ def register_all_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Pass --json to every scenario and emit machine-readable JSON Lines progress.",
     )
     parser.add_argument(
+        "--use-cache",
+        action="store_true",
+        help="Pass --use-cache to every independently launched included scenario.",
+    )
+    parser.add_argument(
         "--verbosity",
         choices=VERBOSITY_LEVELS,
         default="quiet",
@@ -63,6 +68,8 @@ def _child_command(args: argparse.Namespace, scenario: str) -> list[str]:
         command.append("--dry-run")
     if args.json_output:
         command.append("--json")
+    if bool(getattr(args, "use_cache", False)):
+        command.append("--use-cache")
     return command
 
 

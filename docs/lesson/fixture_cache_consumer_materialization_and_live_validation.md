@@ -1,0 +1,110 @@
+# Fixture cache consumer 必须重新建立 live identity 并执行实时验收
+
+> 状态：当前有效的工程经验<br>
+> 观察日期：2026-08-11<br>
+> 范围：Windows OneNote Desktop、本地 COM、隔离的 InsertedFile fixture cache consumer<br>
+> 当前架构：[`../design/architecture.md`](../design/architecture.md)<br>
+> 验证流程：[`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md)、[`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md)<br>
+> 相关对象表示经验：[`onenote_page_object_kind_and_file_attachment_representation.md`](onenote_page_object_kind_and_file_attachment_representation.md)
+
+## 结论
+
+关闭并验证过的 OneNote fixture cache 只能证明 template bytes 和发布时证据可信，不能证明新 materialized working copy 已经具备可直接使用的 Notebook hierarchy、对象 ID 或实时内容状态。可靠的 consumer 必须把每次 materialization 视为一次新的 live identity 建立过程：只打开 working copy，显式激活其中的 SectionGroup/Section，按稳定的类型化结构地址把 template identity 重绑定到 live ID，再以当前 COM snapshot 运行 Recipe validator。
+
+这次排障还证明，consumer 的失败必须按归因分层。working copy 的临时打开或激活失败不能反向证明 immutable template 损坏；结构重绑定缺失、歧义或实时 validator 失败才提供 template 不应继续命中的证据。working lease 同样必须尽早绑定实际 Notebook ID 和路径，否则失败发生在 hierarchy 激活中途时，后续运行无法可靠区分“Notebook 仍打开”和“遗留 lease 已过期”。同时，传给 COM 的物理 working 路径本身也是兼容性输入；完整显示 identity 应保留在 evidence，不应无界地堆入 Notebook 目录名。
+
+## 真实观察与证据边界
+
+本经验来自同一隔离 InsertedFile fixture 从 bootstrap 发布到 cache-only consumer 成功期间保存的多次真实运行证据。排障过程依次观察到：
+
+1. 人工 authored Canvas 已通过 detector 和人工 verdict，但首次 post-publish working copy 只出现已打开的 Notebook shell，没有活动 Section；template manifest 中的 Page ID 也不能直接解析到 working copy。
+2. 使用文件名和 parent ID 调用 `OpenHierarchy` 时，COM 可以返回 object ID，但目标 Section 仍未进入 exact working Notebook hierarchy。返回 ID 本身不能证明激活成功。
+3. 一次修复错误地把绝对 `.one` 路径和非空 parent ID 组合传入 `OpenHierarchy`，当前环境返回 `0x80042006/hrFileDoesNotExist`。这说明两个分别有意义的参数形式不能任意混用。
+4. working activation failure 曾被错误归因为 template invalid，导致下一次 consumer 表现为 cache miss；调整失败分类后，template 保持可重试，结构或内容验收失败仍保持 fail closed。
+5. hierarchy 激活失败发生在实际 working Notebook ID 写回 cache lease 之前，遗留 lease 只持有 template 内部 ID，后续运行因此被 active-lease 门限阻止。将实际 ID/path 在 Notebook folder 打开并完成 exact-path 证明后立即持久化，才使 stale reconciliation 可判定。
+6. 最终由用户执行的 cache-only consumer 命中既有 ready entry，只打开新 working copy，完成 live hierarchy 加载、ID 重绑定和实时 detector；机器投影精确观察到一个 `InsertedFile`，template 未打开，场景通过。用户显式选择保留现场，因此 working Notebook 和 active lease 按设计继续存在。
+7. 后续命名改动把固定长前缀、毫秒和 UTC offset 一并写入物理 Notebook 目录；两次新 working path 均在 Notebook folder 的首次 `OpenHierarchy` 返回 `0x80042006`，当时 working 目录路径长度为 184。将名称改为由双下划线包裹的 scenario、可选 `CACHED` 和本地秒级时间戳后，working 目录路径缩短为 143；用户连续执行的两次 consumer 均命中同一 ready entry、完成 hierarchy/live validation 并精确观察到 `InsertedFile=1`。第一次正常关闭 working Notebook，第二次由用户显式选择 `--keep-worksite` 并按契约保持打开。
+
+上述成功只证明当前 OneNote/Office/Windows 环境中的这一个 InsertedFile Recipe consumer 链路。连续的失败/成功对照支持“较短物理名称解决了当前环境的打开回归”，但同时改变了路径长度和时间戳字符集，因而不能推导出 OneNote 的通用长度上限，也不能把 184 解释为所有版本的固定阈值。环境版本和附件表示范围记录在相关 [`kind`/附件表示 Lesson](onenote_page_object_kind_and_file_attachment_representation.md#观察环境) 中。pytest 和 `--dry-run` 只证明编排与状态机合同，不被当作真实 OneNote 行为证据。本文不记录 Page 正文、附件名称、Notebook 名称、对象 ID、用户路径或二进制内容。
+
+## Materialization 复制的是 bytes，不是可复用的 live identity
+
+opaque byte copy 可以证明 working tree 在打开前与 template inventory 一致，但 OneNote 打开副本时可以重新生成 Notebook、Section 和 Page ID。template manifest 中的旧 ID 因而只能作为发布时证据，不能直接成为 consumer mutation 或 validation 的目标。
+
+可复用的是类型化结构地址，例如 Notebook 内的 SectionGroup/Section/Page 层级、对象类型和受约束的 Page order/level；consumer 必须在当前 working snapshot 中为每个声明对象找到唯一对应项，并记录 old-to-live remap。缺失或歧义都意味着 consumer 无法证明自己操作的是预期 fixture，应停止而不是按名称猜测。
+
+## Notebook shell、COM 返回 ID 与可用 hierarchy 是三种不同状态
+
+排障中出现了三个容易混淆的阶段：
+
+1. Notebook folder 已被 OneNote 打开，并报告 exact working path；
+2. `OpenHierarchy` 已返回 Section 或 SectionGroup object ID；
+3. 完整 hierarchy 回读中出现类型正确、parent 正确的活动对象及其 Page。
+
+只有第三阶段能够支持后续 ID remap 和 live validation。仅凭第一阶段会接受空 Notebook shell，仅凭第二阶段则可能接受位于其他父级、最近打开分区或尚未进入目标 hierarchy 的对象。consumer 的激活证明必须同时检查活动对象、resource type 和 actual parent relationship。
+
+当前环境的排障支持两种有序的打开形式：先尝试绝对 working path 与空 relative ID，必要时再尝试 child filename 与精确 parent ID。该经验解释为什么要保留兼容回退和 parent 回读；当前实现顺序与错误处理仍以 canonical 验证文档为准，而不是由本文定义。
+
+Notebook folder 的打开还表明，Windows 文件系统能看到 `.one`/`.onetoc2` 并不足以证明 OneNote COM 能打开该物理路径。当前决策是让 Notebook 名称只承载 scenario、role、可选 `CACHED` 和本地秒级时间戳，并把完整本地 ISO 时间、UTC offset、时区名称和其他运行 identity 留在 JSON evidence。这是当前环境已验证的工程取舍，不是对所有 OneNote 版本的路径上限声明。
+
+## 失败归因决定 cache 状态
+
+早期实现把所有 materialized-open、remap 和 validator 失败统一 quarantine。这会把 OneNote 当前进程状态、激活延迟或一次 working copy 故障错误升级为 template 内容损坏，使一次可重试失败永久表现为 cache miss。
+
+更可靠的归因边界是：
+
+- working Notebook 打开、Section 激活或本次 COM 环境失败，只能证明当前 working run 未通过；保留 run、Notebook、lease 和 content-free 诊断，但不能据此修改 immutable template 的可信结论；
+- template identity、byte inventory 或 Recipe compatibility 不成立，说明 cache entry 本身不兼容；
+- live typed-address remap 缺失/歧义，或 live Recipe validator 失败，说明 consumer 无法证明该 entry 能在当前实现下安全使用，应继续 fail closed；
+- consumer 自身后续业务动作失败，不自动证明输入 template 损坏，必须单独记录 mutation/restore 结果。
+
+这里的关键不是放宽失败条件，而是让失败影响正确的状态域：run-local failure 终止本次运行，template failure 才改变 cache matchability。
+
+## Lease 必须在最早可证明的时刻绑定实际身份
+
+consumer 在打开 Notebook folder 并证明 `actual_path == working_path` 后，就已经拥有可持久化的实际 Notebook ID/path。若等到全部 child hierarchy 激活成功才写 lease，中途失败会只留下 materialization 前的 template ID，后续进程无法精确判断哪个 Notebook 仍然打开。
+
+因此应尽早保存实际 identity，并让失败 evidence、lifecycle lease 和 cache working lease 能互相补足。下一次 claim 只能在 exact ID/path probe 证明旧 Notebook 已关闭后把遗留 lease 标记为 stale；不能通过删除 lease 文件、忽略冲突或复用同一 working directory 绕过安全门。
+
+`--keep-worksite` 是这一状态机的显式分支：成功后 Notebook 和 active lease 都应保留，便于 UI 检查；它们不是泄漏。下一次 consumer 必须等用户关闭该 exact working Notebook，并完成 stale reconciliation 后才能继续。
+
+## Consumer 应是独立的可执行回归边界
+
+交互式 bootstrap 负责创建和发布人工 authored fixture；consumer 不应在 miss 时隐式进入人工等待、创建替代 fixture 或自动放宽 policy。独立 cache-only consumer 的价值在于把下面这条链路变成可重复验证的功能边界：
+
+```text
+validated cache lookup
+→ new working materialization
+→ exact working-path proof
+→ bounded hierarchy activation
+→ live ID remap
+→ live Recipe validation
+→ consumer result
+```
+
+真正 miss、版本不兼容或已确认的 invalid entry 应在打开 Notebook 和启动业务 mutation 前停止，并指向具名 bootstrap。这样 bootstrap 证据与 consumer 回归证据不会混在同一个隐式流程中。
+
+## 对证据设计的启示
+
+- authored snapshot、hierarchy-open evidence、old-to-live remap 和 live detection 应分开保存；后一步失败不能覆盖前一步证据。
+- hierarchy-open evidence 只需要路径角色、请求形式、返回 ID、actual parent、对象计数和状态，不需要 Page 正文或二进制。
+- cache failure evidence 应明确记录失败属于 open、remap、validator 还是 consumer action，以及 template 是否仍可命中。
+- lease 冲突应报告精确旧 run 和 working role，使用户能关闭正确现场；模糊的“内部 ID 已占用”会迫使用户猜测。
+- 成功报告应同时证明 cache decision、live revalidation、template 未打开、working path 和 lifecycle 结果，不能只返回业务 detector 的最终布尔值。
+
+## 不可靠的实现捷径
+
+- 直接复用 template manifest 中的 Notebook、Section 或 Page ID；
+- 只比较 byte inventory，就跳过 materialized live validation；
+- 把 Notebook shell 已打开当成 Section/Page 已加载；
+- 把 `OpenHierarchy` 返回 object ID 当成 actual-parent 证明；
+- 将 absolute path 与非空 parent ID 任意组合；
+- 把完整时区、毫秒和长固定前缀全部编入物理 Notebook 目录，却不经真实 COM open 验证；
+- 任一 working activation failure 都把 ready template 标成 invalid；
+- hierarchy 全部成功后才记录实际 Notebook ID；
+- 删除 active lease 文件来解除冲突；
+- consumer miss 时自动调用 human bootstrap。
+
+## 适用边界
+
+本文解释的是 fixture cache consumer 在 OneNote COM 环境中建立 live identity、分类失败和管理 lease 的工程经验，不定义 cache schema、CLI 或当前状态机的完整契约。当前实现以 [`../design/architecture.md`](../design/architecture.md) 为准，人工验证授权、参数和操作流程以 [`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md) 与 [`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md) 为准，未完成的扩展仍以 [`../todo/014_recipe_fixture_validation_and_local_notebook_cache.md`](../todo/014_recipe_fixture_validation_and_local_notebook_cache.md) 为准。

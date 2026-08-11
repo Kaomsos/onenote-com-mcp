@@ -178,6 +178,14 @@ def test_capture_snapshot_refreshes_hierarchy_after_page_evidence() -> None:
     assert snapshot["page_canonical_hashes"]["page"]
     assert snapshot["page_reparent_hashes"]["page"]
     assert snapshot["page_xml_hashes"]["page"]
+    assert snapshot["page_capability_projections"]["page"] == {
+        "schema_version": 1,
+        "capabilities": ["Outline"],
+        "object_kind_counts": {"Outline": 1},
+        "unknown_nodes": [],
+        "unsupported_page_roots": [],
+        "complete": True,
+    }
     assert client.tree_calls == 2
 
 

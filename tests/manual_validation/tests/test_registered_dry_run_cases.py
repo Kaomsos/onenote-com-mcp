@@ -58,6 +58,13 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "reorder-section-group",
         "reparent-page",
         "reparent-section-group",
+        "bootstrap-inserted-file-fixture",
+        "bootstrap-ink-drawing-fixture",
+        "bootstrap-media-file-fixture",
+        "bootstrap-user-authored-fixture",
+        "cache-invalidation",
+        "user-authored-fixture-consumer",
+        "inserted-file-fixture-consumer",
     }
     assert excluded <= covered
 
@@ -89,24 +96,53 @@ def test_registered_named_case_round_trips_through_guarded_cli(
     assert payload["human_only"] is True
     assert payload["agent_execution_prohibited"] is True
     assert payload["copy_budget"]["max_pages"] == 200
-    assert payload["ordered_steps"][0]["step"] == "create-source-notebook"
-    assert payload["ordered_steps"][1]["tool_allowlist"] == sorted(spec.tool_allowlist)
+    if case.scenario_name.startswith("bootstrap-"):
+        checkpoint = payload["cache"]["interactive_checkpoint"]
+        assert checkpoint["stdin_read_performed"] is False
+        assert checkpoint["authoring_instruction"] == (
+            scenario.fixture_recipe.authoring_instruction
+        )
+    consumer_cache_required = (
+        scenario.fixture_recipe.consumer_scenario
+        and "--use-cache" not in case.scenario_args
+    )
+    if consumer_cache_required:
+        assert [step["step"] for step in payload["ordered_steps"]] == [
+            "preflight-cache-required"
+        ]
+        assert payload["cache"]["decision"] == "rejected_missing_use_cache"
+    else:
+        assert payload["ordered_steps"][0]["step"] == (
+            "resolve-fixture-bundle"
+            if "--use-cache" in case.scenario_args
+            and payload["cache"]["cache_mode"] != "interactive_bootstrap"
+            else (
+                "create-notebook-bundle"
+                if len(scenario.fixture_recipe.cache_identity.notebook_roles) > 1
+                else "create-source-notebook"
+            )
+        )
+        assert payload["ordered_steps"][1]["tool_allowlist"] == sorted(spec.tool_allowlist)
     assert payload["filesystem_cleanup"]["enabled"] is False
     if case.scenario_name == "copy-page":
-        assert payload["scenario_spec"]["execution_contract"] == {
-            "cases": [
-                {
-                    "name": "root-only-default",
-                    "include_descendants": "omitted",
-                    "expected_page_count": 1,
-                },
-                {
-                    "name": "full-subtree",
-                    "include_descendants": True,
-                    "expected_page_count": 2,
-                },
-            ]
-        }
+        cases = payload["scenario_spec"]["execution_contract"]["cases"]
+        assert len(cases) == 6
+        assert [item["destination_scope"] for item in cases] == [
+            "same-section",
+            "same-section",
+            "cross-section",
+            "cross-section",
+            "cross-notebook",
+            "cross-notebook",
+        ]
+        assert [item["include_descendants"] for item in cases] == [
+            "omitted",
+            True,
+            "omitted",
+            True,
+            "omitted",
+            True,
+        ]
     assert not run_dir.exists()
 
 
@@ -136,6 +172,7 @@ def test_case_schema_rejects_harness_owned_or_command_arguments() -> None:
         ("--dry-run",),
         ("--json",),
         ("--run-dir", "unsafe"),
+        ("--notebook-label", "unsafe"),
         ("--notebook-name", "unsafe"),
         ("rename",),
         ("all",),

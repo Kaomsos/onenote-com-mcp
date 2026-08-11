@@ -30,7 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument(
             "--run-dir",
             type=Path,
-            help="Fresh artifact directory; defaults to .local-validation/run-<UTC timestamp>.",
+            help=(
+                "Fresh artifact directory; defaults to .local-validation/run-"
+                "<local YYYY-MM-DD-HH-MM-SS timestamp>."
+            ),
         )
         command.add_argument(
             "--timeout",
@@ -48,6 +51,14 @@ def build_parser() -> argparse.ArgumentParser:
             action="store_true",
             dest="json_output",
             help="Print stable JSON only.",
+        )
+        command.add_argument(
+            "--use-cache",
+            action="store_true",
+            help=(
+                "Use or build the managed immutable fixture bundle cache, then open only "
+                "a new run-scoped working copy. Default is a fresh uncached fixture."
+            ),
         )
 
     from .all_scenarios import register_all_parser

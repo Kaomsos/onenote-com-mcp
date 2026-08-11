@@ -10,15 +10,21 @@ from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
 
-from local_onenote_mcp.page import canonical_page_digest
+from local_onenote_mcp.page import (
+    canonical_page_digest,
+    page_content_capability_projection,
+)
 from local_onenote_mcp.services.pages import stable_page_content_digest
 
 from .mcp_stdio_client import COPY_BUDGET_ENV, MCPStdioClient, ScenarioPolicy
+from .run_identity import new_run_identity
 from .runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
 
 
 def timestamp() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    """Return a Windows-safe local display timestamp for legacy callers."""
+
+    return new_run_identity().safe_timestamp
 
 
 def utc_now() -> str:
@@ -157,6 +163,7 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
     page_reparent_hashes: dict[str, str] = {}
     page_xml_hashes: dict[str, str] = {}
     page_objects: dict[str, list[dict[str, Any]]] = {}
+    page_capability_projections: dict[str, dict[str, Any]] = {}
     for page in pages:
         page_id = str(page["id"])
         xml_result = await client.call_tool("get_page_xml", {"page_id": page_id, "page_info": "all"})
@@ -165,6 +172,7 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
         page_canonical_hashes[page_id] = canonical_page_digest(xml)
         page_reparent_hashes[page_id] = page_reparent_content_hash(xml)
         page_xml_hashes[page_id] = hashlib.sha256(xml.encode("utf-8")).hexdigest()
+        page_capability_projections[page_id] = page_content_capability_projection(xml)
         objects_result = await client.call_tool("get_page_objects", {"page_id": page_id})
         page_objects[page_id] = [
             {field: obj.get(field) for field in OBJECT_FIELDS if field in obj}
@@ -190,6 +198,7 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
         "page_reparent_hashes": page_reparent_hashes,
         "page_xml_hashes": page_xml_hashes,
         "page_objects": page_objects,
+        "page_capability_projections": page_capability_projections,
     }
 
 

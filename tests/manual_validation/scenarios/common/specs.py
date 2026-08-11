@@ -25,6 +25,7 @@ from .config import (
     REPARENT_PAGE_TOOLS,
     REPARENT_SECTION_TOOLS,
     REPARENT_SECTION_GROUP_TOOLS,
+    READ_TOOLS,
     RENAME_TOOLS,
     REORDER_PAGE_TOOLS,
     REORDER_SECTION_GROUP_TOOLS,
@@ -513,6 +514,97 @@ SCENARIO_SPECS = {
         ),
     ),
 }
+
+_INTERACTIVE_TOOLS = READ_TOOLS | {"create_section", "create_page"}
+for _scenario_name, _capability in (
+    ("bootstrap-inserted-file-fixture", "InsertedFile"),
+    ("bootstrap-ink-drawing-fixture", "InkDrawing"),
+    ("bootstrap-media-file-fixture", "MediaFile"),
+):
+    SCENARIO_SPECS[_scenario_name] = ScenarioSpec(
+        _scenario_name,
+        _profile(
+            f"interactive-{_capability.casefold()}",
+            (f"00-{_capability}-Canvas/01-Interactive-Canvas",),
+            ("canvas_section", "canvas_page"),
+            {"create_section", "create_page"},
+            content=(_capability,),
+            checks=(
+                "exact Canvas IDs remain active",
+                "exactly one requested synthetic content object is present after checkpoint",
+                "unexpected or misplaced content fails closed",
+            ),
+        ),
+        WRITE_POLICY,
+        frozenset(_INTERACTIVE_TOOLS),
+        {"interactive_bootstrap": True, "included_in_all": False},
+    )
+
+SCENARIO_SPECS["bootstrap-user-authored-fixture"] = ScenarioSpec(
+    "bootstrap-user-authored-fixture",
+    _profile(
+        "user-authored-zone",
+        (
+            "00-System-Instructions/00-Reserved-Marker-Do-Not-Edit",
+            "01-Authoring-Zone/01-Author-Here",
+        ),
+        (
+            "instructions_section",
+            "instructions_page",
+            "authoring_zone_section",
+            "authoring_zone_page",
+        ),
+        {"create_section", "create_page"},
+        content=("bounded_user_authored_content",),
+        checks=(
+            "reserved marker remains unchanged",
+            "all edits remain inside the exact authoring zone",
+            "unknown capabilities publish evidence_only and are mutation-ineligible",
+        ),
+    ),
+    WRITE_POLICY,
+    frozenset(_INTERACTIVE_TOOLS),
+    {"interactive_bootstrap": True, "user_authored": True, "included_in_all": False},
+)
+
+SCENARIO_SPECS["user-authored-fixture-consumer"] = ScenarioSpec(
+    "user-authored-fixture-consumer",
+    SCENARIO_SPECS["bootstrap-user-authored-fixture"].fixture,
+    ScenarioPolicy(),
+    frozenset(READ_TOOLS),
+    {"interactive_consumer": True, "requires_explicit_instance": True, "included_in_all": False},
+)
+
+SCENARIO_SPECS["inserted-file-fixture-consumer"] = ScenarioSpec(
+    "inserted-file-fixture-consumer",
+    SCENARIO_SPECS["bootstrap-inserted-file-fixture"].fixture,
+    ScenarioPolicy(),
+    frozenset(READ_TOOLS),
+    {
+        "interactive_consumer": True,
+        "cache_only": True,
+        "bootstrap_on_miss": "bootstrap-inserted-file-fixture",
+        "included_in_all": False,
+    },
+)
+
+SCENARIO_SPECS["cache-invalidation"] = ScenarioSpec(
+    "cache-invalidation",
+    _profile(
+        "cache-invalidation-probe",
+        ("00-Cache-Invalidation/00-Owned-Probe",),
+        ("probe_section", "probe_page"),
+        {"create_section", "create_page"},
+        content=("plain_text",),
+        checks=(
+            "probe IDs remain active before publication",
+            "only this Recipe's exact fingerprint/instance may be invalidated",
+        ),
+    ),
+    WRITE_POLICY,
+    frozenset(_INTERACTIVE_TOOLS),
+    {"cache_invalidation_probe": True, "included_in_all": False},
+)
 
 def get_scenario_spec(name: str) -> ScenarioSpec:
     try:

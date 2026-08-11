@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import Any, Callable, Mapping
 
 from ...mcp_stdio_client import (
     COPY_BUDGET_ENV,
@@ -22,7 +22,13 @@ from ...test_utils import (
     utc_now,
     write_json,
 )
-from .fixture_runtime import prepare_fixture
+from .fixture_runtime import (
+    bundle_cache_artifacts,
+    prepare_fixture_bundle,
+    prepare_materialized_fixture_bundle,
+)
+from .fixture_cache import BundleCacheStore, CacheHit, MaterializedBundle
+from ..fixture_recipes.recipe_base import BuildMode
 from .dry_run import build_isolated_dry_run_plan
 from .report import render_report
 from .specs import SCENARIO_SPECS
@@ -55,6 +61,18 @@ def _validate_notebook_name(name: str) -> None:
         )
 
 
+def _cached_working_names(args: argparse.Namespace, scenario) -> dict[str, str] | None:
+    names = getattr(args, "cached_notebook_names", None)
+    if not isinstance(names, dict):
+        return None
+    roles = {
+        role.role for role in scenario.fixture_recipe.cache_identity.notebook_roles
+    }
+    if set(names) != roles:
+        raise RunnerFailure("Canonical cached Notebook names do not cover every Recipe role.")
+    return {role: str(name) for role, name in names.items()}
+
+
 def _assert_fresh_run_dir(run_dir: Path) -> None:
     if run_dir.exists() and not run_dir.is_dir():
         raise RunnerFailure("--run-dir must identify a directory, not a file.")
@@ -76,10 +94,13 @@ def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[
             field: value for field, (_env_name, value) in COPY_BUDGET_ENV.items()
         },
         worksite_action=scenario.worksite_dry_run_action,
+        recipe=scenario.fixture_recipe,
     )
 
 
 def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
+    scenario = SCENARIO_REGISTRY.get(args.scenario)
+    multi_role = len(scenario.fixture_recipe.cache_identity.notebook_roles) > 1
     state = {
         "schema_version": 1,
         "command": args.scenario,
@@ -93,10 +114,19 @@ def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[st
         "lifecycle": "keep" if _keep_source_notebook(args) else "close",
         "keep_worksite": bool(getattr(args, "keep_worksite", False)),
         "completed_steps": [],
-        "current_step": "create-source-notebook",
+        "current_step": "create-notebook-bundle" if multi_role else "create-source-notebook",
         "finalization_started": False,
     }
-    scenario = SCENARIO_REGISTRY.get(args.scenario)
+    run_identity = getattr(args, "run_identity", None)
+    if hasattr(run_identity, "as_dict"):
+        state["run_identity"] = run_identity.as_dict()
+    fresh_names = getattr(args, "fresh_notebook_names", None)
+    cached_names = getattr(args, "cached_notebook_names", None)
+    if isinstance(fresh_names, dict) and isinstance(cached_names, dict):
+        state["notebook_names"] = {
+            "fresh": dict(fresh_names),
+            "cached": dict(cached_names),
+        }
     if scenario.capability_assessment is not None:
         state["capability_assessment"] = dict(scenario.capability_assessment)
     return state
@@ -104,9 +134,13 @@ def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[st
 
 def _preserved_notebook_paths(run_dir: Path, manifest: dict[str, Any]) -> list[str]:
     paths: list[str] = []
-    source_path = manifest.get("disposable_targets", {}).get("source_notebook_path")
-    if source_path:
-        paths.append(str(source_path))
+    disposable = manifest.get("disposable_targets", {})
+    if isinstance(disposable, dict):
+        paths.extend(
+            str(value)
+            for key, value in sorted(disposable.items())
+            if key.endswith("_notebook_path") and value
+        )
     copy_dir = scenario_dir(run_dir, "copy-notebook")
     for evidence_name in ("worksite.json", "restored.json"):
         copy_path = copy_dir / evidence_name
@@ -139,32 +173,171 @@ def _refresh_call_metrics(metrics: dict[str, Any], run_dir: Path) -> None:
     )
 
 
+def _record_materialized_failure(
+    cache_store: BundleCacheStore,
+    scenario,
+    hit: CacheHit,
+    options: RuntimeOptions,
+    exc: Exception,
+    *,
+    phase: str,
+    quarantine: bool = True,
+) -> None:
+    reason = f"{phase} failed: {type(exc).__name__}: {exc}"
+    evidence: dict[str, Any] = {
+        "schema_version": 1,
+        "phase": phase,
+        "fingerprint": hit.fingerprint,
+        "template_instance_id": hit.template_instance_id,
+        "reason": reason,
+        "cache_entry_matchable": not quarantine,
+        "template_deleted": False,
+        "failed_at": utc_now(),
+    }
+    if quarantine:
+        try:
+            with cache_store.lock(hit.fingerprint, run_id=options.run_dir.name):
+                evidence["quarantine"] = cache_store.quarantine_exact(
+                    scenario.fixture_recipe,
+                    hit.template_instance_id,
+                    reason=reason,
+                    run_id=options.run_dir.name,
+                )
+        except Exception as quarantine_exc:
+            evidence["cache_entry_matchable"] = None
+            evidence["quarantine_error"] = (
+                f"{type(quarantine_exc).__name__}: {quarantine_exc}"
+            )
+    else:
+        evidence["quarantine"] = None
+        evidence["retryable_after_working_notebook_close"] = True
+    write_json(options.run_dir / "cache-live-validation-failure.json", evidence)
+
+
+def _resolve_exact_cache_entry(
+    cache_store: BundleCacheStore,
+    recipe,
+    instance_id: str,
+    *,
+    run_id: str,
+    open_state_probe: Callable[[Mapping[str, Any]], bool],
+    allow_open_failure_recovery: bool,
+) -> tuple[CacheHit | None, str | None, bool]:
+    """Resolve one exact entry without collapsing an invalid entry into a miss."""
+
+    state = cache_store.exact_entry_state(recipe, instance_id)
+    if state is None:
+        return None, None, False
+    if state == "cleanup_failed":
+        raise RunnerFailure(
+            "Exact fixture cache cleanup previously failed; rebuild remains blocked."
+        )
+    if state == "invalid":
+        if allow_open_failure_recovery:
+            recovered = cache_store.recover_retryable_open_failure(
+                recipe,
+                instance_id,
+                run_id=run_id,
+            )
+            if recovered is not None:
+                return recovered, "recovered_retryable_open_failure", False
+        cache_store.invalidate_exact(
+            recipe,
+            instance_id,
+            reason="selected exact cache entry is invalid and requires rebuild",
+            open_state_probe=open_state_probe,
+        )
+        return None, "invalidated_rebuild", True
+    try:
+        hit = cache_store.lookup(recipe, instance_id)
+    except Exception as exc:
+        cache_store.invalidate_exact(
+            recipe,
+            instance_id,
+            reason=f"lookup validation failed: {type(exc).__name__}",
+            open_state_probe=open_state_probe,
+        )
+        return None, "invalidated_rebuild", True
+    if hit is None:
+        raise RunnerFailure(
+            "Matchable exact fixture cache entry disappeared during locked lookup."
+        )
+    return hit, None, False
+
+
+def _bind_failed_materialized_open(
+    cache_store: BundleCacheStore,
+    cache_lease_path: Path,
+    wrapper: NotebookLifecycleWrapper,
+    materialized: MaterializedBundle,
+    options: RuntimeOptions,
+) -> None:
+    """Persist the exact live Notebook ID even when child hierarchy activation fails."""
+
+    if not wrapper.lease_path.exists():
+        return
+    lifecycle_lease = read_json(wrapper.lease_path)
+    notebook_id = str(lifecycle_lease.get("notebook_id", ""))
+    actual_path = Path(str(lifecycle_lease.get("actual_local_path", ""))).resolve()
+    if not notebook_id or actual_path != materialized.working_paths["source"]:
+        return
+    evidence: dict[str, Any] = {
+        "schema_version": 1,
+        "notebook_id": notebook_id,
+        "actual_local_path": str(actual_path),
+        "hierarchy_open_status": lifecycle_lease.get("hierarchy_open_status"),
+        "bound_at": utc_now(),
+    }
+    try:
+        cache_store.bind_working_bundle_notebook_ids(
+            cache_lease_path,
+            notebook_ids={"source": notebook_id},
+            open_state_probe=wrapper.cache_working_lease_is_open,
+        )
+        cache_store.record_opened_working_role(
+            materialized,
+            role="source",
+            notebook_id=notebook_id,
+            actual_path=actual_path,
+        )
+        evidence["bound"] = True
+    except Exception as bind_exc:
+        evidence["bound"] = False
+        evidence["binding_error"] = f"{type(bind_exc).__name__}: {bind_exc}"
+    write_json(options.run_dir / "cache-failed-open-live-id.json", evidence)
+
+
 async def finalize_notebook(
     args: argparse.Namespace,
     options: RuntimeOptions,
     manifest: dict[str, Any],
     *,
     wrapper: NotebookLifecycleWrapper | None = None,
+    role: str = "source",
 ) -> dict[str, Any]:
     wrapper = wrapper or NotebookLifecycleWrapper(
         options.run_dir,
         timeout_seconds=options.timeout,
+        **({} if role == "source" else {"role": role}),
     )
-    notebook = manifest["notebook"]
+    notebook = manifest.get("notebooks", {}).get(role, manifest["notebook"])
     notebook_id = str(notebook["id"])
     lease = read_json(wrapper.lease_path)
-    source_path = manifest.get("disposable_targets", {}).get("source_notebook_path")
+    source_path = manifest.get("disposable_targets", {}).get(f"{role}_notebook_path")
     if notebook_id != str(lease.get("notebook_id")):
         raise RestoreFailure("Manifest Notebook ID does not match the lifecycle lease.")
     if source_path and Path(str(source_path)).resolve() != Path(
         str(lease.get("expected_local_path", ""))
     ).resolve():
         raise RestoreFailure("Manifest Notebook path does not match the lifecycle lease.")
-    lifecycle_path = options.run_dir / "lifecycle.json"
+    lifecycle_path = options.run_dir / (
+        "lifecycle.json" if role == "source" else f"lifecycle-{role}.json"
+    )
     lifecycle: dict[str, Any] = {
         "started_at": utc_now(),
         "mode": "keep" if _keep_source_notebook(args) else "close",
         "source_notebook_id": notebook_id,
+        "role": role,
         "closed": False,
         "preserved_paths": _preserved_notebook_paths(options.run_dir, manifest),
         "filesystem_deleted": False,
@@ -200,6 +373,57 @@ async def finalize_notebook(
     return lifecycle
 
 
+async def finalize_bundle(
+    args: argparse.Namespace,
+    options: RuntimeOptions,
+    manifest: dict[str, Any],
+    *,
+    wrappers: Mapping[str, NotebookLifecycleWrapper],
+    roles: tuple[str, ...],
+) -> dict[str, Any]:
+    evidence_path = options.run_dir / "lifecycle-bundle.json"
+    role_results: dict[str, dict[str, Any]] = {}
+    result: dict[str, Any] = {
+        "status": "running",
+        "mode": "keep" if _keep_source_notebook(args) else "close",
+        "closed": False,
+        "roles": role_results,
+        "filesystem_deleted": False,
+        "started_at": utc_now(),
+    }
+    write_json(evidence_path, result)
+    try:
+        for role in roles:
+            role_results[role] = await finalize_notebook(
+                args,
+                options,
+                manifest,
+                wrapper=wrappers[role],
+                role=role,
+            )
+            write_json(evidence_path, result)
+    except Exception as exc:
+        result.update(
+            status="failed_preserved_bundle",
+            error=f"{type(exc).__name__}: {exc}",
+            failed_at=utc_now(),
+            completed_roles=list(role_results),
+        )
+        write_json(evidence_path, result)
+        raise
+    result.update(
+        status=(
+            "preserved_open"
+            if _keep_source_notebook(args)
+            else "closed_preserved"
+        ),
+        closed=all(value.get("closed") is True for value in role_results.values()),
+        completed_at=utc_now(),
+    )
+    write_json(evidence_path, result)
+    return result
+
+
 async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dict[str, Any]:
     _validate_notebook_name(args.notebook_name)
     if args.scenario == "reorder-page" and args.page_level < 1:
@@ -211,6 +435,10 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     state_path = options.run_dir / "run-state.json"
     write_json(state_path, state)
     scenario = SCENARIO_REGISTRY.get(args.scenario)
+    if scenario.fixture_recipe.consumer_scenario and not options.use_cache:
+        raise RunnerFailure(
+            "Interactive fixture consumers require --use-cache and never build a fresh authored fixture."
+        )
     spec = scenario.runtime_spec(args)
     metrics_path = options.run_dir / "run-metrics.json"
     metrics: dict[str, Any] = {
@@ -232,17 +460,134 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     total_started = time.perf_counter()
     write_json(metrics_path, metrics)
 
-    wrapper = NotebookLifecycleWrapper(options.run_dir, timeout_seconds=options.timeout)
+    roles = tuple(
+        role.role for role in scenario.fixture_recipe.cache_identity.notebook_roles
+    )
+    wrappers = _role_wrappers(options.run_dir, options.timeout, roles)
+    wrapper = wrappers["source"]
+    cache_store: BundleCacheStore | None = None
+    cache_hit: CacheHit | None = None
+    materialized: MaterializedBundle | None = None
+    cache_lease_path: Path | None = None
+    cache_decision = "fresh"
+    invalidation_performed = False
+    interactive_bootstrap = (
+        scenario.fixture_recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED
+        and getattr(scenario.fixture_recipe, "bootstrap_scenario_name", None) == scenario.name
+    )
+    selected_instance_id: str | None = None
+    if options.use_cache and not interactive_bootstrap:
+        selected_instance_id = scenario.fixture_recipe.select_template_instance_id(args)
     phase_started = time.perf_counter()
-    notebook, lease = wrapper.create_fresh_notebook(args.notebook_name)
+    if options.use_cache:
+        cache_store = BundleCacheStore(
+            options.cache_root or (options.run_dir.parent / "fixture-cache")
+        )
+        cache_store.initialize()
+    if options.use_cache and not interactive_bootstrap:
+        recipe = scenario.fixture_recipe
+        instance_id = str(selected_instance_id)
+        with cache_store.lock(recipe.cache_fingerprint, run_id=options.run_dir.name):
+            cache_hit, resolution, resolved_invalidation = _resolve_exact_cache_entry(
+                cache_store,
+                recipe,
+                instance_id,
+                run_id=options.run_dir.name,
+                open_state_probe=wrapper.any_cache_source_open,
+                allow_open_failure_recovery=True,
+            )
+            if resolution is not None:
+                cache_decision = resolution
+            invalidation_performed = (
+                invalidation_performed or resolved_invalidation
+            )
+            if cache_hit is not None and recipe.invalidation_probe:
+                cache_store.invalidate_exact(
+                    recipe,
+                    instance_id,
+                    reason="fixed cache-invalidation Scenario probe",
+                    open_state_probe=wrapper.any_cache_source_open,
+                )
+                cache_hit = None
+                cache_decision = "invalidated_rebuild"
+                invalidation_performed = True
+            if cache_hit is not None:
+                if cache_hit.entry.get("state") == "evidence_only" and not recipe.accepts_evidence_only:
+                    raise RunnerFailure(
+                        "Selected template instance is evidence_only and cannot enter this Scenario."
+                    )
+                materialized = cache_store.materialize(
+                    cache_hit,
+                    options.run_dir,
+                    working_names=_cached_working_names(args, scenario),
+                )
+                if cache_decision != "recovered_retryable_open_failure":
+                    cache_decision = "validated_hit"
+        if cache_hit is None and recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED:
+            bootstrap = getattr(recipe, "bootstrap_scenario_name", "")
+            raise RunnerFailure(
+                f"interactive_bootstrap_required: run the named scenario {bootstrap!r}."
+            )
+    if cache_hit is not None and materialized is not None and cache_store is not None:
+        expected_ids = {
+            role: str(
+                cache_hit.entry["role_entries"][role]["source_notebook"].get("id", "")
+            )
+            for role in roles
+        }
+        cache_lease_path = cache_store.claim_working_bundle(
+            materialized,
+            run_id=options.run_dir.name,
+            notebook_ids=expected_ids,
+            open_state_probe=wrapper.cache_working_lease_is_open,
+        )
+        try:
+            notebooks, leases = _open_materialized_bundle(
+                cache_store,
+                materialized,
+                wrappers,
+                roles,
+                cache_lease_path,
+            )
+        except Exception as exc:
+            if roles == ("source",):
+                _bind_failed_materialized_open(
+                    cache_store,
+                    cache_lease_path,
+                    wrapper,
+                    materialized,
+                    options,
+                )
+            _record_materialized_failure(
+                cache_store,
+                scenario,
+                cache_hit,
+                options,
+                exc,
+                phase="materialized-open",
+                quarantine=False,
+            )
+            raise
+        notebook, lease = notebooks["source"], leases["source"]
+        args.notebook_name = str(notebook.get("name", args.notebook_name))
+    else:
+        notebooks, leases = _create_fresh_bundle(args, wrappers, roles)
+        notebook, lease = notebooks["source"], leases["source"]
     metrics["phases_seconds"]["lifecycle_create"] = round(
         time.perf_counter() - phase_started, 6
     )
     state["completed_steps"].append(
         {
-            "step": "create-source-notebook",
-            "notebook_id": lease["notebook_id"],
-            "lease": str(wrapper.lease_path.resolve()),
+            "step": (
+                "create-source-notebook" if len(roles) == 1 else "create-notebook-bundle"
+            ),
+            "roles": {
+                role: {
+                    "notebook_id": leases[role]["notebook_id"],
+                    "lease": str(wrappers[role].lease_path.resolve()),
+                }
+                for role in roles
+            },
         }
     )
     state["current_step"] = args.scenario
@@ -265,15 +610,174 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
             entered_client = True
             metrics["observed_mcp_process_starts"] = 1
             write_json(metrics_path, metrics)
-            manifest, fixture_result = await prepare_fixture(
-                scenario,
-                args,
-                options,
-                client,
-                notebook,
-                str(lease["expected_local_path"]),
-                spec,
-            )
+            if cache_hit is not None and materialized is not None:
+                try:
+                    manifest, fixture_result = await prepare_materialized_fixture_bundle(
+                        scenario,
+                        args,
+                        options,
+                        client,
+                        notebooks,
+                        {
+                            role: str(leases[role]["expected_local_path"])
+                            for role in roles
+                        },
+                        spec,
+                        cache_hit,
+                        materialized,
+                    )
+                except Exception as exc:
+                    _record_materialized_failure(
+                        cache_store,
+                        scenario,
+                        cache_hit,
+                        options,
+                        exc,
+                        phase="materialized-live-validation",
+                    )
+                    raise
+            else:
+                manifest, fixture_result = await prepare_fixture_bundle(
+                    scenario,
+                    args,
+                    options,
+                    client,
+                    notebooks,
+                    {
+                        role: str(leases[role]["expected_local_path"])
+                        for role in roles
+                    },
+                    spec,
+                )
+                if options.use_cache and scenario.fixture_recipe.build_mode == BuildMode.PROGRAMMATIC:
+                    if cache_store is None:
+                        raise RunnerFailure("Fixture cache runtime was not initialized.")
+                    _close_bundle(wrappers, roles)
+                    recipe = scenario.fixture_recipe
+                    instance_id = recipe.default_template_instance_id
+                    artifacts = bundle_cache_artifacts(
+                        options.run_dir, roles, manifest, fixture_result
+                    )
+                    source_paths = {
+                        role: Path(str(leases[role]["expected_local_path"]))
+                        for role in roles
+                    }
+                    with cache_store.lock(recipe.cache_fingerprint, run_id=options.run_dir.name):
+                        cache_hit, resolution, resolved_invalidation = (
+                            _resolve_exact_cache_entry(
+                                cache_store,
+                                recipe,
+                                instance_id,
+                                run_id=options.run_dir.name,
+                                open_state_probe=wrapper.any_cache_source_open,
+                                allow_open_failure_recovery=True,
+                            )
+                        )
+                        if resolution is not None:
+                            cache_decision = resolution
+                        invalidation_performed = (
+                            invalidation_performed or resolved_invalidation
+                        )
+                        if cache_hit is None:
+                            cache_hit = cache_store.publish(
+                                recipe,
+                                instance_id,
+                                source_paths=source_paths,
+                                source_notebooks=notebooks,
+                                closed_roles=set(roles),
+                                validation=manifest["fixture_validation"],
+                                artifacts=artifacts,
+                            )
+                        if recipe.invalidation_probe and not invalidation_performed:
+                            cache_store.invalidate_exact(
+                                recipe,
+                                instance_id,
+                                reason="fixed cache-invalidation Scenario cold-entry probe",
+                                open_state_probe=wrapper.any_cache_source_open,
+                            )
+                            invalidation_performed = True
+                            cache_decision = "invalidated_rebuild"
+                            cache_hit = cache_store.publish(
+                                recipe,
+                                instance_id,
+                                source_paths=source_paths,
+                                source_notebooks=notebooks,
+                                closed_roles=set(roles),
+                                validation=manifest["fixture_validation"],
+                                artifacts=artifacts,
+                            )
+                        materialized = cache_store.materialize(
+                            cache_hit,
+                            options.run_dir,
+                            working_names=_cached_working_names(args, scenario),
+                        )
+                    cache_lease_path = cache_store.claim_working_bundle(
+                        materialized,
+                        run_id=options.run_dir.name,
+                        notebook_ids={role: str(notebooks[role]["id"]) for role in roles},
+                        open_state_probe=wrapper.cache_working_lease_is_open,
+                    )
+                    try:
+                        notebooks, leases = _open_materialized_bundle(
+                            cache_store,
+                            materialized,
+                            wrappers,
+                            roles,
+                            cache_lease_path,
+                        )
+                    except Exception as exc:
+                        if roles == ("source",):
+                            _bind_failed_materialized_open(
+                                cache_store,
+                                cache_lease_path,
+                                wrapper,
+                                materialized,
+                                options,
+                            )
+                        _record_materialized_failure(
+                            cache_store,
+                            scenario,
+                            cache_hit,
+                            options,
+                            exc,
+                            phase="cold-materialized-open",
+                            quarantine=False,
+                        )
+                        raise
+                    notebook, lease = notebooks["source"], leases["source"]
+                    args.notebook_name = str(notebook.get("name", args.notebook_name))
+                    try:
+                        manifest, fixture_result = await prepare_materialized_fixture_bundle(
+                            scenario,
+                            args,
+                            options,
+                            client,
+                            notebooks,
+                            {
+                                role: str(leases[role]["expected_local_path"])
+                                for role in roles
+                            },
+                            spec,
+                            cache_hit,
+                            materialized,
+                        )
+                    except Exception as exc:
+                        _record_materialized_failure(
+                            cache_store,
+                            scenario,
+                            cache_hit,
+                            options,
+                            exc,
+                            phase="cold-materialized-live-validation",
+                        )
+                        raise
+                    cache_decision = (
+                        "invalidated_rebuild"
+                        if cache_decision == "invalidated_rebuild"
+                        else "cold_build"
+                    )
+                    manifest["fixture_cache"]["decision"] = cache_decision
+                    write_json(options.run_dir / "manifest.json", manifest)
             state["completed_steps"].append(
                 {"step": "prepare-fixture", "result": fixture_result}
             )
@@ -286,6 +790,141 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 client=client,
                 fixture_result=fixture_result,
             )
+            if interactive_bootstrap and scenario_result.get("interactive_bootstrap") is True:
+                if bool(getattr(args, "keep_worksite", False)):
+                    scenario_result["template_published"] = False
+                    scenario_result["template_not_published_reason"] = "keep_worksite"
+                    cache_decision = "template_not_published"
+                else:
+                    if cache_store is None:
+                        cache_store = BundleCacheStore(
+                            options.cache_root
+                            or (options.run_dir.parent / "fixture-cache")
+                        )
+                        cache_store.initialize()
+                    closed = wrapper.close_exact_notebook()
+                    if closed.get("closed") is not True:
+                        raise RestoreFailure(
+                            "Interactive source did not close; template publication is blocked."
+                        )
+                    recipe = scenario.fixture_recipe
+                    instance_id = str(scenario_result["template_instance_id"])
+                    final_manifest = read_json(options.run_dir / "manifest.json")
+                    final_snapshot = read_json(options.run_dir / "fixture-snapshot.json")
+                    with cache_store.lock(recipe.cache_fingerprint, run_id=options.run_dir.name):
+                        reconciled = cache_store.reconcile_stale_working_leases(
+                            wrapper.cache_working_lease_is_open
+                        )
+                        if reconciled:
+                            write_json(
+                                options.run_dir / "cache-stale-lease-reconciliation.json",
+                                {
+                                    "schema_version": 1,
+                                    "reconciled": reconciled,
+                                    "observed_at": utc_now(),
+                                },
+                            )
+                        existing, _resolution, _resolved_invalidation = (
+                            _resolve_exact_cache_entry(
+                                cache_store,
+                                recipe,
+                                instance_id,
+                                run_id=options.run_dir.name,
+                                open_state_probe=wrapper.any_cache_source_open,
+                                allow_open_failure_recovery=True,
+                            )
+                        )
+                        if existing is not None:
+                            cache_store.invalidate_exact(
+                                recipe,
+                                instance_id,
+                                reason="explicit named interactive re-bootstrap",
+                                open_state_probe=wrapper.any_cache_source_open,
+                            )
+                        cache_hit = cache_store.publish(
+                            recipe,
+                            instance_id,
+                            source_paths={"source": Path(str(lease["expected_local_path"]))},
+                            source_notebooks={"source": notebook},
+                            closed_roles={"source"},
+                            validation=final_manifest["fixture_validation"],
+                            artifacts={
+                                "source": {
+                                    "manifest": final_manifest,
+                                    "fixture_result": fixture_result,
+                                    "snapshot": final_snapshot,
+                                }
+                            },
+                            state=str(scenario_result.get("template_state", "ready")),
+                        )
+                        materialized = cache_store.materialize(
+                            cache_hit,
+                            options.run_dir,
+                            working_names=_cached_working_names(args, scenario),
+                        )
+                    cache_lease_path = cache_store.claim_working_bundle(
+                        materialized,
+                        run_id=options.run_dir.name,
+                        notebook_ids={"source": str(notebook["id"])},
+                        open_state_probe=wrapper.cache_working_lease_is_open,
+                    )
+                    try:
+                        notebooks, leases = _open_materialized_bundle(
+                            cache_store,
+                            materialized,
+                            wrappers,
+                            roles,
+                            cache_lease_path,
+                        )
+                    except Exception as exc:
+                        if roles == ("source",):
+                            _bind_failed_materialized_open(
+                                cache_store,
+                                cache_lease_path,
+                                wrapper,
+                                materialized,
+                                options,
+                            )
+                        _record_materialized_failure(
+                            cache_store,
+                            scenario,
+                            cache_hit,
+                            options,
+                            exc,
+                            phase="bootstrap-materialized-open",
+                            quarantine=False,
+                        )
+                        raise
+                    notebook, lease = notebooks["source"], leases["source"]
+                    args.notebook_name = str(notebook.get("name", args.notebook_name))
+                    try:
+                        manifest, fixture_result = await prepare_materialized_fixture_bundle(
+                            scenario,
+                            args,
+                            options,
+                            client,
+                            notebooks,
+                            {
+                                role: str(leases[role]["expected_local_path"])
+                                for role in roles
+                            },
+                            spec,
+                            cache_hit,
+                            materialized,
+                        )
+                    except Exception as exc:
+                        _record_materialized_failure(
+                            cache_store,
+                            scenario,
+                            cache_hit,
+                            options,
+                            exc,
+                            phase="bootstrap-materialized-live-validation",
+                        )
+                        raise
+                    cache_decision = "bootstrap_published"
+                    scenario_result["template_published"] = True
+                    scenario_result["post_publish_materialization_validated"] = True
     finally:
         metrics["observed_mcp_process_starts"] = int(
             entered_client or getattr(client_handle, "process_started", False)
@@ -299,6 +938,8 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
         )
         metrics["process_exited_at"] = utc_now()
         write_json(metrics_path, metrics)
+        if cache_store is not None and materialized is not None:
+            cache_store.verify_templates_unchanged(materialized)
     state["completed_steps"].append({"step": args.scenario, "result": scenario_result})
     write_json(metrics_path, metrics)
     state["current_step"] = "report"
@@ -309,14 +950,26 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     metrics["phases_seconds"]["report"] = round(time.perf_counter() - phase_started, 6)
     state["completed_steps"].append({"step": "report", "path": str(report_path.resolve())})
     state["current_step"] = (
-        "preserve-source-notebook"
+        ("preserve-notebook-bundle" if len(roles) > 1 else "preserve-source-notebook")
         if _keep_source_notebook(args)
-        else "close-source-notebook"
+        else ("close-notebook-bundle" if len(roles) > 1 else "close-source-notebook")
     )
     state["finalization_started"] = True
     write_json(state_path, state)
     phase_started = time.perf_counter()
-    lifecycle = await finalize_notebook(args, options, manifest, wrapper=wrapper)
+    lifecycle = await finalize_bundle(
+        args,
+        options,
+        manifest,
+        wrappers=wrappers,
+        roles=roles,
+    )
+    if (
+        cache_store is not None
+        and cache_lease_path is not None
+        and lifecycle.get("closed") is True
+    ):
+        cache_store.release_working_bundle(cache_lease_path)
     metrics["phases_seconds"]["lifecycle_finalize"] = round(
         time.perf_counter() - phase_started, 6
     )
@@ -340,19 +993,44 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
         "agent_execution_prohibited": True,
         "notebook_name": args.notebook_name,
         "notebook_id": manifest["notebook"]["id"],
+        "notebooks": dict(manifest.get("notebooks", {"source": manifest["notebook"]})),
         "run_dir": str(options.run_dir.resolve()),
         "scenario_result": scenario_result,
         "lifecycle": lifecycle,
         "metrics": metrics,
         "filesystem_deleted": False,
+        "cache": {
+            "cache_mode": "use_cache" if options.use_cache else "fresh",
+            "decision": cache_decision,
+            "fingerprint": scenario.fixture_recipe.cache_fingerprint,
+            "template_instance_id": (
+                cache_hit.template_instance_id
+                if cache_hit is not None
+                else scenario.fixture_recipe.default_template_instance_id
+            ),
+            "opened_template": False,
+        },
     }
-    result["ordered_steps"] = ["create-source-notebook", args.scenario]
+    run_identity = getattr(args, "run_identity", None)
+    if hasattr(run_identity, "as_dict"):
+        result["run_identity"] = run_identity.as_dict()
+    fresh_names = getattr(args, "fresh_notebook_names", None)
+    cached_names = getattr(args, "cached_notebook_names", None)
+    if isinstance(fresh_names, dict) and isinstance(cached_names, dict):
+        result["notebook_names"] = {
+            "fresh": dict(fresh_names),
+            "cached": dict(cached_names),
+        }
+    result["ordered_steps"] = [
+        "create-source-notebook" if len(roles) == 1 else "create-notebook-bundle",
+        args.scenario,
+    ]
     result["ordered_steps"].extend(
         [
             "report",
-            "preserve-source-notebook"
+            ("preserve-notebook-bundle" if len(roles) > 1 else "preserve-source-notebook")
             if _keep_source_notebook(args)
-            else "close-source-notebook",
+            else ("close-notebook-bundle" if len(roles) > 1 else "close-source-notebook"),
         ]
     )
     write_json(options.run_dir / "run-result.json", result)
@@ -393,6 +1071,10 @@ def _record_run_failure(args: argparse.Namespace, message: str, exit_code: int) 
             else "The fresh Notebook remains open and all evidence is preserved for inspection."
         ),
     }
+    if isinstance(state.get("run_identity"), dict):
+        failure["run_identity"] = dict(state["run_identity"])
+    if isinstance(state.get("notebook_names"), dict):
+        failure["notebook_names"] = dict(state["notebook_names"])
     write_json(run_dir / "run-failure.json", failure)
     state.update(
         status=failure_status,
@@ -504,6 +1186,113 @@ def record_failure(args: argparse.Namespace, message: str, exit_code: int) -> No
         render_report(run_dir)
     except Exception:
         pass
+
+
+def _role_wrappers(
+    run_dir: Path,
+    timeout_seconds: int,
+    roles: tuple[str, ...],
+) -> dict[str, NotebookLifecycleWrapper]:
+    return {
+        role: NotebookLifecycleWrapper(
+            run_dir,
+            timeout_seconds=timeout_seconds,
+            **({} if role == "source" else {"role": role}),
+        )
+        for role in roles
+    }
+
+
+def _create_fresh_bundle(
+    args: argparse.Namespace,
+    wrappers: Mapping[str, NotebookLifecycleWrapper],
+    roles: tuple[str, ...],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    names = getattr(args, "fresh_notebook_names", None)
+    if not isinstance(names, dict):
+        names = {
+            role: (
+                str(args.notebook_name)
+                if role == "source"
+                else f"{args.notebook_name}-{role}"
+            )
+            for role in roles
+        }
+    if set(names) != set(roles):
+        raise RunnerFailure("Canonical fresh Notebook names do not cover every Recipe role.")
+    notebooks: dict[str, dict[str, Any]] = {}
+    leases: dict[str, dict[str, Any]] = {}
+    for role in roles:
+        notebooks[role], leases[role] = wrappers[role].create_fresh_notebook(
+            str(names[role])
+        )
+    return notebooks, leases
+
+
+def _open_materialized_bundle(
+    cache_store: BundleCacheStore,
+    materialized: MaterializedBundle,
+    wrappers: Mapping[str, NotebookLifecycleWrapper],
+    roles: tuple[str, ...],
+    cache_lease_path: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    notebooks: dict[str, dict[str, Any]] = {}
+    leases: dict[str, dict[str, Any]] = {}
+    try:
+        for role in roles:
+            kwargs = {} if role == "source" else {"role": role}
+            notebooks[role], leases[role] = wrappers[role].open_working_notebook(
+                materialized.working_paths[role].name,
+                materialized.working_paths[role],
+                template_paths=tuple(materialized.template_paths.values()),
+                **kwargs,
+            )
+        cache_store.bind_working_bundle_notebook_ids(
+            cache_lease_path,
+            notebook_ids={role: str(notebooks[role]["id"]) for role in roles},
+            open_state_probe=wrappers["source"].cache_working_lease_is_open,
+        )
+        for role in roles:
+            cache_store.record_opened_working_role(
+                materialized,
+                role=role,
+                notebook_id=str(notebooks[role]["id"]),
+                actual_path=Path(str(leases[role]["actual_local_path"])),
+            )
+        return notebooks, leases
+    except Exception:
+        bound_ids = {
+            role: str(
+                notebooks.get(role, {}).get(
+                    "id",
+                    read_json(cache_lease_path).get("notebook_ids", {}).get(role, ""),
+                )
+            )
+            for role in roles
+        }
+        if all(bound_ids.values()) and len(set(bound_ids.values())) == len(bound_ids):
+            try:
+                cache_store.bind_working_bundle_notebook_ids(
+                    cache_lease_path,
+                    notebook_ids=bound_ids,
+                    open_state_probe=wrappers["source"].cache_working_lease_is_open,
+                )
+            except Exception:
+                pass
+        raise
+
+
+def _close_bundle(
+    wrappers: Mapping[str, NotebookLifecycleWrapper],
+    roles: tuple[str, ...],
+) -> dict[str, dict[str, Any]]:
+    closed: dict[str, dict[str, Any]] = {}
+    for role in roles:
+        result = wrappers[role].close_exact_notebook()
+        if result.get("closed") is not True:
+            raise RestoreFailure(f"Notebook role {role} did not close precisely.")
+        closed[role] = result
+    return closed
 
 
 __all__ = [

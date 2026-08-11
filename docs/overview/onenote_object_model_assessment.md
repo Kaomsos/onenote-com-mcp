@@ -6,6 +6,7 @@
 > 方法：静态检查生产代码、当前设计契约、自动化测试与已保存的人工验证记录；未操作真实 OneNote 数据。
 > 结论补充：2026-08-10 用户触发的 Reorder 隔离验证；Section 保留，SectionGroup 明确拒绝。
 > 合同同步：2026-08-10 后续工作树已实现全部已打开 Notebook 搜索与默认单页 Page Copy；两项新真实验收仍待用户确认。
+> 取证范围同步：2026-08-11 后续 Copy 内容取证聚焦 InkDrawing、UI Shape、MediaFile；FileAttachment 与 MeetingInfo 排除。
 
 ## 核心阅读入口
 
@@ -38,7 +39,7 @@
 - raw XML 与 legacy generic destructive 工具不进入默认 profile；
 - 四层 Copy 与 Page Move 已有实验实现、plan digest、预算和部分失败语义；Move 的定义天然包含 Copy、验证与源处理，不再添加额外的操作名前缀。
 
-项目当前的主要差距已从“缺少稳定对象模型”转移到“扩展能力与跨环境证据”：用户已确认四层 Copy、最终 Page Move 和三类迁移后的 typed Reparent 场景在当前环境完成真实闭环；附件、插入文件、墨迹、媒体和 MeetingInfo 仍不在已验证保真集合。SectionGroup Reorder 已依据后端固定名称升序结束评估，不再等待正向复跑。COM bridge 也仍然每次调用启动 PowerShell 并创建 `OneNote.Application`，尚未用正式基准证明是否值得引入长驻 broker。
+项目当前的主要差距已从“缺少稳定对象模型”转移到“扩展能力与跨环境证据”：用户已确认四层 Copy、最终 Page Move 和三类迁移后的 typed Reparent 场景在当前环境完成真实闭环；附件、插入文件、墨迹、媒体和 MeetingInfo 仍不在已验证保真集合。后续内容 Copy 取证只聚焦 InkDrawing、OneNote UI Shape 和 MediaFile（在线视频）；FileAttachment 因当前 GUI 无法生成独立表示而排除，MeetingInfo 因小众、难生成且价值低而排除。Shape 的实际公开 kind/XML 投影尚待观察。SectionGroup Reorder 已依据后端固定名称升序结束评估，不再等待正向复跑。COM bridge 也仍然每次调用启动 PowerShell 并创建 `OneNote.Application`，尚未用正式基准证明是否值得引入长驻 broker。
 
 ## 2. 复审范围与证据等级
 
@@ -261,7 +262,7 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | Page Reparent                                                           | typed service 与 runner 已覆盖精确 confirmation、同 Notebook、Page/内容对象 ID 一对一重映射、Tag-index 归一化富内容、无关对象和逻辑恢复 | 用户确认迁移后的 `reparent_page` 场景在当前环境真实通过                                                       | typed 实验工具；仍不进入`all`   |
 | SectionGroup Reparent                                                   | typed service 与 runner 已覆盖防循环、三种父级路线、后代 ID/拓扑、Page 内容、无关对象和逆序恢复                                         | 用户确认迁移后的 `reparent_section_group` 场景在当前环境真实通过                                              | typed 实验工具；仍不进入`all`   |
 | 原完整双页子树模式的 Page/Section/SectionGroup/Notebook Copy 与最终 Move | 已覆盖 Runner 与生产合同                                                                                                                   | 用户确认五个原场景均完成真实闭环；新默认单页 Page Copy 场景尚待真实验收                                        | 原模式当前环境已完成              |
-| FileAttachment/InsertedFile/InkDrawing/MediaFile/MeetingInfo            | 有识别和 fail-closed 分支                                                                                                                   | 尚无逐类型完整保真结论                                                                                          | 保持 unverified，阻止 Move 删除源 |
+| FileAttachment/InsertedFile/InkDrawing/MediaFile/MeetingInfo；UI Shape 待确认实际投影 | 已知 XML 类型有识别和 fail-closed 分支；Shape 尚不能预设公开 kind | 当前只计划补齐 InkDrawing、UI Shape、MediaFile；FileAttachment/MeetingInfo 已排除，InsertedFile 仅保留 fixture/cache 证据 | 全部未获 Copy 证据的能力保持 unverified，阻止 Move 删除源 |
 
 `Outline/Image/RichText/Table/List/Tag` 的证据只适用于已记录的真实环境与验证 tier，不应改写为 OneNote COM 的跨版本普遍保证。
 
@@ -274,7 +275,7 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | [001：本地程序化 OneNote 隔离验证 Runner](../todo/001_programmatic_isolated_mutation_runner.md)              | 已完成 | Runner 架构、纯合同与用户确认的逐 scenario 真实验收矩阵均已闭环     |
 | [002：P2 四层 Copy 与 Page Move](../todo/002_p2_copy_and_reconstructive_page_move.md)                        | 已完成 | 用户确认四层 Copy 与最终 Page Move 的五个统一 fixture 场景全部通过  |
 | [003：Scenario 独立 Fixture 与单 MCP 进程闭环](../todo/003_scenario_scoped_mcp_and_fixtures.md)              | 已完成 | 架构、合同、低风险运行、性能单样本和严格失败门已有证据              |
-| [004：交互式 Copy/Move 未验证内容保真验收](../todo/004_interactive_copy_move_content_fidelity_validation.md) | 待办   | 负责附件、墨迹、媒体、MeetingInfo 等逐类型证据和静态 allowlist 评审 |
+| [004：交互式 Copy/Move 未验证内容保真验收](../todo/004_interactive_copy_move_content_fidelity_validation.md) | 进行中 | 聚焦 InkDrawing、UI Shape、MediaFile 的逐类型证据和静态 allowlist 评审；FileAttachment/MeetingInfo 已排除 |
 | [005：Page Copy 默认仅复制单页，可选包含缩进子树](../todo/005_page_copy_without_indentation_subtree.md)      | 已完成 | 默认单页与显式完整子树已交付，用户已确认双 case 真实验收通过       |
 | [006：Typed Section 与 SectionGroup Reorder](../todo/006_typed_section_and_section_group_reorder.md)         | 已完成 | Section 真实排序已确认；SectionGroup 因后端固定名称升序而明确拒绝   |
 | [007：跨版本兼容性证据与环境元数据](../todo/007_cross_version_compatibility_evidence.md)                     | 待办   | 后续补充非阻塞的跨版本证据，不重开 SectionGroup Reorder 能力结论    |

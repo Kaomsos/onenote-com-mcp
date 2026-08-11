@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.manual_validation.lifecycle import NotebookLifecycleWrapper
-from tests.manual_validation.runtime import RestoreFailure
+from tests.manual_validation.runtime import RestoreFailure, RunnerFailure
 from tests.manual_validation.test_utils import read_json, write_json
 
 
@@ -15,15 +15,60 @@ class FakeBridge:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.hierarchy = None
+        self.opened_paths: dict[Path, str] = {}
+        self.fail_absolute_children = False
+        self.fail_all_children = False
+        self.exact_child_hierarchy = False
+        self.exact_child_tag = "Section"
 
     def call(self, name: str, **kwargs):
         self.calls.append((name, kwargs))
         if name == "open_hierarchy":
-            Path(kwargs["path"]).mkdir(parents=True)
-            return {"object_id": "notebook-id"}
+            path = Path(kwargs["path"])
+            if path.is_absolute() and not self.opened_paths:
+                path.mkdir(parents=True, exist_ok=True)
+                self.opened_paths[path.resolve()] = "notebook-id"
+                self.reported_path = str(path.resolve())
+                return {"object_id": "notebook-id"}
+            if self.fail_all_children or (
+                path.is_absolute() and self.fail_absolute_children
+            ):
+                raise RuntimeError("injected child open failure")
+            if path.is_absolute():
+                parent_id = self.opened_paths[path.resolve().parent]
+                object_id = f"{parent_id}::{path.name}"
+                self.opened_paths[path.resolve()] = object_id
+                return {"object_id": object_id}
+            return {
+                "object_id": f"{kwargs['relative_to_id']}::{path.name}"
+            }
+        if name == "get_hierarchy_parent":
+            object_id = str(kwargs["object_id"])
+            return {"parent_id": object_id.rsplit("::", 1)[0]}
         if name == "close_notebook":
             self.hierarchy.closed = True
             return {"ok": True}
+        if name == "get_hierarchy":
+            start_id = str(kwargs.get("start_id", ""))
+            if self.exact_child_hierarchy and start_id != "notebook-id":
+                filename = start_id.rsplit("::", 1)[-1]
+                child_name = Path(filename).stem
+                return {
+                    "xml": (
+                        '<one:{tag} xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
+                        'ID="{object_id}" name="{child_name}" />'
+                    ).format(
+                        tag=self.exact_child_tag,
+                        object_id=start_id,
+                        child_name=child_name,
+                    )
+                }
+            return {
+                "xml": (
+                    '<one:Notebook xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
+                    f'ID="notebook-id" path="{self.reported_path}" />'
+                )
+            }
         raise AssertionError(name)
 
 
@@ -32,12 +77,30 @@ class FakeHierarchy:
         self.name = name
         self.closed = False
         self.created = False
+        self.hide_children_from_global = False
 
     def list_notebooks(self, include_recycle_bin: bool = False):
         return {"notebooks": [] if not self.created else [self._item()]}
 
-    def wait_for_created(self, _path: str, _type: str, _fallback_id: str):
+    def wait_for_created(
+        self,
+        _path: str,
+        _type: str,
+        _fallback_id: str,
+        **_kwargs,
+    ):
         self.created = True
+        if _type != "notebook":
+            if self.hide_children_from_global:
+                return None
+            return {
+                "id": _fallback_id,
+                "name": Path(_path).name,
+                "resource_type": _type,
+                "path": _path,
+                "parent_id": _fallback_id.rsplit("::", 1)[0],
+                "is_open": True,
+            }
         return self._item()
 
     def resource(self, object_id: str, resource_type: str):
@@ -60,9 +123,217 @@ def _wrapper(tmp_path: Path):
     bridge = FakeBridge()
     hierarchy = FakeHierarchy()
     bridge.hierarchy = hierarchy
+    bridge.reported_path = ""
     wrapper = NotebookLifecycleWrapper(tmp_path / "run", timeout_seconds=10, bridge=bridge)
     wrapper._hierarchy = hierarchy
     return wrapper, bridge, hierarchy
+
+
+def test_open_working_copy_proves_actual_path_is_not_template(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    bridge.reported_path = str(working.resolve())
+
+    notebook, lease = wrapper.open_working_notebook(
+        "__ISOLATED__",
+        working,
+        template_paths=(template,),
+    )
+
+    assert notebook["id"] == "notebook-id"
+    assert lease["actual_local_path"] == str(working.resolve())
+    assert lease["opened_template"] is False
+    assert lease["template_paths"] == [str(template.resolve())]
+
+
+def test_open_working_copy_explicitly_opens_bounded_sections_and_groups(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    (working / "Group").mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Root.one").write_bytes(b"root")
+    (working / "Group" / "Child.one").write_bytes(b"child")
+    (working / "Open Notebook.onetoc2").write_bytes(b"catalog")
+    bridge.reported_path = str(working.resolve())
+
+    _notebook, lease = wrapper.open_working_notebook(
+        "__ISOLATED__",
+        working,
+        template_paths=(template,),
+    )
+
+    opened = lease["opened_hierarchy"]
+    assert [(item["relative_path"], item["resource_type"]) for item in opened] == [
+        ("Group", "section_group"),
+        ("Group/Child.one", "section"),
+        ("Root.one", "section"),
+    ]
+    child_calls = [call for call in bridge.calls if call[0] == "open_hierarchy"][1:]
+    assert all(Path(call[1]["path"]).is_absolute() for call in child_calls)
+    assert all(call[1]["relative_to_id"] == "" for call in child_calls)
+    open_evidence = read_json(wrapper.run_dir / "materialized-hierarchy-open.json")
+    assert open_evidence["status"] == "passed"
+    assert open_evidence["content_saved"] is False
+    assert all(item["activated"] is True for item in open_evidence["attempts"])
+
+
+def test_open_working_copy_falls_back_to_parent_relative_child_path(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Root.one").write_bytes(b"root")
+    bridge.reported_path = str(working.resolve())
+    bridge.fail_absolute_children = True
+
+    _notebook, lease = wrapper.open_working_notebook(
+        "__ISOLATED__",
+        working,
+        template_paths=(template,),
+    )
+
+    assert lease["opened_hierarchy"][0]["relative_path"] == "Root.one"
+    evidence = read_json(wrapper.run_dir / "materialized-hierarchy-open.json")
+    assert evidence["attempts"][0]["path_mode"] == "absolute"
+    assert evidence["attempts"][0]["bridge_error_type"] == "RuntimeError"
+    assert evidence["attempts"][1]["path_mode"] == "parent_relative"
+    assert evidence["attempts"][1]["activated"] is True
+
+
+def test_open_working_copy_accepts_exact_object_and_parent_when_global_snapshot_lags(
+    tmp_path,
+) -> None:
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Root.one").write_bytes(b"root")
+    bridge.reported_path = str(working.resolve())
+    bridge.exact_child_hierarchy = True
+    hierarchy.hide_children_from_global = True
+
+    _notebook, lease = wrapper.open_working_notebook(
+        "__ISOLATED__",
+        working,
+        template_paths=(template,),
+    )
+
+    assert lease["opened_hierarchy"] == [
+        {
+            "relative_path": "Root.one",
+            "resource_type": "section",
+            "object_id": "notebook-id::Root.one",
+        }
+    ]
+    attempt = read_json(wrapper.materialized_evidence_path)["attempts"][0]
+    assert attempt["global_snapshot_visible"] is False
+    assert attempt["observed_parent_id"] == "notebook-id"
+    assert attempt["exact_object_probe"] == "passed"
+    assert attempt["activation_proof"] == "exact_object_and_parent"
+    exact_calls = [
+        kwargs
+        for name, kwargs in bridge.calls
+        if name == "get_hierarchy" and kwargs.get("start_id") != "notebook-id"
+    ]
+    assert exact_calls[0]["start_id"] == "notebook-id::Root.one"
+
+
+def test_open_working_copy_rejects_exact_parent_when_object_type_is_wrong(tmp_path) -> None:
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Root.one").write_bytes(b"root")
+    bridge.reported_path = str(working.resolve())
+    bridge.exact_child_hierarchy = True
+    bridge.exact_child_tag = "SectionGroup"
+    hierarchy.hide_children_from_global = True
+
+    with pytest.raises(RunnerFailure, match="did not become active"):
+        wrapper.open_working_notebook(
+            "__ISOLATED__",
+            working,
+            template_paths=(template,),
+        )
+
+    attempts = read_json(wrapper.materialized_evidence_path)["attempts"]
+    assert all(attempt["observed_parent_id"] == "notebook-id" for attempt in attempts)
+    assert all(attempt["exact_object_probe"] == "failed" for attempt in attempts)
+
+
+def test_open_working_copy_wraps_bridge_failure_and_preserves_diagnostics(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Root.one").write_bytes(b"root")
+    bridge.reported_path = str(working.resolve())
+    bridge.fail_all_children = True
+
+    with pytest.raises(RunnerFailure, match="did not become active"):
+        wrapper.open_working_notebook(
+            "__ISOLATED__",
+            working,
+            template_paths=(template,),
+        )
+
+    evidence = read_json(wrapper.run_dir / "materialized-hierarchy-open.json")
+    assert evidence["status"] == "failed"
+    assert len(evidence["attempts"]) == 2
+    lease = read_json(wrapper.lease_path)
+    assert lease["notebook_id"] == "notebook-id"
+    assert lease["hierarchy_open_status"] == "failed"
+    assert lease["state"] == "active"
+
+
+def test_materialized_schema_two_lease_closes_by_exact_id_and_path(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    bridge.reported_path = str(working.resolve())
+    wrapper.open_working_notebook(
+        "__ISOLATED__",
+        working,
+        template_paths=(template,),
+    )
+
+    result = wrapper.close_exact_notebook()
+
+    assert result["closed"] is True
+    assert read_json(wrapper.lease_path)["state"] == "closed"
+
+
+def test_stale_probe_uses_failed_open_evidence_actual_id(tmp_path, monkeypatch) -> None:
+    wrapper, _bridge, hierarchy = _wrapper(tmp_path)
+    hierarchy.created = True
+    old_run = tmp_path / "old-run"
+    old_run.mkdir()
+    write_json(
+        old_run / "materialized-hierarchy-open.json",
+        {"notebook_id": "actual-working-id"},
+    )
+    lease = {
+        "run_id": "old-run",
+        "notebook_ids": {"source": "template-id"},
+        "working_paths": {"source": str(tmp_path / "old-run" / "working")},
+    }
+
+    def unreadable_unrelated_path(_notebook_id: str):
+        raise RestoreFailure("unrelated path unavailable")
+
+    monkeypatch.setattr(wrapper, "_reported_notebook_directory", unreadable_unrelated_path)
+
+    assert wrapper.cache_working_lease_is_open(lease) is False
 
 
 def test_create_writes_exact_id_name_path_lease(tmp_path) -> None:
@@ -119,10 +390,13 @@ def test_get_exact_notebook_validates_open_binding_without_mutation(tmp_path) ->
 
     assert result["id"] == "notebook-id"
     assert hierarchy.closed is False
-    assert [name for name, _kwargs in bridge.calls] == ["open_hierarchy"]
+    assert [name for name, _kwargs in bridge.calls] == [
+        "open_hierarchy",
+        "get_hierarchy",
+    ]
 
 
-def test_wrapper_exposes_only_three_public_operations() -> None:
+def test_wrapper_exposes_only_bounded_lifecycle_operations() -> None:
     operations = {
         name
         for name, value in vars(NotebookLifecycleWrapper).items()
@@ -132,4 +406,26 @@ def test_wrapper_exposes_only_three_public_operations() -> None:
         "create_fresh_notebook",
         "get_exact_notebook",
         "close_exact_notebook",
+        "open_working_notebook",
+        "any_cache_source_open",
+        "cache_working_lease_is_open",
     }
+
+
+def test_role_wrappers_use_independent_leases_and_materialization_evidence(tmp_path) -> None:
+    source = NotebookLifecycleWrapper(tmp_path / "run", timeout_seconds=10, bridge=FakeBridge())
+    destination = NotebookLifecycleWrapper(
+        tmp_path / "run",
+        timeout_seconds=10,
+        bridge=FakeBridge(),
+        role="destination",
+    )
+
+    assert source.lease_path.name == "lifecycle-lease.json"
+    assert destination.lease_path.name == "lifecycle-lease-destination.json"
+    assert source.materialized_evidence_path.name == "materialized-hierarchy-open.json"
+    assert (
+        destination.materialized_evidence_path.name
+        == "materialized-hierarchy-open-destination.json"
+    )
+    assert source.lease_path != destination.lease_path

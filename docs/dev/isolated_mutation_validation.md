@@ -3,7 +3,13 @@
 > 本文只定义用户本人在终端显式触发的隔离流程。CI、hook、前台/后台 Agent 或默认测试不得执行。
 > 真实验证对象必须是专用、无业务数据、可丢弃的本地 Notebook。
 
-推荐由用户按 [Human-gated Manual Validation Runner](../../tests/manual_validation/README.md) 显式运行一个扁平的 `run.py <scenario>`。每个 scenario 本身就是完整隔离 suite：一个用户命令创建全新 Notebook、准备 fixture、运行所选 mutation（fixture-only 的 `create` 除外）、生成报告并按选项关闭或保留 Notebook。`validate`、`inspect`、`read`、`report` 和聚合 `suite` 均不是公开 action；本页的手工 tool 调用只保留为故障排查说明，不构成可执行入口。Agent 不得通过 Codex CLI、shell 或 MCP 代用户执行真实 mutation；历史 Codex CLI 编排记录见 [已停用流程](codex_cli_mcp_validation.md)。实现进度见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
+推荐由用户按 [Human-gated Manual Validation Runner](../../tests/manual_validation/README.md) 显式运行一个扁平的 `run.py <scenario>`。每个 scenario 本身就是完整隔离 suite：一个用户命令创建全新 Notebook、准备 fixture、运行所选 mutation、生成报告并按选项关闭或保留 Notebook。`create` 也会在 fixture 后连续创建两个同标题 Page，验证 allocated/read-back ID 互异，并在默认模式下按精确 ID 非永久清理。`validate`、`inspect`、`read`、`report` 和聚合 `suite` 均不是公开 action；本页的手工 tool 调用只保留为故障排查说明，不构成可执行入口。Agent 不得通过 Codex CLI、shell 或 MCP 代用户执行真实 mutation；历史 Codex CLI 编排记录见 [已停用流程](codex_cli_mcp_validation.md)。实现进度见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
+
+反复调试复杂 fixture 时可显式加 `--use-cache`。它不会放宽 policy/tool allowlist，也不会打开 cache template；validated hit 始终 materialize 新的 run-scoped working copy。SectionGroup/`.one` Section 先以绝对 working path 与空 relative ID 打开，必要时才以文件名与精确 parent ID 打开；禁止绝对 path 与非空 parent ID 的无效组合，且两条路径都必须回读 actual parent。全局 hierarchy snapshot 暂时不可见时，还要用同一返回 ID 的 exact-self XML 证明预期类型、名称、非回收站状态和精确 parent；随后以 Notebook-relative typed address 记录 old→live ID 重绑定，再执行 live Recipe validation。只打开 Notebook folder 得到的空 shell或只收到 COM object ID 不能通过。Working-copy activation failure 保留本次 working Notebook、实际 live ID lease 和诊断，但不污染已验证的 immutable template，关闭该 working Notebook 后可重试；ID rebind/live validation 失败才把 exact entry quarantine 为不可命中的 `invalid`。省略该选项仍是默认、最保守的 fresh 路径，并保证零 cache lookup/read/write/invalidation/cleanup。
+
+Cache 只在 `.local-validation/fixture-cache/` managed root 内保存关闭的 disposable Notebook opaque bytes。失效清理不是通用 Notebook 删除：只能命中由 fingerprint/instance 精确定位、ownership/containment/reparse/open-state/lease 全部通过的单一 template/staging entry，并留下 root-level tombstone。工作副本、失败现场、普通 artifact 和用户 Notebook 永远不属于该清理能力。
+
+Lookup 不会把目录仍存在的 `invalid` entry 当成普通 miss。历史上仅因 working-copy materialized-open failure 被误隔离的 entry，可在原 validation 与 byte inventory 重新通过时恢复；其他 `invalid` entry 会在首次 lookup 和 programmatic publish 前的 fingerprint lock 内精确清理，再以 `invalidated_rebuild` 重建。`cleanup_failed`、缺失 ownership metadata、未知状态、active lease 或仍打开的 source 都会 fail closed；原子 publish 继续拒绝覆盖现有实例。
 
 P2 Copy 与 Page Move 只能使用 Runner 中各自的具名场景；精确命令、权限矩阵、目标清理和 Notebook 残留规则见 [tests/manual_validation/README.md](../../tests/manual_validation/README.md)，进度见 [TODO 002](../todo/002_p2_copy_and_reconstructive_page_move.md)。不得把本页的 raw/manual 片段组合成另一个隐式 Copy 入口。
 
@@ -31,7 +37,7 @@ P2 Copy 与 Page Move 只能使用 Runner 中各自的具名场景；精确命�
 .venv\Scripts\python.exe tests\manual_validation\run.py rename
 ```
 
-第一条只展示计划；第二条必须由用户本人明确运行。把 `rename` 替换为另一个顶层 scenario 即可验证其他行为；每条命令都独立创建 Notebook，不依赖上一条。默认 Notebook 名称为 `__LOCAL_MCP_TEST_ISOLATED__<TIMESTAMP>`，默认证据目录为 `.local-validation\run-<同一 TIMESTAMP>`。只有在 scenario 失败后排障或专门验证附件、墨迹、媒体等没有稳定 typed 创建工具的内容时，才需要下面的 UI 人工准备。
+第一条只展示计划；第二条必须由用户本人明确运行。把 `rename` 替换为另一个顶层 scenario 即可验证其他行为；每条命令都独立创建完整 Notebook bundle，不依赖上一条。单 role Fresh Notebook 名称为 `__<scenario>-<YYYY-MM-DD-HH-MM-SS>__`；cache working Notebook 增加 `CACHED`。多 role bundle（当前代表为 `copy-page`）还在 scenario 后增加 `source`/`destination` role，并为每个 role 写独立 lifecycle lease。默认 run 目录使用同一本地时间戳，例如 `.local-validation\run-2026-08-11-11-05-49`。完整本地 ISO 时间、UTC offset 和时区名称仍写入 `run_identity`，JSON 事件字段仍使用 UTC ISO-8601。只有在 scenario 失败后排障或专门验证附件、墨迹、媒体等没有稳定 typed 创建工具的内容时，才需要下面的 UI 人工准备。
 
 在 OneNote UI 中手工创建仅用于测试的 Notebook：
 
@@ -52,7 +58,7 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
 
 ## 3. 独立进程配置
 
-使用推荐 Runner 时无需修改任何 MCP 配置；每条场景命令最多启动一个独立 server。源 Notebook create/get/close 由 lease 约束的窄 lifecycle wrapper 完成；该场景唯一的 MCP 进程使用固定的 fixture + mutation + evidence + restore/cleanup 最小权限闭包，并在 fixture 前用 `health_check` 核验。仅在使用后文手工 tool 调用排障时，才复制一份只用于该 Notebook 的 MCP 配置并重启独立 server 进程：
+使用推荐 Runner 时无需修改任何 MCP 配置；每条场景命令最多启动一个独立 server。Working Notebook fresh create 或 materialized open，以及精确 get/close，均由 lease 约束的窄 lifecycle wrapper 完成；cache open 还必须从 COM hierarchy 证明 actual path 只等于 working path。该场景唯一的 MCP 进程使用固定的 fixture + mutation + evidence + restore/cleanup 最小权限闭包，并在 fixture 前用 `health_check` 核验。仅在使用后文手工 tool 调用排障时，才复制一份只用于该 Notebook 的 MCP 配置并重启独立 server 进程：
 
 ```toml
 [mcp_servers.local-onenote-isolated.env]

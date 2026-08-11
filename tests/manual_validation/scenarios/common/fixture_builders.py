@@ -189,7 +189,7 @@ async def ensure_copy_rich_fixture(
         "page_id": page_id,
         "marker": marker,
         "automated_content": ["rich_text", "table", "image"],
-        "manual_content": ["file_attachment", "ink", "media"],
+        "manual_content": ["ink", "shape", "media"],
         "observed_object_types": sorted(
             {
                 str(item.get("kind"))
