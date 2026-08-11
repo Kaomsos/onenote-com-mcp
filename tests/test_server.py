@@ -170,7 +170,7 @@ def test_search_pages_schema_allows_omitted_scope_id():
 def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
-    assert len(names) == 54
+    assert len(names) == 58
     assert {
         "reorder_section",
         "reorder_section_group",
@@ -186,12 +186,15 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
         "copy_notebook",
         "plan_move_page",
         "move_page",
+        "plan_move_section",
+        "move_section",
+        "plan_move_section_group",
+        "move_section_group",
     } <= names
     assert "update_page_xml" not in names
     assert "update_hierarchy_xml" not in names
     assert "delete_hierarchy" not in names
     assert "merge_sections" not in names
-    assert "move_section" not in names
     assert "plan_reconstructive_move_page" not in names
     assert "reconstructive_move_page" not in names
 
@@ -219,7 +222,7 @@ def test_raw_hierarchy_xml_is_absent_from_advanced_and_every_registration_profil
     register_tools(fake, server.services, raw_xml_enabled=True)
     assert "update_page_xml" in fake.names
     assert "update_hierarchy_xml" not in fake.names
-    assert "move_section" not in fake.names
+    assert "move_section" in fake.names
 
 
 def test_reparent_tool_schemas_require_exact_typed_confirmation():
@@ -281,6 +284,22 @@ def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
             "expected_section_id",
             "plan_digest",
         },
+        "plan_move_section": {"section_id", "destination_parent_id"},
+        "move_section": {
+            "section_id",
+            "destination_parent_id",
+            "expected_name",
+            "expected_parent_id",
+            "plan_digest",
+        },
+        "plan_move_section_group": {"section_group_id", "destination_parent_id"},
+        "move_section_group": {
+            "section_group_id",
+            "destination_parent_id",
+            "expected_name",
+            "expected_parent_id",
+            "plan_digest",
+        },
     }
 
     for name, required in expected_required.items():
@@ -289,7 +308,9 @@ def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
     assert tools["plan_copy"].parameters["properties"]["destination_base_folder"]["default"] == ""
     assert tools["plan_copy"].parameters["properties"]["include_descendants"]["default"] is False
     assert tools["copy_page"].parameters["properties"]["include_descendants"]["default"] is False
-    for name in ("copy_section", "copy_section_group", "copy_notebook", "move_page"):
+    assert tools["plan_move_page"].parameters["properties"]["include_descendants"]["default"] is False
+    assert tools["move_page"].parameters["properties"]["include_descendants"]["default"] is False
+    for name in ("copy_section", "copy_section_group", "copy_notebook"):
         assert "include_descendants" not in tools[name].parameters["properties"]
 
 

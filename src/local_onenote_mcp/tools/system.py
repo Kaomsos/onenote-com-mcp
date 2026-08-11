@@ -51,6 +51,7 @@ async def health_check() -> dict[str, Any]:
                 ),
                 "experimental_copy_enabled": policy.experimental_copy_enabled,
                 "move_page_enabled": policy.move_page_enabled,
+                "move_containers_enabled": policy.move_containers_enabled,
                 "raw_xml_enabled": policy.raw_xml_enabled,
             },
             "search_budget": {

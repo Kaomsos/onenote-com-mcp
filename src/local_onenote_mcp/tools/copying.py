@@ -1,4 +1,4 @@
-"""Experimental Copy planning, execution, and Page Move tools."""
+"""Experimental Copy planning and reconstructive Move tools."""
 
 from __future__ import annotations
 
@@ -137,14 +137,16 @@ async def plan_move_page(
     page_id: str,
     destination_section_id: str,
     destination_title: str = "",
+    include_descendants: bool = False,
 ) -> dict[str, Any]:
-    """Plan a Page-subtree Copy followed by non-permanent source deletion."""
+    """Plan a selected Page scope Copy followed by non-permanent source deletion."""
 
     return invoke(
         lambda: get_services().copying.plan_move_page(
             page_id,
             destination_section_id,
             destination_title,
+            include_descendants,
         )
     )
 
@@ -157,8 +159,9 @@ async def move_page(
     plan_digest: str,
     expected_modified: str | None = None,
     destination_title: str = "",
+    include_descendants: bool = False,
 ) -> dict[str, Any]:
-    """Copy a Page subtree and recycle the source only after lossless verification."""
+    """Copy a selected Page scope and recycle its source only after verification."""
 
     return invoke(
         lambda: get_services().copying.move_page(
@@ -169,6 +172,83 @@ async def move_page(
             plan_digest,
             expected_modified,
             destination_title,
+            include_descendants,
+        )
+    )
+
+
+async def plan_move_section(
+    section_id: str,
+    destination_parent_id: str,
+    destination_name: str = "",
+) -> dict[str, Any]:
+    """Plan a cross-Notebook Section Copy followed by one non-permanent root deletion."""
+
+    return invoke(
+        lambda: get_services().copying.plan_move_section(
+            section_id, destination_parent_id, destination_name
+        )
+    )
+
+
+async def move_section(
+    section_id: str,
+    destination_parent_id: str,
+    expected_name: str,
+    expected_parent_id: str,
+    plan_digest: str,
+    expected_modified: str | None = None,
+    destination_name: str = "",
+) -> dict[str, Any]:
+    """Move a Section across Notebooks by verified Copy and non-permanent root deletion."""
+
+    return invoke(
+        lambda: get_services().copying.move_section(
+            section_id,
+            destination_parent_id,
+            expected_name,
+            expected_parent_id,
+            plan_digest,
+            expected_modified,
+            destination_name,
+        )
+    )
+
+
+async def plan_move_section_group(
+    section_group_id: str,
+    destination_parent_id: str,
+    destination_name: str = "",
+) -> dict[str, Any]:
+    """Plan a cross-Notebook SectionGroup Copy followed by one non-permanent root deletion."""
+
+    return invoke(
+        lambda: get_services().copying.plan_move_section_group(
+            section_group_id, destination_parent_id, destination_name
+        )
+    )
+
+
+async def move_section_group(
+    section_group_id: str,
+    destination_parent_id: str,
+    expected_name: str,
+    expected_parent_id: str,
+    plan_digest: str,
+    expected_modified: str | None = None,
+    destination_name: str = "",
+) -> dict[str, Any]:
+    """Move a SectionGroup tree across Notebooks by verified Copy and root deletion."""
+
+    return invoke(
+        lambda: get_services().copying.move_section_group(
+            section_group_id,
+            destination_parent_id,
+            expected_name,
+            expected_parent_id,
+            plan_digest,
+            expected_modified,
+            destination_name,
         )
     )
 
@@ -181,4 +261,8 @@ TOOLS = [
     copy_notebook,
     plan_move_page,
     move_page,
+    plan_move_section,
+    move_section,
+    plan_move_section_group,
+    move_section_group,
 ]

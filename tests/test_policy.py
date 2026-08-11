@@ -13,6 +13,7 @@ def test_mutations_are_disabled_by_default(monkeypatch):
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
         "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
+        "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
         "LOCAL_ONENOTE_ENABLE_RAW_XML",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -27,6 +28,7 @@ def test_mutations_are_disabled_by_default(monkeypatch):
     assert policy.experimental_reorder_section_group_enabled is False
     assert policy.experimental_reparent_enabled is False
     assert policy.move_page_enabled is False
+    assert policy.move_containers_enabled is False
     with pytest.raises(PermissionError):
         policy.require_write()
     with pytest.raises(PermissionError):
@@ -41,6 +43,8 @@ def test_mutations_are_disabled_by_default(monkeypatch):
         policy.require_experimental_reorder("section_group")
     with pytest.raises(PermissionError):
         policy.require_move_page()
+    with pytest.raises(PermissionError):
+        policy.require_move_containers()
 
 
 def test_move_page_requires_all_three_mutation_capabilities(monkeypatch):
@@ -50,6 +54,15 @@ def test_move_page_requires_all_three_mutation_capabilities(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
 
     MutationPolicy.current().require_move_page()
+
+
+def test_move_containers_requires_its_independent_gate(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS", "true")
+
+    MutationPolicy.current().require_move_containers()
 
 
 @pytest.mark.parametrize(
@@ -140,6 +153,29 @@ def test_move_page_permission_matrix_rejects_each_missing_gate(monkeypatch, miss
 
     with pytest.raises(PermissionError):
         MutationPolicy.current().require_move_page()
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "LOCAL_ONENOTE_ENABLE_WRITES",
+        "LOCAL_ONENOTE_ENABLE_DELETES",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
+        "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
+    ],
+)
+def test_move_containers_permission_matrix_rejects_each_missing_gate(monkeypatch, missing):
+    for name in (
+        "LOCAL_ONENOTE_ENABLE_WRITES",
+        "LOCAL_ONENOTE_ENABLE_DELETES",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
+        "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
+    ):
+        monkeypatch.setenv(name, "true")
+    monkeypatch.setenv(missing, "false")
+
+    with pytest.raises(PermissionError):
+        MutationPolicy.current().require_move_containers()
 
 
 def test_search_budget_reads_bounded_environment_values(monkeypatch):

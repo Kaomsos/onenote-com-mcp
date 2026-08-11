@@ -14,6 +14,7 @@ from local_onenote_mcp.page import (
     transform_page_for_copy,
 )
 from local_onenote_mcp.services import PartialFailure
+from local_onenote_mcp.services.pages import stable_page_content_digest
 from local_onenote_mcp.tools.copying import copy_page, plan_copy
 
 
@@ -52,6 +53,21 @@ def test_canonical_page_digest_ignores_only_empty_selection_text_placeholders():
     assert canonical_page_digest(baseline) != canonical_page_digest(
         selected_visible_text
     )
+
+
+def test_stable_page_content_digest_ignores_promotion_metadata_but_not_body():
+    before = page_xml("page", "Title", "Body").replace(
+        'lastModifiedTime="clock"',
+        'lastModifiedTime="before" pageLevel="2" isCurrentlyViewed="true"',
+    )
+    promoted = before.replace(
+        'lastModifiedTime="before" pageLevel="2" isCurrentlyViewed="true"',
+        'lastModifiedTime="after" pageLevel="1" isCurrentlyViewed="false"',
+    )
+    changed_body = promoted.replace("Body", "Changed body")
+
+    assert stable_page_content_digest(before) == stable_page_content_digest(promoted)
+    assert stable_page_content_digest(before) != stable_page_content_digest(changed_body)
 
 
 def test_page_content_capability_projection_is_content_free_and_kind_counted():
@@ -1480,6 +1496,207 @@ def test_page_copy_scope_creates_only_selected_ids_and_verifies(monkeypatch, inc
         assert "#child" in xml_store["new-1"]
 
 
+def test_move_page_scope_defaults_to_root_and_binds_preserved_descendants(monkeypatch):
+    install_plan_fakes(monkeypatch, body="")
+
+    root_only = server.services.copying.plan_move_page(
+        "parent", "destination-section", "Moved Parent"
+    )
+    subtree = server.services.copying.plan_move_page(
+        "parent", "destination-section", "Moved Parent", True
+    )
+
+    assert root_only["include_descendants"] is False
+    assert [item["id"] for item in root_only["snapshots"]["source"]["resources"]] == [
+        "parent"
+    ]
+    assert [
+        item["id"] for item in root_only["snapshots"]["move_source"]["resources"]
+    ] == ["parent", "child"]
+    assert {step["operation"] for step in root_only["steps"]} >= {
+        "promote_preserved_descendants",
+        "recycle_source_pages",
+    }
+    assert subtree["include_descendants"] is True
+    assert [item["id"] for item in subtree["snapshots"]["source"]["resources"]] == [
+        "parent",
+        "child",
+    ]
+    assert not any(
+        step["operation"] == "promote_preserved_descendants"
+        for step in subtree["steps"]
+    )
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize("planned_scope,executed_scope", [(False, True), (True, False)])
+def test_move_page_rejects_scope_mismatch_before_copy(
+    monkeypatch, planned_scope, executed_scope
+):
+    install_plan_fakes(monkeypatch, body="")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    plan = server.services.copying.plan_move_page(
+        "parent",
+        "destination-section",
+        "Moved Parent",
+        planned_scope,
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_execute_copy",
+        lambda value: (_ for _ in ()).throw(AssertionError("stale Move must not copy")),
+    )
+
+    with pytest.raises(ValueError, match="missing or stale"):
+        server.services.copying.move_page(
+            "parent",
+            "destination-section",
+            "Parent",
+            "source-section",
+            plan["plan_digest"],
+            destination_title="Moved Parent",
+            include_descendants=executed_scope,
+        )
+
+
+@pytest.mark.write_contract
+def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch):
+    state = install_plan_fakes(monkeypatch, body="")
+    state["xml_clock"] = "before-promotion"
+
+    def hierarchy_sensitive_page_xml(page_id, page_info="basic"):
+        item = next(value for value in state["items"] if value["id"] == page_id)
+        return page_xml(page_id, item["title"], state["body"]).replace(
+            'lastModifiedTime="clock"',
+            f'lastModifiedTime="{state["xml_clock"]}" pageLevel="{item["page_level"]}"',
+        )
+
+    monkeypatch.setattr(server.services.pages, "xml", hierarchy_sensitive_page_xml)
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    plan = server.services.copying.plan_move_page(
+        "parent", "destination-section", "Moved Parent"
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_execute_copy",
+        lambda value: {
+            "item": {"id": "new-parent", "resource_type": "page"},
+            "created_ids": ["new-parent"],
+            "copy_report": {
+                "lossless": True,
+                "verified": True,
+                "id_map": {"parent": "new-parent"},
+            },
+            "warnings": [],
+        },
+    )
+
+    def update_hierarchy(operation, **params):
+        assert operation == "update_hierarchy"
+        root = ET.fromstring(params["xml"])
+        nodes = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Page"]
+        stack = []
+        for order, node in enumerate(nodes):
+            item = next(value for value in state["items"] if value["id"] == node.attrib["ID"])
+            level = int(node.attrib["pageLevel"])
+            while stack and stack[-1]["page_level"] >= level:
+                stack.pop()
+            item.update(
+                order=order,
+                page_level=level,
+                parent_page_id=stack[-1]["id"] if stack else None,
+            )
+            stack.append(item)
+        state["xml_clock"] = "after-promotion"
+        return {"updated": True}
+
+    monkeypatch.setattr(server.services.copying, "call", update_hierarchy)
+
+    def delete_page(page_id, *args, **kwargs):
+        state["items"] = [item for item in state["items"] if item["id"] != page_id]
+        return {"deleted": True, "final_state": {"id": page_id, "is_in_recycle_bin": True}}
+
+    monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
+
+    result = server.services.copying.move_page(
+        "parent",
+        "destination-section",
+        "Parent",
+        "source-section",
+        plan["plan_digest"],
+        destination_title="Moved Parent",
+    )
+
+    child = next(item for item in state["items"] if item["id"] == "child")
+    assert result["include_descendants"] is False
+    assert result["deleted_source_ids"] == ["parent"]
+    assert result["preserved_descendants"]["preserved_descendant_ids"] == ["child"]
+    assert child["page_level"] == 1
+    assert child["parent_page_id"] is None
+
+
+@pytest.mark.write_contract
+def test_root_only_move_blocks_delete_when_descendant_promotion_fails(monkeypatch):
+    install_plan_fakes(monkeypatch, body="")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    plan = server.services.copying.plan_move_page(
+        "parent", "destination-section", "Moved Parent"
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_execute_copy",
+        lambda value: {
+            "item": {"id": "new-parent", "resource_type": "page"},
+            "created_ids": ["new-parent"],
+            "copy_report": {
+                "lossless": True,
+                "verified": True,
+                "id_map": {"parent": "new-parent"},
+            },
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "call",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("promotion failed")),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "delete_page",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("source delete must remain blocked")
+        ),
+    )
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.move_page(
+            "parent",
+            "destination-section",
+            "Parent",
+            "source-section",
+            plan["plan_digest"],
+            destination_title="Moved Parent",
+        )
+
+    assert caught.value.details["outcome"] == "copy_only"
+    assert caught.value.details["source_deleted"] is False
+    assert caught.value.details["source_topology_may_have_changed"] is True
+    assert caught.value.details["preservation_error"] == "promotion failed"
+
+
 @pytest.mark.write_contract
 def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
     install_plan_fakes(monkeypatch)
@@ -1489,7 +1706,7 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying.plan_move_page(
-        "parent", "destination-section", "Moved Parent"
+        "parent", "destination-section", "Moved Parent", True
     )
     monkeypatch.setattr(
         server.services.copying,
@@ -1510,6 +1727,7 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
             "source-section",
             plan["plan_digest"],
             destination_title="Moved Parent",
+            include_descendants=True,
         )
 
     assert caught.value.details["outcome"] == "copy_only"
@@ -1525,7 +1743,7 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying.plan_move_page(
-        "parent", "destination-section", "Moved Parent"
+        "parent", "destination-section", "Moved Parent", True
     )
     report = {
         "lossless": False,
@@ -1557,6 +1775,7 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
             "source-section",
             plan["plan_digest"],
             destination_title="Moved Parent",
+            include_descendants=True,
         )
 
     assert caught.value.details["outcome"] == "copy_only"
@@ -1577,7 +1796,7 @@ def test_move_page_actual_copy_identity_failure_blocks_all_source_deletes(
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     planned = server.services.copying.plan_move_page(
-        "parent", "destination-section", "Moved Parent"
+        "parent", "destination-section", "Moved Parent", True
     )
 
     def create_page(section_id, title, *args, **kwargs):
@@ -1628,6 +1847,7 @@ def test_move_page_actual_copy_identity_failure_blocks_all_source_deletes(
             "source-section",
             planned["plan_digest"],
             destination_title="Moved Parent",
+            include_descendants=True,
         )
 
     assert caught.value.details["outcome"] == "copy_only"
@@ -1645,7 +1865,7 @@ def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying.plan_move_page(
-        "parent", "destination-section", "Moved Parent"
+        "parent", "destination-section", "Moved Parent", True
     )
     monkeypatch.setattr(
         server.services.copying,
@@ -1686,6 +1906,7 @@ def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch)
             "source-section",
             plan["plan_digest"],
             destination_title="Moved Parent",
+            include_descendants=True,
         )
 
     assert caught.value.details["outcome"] == "copy_only"
@@ -1702,7 +1923,7 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying.plan_move_page(
-        "parent", "destination-section", "Moved Parent"
+        "parent", "destination-section", "Moved Parent", True
     )
 
     def copy_then_change_source(value):
@@ -1733,6 +1954,7 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
             "source-section",
             plan["plan_digest"],
             destination_title="Moved Parent",
+            include_descendants=True,
         )
 
     assert caught.value.details["outcome"] == "copy_only"
@@ -1749,7 +1971,7 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying.plan_move_page(
-        "parent", "destination-section", "Moved Parent"
+        "parent", "destination-section", "Moved Parent", True
     )
     monkeypatch.setattr(
         server.services.copying,
@@ -1781,6 +2003,7 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
         "source-section",
         plan["plan_digest"],
         destination_title="Moved Parent",
+        include_descendants=True,
     )
 
     assert deleted == ["child", "parent"]
@@ -1800,7 +2023,7 @@ def test_move_page_reports_verified_and_remaining_ids_on_delete_failure(monkeypa
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying.plan_move_page(
-        "parent", "destination-section", "Moved Parent"
+        "parent", "destination-section", "Moved Parent", True
     )
     monkeypatch.setattr(
         server.services.copying,
@@ -1832,6 +2055,7 @@ def test_move_page_reports_verified_and_remaining_ids_on_delete_failure(monkeypa
             "source-section",
             plan["plan_digest"],
             destination_title="Moved Parent",
+            include_descendants=True,
         )
 
     assert caught.value.details["outcome"] == "source_partially_removed"
@@ -1893,3 +2117,315 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
     assert result["recycled_source_ids"] == []
     assert result["recycle_unverified_source_ids"] == ["parent"]
     assert any("COM did not expose" in warning for warning in result["warnings"])
+
+
+def container_move_items() -> list[dict]:
+    return [
+        {
+            "resource_type": "notebook",
+            "id": "source-notebook",
+            "name": "Source Notebook",
+            "path": "Source Notebook",
+            "parent_id": None,
+            "modified": "m1",
+        },
+        {
+            "resource_type": "section_group",
+            "id": "source-group",
+            "name": "Source Group",
+            "path": "Source Notebook/Source Group",
+            "parent_id": "source-notebook",
+            "notebook_id": "source-notebook",
+            "modified": "m1",
+        },
+        {
+            "resource_type": "section",
+            "id": "source-container-section",
+            "name": "Source Section",
+            "path": "Source Notebook/Source Group/Source Section",
+            "parent_id": "source-group",
+            "notebook_id": "source-notebook",
+            "modified": "m1",
+        },
+        {
+            "resource_type": "page",
+            "id": "source-container-page",
+            "title": "Source Page",
+            "path": "Source Notebook/Source Group/Source Section/Source Page",
+            "parent_id": "source-container-section",
+            "notebook_id": "source-notebook",
+            "section_id": "source-container-section",
+            "parent_page_id": None,
+            "page_level": 1,
+            "order": 0,
+            "modified": "m1",
+        },
+        {
+            "resource_type": "notebook",
+            "id": "destination-notebook",
+            "name": "Destination Notebook",
+            "path": "Destination Notebook",
+            "parent_id": None,
+            "modified": "m1",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    ("resource_type", "source_id", "planner", "execute_tool"),
+    [
+        ("section", "source-container-section", "plan_move_section", "move_section"),
+        (
+            "section_group",
+            "source-group",
+            "plan_move_section_group",
+            "move_section_group",
+        ),
+    ],
+)
+def test_container_move_plan_is_cross_notebook_and_move_specific(
+    monkeypatch, resource_type, source_id, planner, execute_tool
+):
+    items = container_move_items()
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [dict(item) for item in items],
+    )
+    monkeypatch.setattr(
+        server.services.pages,
+        "xml",
+        lambda page_id, page_info="basic": page_xml(page_id, "Source Page", "Body"),
+    )
+
+    plan = getattr(server.services.copying, planner)(
+        source_id, "destination-notebook", "Moved Container"
+    )
+
+    assert plan["operation"] == f"move_{resource_type}"
+    assert plan["execute_tool"] == execute_tool
+    assert plan["move_notebooks"] == {
+        "source_notebook_id": "source-notebook",
+        "destination_notebook_id": "destination-notebook",
+        "cross_notebook": True,
+    }
+    assert [step["operation"] for step in plan["steps"]][-4:] == [
+        "revalidate_source",
+        "delete_source_root_nonpermanently",
+        "verify_source_subtree_inactive",
+        "revalidate_destination",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source_id", "planner", "suggestion"),
+    [
+        ("source-container-section", "plan_move_section", "reparent_section"),
+        ("source-group", "plan_move_section_group", "reparent_section_group"),
+    ],
+)
+def test_container_move_rejects_same_notebook_before_mutation(
+    monkeypatch, source_id, planner, suggestion
+):
+    items = container_move_items()
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [dict(item) for item in items],
+    )
+    monkeypatch.setattr(
+        server.services.pages,
+        "xml",
+        lambda page_id, page_info="basic": page_xml(page_id, "Source Page", "Body"),
+    )
+
+    with pytest.raises(ValueError, match=suggestion):
+        getattr(server.services.copying, planner)(source_id, "source-notebook", "Moved")
+
+
+def install_container_move_execution_fakes(monkeypatch, resource_type: str):
+    source_id = "source-section" if resource_type == "section" else "source-group"
+    child_id = "source-page" if resource_type == "section" else "source-section"
+    target_root = f"target-{source_id}"
+    target_child = f"target-{child_id}"
+    plan = {
+        "operation": f"move_{resource_type}",
+        "plan_digest": "move-digest",
+        "source_digest": "source-digest",
+        "source": {
+            "resource_type": resource_type,
+            "id": source_id,
+            "name": "Source",
+            "parent_id": "source-notebook",
+            "notebook_id": "source-notebook",
+            "modified": "m1",
+        },
+        "resources": [
+            {"resource_type": resource_type, "id": source_id},
+            {"resource_type": "page" if resource_type == "section" else "section", "id": child_id},
+        ],
+        "move_notebooks": {
+            "source_notebook_id": "source-notebook",
+            "destination_notebook_id": "destination-notebook",
+            "cross_notebook": True,
+        },
+    }
+    report = {
+        "id_map": {source_id: target_root, child_id: target_child},
+        "lossless": True,
+        "verified": True,
+        "skipped_content": [],
+    }
+    copied = {
+        "item": {"resource_type": resource_type, "id": target_root},
+        "copy_report": report,
+        "created_ids": [target_root, target_child],
+        "warnings": [],
+    }
+    captures = iter(
+        [
+            {"source_digest": "source-digest"},
+            {"source_digest": "target-digest"},
+            {"source_digest": "target-digest"},
+        ]
+    )
+    delete_calls = []
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS", "true")
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server.services.copying, "_build_plan", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(server.services.copying, "_execute_copy", lambda _plan: copied)
+    monkeypatch.setattr(server.services.copying, "_capture_source", lambda *args, **kwargs: next(captures))
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [
+            {"resource_type": resource_type, "id": target_root},
+            {"resource_type": "page", "id": target_child},
+        ],
+    )
+
+    def delete_resource(*args):
+        delete_calls.append(args)
+        return {"final_state": None}
+
+    monkeypatch.setattr(server.services.mutations, "delete_resource", delete_resource)
+    return source_id, child_id, copied, delete_calls
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize("resource_type", ["section", "section_group"])
+def test_container_move_uses_one_nonpermanent_root_delete(monkeypatch, resource_type):
+    source_id, child_id, _copied, delete_calls = install_container_move_execution_fakes(
+        monkeypatch, resource_type
+    )
+    method = getattr(server.services.copying, f"move_{resource_type}")
+
+    result = method(
+        source_id,
+        "destination-notebook",
+        "Source",
+        "source-notebook",
+        "move-digest",
+        "m1",
+        "Moved",
+    )
+
+    assert len(delete_calls) == 1
+    assert delete_calls[0] == (
+        source_id,
+        resource_type,
+        "Source",
+        "source-notebook",
+        "m1",
+        False,
+    )
+    assert result["outcome"] == "moved"
+    assert result["attempted_source_ids"] == [source_id]
+    assert result["deleted_source_ids"] == [source_id]
+    assert result["inactive_source_ids"] == [source_id, child_id]
+    assert result["source_deleted_nonpermanently"] is True
+
+
+@pytest.mark.write_contract
+def test_container_move_blocks_root_delete_when_copy_gate_is_not_lossless(monkeypatch):
+    source_id, _child_id, copied, delete_calls = install_container_move_execution_fakes(
+        monkeypatch, "section"
+    )
+    copied["copy_report"]["lossless"] = False
+
+    with pytest.raises(PartialFailure) as raised:
+        server.services.copying.move_section(
+            source_id,
+            "destination-notebook",
+            "Source",
+            "source-notebook",
+            "move-digest",
+            "m1",
+            "Moved",
+        )
+
+    assert raised.value.details["outcome"] == "copy_only"
+    assert raised.value.details["source_deleted"] is False
+    assert delete_calls == []
+
+
+@pytest.mark.write_contract
+def test_container_move_does_not_delete_when_source_revalidation_changes(monkeypatch):
+    source_id, _child_id, _copied, delete_calls = install_container_move_execution_fakes(
+        monkeypatch, "section"
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_capture_source",
+        lambda *args, **kwargs: {"source_digest": "changed-source"},
+    )
+
+    with pytest.raises(PartialFailure) as raised:
+        server.services.copying.move_section(
+            source_id,
+            "destination-notebook",
+            "Source",
+            "source-notebook",
+            "move-digest",
+            "m1",
+            "Moved",
+        )
+
+    assert raised.value.details["outcome"] == "copy_only"
+    assert delete_calls == []
+
+
+@pytest.mark.write_contract
+def test_container_move_reports_remaining_descendant_without_extra_deletes(monkeypatch):
+    source_id, child_id, _copied, delete_calls = install_container_move_execution_fakes(
+        monkeypatch, "section_group"
+    )
+    monkeypatch.setattr("local_onenote_mcp.services.copying.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [
+            {"resource_type": "page", "id": child_id},
+            {"resource_type": "section_group", "id": f"target-{source_id}"},
+            {"resource_type": "section", "id": f"target-{child_id}"},
+        ],
+    )
+
+    with pytest.raises(PartialFailure) as raised:
+        server.services.copying.move_section_group(
+            source_id,
+            "destination-notebook",
+            "Source",
+            "source-notebook",
+            "move-digest",
+            "m1",
+            "Moved",
+        )
+
+    assert len(delete_calls) == 1
+    assert raised.value.details["outcome"] == "source_partially_removed"
+    assert raised.value.details["attempted_source_ids"] == [source_id]
+    assert raised.value.details["remaining_source_ids"] == [child_id]

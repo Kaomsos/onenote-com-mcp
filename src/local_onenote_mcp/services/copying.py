@@ -22,7 +22,7 @@ from .base import BaseService
 from .errors import PartialFailure
 from .hierarchy import HierarchyService
 from .mutations import MutationService
-from .pages import PageService
+from .pages import PageService, stable_page_content_digest
 
 
 COPY_EXECUTE_TOOLS = {
@@ -30,6 +30,16 @@ COPY_EXECUTE_TOOLS = {
     "section": "copy_section",
     "section_group": "copy_section_group",
     "notebook": "copy_notebook",
+}
+MOVE_RESOURCE_TYPES = {
+    "move_page": "page",
+    "move_section": "section",
+    "move_section_group": "section_group",
+}
+MOVE_EXECUTE_TOOLS = {
+    "move_page": "move_page",
+    "move_section": "move_section",
+    "move_section_group": "move_section_group",
 }
 
 class CopyService(BaseService):
@@ -287,6 +297,8 @@ class CopyService(BaseService):
         operation: str = "copy",
         include_descendants: bool = False,
     ) -> dict[str, Any]:
+        if operation not in {"copy", *MOVE_RESOURCE_TYPES}:
+            raise ValueError(f"Unsupported Copy/Move operation '{operation}'.")
         started = time.monotonic()
         budget = CopyBudget.current()
         bundle = self._capture_source(source_id, budget, started, include_descendants)
@@ -295,7 +307,47 @@ class CopyService(BaseService):
             if bundle["source"]["resource_type"] == "page"
             else True
         )
+        move_source_bundle = None
+        if operation == "move_page":
+            # A root-only Move still needs to bind every excluded descendant before
+            # the source root is deleted.  Those Pages are promoted one level first,
+            # so OneNote cannot implicitly recycle them with their former parent.
+            move_source_bundle = (
+                bundle
+                if effective_include_descendants
+                else self._capture_source(source_id, budget, started, True)
+            )
         items = self.hierarchy.resources(include_recycle_bin=False)
+        move_notebooks = None
+        if operation in {"move_section", "move_section_group"}:
+            expected_type = MOVE_RESOURCE_TYPES[operation]
+            if bundle["source"]["resource_type"] != expected_type:
+                raise ValueError(
+                    f"{operation} source must identify a {expected_type}."
+                )
+            destination_parent = next(
+                (item for item in items if item.get("id") == destination_parent_id),
+                None,
+            )
+            if destination_parent is not None and destination_parent.get(
+                "resource_type"
+            ) in {"notebook", "section_group"}:
+                source_notebook_id = str(bundle["source"].get("notebook_id", ""))
+                destination_notebook_id = str(
+                    destination_parent.get("id")
+                    if destination_parent.get("resource_type") == "notebook"
+                    else destination_parent.get("notebook_id", "")
+                )
+                if source_notebook_id and source_notebook_id == destination_notebook_id:
+                    suggested = (
+                        "reparent_section"
+                        if expected_type == "section"
+                        else "reparent_section_group"
+                    )
+                    raise ValueError(
+                        f"{operation} only supports cross-Notebook reconstruction. "
+                        f"Use {suggested} for same-Notebook parent changes."
+                    )
         destination = self._destination(
             bundle["source"],
             items,
@@ -303,6 +355,21 @@ class CopyService(BaseService):
             destination_name,
             destination_base_folder,
         )
+        if operation in {"move_section", "move_section_group"}:
+            source_notebook_id = str(bundle["source"].get("notebook_id", ""))
+            destination_parent = destination.get("parent") or {}
+            destination_notebook_id = str(
+                destination_parent.get("id")
+                if destination_parent.get("resource_type") == "notebook"
+                else destination_parent.get("notebook_id", "")
+            )
+            if not source_notebook_id or not destination_notebook_id:
+                raise ValueError("Move requires exact source and destination Notebook IDs.")
+            move_notebooks = {
+                "source_notebook_id": source_notebook_id,
+                "destination_notebook_id": destination_notebook_id,
+                "cross_notebook": True,
+            }
         if time.monotonic() - started > budget.max_plan_seconds:
             raise ValueError(f"Copy planning exceeded {budget.max_plan_seconds} seconds.")
         digest_payload = {
@@ -316,6 +383,12 @@ class CopyService(BaseService):
                 "issues": bundle["preview_issues"],
             },
         }
+        if move_source_bundle is not None:
+            digest_payload["move_source_snapshot"] = move_source_bundle[
+                "source_snapshot"
+            ]
+        if move_notebooks is not None:
+            digest_payload["move_notebooks"] = move_notebooks
         plan_digest = self._digest(digest_payload)
         pages = bundle["estimated"]["pages"]
         steps = [
@@ -325,18 +398,40 @@ class CopyService(BaseService):
             {"operation": "verify_copy", "count": bundle["estimated"]["resources"]},
         ]
         if operation == "move_page":
+            preserved_count = max(
+                0,
+                len(move_source_bundle["resources"]) - len(bundle["resources"]),
+            )
+            if preserved_count:
+                steps.append(
+                    {
+                        "operation": "promote_preserved_descendants",
+                        "count": preserved_count,
+                    }
+                )
             steps.append({"operation": "recycle_source_pages", "count": pages})
+        elif operation in {"move_section", "move_section_group"}:
+            steps.extend(
+                [
+                    {"operation": "revalidate_source", "count": bundle["estimated"]["resources"]},
+                    {"operation": "delete_source_root_nonpermanently", "count": 1},
+                    {"operation": "verify_source_subtree_inactive", "count": bundle["estimated"]["resources"]},
+                    {"operation": "revalidate_destination", "count": bundle["estimated"]["resources"]},
+                ]
+            )
         return {
             **bundle,
             "operation": operation,
             "include_descendants": effective_include_descendants,
             "destination": destination,
+            "move_source_bundle": move_source_bundle,
+            "move_notebooks": move_notebooks,
             "plan_digest": plan_digest,
             "steps": steps,
             "lossless_candidate": not bundle["preview_issues"],
             "execute_tool": (
-                "move_page"
-                if operation == "move_page"
+                MOVE_EXECUTE_TOOLS[operation]
+                if operation in MOVE_EXECUTE_TOOLS
                 else COPY_EXECUTE_TOOLS[bundle["source"]["resource_type"]]
             ),
         }
@@ -344,9 +439,9 @@ class CopyService(BaseService):
     @staticmethod
     def _public_plan(plan: dict[str, Any]) -> dict[str, Any]:
         warnings = sorted({issue["reason"] for issue in plan["preview_issues"]})
-        if plan["operation"] == "move_page":
+        if plan["operation"] in MOVE_RESOURCE_TYPES:
             warnings.append(
-                "Move creates new Page IDs; inbound links from outside the copied subtree are not scanned."
+                "Move creates new IDs; inbound links from outside the copied subtree are not scanned."
             )
         return {
             "operation": plan["operation"],
@@ -355,9 +450,21 @@ class CopyService(BaseService):
             "source_snapshot_digest": plan["source_digest"],
             "source": CopyService._stable_resource(plan["source"]),
             "destination": plan["destination"],
+            **(
+                {"move_notebooks": plan["move_notebooks"]}
+                if plan.get("move_notebooks") is not None
+                else {}
+            ),
             "snapshots": {
                 "source": plan["source_snapshot"],
                 "destination": plan["destination"],
+                **(
+                    {
+                        "move_source": plan["move_source_bundle"]["source_snapshot"],
+                    }
+                    if plan.get("move_source_bundle") is not None
+                    else {}
+                ),
             },
             "estimated": plan["estimated"],
             "content_capabilities": plan["content_capabilities"],
@@ -393,17 +500,60 @@ class CopyService(BaseService):
         page_id: str,
         destination_section_id: str,
         destination_title: str = "",
+        include_descendants: bool = False,
     ) -> dict[str, Any]:
         plan = self._build_plan(
             page_id,
             destination_section_id,
             destination_title,
             operation="move_page",
-            include_descendants=True,
+            include_descendants=include_descendants,
         )
         if plan["source"]["resource_type"] != "page":
             raise ValueError("page_id must identify a Page.")
         return self._public_plan(plan)
+
+    def _plan_move_container(
+        self,
+        source_id: str,
+        resource_type: str,
+        destination_parent_id: str,
+        destination_name: str = "",
+    ) -> dict[str, Any]:
+        operation = f"move_{resource_type}"
+        plan = self._build_plan(
+            source_id,
+            destination_parent_id,
+            destination_name,
+            operation=operation,
+            include_descendants=True,
+        )
+        if plan["source"]["resource_type"] != resource_type:
+            raise ValueError(f"source ID must identify a {resource_type}.")
+        return self._public_plan(plan)
+
+    def plan_move_section(
+        self,
+        section_id: str,
+        destination_parent_id: str,
+        destination_name: str = "",
+    ) -> dict[str, Any]:
+        return self._plan_move_container(
+            section_id, "section", destination_parent_id, destination_name
+        )
+
+    def plan_move_section_group(
+        self,
+        section_group_id: str,
+        destination_parent_id: str,
+        destination_name: str = "",
+    ) -> dict[str, Any]:
+        return self._plan_move_container(
+            section_group_id,
+            "section_group",
+            destination_parent_id,
+            destination_name,
+        )
 
     def _confirm_source(
         self,
@@ -853,6 +1003,160 @@ class CopyService(BaseService):
             raise ValueError("Copy plan is missing or stale. Run plan_copy again before mutation.")
         return self._execute_copy(plan)
 
+    def _promote_preserved_move_descendants(
+        self,
+        plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Detach descendants excluded by a root-only Move before deleting its root."""
+
+        move_bundle = plan.get("move_source_bundle")
+        if not isinstance(move_bundle, dict):
+            return {"promoted": False, "preserved_descendant_ids": [], "pages": {}}
+        selected_ids = {str(item["id"]) for item in plan["resources"]}
+        preserved = [
+            item
+            for item in move_bundle["resources"]
+            if str(item["id"]) not in selected_ids
+        ]
+        if not preserved:
+            return {"promoted": False, "preserved_descendant_ids": [], "pages": {}}
+
+        source = plan["source"]
+        section_id = str(source["section_id"])
+        catalog = self.hierarchy.resources(include_recycle_bin=False)
+        section = next(
+            (
+                item
+                for item in catalog
+                if item.get("id") == section_id and item.get("resource_type") == "section"
+            ),
+            None,
+        )
+        if section is None:
+            raise RuntimeError(
+                "Move source Section is no longer active before descendant promotion."
+            )
+        pages = sorted(
+            (
+                dict(item)
+                for item in catalog
+                if item.get("resource_type") == "page"
+                and str(item.get("section_id")) == section_id
+            ),
+            key=lambda item: int(item.get("order", 0)),
+        )
+        page_ids = [str(item["id"]) for item in pages]
+        preserved_ids = [str(item["id"]) for item in preserved]
+        if str(source["id"]) not in page_ids or any(
+            value not in page_ids for value in preserved_ids
+        ):
+            raise RuntimeError(
+                "A root-only Move descendant is no longer active before promotion."
+            )
+
+        expected_levels = {
+            str(item["id"]): int(item.get("page_level", 1)) - 1
+            for item in preserved
+        }
+        if any(level < 1 for level in expected_levels.values()):
+            raise RuntimeError("A preserved Move descendant cannot be promoted above page level 1.")
+        adjusted = [
+            {
+                **item,
+                "page_level": expected_levels.get(
+                    str(item["id"]), int(item.get("page_level", 1))
+                ),
+            }
+            for item in pages
+        ]
+        self.call(
+            "update_hierarchy",
+            xml=self.hierarchy.page_order_xml(section, adjusted),
+            schema=XML_SCHEMA_2013,
+        )
+
+        refreshed = sorted(
+            (
+                dict(item)
+                for item in self.hierarchy.resources(include_recycle_bin=False)
+                if item.get("resource_type") == "page"
+                and str(item.get("section_id")) == section_id
+            ),
+            key=lambda item: int(item.get("order", 0)),
+        )
+        if [str(item["id"]) for item in refreshed] != page_ids:
+            raise RuntimeError("Descendant promotion changed the source Section Page identity/order.")
+        expected_parent: dict[str, str | None] = {}
+        stack: list[dict[str, Any]] = []
+        for page in adjusted:
+            level = int(page["page_level"])
+            while stack and int(stack[-1]["page_level"]) >= level:
+                stack.pop()
+            expected_parent[str(page["id"])] = (
+                str(stack[-1]["id"]) if stack else None
+            )
+            stack.append(page)
+        refreshed_by_id = {str(item["id"]): item for item in refreshed}
+        page_evidence: dict[str, dict[str, Any]] = {}
+        # Promotion intentionally changes Page hierarchy metadata such as
+        # pageLevel and OneNote-owned modification clocks.  Keep the raw XML
+        # hashes in the plan for pre-mutation stale-plan detection, but compare
+        # stable in-place Page content across this intentional topology change.
+        planned_content_hashes = {
+            page_id: stable_page_content_digest(move_bundle["page_xml"][page_id])
+            for page_id in preserved_ids
+        }
+        for page_id in preserved_ids:
+            current = refreshed_by_id[page_id]
+            if (
+                int(current.get("page_level", 0)) != expected_levels[page_id]
+                or current.get("parent_page_id") != expected_parent[page_id]
+            ):
+                raise RuntimeError("A preserved Move descendant has unexpected promoted topology.")
+            current_hash = stable_page_content_digest(
+                self.pages.xml(page_id, "all")
+            )
+            if current_hash != planned_content_hashes.get(page_id):
+                raise RuntimeError("A preserved Move descendant changed content during promotion.")
+            page_evidence[page_id] = {
+                "section_id": section_id,
+                "page_level": expected_levels[page_id],
+                "parent_page_id": expected_parent[page_id],
+                "page_hash": current_hash,
+            }
+        return {
+            "promoted": True,
+            "preserved_descendant_ids": preserved_ids,
+            "pages": page_evidence,
+        }
+
+    def _verify_preserved_move_descendants(
+        self,
+        evidence: dict[str, Any],
+    ) -> None:
+        if not evidence.get("promoted"):
+            return
+        catalog = {
+            str(item["id"]): item
+            for item in self.hierarchy.resources(include_recycle_bin=False)
+            if item.get("resource_type") == "page"
+        }
+        for page_id in evidence["preserved_descendant_ids"]:
+            expected = evidence["pages"][page_id]
+            current = catalog.get(page_id)
+            if current is None or any(
+                current.get(field) != expected[field]
+                for field in ("section_id", "page_level", "parent_page_id")
+            ):
+                raise RuntimeError("A preserved root-only Move descendant is missing or misplaced.")
+            current_hash = stable_page_content_digest(
+                self.pages.xml(page_id, "all")
+            )
+            if current_hash != expected["page_hash"]:
+                raise RuntimeError(
+                    "A preserved root-only Move descendant changed after source deletion."
+                )
+
     def move_page(
         self,
         page_id: str,
@@ -862,6 +1166,7 @@ class CopyService(BaseService):
         plan_digest: str,
         expected_modified: str | None = None,
         destination_title: str = "",
+        include_descendants: bool = False,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_move_page()
         self._confirm_source(
@@ -876,7 +1181,7 @@ class CopyService(BaseService):
             destination_section_id,
             destination_title,
             operation="move_page",
-            include_descendants=True,
+            include_descendants=include_descendants,
         )
         if not plan_digest or plan_digest != plan["plan_digest"]:
             raise ValueError(
@@ -899,7 +1204,7 @@ class CopyService(BaseService):
                 details["outcome"] = "copy_only"
                 details["source_deleted"] = False
                 raise PartialFailure(
-                    "The Page subtree target was created, but Copy read-back verification failed; "
+                    "The selected Page target was created, but Copy read-back verification failed; "
                     "source deletion was blocked.",
                     **details,
                 ) from exc
@@ -908,7 +1213,8 @@ class CopyService(BaseService):
         report = copied["copy_report"]
         if not report["lossless"] or not report["verified"]:
             raise PartialFailure(
-                "The Page subtree was copied, but source deletion was blocked because fidelity was not verified.",
+                "The selected Page scope was copied, but source deletion was blocked because "
+                "fidelity was not verified.",
                 partial=True,
                 outcome="copy_only",
                 source_deleted=False,
@@ -920,10 +1226,15 @@ class CopyService(BaseService):
 
         try:
             check_move_deadline()
-            current = self._capture_source(page_id, CopyBudget.current(), time.monotonic())
+            current = self._capture_source(
+                page_id,
+                CopyBudget.current(),
+                time.monotonic(),
+                True,
+            )
         except Exception as exc:
             raise PartialFailure(
-                "The Page subtree was copied, but the source snapshot could not be revalidated; "
+                "The selected Page scope was copied, but the source snapshot could not be revalidated; "
                 "source deletion was blocked.",
                 partial=True,
                 outcome="copy_only",
@@ -933,9 +1244,11 @@ class CopyService(BaseService):
                 created_ids=copied["created_ids"],
                 source_revalidation_error=str(exc),
             ) from exc
-        if current["source_digest"] != plan["source_digest"]:
+        expected_move_source = plan.get("move_source_bundle") or plan
+        if current["source_digest"] != expected_move_source["source_digest"]:
             raise PartialFailure(
-                "The source Page subtree changed after Copy verification; source deletion was blocked.",
+                "The source Page scope or its preserved descendants changed after Copy verification; "
+                "source deletion was blocked.",
                 partial=True,
                 outcome="copy_only",
                 source_deleted=False,
@@ -944,11 +1257,37 @@ class CopyService(BaseService):
                 created_ids=copied["created_ids"],
             )
 
+        try:
+            preservation = self._promote_preserved_move_descendants(plan)
+        except Exception as exc:
+            raise PartialFailure(
+                "The Page target was copied, but excluded descendants could not be safely detached; "
+                "source deletion was blocked.",
+                partial=True,
+                outcome="copy_only",
+                source_deleted=False,
+                source_topology_may_have_changed=True,
+                destination=copied.get("item"),
+                copy_report=report,
+                created_ids=copied["created_ids"],
+                preservation_error=str(exc),
+            ) from exc
+
         attempted: list[str] = []
         removed: list[str] = []
         recycled: list[str] = []
         recycle_unverified: list[str] = []
-        source_pages = [item for item in plan["resources"] if item["resource_type"] == "page"]
+        source_pages = [
+            item for item in plan["resources"] if item["resource_type"] == "page"
+        ]
+        if preservation.get("promoted"):
+            current_by_id = {
+                str(item["id"]): item
+                for item in self.hierarchy.resources(include_recycle_bin=False)
+            }
+            source_pages = [
+                current_by_id.get(str(item["id"]), item) for item in source_pages
+            ]
         try:
             for page in reversed(source_pages):
                 check_move_deadline()
@@ -986,6 +1325,26 @@ class CopyService(BaseService):
                 destination=copied.get("item"),
                 copy_report=report,
                 created_ids=copied["created_ids"],
+                preserved_descendants=preservation,
+            ) from exc
+        try:
+            self._verify_preserved_move_descendants(preservation)
+        except Exception as exc:
+            raise PartialFailure(
+                "The selected source Page was removed, but an excluded descendant could not be "
+                "verified in the active hierarchy.",
+                partial=True,
+                outcome="source_removed_preserved_descendants_unverified",
+                source_deleted=True,
+                attempted_source_ids=attempted,
+                recycled_source_ids=recycled,
+                recycle_unverified_source_ids=recycle_unverified,
+                deleted_source_ids=removed,
+                destination=copied.get("item"),
+                copy_report=report,
+                created_ids=copied["created_ids"],
+                preserved_descendants=preservation,
+                preservation_error=str(exc),
             ) from exc
         copied.update(
             {
@@ -1004,6 +1363,8 @@ class CopyService(BaseService):
                 "recycled_source_ids": recycled,
                 "recycle_unverified_source_ids": recycle_unverified,
                 "deleted_source_ids": removed,
+                "include_descendants": bool(include_descendants),
+                "preserved_descendants": preservation,
                 "warnings": [
                     *copied.get("warnings", []),
                     "Move created new Page IDs; inbound links outside the copied subtree were not scanned.",
@@ -1019,3 +1380,272 @@ class CopyService(BaseService):
             }
         )
         return copied
+
+    def _move_container(
+        self,
+        source_id: str,
+        resource_type: str,
+        destination_parent_id: str,
+        expected_name: str,
+        expected_parent_id: str,
+        plan_digest: str,
+        expected_modified: str | None = None,
+        destination_name: str = "",
+    ) -> dict[str, Any]:
+        """Execute the fixed Copy→verify→one root Delete container Move pipeline."""
+
+        MutationPolicy.current().require_move_containers()
+        self._confirm_source(
+            source_id,
+            resource_type,
+            expected_name,
+            expected_parent_id,
+            expected_modified,
+        )
+        operation = f"move_{resource_type}"
+        plan = self._build_plan(
+            source_id,
+            destination_parent_id,
+            destination_name,
+            operation=operation,
+            include_descendants=True,
+        )
+        if not plan_digest or plan_digest != plan["plan_digest"]:
+            planner = (
+                "plan_move_section"
+                if resource_type == "section"
+                else "plan_move_section_group"
+            )
+            raise ValueError(
+                f"Move plan is missing or stale. Run {planner} again before mutation."
+            )
+
+        execute_started = time.monotonic()
+        execute_budget = CopyBudget.current()
+
+        def check_move_deadline() -> None:
+            if time.monotonic() - execute_started > execute_budget.max_execute_seconds:
+                raise RuntimeError(
+                    f"Move execution exceeded {execute_budget.max_execute_seconds} seconds."
+                )
+
+        try:
+            copied = self._execute_copy(plan)
+        except PartialFailure as exc:
+            details = dict(exc.details)
+            if details.get("outcome") == "copy_unverified":
+                details["outcome"] = "copy_only"
+            details.setdefault("source_deleted", False)
+            raise PartialFailure(
+                "The container target was created, but Copy verification did not authorize source deletion.",
+                **details,
+            ) from exc
+
+        report = copied["copy_report"]
+        planned_source_ids = [str(item["id"]) for item in plan["resources"]]
+        id_map = report.get("id_map")
+        mapped_target_ids = list(id_map.values()) if isinstance(id_map, dict) else []
+        copy_gate_passed = (
+            report.get("lossless") is True
+            and report.get("verified") is True
+            and not report.get("skipped_content")
+            and isinstance(id_map, dict)
+            and list(id_map) == planned_source_ids
+            and len(mapped_target_ids) == len(set(mapped_target_ids))
+        )
+        if not copy_gate_passed:
+            raise PartialFailure(
+                "The container subtree was copied, but the complete verified Copy gate did not pass; "
+                "source deletion was blocked.",
+                partial=True,
+                outcome="copy_only",
+                source_deleted=False,
+                destination=copied.get("item"),
+                copy_report=report,
+                created_ids=copied["created_ids"],
+            )
+
+        try:
+            check_move_deadline()
+            current_source = self._capture_source(
+                source_id,
+                CopyBudget.current(),
+                time.monotonic(),
+                True,
+            )
+            if current_source["source_digest"] != plan["source_digest"]:
+                raise RuntimeError("The source container subtree changed after Copy verification.")
+            target_root_id = str(id_map[source_id])
+            target_before_delete = self._capture_source(
+                target_root_id,
+                CopyBudget.current(),
+                time.monotonic(),
+                True,
+            )
+        except Exception as exc:
+            raise PartialFailure(
+                "The container subtree was copied, but source/destination revalidation failed; "
+                "source deletion was blocked.",
+                partial=True,
+                outcome="copy_only",
+                source_deleted=False,
+                destination=copied.get("item"),
+                copy_report=report,
+                created_ids=copied["created_ids"],
+                source_revalidation_error=str(exc),
+            ) from exc
+
+        deletion: dict[str, Any] | None = None
+        deletion_error: Exception | None = None
+        try:
+            check_move_deadline()
+            deletion = self.mutations.delete_resource(
+                source_id,
+                resource_type,
+                expected_name,
+                expected_parent_id,
+                expected_modified,
+                False,
+            )
+        except Exception as exc:
+            deletion_error = exc
+
+        remaining_source_ids = list(planned_source_ids)
+        for attempt in range(8):
+            check_move_deadline()
+            active_items = self.hierarchy.resources(include_recycle_bin=False)
+            active_ids = {str(item["id"]) for item in active_items}
+            remaining_source_ids = [
+                value for value in planned_source_ids if value in active_ids
+            ]
+            if not remaining_source_ids or attempt == 7:
+                break
+            time.sleep(0.5)
+        inactive_source_ids = [
+            value for value in planned_source_ids if value not in active_ids
+        ]
+        if deletion_error is not None or remaining_source_ids:
+            root_inactive = source_id not in remaining_source_ids
+            outcome = (
+                "source_partially_removed"
+                if inactive_source_ids
+                else "source_delete_failed"
+            )
+            raise PartialFailure(
+                str(deletion_error or "Root deletion returned but part of the source subtree remains active."),
+                partial=True,
+                outcome=outcome,
+                source_deleted=root_inactive and not remaining_source_ids,
+                source_deleted_nonpermanently=root_inactive,
+                attempted_source_ids=[source_id],
+                deleted_source_ids=[source_id] if root_inactive else [],
+                inactive_source_ids=inactive_source_ids,
+                remaining_source_ids=remaining_source_ids,
+                destination=copied.get("item"),
+                copy_report=report,
+                created_ids=copied["created_ids"],
+            ) from deletion_error
+
+        try:
+            check_move_deadline()
+            target_after_delete = self._capture_source(
+                target_root_id,
+                CopyBudget.current(),
+                time.monotonic(),
+                True,
+            )
+            if target_after_delete["source_digest"] != target_before_delete["source_digest"]:
+                raise RuntimeError("The verified destination subtree changed during source deletion.")
+        except Exception as exc:
+            raise PartialFailure(
+                "The source container subtree is inactive, but the destination could not be revalidated.",
+                partial=True,
+                outcome="source_removed_destination_revalidation_failed",
+                source_deleted=True,
+                source_deleted_nonpermanently=True,
+                attempted_source_ids=[source_id],
+                deleted_source_ids=[source_id],
+                inactive_source_ids=inactive_source_ids,
+                remaining_source_ids=[],
+                destination=copied.get("item"),
+                copy_report=report,
+                created_ids=copied["created_ids"],
+                destination_revalidation_error=str(exc),
+            ) from exc
+
+        final_state = deletion.get("final_state") if deletion else None
+        recycle_verified = (
+            isinstance(final_state, dict)
+            and final_state.get("is_in_recycle_bin") is True
+        )
+        copied.update(
+            {
+                "outcome": "moved",
+                "source_deleted": True,
+                "source_deleted_nonpermanently": True,
+                "source_deleted_to_recycle_bin": True if recycle_verified else None,
+                "recycle_bin_verification": (
+                    "verified" if recycle_verified else "not_required_com_unavailable"
+                ),
+                "attempted_source_ids": [source_id],
+                "deleted_source_ids": [source_id],
+                "inactive_source_ids": inactive_source_ids,
+                "remaining_source_ids": [],
+                "move_notebooks": plan["move_notebooks"],
+                "warnings": [
+                    *copied.get("warnings", []),
+                    "Move created new IDs; inbound links outside the copied subtree were not scanned.",
+                    *(
+                        [
+                            "OneNote removed the source subtree from the active hierarchy after "
+                            "non-permanent DeleteHierarchy, but COM did not expose recycle-bin metadata."
+                        ]
+                        if not recycle_verified
+                        else []
+                    ),
+                ],
+            }
+        )
+        return copied
+
+    def move_section(
+        self,
+        section_id: str,
+        destination_parent_id: str,
+        expected_name: str,
+        expected_parent_id: str,
+        plan_digest: str,
+        expected_modified: str | None = None,
+        destination_name: str = "",
+    ) -> dict[str, Any]:
+        return self._move_container(
+            section_id,
+            "section",
+            destination_parent_id,
+            expected_name,
+            expected_parent_id,
+            plan_digest,
+            expected_modified,
+            destination_name,
+        )
+
+    def move_section_group(
+        self,
+        section_group_id: str,
+        destination_parent_id: str,
+        expected_name: str,
+        expected_parent_id: str,
+        plan_digest: str,
+        expected_modified: str | None = None,
+        destination_name: str = "",
+    ) -> dict[str, Any]:
+        return self._move_container(
+            section_group_id,
+            "section_group",
+            destination_parent_id,
+            expected_name,
+            expected_parent_id,
+            plan_digest,
+            expected_modified,
+            destination_name,
+        )

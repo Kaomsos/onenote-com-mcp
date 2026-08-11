@@ -31,6 +31,7 @@ class MutationPolicy:
     experimental_reorder_section_group_enabled: bool
     experimental_copy_enabled: bool
     move_page_enabled: bool
+    move_containers_enabled: bool
     raw_xml_enabled: bool
 
     @classmethod
@@ -50,6 +51,7 @@ class MutationPolicy:
             ),
             experimental_copy_enabled=env_bool("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY"),
             move_page_enabled=env_bool("LOCAL_ONENOTE_ENABLE_MOVE_PAGE"),
+            move_containers_enabled=env_bool("LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS"),
             raw_xml_enabled=env_bool("LOCAL_ONENOTE_ENABLE_RAW_XML"),
         )
 
@@ -106,6 +108,15 @@ class MutationPolicy:
             raise PermissionError(
                 "Page move is disabled. Validate it in an isolated notebook, then set "
                 "LOCAL_ONENOTE_ENABLE_MOVE_PAGE=true."
+            )
+
+    def require_move_containers(self) -> None:
+        self.require_experimental_copy()
+        self.require_delete(permanently=False)
+        if not self.move_containers_enabled:
+            raise PermissionError(
+                "Section and SectionGroup move is disabled. Validate it in isolated notebooks, "
+                "then set LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS=true."
             )
 
     def require_raw_xml(self) -> None:
