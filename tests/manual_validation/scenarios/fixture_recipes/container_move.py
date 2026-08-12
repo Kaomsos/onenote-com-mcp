@@ -26,7 +26,7 @@ ContainerKind = Literal["section", "section_group"]
 
 
 class ContainerMoveFixtureRecipe(RecipeBase):
-    recipe_version = 1
+    recipe_version = 2
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "the Move destination is the exact destination Notebook root",
@@ -45,21 +45,28 @@ class ContainerMoveFixtureRecipe(RecipeBase):
             name=f"{scenario_name}-source",
             manifest_keys=source_keys,
         )
+        destination_keys = ("destination_anchor_a", "destination_anchor_b")
         destination_profile = replace(
             profile,
             name=f"{scenario_name}-destination",
-            expected_structure=("destination Notebook root",),
-            manifest_keys=(),
-            creation_tools=frozenset(),
+            expected_structure=("destination Notebook root with two typed anchors",),
+            manifest_keys=destination_keys,
+            creation_tools=frozenset(
+                {"create_section"}
+                if container_kind == "section"
+                else {"create_section_group"}
+            ),
             validation_conditions=(
-                "destination role is an active distinct Notebook root",
+                "destination role is an active distinct Notebook root with two typed anchors",
             ),
         )
         super().__init__(
             scenario_name,
             notebook_roles=(
                 NotebookRoleSpec(
-                    "destination", destination_profile, {"manifest_keys": []}
+                    "destination",
+                    destination_profile,
+                    {"manifest_keys": list(destination_keys)},
                 ),
                 NotebookRoleSpec(
                     "source",
@@ -72,6 +79,15 @@ class ContainerMoveFixtureRecipe(RecipeBase):
     async def build(self, context: FixtureContext) -> FixtureBuildResult:
         recorder = context.recorder
         if context.role == "destination":
+            ensure = ensure_section if self.container_kind == "section" else ensure_group
+            recorder.record_structure(
+                "destination_anchor_a",
+                await ensure(context.client, context.notebook_id, "00-Destination-Anchor-A"),
+            )
+            recorder.record_structure(
+                "destination_anchor_b",
+                await ensure(context.client, context.notebook_id, "99-Destination-Anchor-B"),
+            )
             return FixtureBuildResult(recorder.structure, recorder.evidence)
         if context.role != "source":
             raise InvariantFailure(f"Unsupported container Move role: {context.role}")
@@ -109,11 +125,25 @@ class ContainerMoveFixtureRecipe(RecipeBase):
         context: FixtureValidationContext,
         build: FixtureBuildResult,
     ) -> tuple[str, ...]:
-        if not build.structure:
+        if set(build.structure) == {"destination_anchor_a", "destination_anchor_b"}:
             notebook_id = str(context.snapshot.get("notebook_id", ""))
-            if not notebook_id:
+            resolved, _by_id, _checks = resolve_active_structure(
+                context.snapshot, build.structure
+            )
+            expected_type = self.container_kind
+            if (
+                not notebook_id
+                or any(
+                    item.get("resource_type") != expected_type
+                    or str(item.get("parent_id", "")) != notebook_id
+                    for item in resolved.values()
+                )
+                or len({str(item["id"]) for item in resolved.values()}) != 2
+            ):
                 raise InvariantFailure("Container Move destination Notebook is not active.")
-            return ("destination role is an active distinct Notebook root",)
+            return (
+                "destination role is an active distinct Notebook root with two typed anchors",
+            )
 
         resolved, _by_id, checks = resolve_active_structure(
             context.snapshot, build.structure
@@ -144,11 +174,20 @@ class ContainerMoveFixtureRecipe(RecipeBase):
         destination = observation.roles["destination"]
         if str(source.notebook["id"]) == str(destination.notebook["id"]):
             raise InvariantFailure("Container Move roles resolved to the same Notebook ID.")
+        if any(
+            str(destination.build.structure[key].get("parent_id", ""))
+            != str(destination.notebook["id"])
+            for key in ("destination_anchor_a", "destination_anchor_b")
+        ):
+            raise InvariantFailure("Container Move destination anchor escaped its Notebook.")
         return FixtureValidationReport(
             passed=report.passed,
             role_checks=report.role_checks,
             bundle_checks=report.bundle_checks
-            + ("cross-Notebook source and destination roles are distinct",),
+            + (
+                "cross-Notebook source and destination roles are distinct",
+                "destination contains two distinct typed anchors",
+            ),
         )
 
 

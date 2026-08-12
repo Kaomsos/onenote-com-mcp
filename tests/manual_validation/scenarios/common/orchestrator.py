@@ -425,6 +425,11 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     if options.dry_run:
         return isolated_dry_run(args, options)
     scenario = SCENARIO_REGISTRY.get(args.scenario)
+    if options.use_cache and not getattr(scenario.fixture_recipe, "supports_cache", True):
+        raise RunnerFailure(
+            "This Scenario is fresh-only because it generates in-memory search probes; "
+            "remove --use-cache."
+        )
     if (
         options.use_cache
         and getattr(scenario.fixture_recipe, "representation_discovery_only", False)
@@ -585,12 +590,15 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     phase_started = time.perf_counter()
     metrics["mcp_process_start_attempts"] = 1
     write_json(metrics_path, metrics)
-    client_handle = MCPStdioClient(
+    client_options = dict(
         policy=spec.policy,
         allowed_tools=set(spec.tool_allowlist),
         run_dir=options.run_dir / "scenario-mcp",
         timeout_seconds=options.timeout,
     )
+    if spec.search_budget:
+        client_options["search_budget"] = dict(spec.search_budget)
+    client_handle = MCPStdioClient(**client_options)
     entered_client = False
     try:
         async with client_handle as client:

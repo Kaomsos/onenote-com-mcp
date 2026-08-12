@@ -15,11 +15,15 @@ from tests.manual_validation.scenarios.move_page import MovePageScenario
 from tests.manual_validation.scenarios.create import CreateScenario
 from tests.manual_validation.scenarios.reparent_section import ReparentSectionScenario
 from tests.manual_validation.scenarios.reorder_page import ReorderPageScenario
+from tests.manual_validation.scenarios.common.destination_position import (
+    expected_destination_position,
+)
 
 
 class FakeClient:
     calls: list[tuple[str, dict]] = []
     response_item: dict = {}
+    last_response: dict | None = None
 
     def __init__(self, **_: object) -> None:
         pass
@@ -32,7 +36,8 @@ class FakeClient:
 
     async def call_tool(self, name: str, arguments: dict, **_: object) -> dict:
         self.calls.append((name, arguments))
-        return {"ok": True, "complete": True, "item": self.response_item}
+        self.last_response = {"ok": True, "complete": True, "item": self.response_item}
+        return self.last_response
 
 
 def test_create_duplicate_title_regression_uses_fresh_ids_and_exact_cleanup(
@@ -170,6 +175,7 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
         return next(snapshots)
 
     FakeClient.calls = []
+    FakeClient.last_response = None
     FakeClient.response_item = changed
     monkeypatch.setattr(reorder_page_scenario, "MCPStdioClient", FakeClient)
     monkeypatch.setattr(reorder_page_scenario, "capture_snapshot", fake_snapshot)
@@ -291,11 +297,20 @@ def test_reparent_section_keep_worksite_skips_restore(monkeypatch, tmp_path) -> 
         }
     )
     snapshots = iter([before, after_1, after_2, after_3])
+    response_targets = iter(["section-1", "section-2", "section-3"])
 
     async def fake_snapshot(_client, _notebook_id):
-        return next(snapshots)
+        snapshot = next(snapshots)
+        if _client.last_response is not None:
+            target_id = next(response_targets)
+            _client.last_response["destination_position"] = expected_destination_position(
+                snapshot,
+                target_id,
+            )
+        return snapshot
 
     FakeClient.calls = []
+    FakeClient.last_response = None
     monkeypatch.setattr(reparent_section_scenario, "MCPStdioClient", FakeClient)
     monkeypatch.setattr(reparent_section_scenario, "capture_snapshot", fake_snapshot)
     monkeypatch.setattr(reparent_section_scenario, "render_report", lambda _run_dir: None)
@@ -382,10 +397,22 @@ def test_reparent_section_default_restores_three_cases_in_reverse_order(monkeypa
             snapshot("destination-1", "source-2", "source-3"),
             before,
         ]
-    )
+        )
+    forward_targets = iter(["section-1", "section-2", "section-3"])
 
     async def fake_snapshot(_client, _notebook_id):
-        return next(snapshots)
+        snapshot_value = next(snapshots)
+        if _client.last_response is not None:
+            try:
+                target_id = next(forward_targets)
+            except StopIteration:
+                pass
+            else:
+                _client.last_response["destination_position"] = expected_destination_position(
+                    snapshot_value,
+                    target_id,
+                )
+        return snapshot_value
 
     manifest = {
         "schema_version": 1,
@@ -401,6 +428,7 @@ def test_reparent_section_default_restores_three_cases_in_reverse_order(monkeypa
         },
     }
     FakeClient.calls = []
+    FakeClient.last_response = None
     monkeypatch.setattr(reparent_section_scenario, "MCPStdioClient", FakeClient)
     monkeypatch.setattr(reparent_section_scenario, "capture_snapshot", fake_snapshot)
     monkeypatch.setattr(reparent_section_scenario, "render_report", lambda _run_dir: None)
@@ -534,7 +562,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                     if include_descendants
                     else ["root-only"]
                 )
-                return {
+                response = {
                     "plan_digest": f"digest-{include_descendants}",
                     "include_descendants": include_descendants,
                     "snapshots": {
@@ -546,6 +574,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                         }
                     },
                 }
+                return response
             assert name == "move_page"
             include_descendants = arguments.get("include_descendants", False)
             if include_descendants:
@@ -574,7 +603,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                     }
                 )
                 state["hashes"][target_id] = state["hashes"][source_id]
-            return {
+            response = {
                 "item": next(item for item in state["destination"] if item["id"] == target_ids[0]),
                 "created_ids": target_ids,
                 "copy_report": {
@@ -594,6 +623,11 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                     "preserved_descendant_ids": [] if include_descendants else ["root-child"],
                 },
             }
+            response["destination_position"] = expected_destination_position(
+                {"items": [*state["source"], *state["destination"]]},
+                target_ids[0],
+            )
+            return response
 
     manifest = {
         "schema_version": 1,

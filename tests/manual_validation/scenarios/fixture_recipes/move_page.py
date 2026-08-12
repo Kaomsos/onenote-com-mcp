@@ -22,7 +22,7 @@ from .recipe_base import (
 
 
 class MovePageFixtureRecipe(RecipeBase):
-    recipe_version = 4
+    recipe_version = 5
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "both Move targets belong only to the destination Notebook role",
@@ -37,7 +37,11 @@ class MovePageFixtureRecipe(RecipeBase):
             "subtree_page",
             "subtree_child",
         )
-        destination_keys = ("destination_section",)
+        destination_keys = (
+            "destination_section",
+            "destination_anchor_a",
+            "destination_anchor_b",
+        )
         source_profile = replace(
             profile,
             name="page-move-source",
@@ -78,9 +82,27 @@ class MovePageFixtureRecipe(RecipeBase):
     async def build(self, context: FixtureContext) -> FixtureBuildResult:
         recorder = context.recorder
         if context.role == "destination":
-            recorder.record_structure(
+            destination = recorder.record_structure(
                 "destination_section",
                 await ensure_section(context.client, context.notebook_id, "Destination"),
+            )
+            recorder.record_structure(
+                "destination_anchor_a",
+                await ensure_page(
+                    context.client,
+                    destination["id"],
+                    "00-Destination-Anchor-A",
+                    f"Move destination anchor A: {context.token}",
+                ),
+            )
+            recorder.record_structure(
+                "destination_anchor_b",
+                await ensure_page(
+                    context.client,
+                    destination["id"],
+                    "99-Destination-Anchor-B",
+                    f"Move destination anchor B: {context.token}",
+                ),
             )
             return FixtureBuildResult(recorder.structure, recorder.evidence)
         if context.role != "source":
@@ -116,12 +138,26 @@ class MovePageFixtureRecipe(RecipeBase):
         build: FixtureBuildResult,
     ) -> tuple[str, ...]:
         resolved, _by_id, checks = resolve_active_structure(context.snapshot, build.structure)
-        if set(build.structure) == {"destination_section"}:
+        if set(build.structure) == {
+            "destination_section",
+            "destination_anchor_a",
+            "destination_anchor_b",
+        }:
             destination = resolved["destination_section"]
+            anchors = [
+                resolved["destination_anchor_a"],
+                resolved["destination_anchor_b"],
+            ]
             checks.require(
-                destination.get("resource_type") == "section",
+                destination.get("resource_type") == "section"
+                and all(
+                    anchor.get("resource_type") == "page"
+                    and anchor.get("section_id") == destination["id"]
+                    for anchor in anchors
+                )
+                and len({anchor["id"] for anchor in anchors}) == 2,
                 "Move destination is not an active Section.",
-                "destination role exposes one active root Section",
+                "destination role exposes one active root Section with two Page anchors",
             )
             return tuple(checks.checks)
 
@@ -153,15 +189,27 @@ class MovePageFixtureRecipe(RecipeBase):
         source = observation.roles["source"]
         destination = observation.roles["destination"]
         destination_section = destination.build.structure["destination_section"]
+        destination_anchors = [
+            destination.build.structure["destination_anchor_a"],
+            destination.build.structure["destination_anchor_b"],
+        ]
         if str(source.notebook["id"]) == str(destination.notebook["id"]):
             raise InvariantFailure("Move Page bundle roles resolved to the same Notebook ID.")
         if str(destination_section.get("parent_id", "")) != str(destination.notebook["id"]):
             raise InvariantFailure("Move destination Section escaped the destination role.")
+        if any(
+            str(anchor.get("section_id", "")) != str(destination_section["id"])
+            for anchor in destination_anchors
+        ):
+            raise InvariantFailure("Move destination anchor escaped its Section.")
         return FixtureValidationReport(
             passed=report.passed,
             role_checks=report.role_checks,
             bundle_checks=report.bundle_checks
-            + ("cross-Notebook destination is bound to the destination role",),
+            + (
+                "cross-Notebook destination is bound to the destination role",
+                "destination contains two distinct Page anchors",
+            ),
         )
 
 

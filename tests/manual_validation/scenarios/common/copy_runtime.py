@@ -37,6 +37,7 @@ from .config import (
     RELAXED_COPY_CAPABILITIES,
     ROOT_PAGE_COPY_CAPABILITIES,
 )
+from .destination_position import assert_destination_position
 from .copy_invariants import (
     assert_copy_fixture_capabilities,
     assert_copy_mapping,
@@ -747,6 +748,15 @@ async def execute_copy_page(
                 copied,
                 include_descendants=effective_scope,
             )
+            position_evidence = assert_destination_position(
+                copied,
+                case_after,
+                str(target["id"]),
+            )
+            write_json(
+                out / f"destination-position-evidence-{case_name}.json",
+                position_evidence,
+            )
             anchor_after = find_snapshot_item(
                 case_after, str(collision_anchor["id"])
             )
@@ -794,6 +804,7 @@ async def execute_copy_page(
                 "collision_anchor_id": collision_anchor["id"],
                 "collision_anchor_unchanged": True,
                 "copy_report": report,
+                "destination_position": position_evidence,
             }
             case_results.append(case_result)
             plan_index.append(
@@ -1210,6 +1221,15 @@ async def execute_copy_container(
                 case_spec["destination_name"],
                 copied,
             )
+            position_evidence = assert_destination_position(
+                copied,
+                case_after,
+                str(target["id"]),
+            )
+            write_json(
+                out / f"destination-position-evidence-{case_name}.json",
+                position_evidence,
+            )
             protected_pages = [
                 str(item["id"])
                 for item in case_before.get("items", [])
@@ -1227,6 +1247,7 @@ async def execute_copy_container(
                     "target_id": target["id"],
                     "mapped_resource_count": len(report.get("id_map", {})),
                     "copy_report": report,
+                    "destination_position": position_evidence,
                 }
             )
             plan_index.append(
@@ -1391,6 +1412,12 @@ async def execute_copy(
                 raise InvariantFailure("Notebook Copy result path differs from the manifest-scoped plan.")
             target_snapshot = await capture_snapshot(client, target["id"])
             write_json(out / "after.json", target_snapshot)
+            position_evidence = assert_destination_position(
+                copied,
+                target_snapshot,
+                str(target["id"]),
+            )
+            write_json(out / "destination-position-evidence.json", position_evidence)
             assert_copy_mapping(
                 before,
                 target_snapshot,
@@ -1439,6 +1466,9 @@ async def execute_copy(
 
         after = await capture_snapshot(client, notebook_id)
         write_json(out / "after.json", after)
+        target_id = str(copied.get("item", {}).get("id", ""))
+        position_evidence = assert_destination_position(copied, after, target_id)
+        write_json(out / "destination-position-evidence.json", position_evidence)
         assert_copy_mapping(
             before,
             after,

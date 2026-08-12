@@ -57,6 +57,7 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "reorder-section",
         "reorder-section-group",
         "reparent-page",
+        "reparent-page-scope",
         "reparent-section-group",
         "bootstrap-inserted-file-fixture",
         "bootstrap-ink-drawing-fixture",
@@ -72,6 +73,7 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "interactive-copy-media-file",
         "interactive-copy-ui-shape",
         "interactive-copy-inline-equation",
+        "search-all-open-notebooks",
     }
     assert excluded <= covered
 

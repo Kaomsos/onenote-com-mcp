@@ -154,6 +154,7 @@ def build_isolated_dry_run_plan(
         and getattr(recipe, "representation_discovery_only", False)
     )
     discovery_cache_rejected = representation_discovery and use_cache
+    fresh_only_cache_rejected = use_cache and not getattr(recipe, "supports_cache", True)
     if use_cache and not interactive_bootstrap:
         cache_operations = (
             [
@@ -215,6 +216,16 @@ def build_isolated_dry_run_plan(
                 "reason": "UI representation discovery never reads or publishes fixture cache",
             }
         ]
+    if fresh_only_cache_rejected:
+        steps = [
+            {
+                "step": "preflight-fresh-only-rejects-cache",
+                "trust_boundary": "static fresh-only Recipe contract",
+                "allowed_operations": [],
+                "target": "reject before lifecycle, MCP, cache, or mutation",
+                "reason": "this Recipe generates fresh in-memory search probes",
+            }
+        ]
     if consumer_cache_required:
         steps = [
             {
@@ -233,7 +244,7 @@ def build_isolated_dry_run_plan(
         cached_names = {role: f"{role}-working-copy" for role in roles}
     effective_name = (
         str(cached_names["source"])
-        if use_cache and not interactive_bootstrap
+        if use_cache and not interactive_bootstrap and not fresh_only_cache_rejected
         else str(fresh_names["source"])
     )
     result = {
@@ -254,6 +265,7 @@ def build_isolated_dry_run_plan(
         "scenario_spec": spec.as_dict(),
         "timeout_seconds": options.timeout,
         "copy_budget": dict(copy_budget),
+        "search_budget": dict(spec.search_budget),
         "lifecycle": "keep" if _keep_source_notebook(args) else "close",
         "lifecycle_lease": str((run_dir / "lifecycle-lease.json")),
         "lifecycle_leases": {
@@ -264,7 +276,9 @@ def build_isolated_dry_run_plan(
             for role in roles
         },
         "expected_mcp_process_starts": (
-            0 if consumer_cache_required or discovery_cache_rejected else 1
+            0
+            if consumer_cache_required or discovery_cache_rejected or fresh_only_cache_rejected
+            else 1
         ),
         "server_started": False,
         "ordered_steps": steps,
@@ -287,6 +301,8 @@ def build_isolated_dry_run_plan(
         "cache_mode": (
             "cache_required"
             if consumer_cache_required
+            else "fresh_only"
+            if fresh_only_cache_rejected
             else "representation_discovery"
             if representation_discovery
             else "interactive_bootstrap"
@@ -295,7 +311,11 @@ def build_isolated_dry_run_plan(
             if use_cache
             else "fresh"
         ),
-        "enabled": (use_cache or interactive_bootstrap) and not representation_discovery,
+        "enabled": (
+            (use_cache or interactive_bootstrap)
+            and not representation_discovery
+            and not fresh_only_cache_rejected
+        ),
         "cache_root": str(cache_root),
         "fingerprint": recipe.cache_fingerprint,
         "template_instance_id": template_instance_id,
@@ -318,6 +338,8 @@ def build_isolated_dry_run_plan(
         "decision": (
             "rejected_missing_use_cache"
             if consumer_cache_required
+            else "rejected_fresh_only"
+            if fresh_only_cache_rejected
             else "rejected_cache_for_representation_discovery"
             if discovery_cache_rejected
             else "evidence_only_no_publish"
@@ -331,6 +353,8 @@ def build_isolated_dry_run_plan(
         "planned_branches": (
             ["fail closed before lifecycle: rerun with --use-cache and an exact instance"]
             if consumer_cache_required
+            else ["fail closed before lifecycle: fresh-only Recipe forbids --use-cache"]
+            if fresh_only_cache_rejected
             else ["fail closed before lifecycle: representation discovery forbids --use-cache"]
             if discovery_cache_rejected
             else [

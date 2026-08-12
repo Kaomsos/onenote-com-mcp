@@ -21,6 +21,7 @@ from .base import Scenario
 from .common.config import MOVE_PAGE_TOOLS
 from .common.copy_invariants import expected_copy_source_items
 from .common.copy_runtime import call_with_result_evidence
+from .common.destination_position import assert_destination_position
 from .common.registry import SCENARIO_REGISTRY
 from .common.report import render_report
 from .common.specs import get_scenario_spec
@@ -158,6 +159,15 @@ async def _execute_move_page(
                 raise InvariantFailure(f"Move target escaped the destination Notebook for '{case_name}'.")
             if display_name(after_by_id[target_ids[0]]) != destination_title:
                 raise InvariantFailure(f"Move target title differs for case '{case_name}'.")
+            position_evidence = assert_destination_position(
+                moved,
+                after,
+                target_ids[0],
+            )
+            write_json(
+                out / f"destination-position-evidence-{case_name}.json",
+                position_evidence,
+            )
 
             preservation = moved.get("preserved_descendants", {})
             if include_descendants:

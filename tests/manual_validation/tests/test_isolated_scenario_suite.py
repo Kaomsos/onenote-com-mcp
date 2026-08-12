@@ -336,7 +336,7 @@ def test_copy_page_fixture_description_covers_six_case_bundle_matrix() -> None:
 
 
 def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree() -> None:
-    assert SCENARIO_REGISTRY.get("copy-page").fixture_recipe.recipe_version == 10
+    assert SCENARIO_REGISTRY.get("copy-page").fixture_recipe.recipe_version == 11
     assert tuple(
         role.role
         for role in SCENARIO_REGISTRY.get("copy-page").fixture_recipe.cache_identity.notebook_roles
@@ -349,6 +349,7 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
         "semantic_page": {"id": "child-page"},
         "disposable_section": {"id": "destination-section"},
         "cross_section_anchor": {"id": "cross-section-anchor"},
+        "cross_section_position_anchor": {"id": "cross-section-position-anchor"},
     }
     items = [
         {
@@ -397,6 +398,15 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
             "parent_page_id": None,
         },
         {
+            "id": "cross-section-position-anchor",
+            "resource_type": "page",
+            "title": "99-Position-Anchor",
+            "section_id": "destination-section",
+            "parent_id": "destination-section",
+            "page_level": 1,
+            "parent_page_id": None,
+        },
+        {
             "id": "child-page",
             "resource_type": "page",
             "title": "02-Source-Child",
@@ -439,6 +449,7 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
         "page_hashes": {
             "child-page": "source-child-hash",
             "cross-section-anchor": "cross-section-anchor-hash",
+            "cross-section-position-anchor": "cross-section-position-anchor-hash",
         },
         "page_capability_projections": {
             "parent-page": {
@@ -652,13 +663,19 @@ def test_reparent_section_fixture_validator_proves_three_parent_transitions() ->
         "description_section": {"id": "description-section"},
         "description_page": {"id": "description-page"},
         "notebook_to_group_destination": {"id": "destination-1"},
+        "notebook_to_group_anchor_a": {"id": "anchor-1a"},
+        "notebook_to_group_anchor_b": {"id": "anchor-1b"},
         "notebook_to_group_section": {"id": "section-1"},
         "notebook_to_group_page": {"id": "page-1"},
         "group_to_notebook_source": {"id": "source-2"},
         "group_to_notebook_section": {"id": "section-2"},
         "group_to_notebook_page": {"id": "page-2"},
+        "group_to_notebook_anchor_a": {"id": "anchor-2a"},
+        "group_to_notebook_anchor_b": {"id": "anchor-2b"},
         "group_to_group_source": {"id": "source-3"},
         "group_to_group_destination": {"id": "destination-3"},
+        "group_to_group_anchor_a": {"id": "anchor-3a"},
+        "group_to_group_anchor_b": {"id": "anchor-3b"},
         "group_to_group_section": {"id": "section-3"},
         "group_to_group_page": {"id": "page-3"},
     }
@@ -682,6 +699,8 @@ def test_reparent_section_fixture_validator_proves_three_parent_transitions() ->
             "name": "01-Destination-Group",
             "parent_id": "notebook",
         },
+        {"id": "anchor-1a", "resource_type": "section", "name": "00-Section-Anchor-A", "parent_id": "destination-1"},
+        {"id": "anchor-1b", "resource_type": "section", "name": "99-Section-Anchor-B", "parent_id": "destination-1"},
         {
             "id": "section-1",
             "resource_type": "section",
@@ -700,6 +719,8 @@ def test_reparent_section_fixture_validator_proves_three_parent_transitions() ->
             "name": "02-Source-Group",
             "parent_id": "notebook",
         },
+        {"id": "anchor-2a", "resource_type": "section", "name": "00-Notebook-Section-Anchor-A", "parent_id": "notebook"},
+        {"id": "anchor-2b", "resource_type": "section", "name": "99-Notebook-Section-Anchor-B", "parent_id": "notebook"},
         {
             "id": "section-2",
             "resource_type": "section",
@@ -724,6 +745,8 @@ def test_reparent_section_fixture_validator_proves_three_parent_transitions() ->
             "name": "03-Destination-Group",
             "parent_id": "notebook",
         },
+        {"id": "anchor-3a", "resource_type": "section", "name": "00-Section-Anchor-A", "parent_id": "destination-3"},
+        {"id": "anchor-3b", "resource_type": "section", "name": "99-Section-Anchor-B", "parent_id": "destination-3"},
         {
             "id": "section-3",
             "resource_type": "section",

@@ -77,6 +77,7 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
     assert recipe.manifest_keys_for_role("destination") == {
         "cross_notebook_section",
         "cross_notebook_anchor",
+        "cross_notebook_position_anchor",
     }
     assert recipe.manifest_keys_for_role("source") == {
         "description_section",
@@ -86,6 +87,7 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
         "semantic_page",
         "disposable_section",
         "cross_section_anchor",
+        "cross_section_position_anchor",
     }
     assert (
         recipe.manifest_keys_for_role("destination")
@@ -97,8 +99,22 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
 @pytest.mark.parametrize(
     ("scenario_name", "destination_keys"),
     [
-        ("copy-section", {"cross_notebook_group"}),
-        ("copy-section-group", {"cross_notebook_anchor_section"}),
+        (
+            "copy-section",
+            {
+                "cross_notebook_group",
+                "cross_notebook_anchor_a",
+                "cross_notebook_anchor_b",
+            },
+        ),
+        (
+            "copy-section-group",
+            {
+                "cross_notebook_anchor_section",
+                "cross_notebook_anchor_group_a",
+                "cross_notebook_anchor_group_b",
+            },
+        ),
     ],
 )
 def test_container_copy_recipes_partition_two_notebook_roles(
@@ -106,7 +122,7 @@ def test_container_copy_recipes_partition_two_notebook_roles(
 ) -> None:
     recipe = SCENARIO_REGISTRY.get(scenario_name).fixture_recipe
 
-    assert recipe.recipe_version == 3
+    assert recipe.recipe_version == 4
     assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
         "destination",
         "source",

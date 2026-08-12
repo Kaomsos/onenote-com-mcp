@@ -63,6 +63,7 @@ class ScenarioSpec:
     policy: ScenarioPolicy
     tool_allowlist: frozenset[str]
     execution_contract: dict[str, Any] = field(default_factory=dict)
+    search_budget: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +72,7 @@ class ScenarioSpec:
             "mutation_policy": self.policy.as_dict(),
             "tool_allowlist": sorted(self.tool_allowlist),
             "execution_contract": dict(self.execution_contract),
+            "search_budget": dict(self.search_budget),
         }
 
 
@@ -238,13 +240,19 @@ SCENARIO_SPECS = {
                 "description_section",
                 "description_page",
                 "notebook_to_group_destination",
+                "notebook_to_group_anchor_a",
+                "notebook_to_group_anchor_b",
                 "notebook_to_group_section",
                 "notebook_to_group_page",
                 "group_to_notebook_source",
                 "group_to_notebook_section",
                 "group_to_notebook_page",
+                "group_to_notebook_anchor_a",
+                "group_to_notebook_anchor_b",
                 "group_to_group_source",
                 "group_to_group_destination",
+                "group_to_group_anchor_a",
+                "group_to_group_anchor_b",
                 "group_to_group_section",
                 "group_to_group_page",
             ),
@@ -286,6 +294,7 @@ SCENARIO_SPECS = {
                 "destination_section",
                 "reparent_page",
                 "destination_anchor_page",
+                "destination_anchor_page_b",
             ),
             {"create_section", "create_page", "append_to_page", "add_image_to_page"},
             content=(
@@ -303,7 +312,7 @@ SCENARIO_SPECS = {
             checks=(
                 "source and destination Sections are distinct children of one Notebook",
                 "target Page is a root Page in the source Section",
-                "destination anchor remains outside the reparented target",
+                "destination contains two distinct Page anchors outside the reparented target",
                 "Description Page and Section belong to the fixture Notebook",
                 "Description, Sections, target Page, and anchor use stable numbering",
                 "target Page owns the declared rich-content fixture",
@@ -313,6 +322,50 @@ SCENARIO_SPECS = {
         ),
         REPARENT_POLICY,
         frozenset(REPARENT_PAGE_TOOLS | {"get_page_text"}),
+    ),
+    "reparent-page-scope": ScenarioSpec(
+        "reparent-page-scope",
+        _profile(
+            "typed-page-reparent-scope",
+            (
+                "one source Section contains independent root-only and subtree indentation trees",
+                "both selected Pages start at level 2 and have two descendant levels",
+                "destination Section contains two root Page anchors",
+            ),
+            (
+                "description_section",
+                "description_page",
+                "source_section",
+                "destination_section",
+                "root_only_parent",
+                "root_only_selected",
+                "root_only_child",
+                "root_only_grandchild",
+                "subtree_parent",
+                "subtree_selected",
+                "subtree_child_a",
+                "subtree_grandchild",
+                "subtree_child_b",
+                "destination_anchor_a",
+                "destination_anchor_b",
+            ),
+            {
+                "create_section",
+                "create_page",
+                "reorder_page",
+                "append_to_page",
+                "add_image_to_page",
+            },
+            content=("page_scope", "rich_text", "table", "image", "numbered_pages"),
+            checks=(
+                "root-only selected Page starts at level 2 with two descendant levels",
+                "full-subtree selected Page starts at level 2 with a branched descendant tree",
+                "destination contains two root Page anchors",
+                "both selected Pages own stable rich-content evidence",
+            ),
+        ),
+        REPARENT_POLICY,
+        frozenset(REPARENT_PAGE_TOOLS | {"reorder_page"}),
     ),
     "reparent-section-group": ScenarioSpec(
         "reparent-section-group",
@@ -328,6 +381,8 @@ SCENARIO_SPECS = {
                 "description_section",
                 "description_page",
                 "notebook_to_group_destination",
+                "notebook_to_group_anchor_a",
+                "notebook_to_group_anchor_b",
                 "notebook_to_group_target",
                 "notebook_to_group_section",
                 "notebook_to_group_page",
@@ -335,8 +390,12 @@ SCENARIO_SPECS = {
                 "group_to_notebook_target",
                 "group_to_notebook_section",
                 "group_to_notebook_page",
+                "group_to_notebook_anchor_a",
+                "group_to_notebook_anchor_b",
                 "group_to_group_source",
                 "group_to_group_destination",
+                "group_to_group_anchor_a",
+                "group_to_group_anchor_b",
                 "group_to_group_target",
                 "group_to_group_section",
                 "group_to_group_page",
@@ -395,8 +454,10 @@ SCENARIO_SPECS = {
                 "semantic_page",
                 "disposable_section",
                 "cross_section_anchor",
+                "cross_section_position_anchor",
                 "cross_notebook_section",
                 "cross_notebook_anchor",
+                "cross_notebook_position_anchor",
             ),
             {"create_section", "get_page_text"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=(
@@ -493,7 +554,11 @@ SCENARIO_SPECS = {
                 "source_section",
                 "parent_page",
                 "semantic_page",
+                "same_notebook_anchor_a",
+                "same_notebook_anchor_b",
                 "cross_notebook_group",
+                "cross_notebook_anchor_a",
+                "cross_notebook_anchor_b",
             ),
             {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
@@ -540,7 +605,11 @@ SCENARIO_SPECS = {
                 "source_section",
                 "parent_page",
                 "semantic_page",
+                "same_notebook_anchor_a",
+                "same_notebook_anchor_b",
                 "cross_notebook_anchor_section",
+                "cross_notebook_anchor_group_a",
+                "cross_notebook_anchor_group_b",
             ),
             {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
@@ -613,7 +682,7 @@ SCENARIO_SPECS = {
             (
                 "source:Source/01-Root-Only/02-Root-Only-Child",
                 "source:Source/03-Subtree/04-Subtree-Child",
-                "destination:Destination",
+                "destination:Destination/{00-Destination-Anchor-A,99-Destination-Anchor-B}",
             ),
             (
                 "source_section",
@@ -622,6 +691,8 @@ SCENARIO_SPECS = {
                 "subtree_page",
                 "subtree_child",
                 "destination_section",
+                "destination_anchor_a",
+                "destination_anchor_b",
             ),
             {"create_section", "create_page", "reorder_page"},
             content=("Outline", "RichText"),
@@ -661,9 +732,14 @@ SCENARIO_SPECS = {
             "disposable-cross-notebook-section-move",
             (
                 "source:Move-Section-Source/Move-Section-Page",
-                "destination:Notebook root",
+                "destination:Notebook root/{00-Destination-Anchor-A,99-Destination-Anchor-B}",
             ),
-            ("source_section", "source_page"),
+            (
+                "source_section",
+                "source_page",
+                "destination_anchor_a",
+                "destination_anchor_b",
+            ),
             {"create_section", "create_page"},
             content=("Outline", "RichText"),
             checks=(
@@ -682,9 +758,15 @@ SCENARIO_SPECS = {
             "disposable-cross-notebook-section-group-move",
             (
                 "source:Move-Group-Source/Move-Group-Section/Move-Group-Page",
-                "destination:Notebook root",
+                "destination:Notebook root/{00-Destination-Anchor-A,99-Destination-Anchor-B}",
             ),
-            ("source_group", "source_section", "source_page"),
+            (
+                "source_group",
+                "source_section",
+                "source_page",
+                "destination_anchor_a",
+                "destination_anchor_b",
+            ),
             {"create_section_group", "create_section", "create_page"},
             content=("Outline", "RichText"),
             checks=(
@@ -701,6 +783,58 @@ SCENARIO_SPECS = {
         {"source_key": "source_group", "destination_role": "destination"},
     ),
 }
+
+_SEARCH_FIXTURE_TOOLS = {
+    "create_section_group",
+    "create_section",
+    "create_page",
+}
+SCENARIO_SPECS["search-all-open-notebooks"] = ScenarioSpec(
+    "search-all-open-notebooks",
+    _profile(
+        "fresh-index-search-probes",
+        (
+            "source:Probe Group/{Probe Section 1/Probe Page A1,Probe Section 2/Probe Page A2}",
+            "source:Notebook Root Section/Probe Page A3",
+            "search-b:Probe Section B/{Probe Page B1,Budget Long Text Page B2}",
+        ),
+        (
+            "probe_group",
+            "probe_section_1",
+            "probe_page_a1",
+            "probe_section_2",
+            "probe_page_a2",
+            "root_section",
+            "probe_page_a3",
+            "probe_section_b",
+            "probe_page_b1",
+            "budget_page_b2",
+        ),
+        _SEARCH_FIXTURE_TOOLS,
+        content=("fresh 32-character search probe", "candidate budget marker", "long-text marker"),
+        checks=(
+            "both role Notebooks are simultaneously active and distinct",
+            "main probe topology yields exact root/notebook/group/section counts 4/3/2/1",
+            "raw probes remain only in memory and disposable Page bodies",
+        ),
+    ),
+    WRITE_POLICY,
+    frozenset(READ_TOOLS | _SEARCH_FIXTURE_TOOLS | {"get_page_text", "search_pages"}),
+    {
+        "fresh_only": True,
+        "included_in_all": False,
+        "scope_counts": {"root": 4, "notebook": 3, "section_group": 2, "section": 1},
+        "pagination": {"page_size": 2, "consistency": "live_index"},
+        "probe_persistence": "sha256_length_character_classes_and_ids_only",
+    },
+    search_budget={
+        "max_pages": 4,
+        "max_page_chars": 2_048,
+        "max_total_chars": 512,
+        "max_seconds": 60,
+        "snippet_chars": 200,
+    },
+)
 
 _INTERACTIVE_TOOLS = READ_TOOLS | {"create_section", "create_page"}
 for _scenario_name, _capability in (

@@ -23,6 +23,7 @@ from ...test_utils import (
     validate_manifest_notebook,
     write_json,
 )
+from .destination_position import assert_destination_position
 
 
 def _container_parent(item: dict[str, Any], resource_type: str) -> Any:
@@ -440,6 +441,7 @@ async def execute_typed_reparent(
                 resource_type,
             )
             response = await active_client.call_tool(tool_name, arguments)
+            write_json(out / f"mutation-response-{index}.json", response)
             current_snapshot = await capture_snapshot(active_client, notebook_id)
             write_json(out / f"forward-{index}.json", current_snapshot)
 
@@ -463,6 +465,16 @@ async def execute_typed_reparent(
                         f"{case} typed tool did not report the observed target ID mapping."
                     )
                 operation["forward_id_map"] = response_id_map
+                position_evidence = assert_destination_position(
+                    response,
+                    current_snapshot,
+                    current_target_id,
+                )
+                write_json(
+                    out / f"destination-position-evidence-{index}.json",
+                    position_evidence,
+                )
+                operation["destination_position"] = position_evidence
                 write_json(out / "requests.json", {"operations": operations})
                 verified[case] = checks
             except InvariantFailure as exc:

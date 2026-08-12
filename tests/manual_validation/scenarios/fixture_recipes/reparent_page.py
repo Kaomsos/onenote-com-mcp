@@ -27,6 +27,8 @@ Image 二进制和内容对象类型不变；所有无关对象的 ID、关系�
 
 
 class ReparentPageFixtureRecipe(RecipeBase):
+    recipe_version = 2
+
     def __init__(self) -> None:
         super().__init__("reparent-page")
 
@@ -48,17 +50,19 @@ class ReparentPageFixtureRecipe(RecipeBase):
         r.refresh_structure("reparent_page", target)
         r.record_evidence("reparent_page_fixture", rich)
         r.record_structure("destination_anchor_page", await ensure_page(context.client, destination["id"], "02-Destination-Anchor", f"Destination anchor token: {context.token}"))
+        r.record_structure("destination_anchor_page_b", await ensure_page(context.client, destination["id"], "03-Destination-Anchor", f"Second destination anchor token: {context.token}"))
         return FixtureBuildResult(r.structure, r.evidence)
 
     def validate(self, context: FixtureValidationContext, build: FixtureBuildResult) -> tuple[str, ...]:
         resolved, _by_id, checks = resolve_active_structure(context.snapshot, build.structure)
         source, destination = resolved["source_section"], resolved["destination_section"]
-        target, anchor = resolved["reparent_page"], resolved["destination_anchor_page"]
+        target = resolved["reparent_page"]
+        anchors = [resolved["destination_anchor_page"], resolved["destination_anchor_page_b"]]
         checks.require(source.get("parent_id") == destination.get("parent_id") and source.get("parent_id") and source["id"] != destination["id"], "Page reparent fixture Sections are not distinct children of one Notebook.", "source and destination Sections are distinct children of one Notebook")
         checks.require(resolved["description_section"].get("parent_id") == source.get("parent_id") and resolved["description_page"].get("section_id") == resolved["description_section"]["id"], "Reparent Page Description escaped the fixture Notebook.", "Description Page and Section belong to the fixture Notebook")
         checks.require(target.get("section_id") == source["id"] and target.get("parent_id") == source["id"] and int(target.get("page_level", 0)) == 1 and target.get("parent_page_id") in {None, ""}, "Page reparent target is not a root Page in the source Section.", "target Page is a root Page in the source Section")
-        checks.require(anchor.get("section_id") == destination["id"] and anchor["id"] != target["id"], "Page reparent destination anchor is invalid.", "destination anchor remains outside the reparented target")
-        expected = {"description_section":"00-Description", "description_page":DESCRIPTION_TITLE, "source_section":"01-Source-Section", "destination_section":"02-Destination-Section", "reparent_page":"01-Reparent-Page", "destination_anchor_page":"02-Destination-Anchor"}
+        checks.require(all(anchor.get("section_id") == destination["id"] and anchor["id"] != target["id"] for anchor in anchors) and len({anchor["id"] for anchor in anchors}) == 2, "Page reparent destination anchors are invalid.", "destination contains two distinct Page anchors outside the reparented target")
+        expected = {"description_section":"00-Description", "description_page":DESCRIPTION_TITLE, "source_section":"01-Source-Section", "destination_section":"02-Destination-Section", "reparent_page":"01-Reparent-Page", "destination_anchor_page":"02-Destination-Anchor", "destination_anchor_page_b":"03-Destination-Anchor"}
         checks.require(all(display_name(resolved[key]) == name for key, name in expected.items()), "Page reparent fixture does not have stable numbering.", "Description, Sections, target Page, and anchor use stable numbering")
         rich = evidence(build, "reparent_page_fixture")
         checks.require(isinstance(rich, dict) and rich.get("page_id") == target["id"], "Page reparent rich-content evidence is not bound to the target Page.", "target Page owns the declared rich-content fixture")

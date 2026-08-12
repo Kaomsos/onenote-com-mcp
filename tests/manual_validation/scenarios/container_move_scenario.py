@@ -20,6 +20,7 @@ from ..test_utils import (
 from .base import Scenario
 from .common.copy_invariants import assert_copy_mapping, expected_copy_source_items
 from .common.copy_runtime import call_with_result_evidence
+from .common.destination_position import assert_destination_position
 from .common.report import render_report
 
 
@@ -171,6 +172,12 @@ class ContainerMoveScenario(Scenario):
             target_ids = [str(id_map[value]) for value in source_ids]
             if not set(target_ids).issubset(destination_ids):
                 raise InvariantFailure("A container Move target escaped the destination Notebook.")
+            position_evidence = assert_destination_position(
+                moved,
+                after,
+                target_ids[0],
+            )
+            write_json(out / "destination-position-evidence.json", position_evidence)
 
             remaining = {
                 "status": "cross_notebook_container_move_completed",

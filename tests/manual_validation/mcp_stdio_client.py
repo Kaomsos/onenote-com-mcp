@@ -40,6 +40,13 @@ COPY_BUDGET_ENV = {
     "max_plan_seconds": ("LOCAL_ONENOTE_MAX_COPY_PLAN_SECONDS", 300),
     "max_execute_seconds": ("LOCAL_ONENOTE_MAX_COPY_EXECUTE_SECONDS", 1_800),
 }
+SEARCH_BUDGET_ENV = {
+    "max_pages": ("LOCAL_ONENOTE_MAX_SEARCH_PAGES", 1_000),
+    "max_page_chars": ("LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS", 100_000),
+    "max_total_chars": ("LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS", 2_000_000),
+    "max_seconds": ("LOCAL_ONENOTE_MAX_SEARCH_SECONDS", 30),
+    "snippet_chars": ("LOCAL_ONENOTE_MAX_SEARCH_SNIPPET_CHARS", 400),
+}
 MUTATION_TOOL_PREFIXES = (
     "add_",
     "append_",
@@ -147,6 +154,7 @@ def build_server_env(
     temp_dir: Path,
     timeout_seconds: int = 180,
     bridge_audit_path: Path | None = None,
+    search_budget: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """Build a complete child env, overriding every mutation switch exactly."""
 
@@ -156,6 +164,13 @@ def build_server_env(
         env[env_name] = "true" if getattr(policy, field) else "false"
     for _field, (env_name, value) in COPY_BUDGET_ENV.items():
         env[env_name] = str(value)
+    unknown_search_fields = set(search_budget or {}) - set(SEARCH_BUDGET_ENV)
+    if unknown_search_fields:
+        raise ValueError(
+            "Unknown Search budget fields: " + ", ".join(sorted(unknown_search_fields))
+        )
+    for field, (env_name, default) in SEARCH_BUDGET_ENV.items():
+        env[env_name] = str((search_budget or {}).get(field, default))
     env["TEMP"] = str(temp_dir.resolve())
     env["TMP"] = str(temp_dir.resolve())
     env["LOCAL_ONENOTE_MCP_TIMEOUT"] = str(timeout_seconds)
@@ -181,7 +196,7 @@ def _json_safe(value: Any) -> Any:
 def summarize(value: Any, *, key: str = "") -> Any:
     """Return a bounded audit representation without content/XML/base64 data."""
 
-    sensitive = {"xml", "base64", "content", "text"}
+    sensitive = {"xml", "base64", "content", "text", "query", "snippet"}
     if key.casefold() in sensitive and isinstance(value, str):
         return {
             "redacted": True,
@@ -240,11 +255,16 @@ class MCPStdioClient:
         allowed_tools: set[str],
         run_dir: Path,
         timeout_seconds: int,
+        search_budget: dict[str, int] | None = None,
     ) -> None:
         self.policy = policy
         self.allowed_tools = set(allowed_tools) | {"health_check"}
         self.run_dir = run_dir
         self.timeout_seconds = timeout_seconds
+        self.search_budget = {
+            field: (search_budget or {}).get(field, default)
+            for field, (_env_name, default) in SEARCH_BUDGET_ENV.items()
+        }
         self._stack = AsyncExitStack()
         self._session: ClientSession | None = None
         self.process_started = False
@@ -265,6 +285,7 @@ class MCPStdioClient:
                     self.run_dir / "temp",
                     self.timeout_seconds,
                     self.run_dir / "bridge-calls.jsonl",
+                    self.search_budget,
                 ),
                 encoding="utf-8",
                 encoding_error_handler="replace",
@@ -298,6 +319,11 @@ class MCPStdioClient:
                 raise ClientFailure(
                     "Copy budget mismatch: "
                     f"expected {expected_copy_budget}, received {health.get('copy_budget')}"
+                )
+            if health.get("search_budget") != self.search_budget:
+                raise ClientFailure(
+                    "Search budget mismatch: "
+                    f"expected {self.search_budget}, received {health.get('search_budget')}"
                 )
             return self
         except BaseException:

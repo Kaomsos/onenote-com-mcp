@@ -11,6 +11,9 @@ import pytest
 from tests.manual_validation.runtime import RuntimeOptions
 from tests.manual_validation.scenarios import container_move_scenario
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
+from tests.manual_validation.scenarios.common.destination_position import (
+    expected_destination_position,
+)
 
 
 @pytest.mark.parametrize(
@@ -118,7 +121,7 @@ def test_container_move_scenario_checks_verified_copy_and_one_root_delete(
                     target["section_id"] = id_map[item["section_id"]]
                 state["destination"].append(target)
             state["source"] = [state["source"][0]]
-            return {
+            response = {
                 "copy_report": {
                     "verified": True,
                     "lossless": True,
@@ -130,6 +133,11 @@ def test_container_move_scenario_checks_verified_copy_and_one_root_delete(
                 "inactive_source_ids": source_ids,
                 "remaining_source_ids": [],
             }
+            response["destination_position"] = expected_destination_position(
+                {"items": [*state["source"], *state["destination"]]},
+                id_map[source_root_id],
+            )
+            return response
 
     fake_client = FakeClient()
 

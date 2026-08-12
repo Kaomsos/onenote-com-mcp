@@ -59,23 +59,26 @@ class Scenario:
                     expected_mcp_process_starts=no_cache_processes,
                 ),
             ),
-            DryRunCase(
-                case_id=f"{self.name}.use-cache",
-                scenario_name=self.name,
-                scenario_args=("--use-cache",),
-                expected=DryRunExpectations(
-                    expected_mcp_process_starts=(
-                        0
-                        if getattr(
-                            self.fixture_recipe,
-                            "representation_discovery_only",
-                            False,
-                        )
-                        else 1
-                    )
-                ),
-            ),
         ]
+        if getattr(self.fixture_recipe, "supports_cache", True):
+            cases.append(
+                DryRunCase(
+                    case_id=f"{self.name}.use-cache",
+                    scenario_name=self.name,
+                    scenario_args=("--use-cache",),
+                    expected=DryRunExpectations(
+                        expected_mcp_process_starts=(
+                            0
+                            if getattr(
+                                self.fixture_recipe,
+                                "representation_discovery_only",
+                                False,
+                            )
+                            else 1
+                        )
+                    ),
+                )
+            )
         cases.extend(
             DryRunCase(
                 case_id=f"{self.name}.{variant.case_suffix}",

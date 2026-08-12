@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from ...runtime import InvariantFailure
-from ..common.fixture_builders import ensure_group
+from ..common.fixture_builders import ensure_group, ensure_section
 from ..common.fixture_models import (
     FixtureBuildResult,
     FixtureContext,
@@ -19,7 +19,7 @@ from .recipe_base import (
 )
 
 class CopySectionFixtureRecipe(LayeredCopyFixtureRecipe):
-    recipe_version = 3
+    recipe_version = 4
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "same-Notebook and cross-Notebook destination Groups belong to their declared roles",
@@ -32,8 +32,14 @@ class CopySectionFixtureRecipe(LayeredCopyFixtureRecipe):
             "source_section",
             "parent_page",
             "semantic_page",
+            "same_notebook_anchor_a",
+            "same_notebook_anchor_b",
         )
-        destination_keys = ("cross_notebook_group",)
+        destination_keys = (
+            "cross_notebook_group",
+            "cross_notebook_anchor_a",
+            "cross_notebook_anchor_b",
+        )
         profile = get_scenario_spec("copy-section").fixture
         source_profile = replace(
             profile,
@@ -72,7 +78,7 @@ class CopySectionFixtureRecipe(LayeredCopyFixtureRecipe):
 
     async def build(self, context: FixtureContext) -> FixtureBuildResult:
         if context.role == "destination":
-            context.recorder.record_structure(
+            group = context.recorder.record_structure(
                 "cross_notebook_group",
                 await ensure_group(
                     context.client,
@@ -80,20 +86,42 @@ class CopySectionFixtureRecipe(LayeredCopyFixtureRecipe):
                     "Cross-Notebook-Group",
                 ),
             )
+            for key, name in (
+                ("cross_notebook_anchor_a", "00-Section-Anchor-A"),
+                ("cross_notebook_anchor_b", "99-Section-Anchor-B"),
+            ):
+                context.recorder.record_structure(
+                    key,
+                    await ensure_section(context.client, group["id"], name),
+                )
             return FixtureBuildResult(
                 context.recorder.structure,
                 context.recorder.evidence,
             )
         if context.role != "source":
             raise InvariantFailure(f"Unsupported Copy Section Notebook role: {context.role}")
-        return await super().build(context)
+        build = await super().build(context)
+        group = build.structure["group_b"]
+        for key, name in (
+            ("same_notebook_anchor_a", "00-Section-Anchor-A"),
+            ("same_notebook_anchor_b", "99-Section-Anchor-B"),
+        ):
+            context.recorder.record_structure(
+                key,
+                await ensure_section(context.client, group["id"], name),
+            )
+        return FixtureBuildResult(context.recorder.structure, context.recorder.evidence)
 
     def validate(
         self,
         context: FixtureValidationContext,
         build: FixtureBuildResult,
     ) -> tuple[str, ...]:
-        if set(build.structure) == {"cross_notebook_group"}:
+        if set(build.structure) == {
+            "cross_notebook_group",
+            "cross_notebook_anchor_a",
+            "cross_notebook_anchor_b",
+        }:
             resolved, _by_id, checks = resolve_active_structure(
                 context.snapshot,
                 build.structure,
@@ -105,8 +133,29 @@ class CopySectionFixtureRecipe(LayeredCopyFixtureRecipe):
                 "Cross-Notebook Section destination Group escaped its destination Notebook.",
                 "cross-Notebook destination Group belongs to the destination role",
             )
+            checks.require(
+                all(
+                    resolved[key].get("resource_type") == "section"
+                    and resolved[key].get("parent_id") == group["id"]
+                    for key in ("cross_notebook_anchor_a", "cross_notebook_anchor_b")
+                ),
+                "Cross-Notebook Section anchors escaped their destination Group.",
+                "cross-Notebook destination Group contains two Section anchors",
+            )
             return tuple(checks.checks)
-        return super().validate(context, build)
+        checks = list(super().validate(context, build))
+        resolved, _by_id, state = resolve_active_structure(context.snapshot, build.structure)
+        state.require(
+            all(
+                resolved[key].get("resource_type") == "section"
+                and resolved[key].get("parent_id") == resolved["group_b"]["id"]
+                for key in ("same_notebook_anchor_a", "same_notebook_anchor_b")
+            ),
+            "Same-Notebook Section anchors escaped their destination Group.",
+            "same-Notebook destination Group contains two Section anchors",
+        )
+        checks.append("same-Notebook destination Group contains two Section anchors")
+        return tuple(checks)
 
     def validate_live(
         self,

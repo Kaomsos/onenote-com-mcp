@@ -19,6 +19,7 @@ from .reorder_section import ReorderSectionScenario
 from .reorder_section_group import ReorderSectionGroupScenario
 from .reparent_section import ReparentSectionScenario
 from .reparent_page import ReparentPageScenario
+from .reparent_page_scope import ReparentPageScopeScenario
 from .reparent_section_group import ReparentSectionGroupScenario
 from .delete import DeleteScenario
 from .copy_page import CopyPageScenario
@@ -29,6 +30,7 @@ from .copy_display_equation import CopyDisplayEquationScenario
 from .move_page import MovePageScenario
 from .move_section import MoveSectionScenario
 from .move_section_group import MoveSectionGroupScenario
+from .search_all_open_notebooks import SearchAllOpenNotebooksScenario
 from .bootstrap_inserted_file_fixture import BootstrapInsertedFileFixtureScenario
 from .bootstrap_ink_drawing_fixture import BootstrapInkDrawingFixtureScenario
 from .bootstrap_media_file_fixture import BootstrapMediaFileFixtureScenario
@@ -104,6 +106,7 @@ __all__ = [
     "ReorderSectionGroupScenario",
     "ReparentSectionScenario",
     "ReparentPageScenario",
+    "ReparentPageScopeScenario",
     "ReparentSectionGroupScenario",
     "DeleteScenario",
     "CopyPageScenario",
@@ -114,6 +117,7 @@ __all__ = [
     "MovePageScenario",
     "MoveSectionScenario",
     "MoveSectionGroupScenario",
+    "SearchAllOpenNotebooksScenario",
     "BootstrapInsertedFileFixtureScenario",
     "BootstrapInkDrawingFixtureScenario",
     "BootstrapMediaFileFixtureScenario",

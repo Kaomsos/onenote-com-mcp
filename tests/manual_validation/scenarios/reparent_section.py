@@ -26,6 +26,7 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.config import REPARENT_SECTION_TOOLS
+from .common.destination_position import assert_destination_position
 from .common.registry import SCENARIO_REGISTRY
 from .fixture_recipes.reparent_section import RECIPE
 from .common.report import render_report
@@ -122,7 +123,7 @@ async def _execute_reparent_section(
                     f"{case} source Section is not under its declared parent; "
                     "refusing to guess recovery state."
                 )
-            await client.call_tool(
+            response = await client.call_tool(
                 "reparent_section",
                 {
                     "section_id": current["id"],
@@ -132,6 +133,7 @@ async def _execute_reparent_section(
                     "expected_modified": current.get("modified"),
                 },
             )
+            write_json(out / f"mutation-response-{index}.json", response)
             operations.append(
                 {
                     "case": case,
@@ -143,6 +145,16 @@ async def _execute_reparent_section(
             )
             current_snapshot = await capture_snapshot(client, notebook_id)
             write_json(out / f"forward-{index}.json", current_snapshot)
+            position_evidence = assert_destination_position(
+                response,
+                current_snapshot,
+                str(current["id"]),
+            )
+            write_json(
+                out / f"destination-position-evidence-{index}.json",
+                position_evidence,
+            )
+            operations[-1]["destination_position"] = position_evidence
             _validate_reparent_state(before, current_snapshot, operations)
 
         after = current_snapshot

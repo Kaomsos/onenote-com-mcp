@@ -11,6 +11,9 @@ import pytest
 from tests.manual_validation.mcp_stdio_client import REPARENT_POLICY
 from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
 from tests.manual_validation.scenarios.common import reparent as reparent_runtime
+from tests.manual_validation.scenarios.common.destination_position import (
+    expected_destination_position,
+)
 from tests.manual_validation.scenarios.common.config import (
     REPARENT_PAGE_TOOLS,
     REPARENT_SECTION_GROUP_TOOLS,
@@ -21,6 +24,8 @@ from tests.manual_validation.scenarios.common.specs import SCENARIO_SPECS
 from tests.manual_validation.scenarios.fixture_recipes.reparent_page import DESCRIPTION as REPARENT_PAGE_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reparent_section_group import DESCRIPTION as REPARENT_SECTION_GROUP_DESCRIPTION
 from tests.manual_validation.scenarios.reparent_page import ReparentPageScenario
+from tests.manual_validation.scenarios import reparent_page_scope as reparent_scope_runtime
+from tests.manual_validation.scenarios.reparent_page_scope import ReparentPageScopeScenario
 from tests.manual_validation.scenarios.reparent_section_group import (
     ReparentSectionGroupScenario,
 )
@@ -46,6 +51,7 @@ class FakeClient:
         self.policy = REPARENT_POLICY
         self.timeout_seconds = timeout_seconds
         self.calls: list[tuple[str, dict]] = []
+        self.last_response: dict | None = None
 
     async def call_tool(self, name: str, arguments: dict, **_kwargs) -> dict:
         self.calls.append((name, arguments))
@@ -54,7 +60,12 @@ class FakeClient:
             "target-page": "reparented-page",
             "reparented-page": "restored-page",
         }.get(target_id, target_id)
-        return {"ok": True, "complete": True, "id_map": {target_id: current_id}}
+        self.last_response = {
+            "ok": True,
+            "complete": True,
+            "id_map": {target_id: current_id},
+        }
+        return self.last_response
 
 
 def _snapshot(items: list[dict]) -> dict:
@@ -165,6 +176,17 @@ def _page_case() -> tuple[dict, dict, list[dict], list[dict], type, set[str]]:
             "order": 0,
             "parent_page_id": None,
         },
+        {
+            "resource_type": "page",
+            "id": "anchor-page-b",
+            "title": "03-Destination-Anchor",
+            "parent_id": "destination-section",
+            "notebook_id": "notebook",
+            "section_id": "destination-section",
+            "page_level": 1,
+            "order": 1,
+            "parent_page_id": None,
+        },
     ]
     before = _snapshot(items)
     after = _remap_page(before, "target-page", "reparented-page", "destination-section")
@@ -179,6 +201,7 @@ def _page_case() -> tuple[dict, dict, list[dict], list[dict], type, set[str]]:
             "destination_section": items[4],
             "reparent_page": items[5],
             "destination_anchor_page": items[6],
+            "destination_anchor_page_b": items[7],
         },
     }
     return manifest, before, [after], [restored], ReparentPageScenario, REPARENT_PAGE_TOOLS
@@ -243,6 +266,14 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
         ),
     ]
     destination_3 = group("destination-3", "03-Destination-Parent", "notebook")
+    anchors = [
+        group("anchor-1a", "00-Group-Anchor-A", "destination-1"),
+        group("anchor-1b", "99-Group-Anchor-B", "destination-1"),
+        group("anchor-2a", "00-Notebook-Group-Anchor-A", "notebook"),
+        group("anchor-2b", "99-Notebook-Group-Anchor-B", "notebook"),
+        group("anchor-3a", "00-Group-Anchor-A", "destination-3"),
+        group("anchor-3b", "99-Group-Anchor-B", "destination-3"),
+    ]
     for parent, target, section_name, page_name in cases:
         items.extend(
             [
@@ -268,7 +299,7 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
                 },
             ]
         )
-    items.append(destination_3)
+    items.extend([destination_3, *anchors])
     before = _snapshot(items)
     after_1 = _with_parent(before, "target-1", "destination-1")
     after_2 = _with_parent(after_1, "target-2", "notebook")
@@ -285,6 +316,8 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
             "description_section": by_id["description-section"],
             "description_page": by_id["description-page"],
             "notebook_to_group_destination": by_id["destination-1"],
+            "notebook_to_group_anchor_a": by_id["anchor-1a"],
+            "notebook_to_group_anchor_b": by_id["anchor-1b"],
             "notebook_to_group_target": by_id["target-1"],
             "notebook_to_group_section": by_id["section-1"],
             "notebook_to_group_page": by_id["page-1"],
@@ -292,8 +325,12 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
             "group_to_notebook_target": by_id["target-2"],
             "group_to_notebook_section": by_id["section-2"],
             "group_to_notebook_page": by_id["page-2"],
+            "group_to_notebook_anchor_a": by_id["anchor-2a"],
+            "group_to_notebook_anchor_b": by_id["anchor-2b"],
             "group_to_group_source": by_id["source-3"],
             "group_to_group_destination": by_id["destination-3"],
+            "group_to_group_anchor_a": by_id["anchor-3a"],
+            "group_to_group_anchor_b": by_id["anchor-3b"],
             "group_to_group_target": by_id["target-3"],
             "group_to_group_section": by_id["section-3"],
             "group_to_group_page": by_id["page-3"],
@@ -309,6 +346,101 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
     )
 
 
+def _page_scope_case() -> tuple[dict, dict, dict, dict]:
+    notebook = {"resource_type": "notebook", "id": "notebook", "name": "Notebook", "parent_id": None}
+    source = {"resource_type": "section", "id": "source", "name": "Source", "parent_id": "notebook", "notebook_id": "notebook"}
+    destination = {"resource_type": "section", "id": "destination", "name": "Destination", "parent_id": "notebook", "notebook_id": "notebook"}
+
+    def page(object_id: str, title: str, level: int, order: int, parent: str | None) -> dict:
+        return {
+            "resource_type": "page",
+            "id": object_id,
+            "title": title,
+            "parent_id": "source",
+            "notebook_id": "notebook",
+            "section_id": "source",
+            "page_level": level,
+            "order": order,
+            "parent_page_id": parent,
+        }
+
+    pages = [
+        page("root-parent", "Root Parent", 1, 0, None),
+        page("root-selected", "Root Selected", 2, 1, "root-parent"),
+        page("root-child", "Root Child", 3, 2, "root-selected"),
+        page("root-grandchild", "Root Grandchild", 4, 3, "root-child"),
+        page("tree-parent", "Tree Parent", 1, 4, None),
+        page("tree-selected", "Tree Selected", 2, 5, "tree-parent"),
+        page("tree-child-a", "Tree Child A", 3, 6, "tree-selected"),
+        page("tree-grandchild", "Tree Grandchild", 4, 7, "tree-child-a"),
+        page("tree-child-b", "Tree Child B", 3, 8, "tree-selected"),
+    ]
+    anchors = [
+        {**page("anchor-a", "Anchor A", 1, 0, None), "parent_id": "destination", "section_id": "destination"},
+        {**page("anchor-b", "Anchor B", 1, 1, None), "parent_id": "destination", "section_id": "destination"},
+    ]
+    before = _snapshot([notebook, source, destination, *pages, *anchors])
+    after_root = deepcopy(before)
+    after_root["items"] = [item for item in after_root["items"] if item["id"] != "root-selected"]
+    for item in after_root["items"]:
+        if item["id"] == "root-child":
+            item.update(page_level=2, parent_page_id="root-parent")
+        elif item["id"] == "root-grandchild":
+            item.update(page_level=3, parent_page_id="root-child")
+    root_new = {
+        **next(item for item in before["items"] if item["id"] == "root-selected"),
+        "id": "root-new",
+        "parent_id": "destination",
+        "section_id": "destination",
+        "page_level": 1,
+        "order": 2,
+        "parent_page_id": None,
+    }
+    after_root["items"].append(root_new)
+    for field in ("page_hashes", "page_canonical_hashes", "page_reparent_hashes", "page_objects"):
+        value = after_root[field].pop("root-selected")
+        after_root[field]["root-new"] = value
+
+    selected_ids = ["tree-selected", "tree-child-a", "tree-grandchild", "tree-child-b"]
+    after_tree = deepcopy(after_root)
+    after_tree["items"] = [item for item in after_tree["items"] if item["id"] not in selected_ids]
+    id_map = {source_id: f"new-{source_id}" for source_id in selected_ids}
+    levels = [1, 2, 3, 2]
+    parents = [None, id_map["tree-selected"], id_map["tree-child-a"], id_map["tree-selected"]]
+    for order, (source_id, level, parent_id) in enumerate(zip(selected_ids, levels, parents), start=3):
+        old = next(item for item in before["items"] if item["id"] == source_id)
+        after_tree["items"].append(
+            {
+                **old,
+                "id": id_map[source_id],
+                "parent_id": "destination",
+                "section_id": "destination",
+                "page_level": level,
+                "order": order,
+                "parent_page_id": parent_id,
+            }
+        )
+        for field in ("page_hashes", "page_canonical_hashes", "page_reparent_hashes", "page_objects"):
+            value = after_tree[field].pop(source_id)
+            after_tree[field][id_map[source_id]] = value
+    structure = {item["id"].replace("-", "_"): item for item in [source, destination, *pages, *anchors]}
+    structure.update(
+        {
+            "source_section": source,
+            "destination_section": destination,
+            "root_only_selected": next(item for item in pages if item["id"] == "root-selected"),
+            "root_only_child": next(item for item in pages if item["id"] == "root-child"),
+            "root_only_grandchild": next(item for item in pages if item["id"] == "root-grandchild"),
+            "subtree_selected": next(item for item in pages if item["id"] == "tree-selected"),
+            "subtree_child_a": next(item for item in pages if item["id"] == "tree-child-a"),
+            "subtree_grandchild": next(item for item in pages if item["id"] == "tree-grandchild"),
+            "subtree_child_b": next(item for item in pages if item["id"] == "tree-child-b"),
+        }
+    )
+    manifest = {"schema_version": 1, "notebook": notebook, "structure": structure}
+    return manifest, before, after_root, after_tree
+
+
 @pytest.mark.parametrize("case", [_page_case, _section_group_case])
 @pytest.mark.parametrize("keep_worksite", [False, True])
 def test_typed_reparent_verifies_identity_content_and_restore_or_preserve(
@@ -318,7 +450,14 @@ def test_typed_reparent_verifies_identity_content_and_restore_or_preserve(
     snapshots = iter([before, *forwards] if keep_worksite else [before, *forwards, *restores])
 
     async def fake_snapshot(_client, _notebook_id):
-        return deepcopy(next(snapshots))
+        snapshot = deepcopy(next(snapshots))
+        if client.last_response is not None:
+            current_id = next(iter(client.last_response["id_map"].values()))
+            client.last_response["destination_position"] = expected_destination_position(
+                snapshot,
+                str(current_id),
+            )
+        return snapshot
 
     monkeypatch.setattr(reparent_runtime, "capture_snapshot", fake_snapshot)
     client = FakeClient(allowed_tools)
@@ -403,6 +542,145 @@ def test_typed_reparent_rejects_com_success_without_parent_change(monkeypatch, t
             )
         )
     assert [name for name, _arguments in client.calls] == ["reparent_page"]
+
+
+def test_reparent_page_scope_runner_verifies_both_ranges_and_independent_positions(
+    monkeypatch, tmp_path
+) -> None:
+    manifest, before, after_root, after_tree = _page_scope_case()
+    snapshots = iter([before, after_root, after_tree])
+
+    class ScopeClient:
+        allowed_tools = set(REPARENT_PAGE_TOOLS)
+        policy = REPARENT_POLICY
+        timeout_seconds = 180
+
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+            self.last_response: dict | None = None
+
+        async def call_tool(self, name: str, arguments: dict) -> dict:
+            assert name == "reparent_page"
+            self.calls.append(dict(arguments))
+            if len(self.calls) == 1:
+                response = {
+                    "include_descendants": False,
+                    "id_map": {"root-selected": "root-new"},
+                    "preserved_descendants": {
+                        "promoted": True,
+                        "preserved_descendant_ids": ["root-child", "root-grandchild"],
+                    },
+                }
+            else:
+                response = {
+                    "include_descendants": True,
+                    "id_map": {
+                        source_id: f"new-{source_id}"
+                        for source_id in (
+                            "tree-selected",
+                            "tree-child-a",
+                            "tree-grandchild",
+                            "tree-child-b",
+                        )
+                    },
+                    "preserved_descendants": {
+                        "promoted": False,
+                        "preserved_descendant_ids": [],
+                    },
+                }
+            self.last_response = response
+            return response
+
+    client = ScopeClient()
+
+    async def fake_snapshot(_client, _notebook_id):
+        snapshot = deepcopy(next(snapshots))
+        if client.last_response is not None:
+            target_id = next(iter(client.last_response["id_map"].values()))
+            client.last_response["destination_position"] = expected_destination_position(
+                snapshot, target_id
+            )
+        return snapshot
+
+    monkeypatch.setattr(reparent_scope_runtime, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(reparent_scope_runtime, "render_report", lambda _path: None)
+
+    result = asyncio.run(
+        ReparentPageScopeScenario().execute(
+            SimpleNamespace(notebook_name=None, keep_worksite=False),
+            RuntimeOptions(tmp_path, 180, False, False),
+            manifest,
+            client=client,
+            fixture_result={},
+        )
+    )
+
+    assert result["status"] == "passed"
+    assert [case["case"] for case in result["cases"]] == [
+        "root-only-default",
+        "full-subtree",
+    ]
+    assert "include_descendants" not in client.calls[0]
+    assert client.calls[1]["include_descendants"] is True
+    assert result["cases"][1]["target_parent_page_ids"] == {
+        "new-tree-selected": None,
+        "new-tree-child-a": "new-tree-selected",
+        "new-tree-grandchild": "new-tree-child-a",
+        "new-tree-child-b": "new-tree-selected",
+    }
+    scenario = tmp_path / "scenarios" / "reparent-page-scope"
+    for case in ("root-only-default", "full-subtree"):
+        assert (scenario / f"mutation-response-{case}.json").exists()
+        assert (scenario / f"after-{case}.json").exists()
+        assert (scenario / f"destination-position-evidence-{case}.json").exists()
+
+
+def test_reparent_page_scope_runner_rejects_excluded_descendant_in_id_map(
+    monkeypatch, tmp_path
+) -> None:
+    manifest, before, after_root, _after_tree = _page_scope_case()
+    snapshots = iter([before, after_root])
+
+    class BadClient:
+        allowed_tools = set(REPARENT_PAGE_TOOLS)
+        policy = REPARENT_POLICY
+        timeout_seconds = 180
+        response = {
+            "include_descendants": False,
+            "id_map": {
+                "root-selected": "root-new",
+                "root-child": "root-child",
+            },
+            "preserved_descendants": {
+                "promoted": True,
+                "preserved_descendant_ids": ["root-child", "root-grandchild"],
+            },
+        }
+
+        async def call_tool(self, _name: str, _arguments: dict) -> dict:
+            return self.response
+
+    client = BadClient()
+
+    async def fake_snapshot(_client, _notebook_id):
+        snapshot = deepcopy(next(snapshots))
+        client.response["destination_position"] = expected_destination_position(
+            snapshot, "root-new"
+        ) if any(item["id"] == "root-new" for item in snapshot["items"]) else {}
+        return snapshot
+
+    monkeypatch.setattr(reparent_scope_runtime, "capture_snapshot", fake_snapshot)
+
+    with pytest.raises(InvariantFailure, match="incorrectly includes excluded"):
+        asyncio.run(
+            ReparentPageScopeScenario().execute(
+                SimpleNamespace(notebook_name=None, keep_worksite=False),
+                RuntimeOptions(tmp_path, 180, False, False),
+                manifest,
+                client=client,
+                fixture_result={},
+            )
+        )
 
 
 def test_reparent_page_rejects_ambiguous_identity_transition_without_restore(

@@ -234,6 +234,14 @@ Delete-Sandbox
 
 Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前后各捕获一次当前 Notebook ID/实际目录 snapshot；全部历史 run-local lease 只与 snapshot 做内存比较，历史 run 数量不得放大 COM 调用次数。Snapshot 获取失败按 MCP/lifecycle failure fail closed，并保留本次 working 现场。
 
+`search-all-open-notebooks` 是 fresh-only、`included_in_all=false` 的双 Notebook Search 场景。它构建 Source 中的 Probe Group/两个 Section/三个 Page，以及第二个 `search-b` Notebook 中的两个 Page。每次 fresh run 在内存生成严格 32 字符的 `<15 位字母数字>-<16 位字母数字>` 探针，查询使用左右两段的 `AND`；root、Notebook、SectionGroup、Section 起点必须分别精确命中 `4 → 3 → 2 → 1` 个 Page。Readiness 必须连续两次得到相同四 ID 集合；分页以 `page_size=2` 验证两页并在前后检查 index 稳定性。静态 `max_pages=4` 的独立五 Page marker 必须在分页前失败，长正文 marker 必须触发 `max_total_chars=512`，同时 Probe Section 1 证明正常 snippet hydration。
+
+场景的 MCP audit 会统一 hash/长度脱敏 `query/content/text/snippet`。普通 evidence 只保存探针 SHA-256、长度、字符类别、命中 ID 和无正文 metadata，不保存原始 query、正文或 snippet。Recipe 明确拒绝 `--use-cache`，以保证每次运行都生成新探针；它只有 fixture 所需 Writes，没有 Delete、Copy、Move、Permanent Delete 或 Raw XML。Agent 只能运行下面的 dry-run；真实命令必须由用户本人在前台显式启动：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks
+```
+
 ## 安全审查与执行
 
 用户应先查看 dry-run；它不创建目录、不启动 MCP、不访问 OneNote：
@@ -273,6 +281,11 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
 <!-- dry-run-case: reparent-page.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py reparent-page --dry-run --json
+```
+
+<!-- dry-run-case: reparent-page-scope.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py reparent-page-scope --dry-run --json
 ```
 
 <!-- dry-run-case: reparent-section-group.default -->
@@ -318,6 +331,11 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
 <!-- dry-run-case: move-section-group.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section-group --dry-run --json
+```
+
+<!-- dry-run-case: search-all-open-notebooks.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks --dry-run --json
 ```
 
 <!-- dry-run-case: bootstrap-inserted-file-fixture.default -->
@@ -464,15 +482,16 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
 | `reorder-page` | `Description/00-Reorder-Description` 明示操作前 `01,02,03`、正向操作后 `01,03,02`、恢复后 `01,02,03`；`01-Reorder-Page-Section` 下使用 `01-Parent`、`02-Child`、`03-Sibling`，让 UI 顺序和缩进变化可直接肉眼验收；`--keep-worksite` 保留 `01,03,02` 与新 predecessor/level |
 | `reorder-section` | `00-Description/00-Reorder-Section-Description` 分别说明 Notebook 父级和 `01-Section-Parent`（SectionGroup）父级的 before/after/restore；两组 Section 及其 Page 均使用 `01/02/03` 编号，UI 可直接核对 `01,02,03 → 01,03,02 → 01,02,03`；只开启 Writes 与 Section Reorder；用户已确认真实 UI 排序证据 |
 | `reorder-section-group` | **功能受限 / 验证失败 / 不注册到 `all`**。保留完整 fixture、mutation 和写后回读实现作为可单独调用的诊断场景；真实后端对 Notebook 直属 Group 返回 UpdateHierarchy 成功但保持按名称固定升序，嵌套操作未执行。dry-run 和运行状态证据写入 `capability_assessment={capability_status: limited, validation_status: failed, ...}`。 |
-| `reparent-section` | `00-Description/00-Reparent-Section-Description` 说明三种 before/after/restore：`01-Notebook-To-Group-Section` 从 Notebook 根换父级到 `01-Destination-Group`，`02-Group-To-Notebook-Section` 从 `02-Source-Group` 换父级到 Notebook 根，`03-Group-To-Group-Section` 从 `03-Source-Group` 换父级到 `03-Destination-Group`。三个 Section 及其 Page 均编号；每次 Reparent 后刷新快照，验证 ID、父级、Page 拓扑和内容，默认逆序恢复，`--keep-worksite` 保留三项目标父级。只允许同一 Notebook。 |
-| `reparent-page` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_page` 提交精确 ID 与 confirmation，不要求 Raw XML。`00-Description/00-Reparent-Page-Description` 解释原生 `UpdateHierarchy` 与 ID 重映射；`01-Source-Section/01-Reparent-Page` 同页包含 Rich Text、Table、List、Tag、Image，再请求改属 `02-Destination-Section`，编号锚点保持无关。工具与 runner 双层验证 Page/内容对象一对一映射、富内容和无关对象；默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
-| `reparent-section-group` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_section_group` 提交精确 ID 与 confirmation，不要求 Raw XML。三组编号 Group/Section/Page 覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；要求目标及后代 ID、关系、Page 内容保持。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级。 |
+| `reparent-section` | `00-Description/00-Reparent-Section-Description` 说明三种 before/after/restore：`01-Notebook-To-Group-Section` 从 Notebook 根换父级到 `01-Destination-Group`，`02-Group-To-Notebook-Section` 从 `02-Source-Group` 换父级到 Notebook 根，`03-Group-To-Group-Section` 从 `03-Source-Group` 换父级到 `03-Destination-Group`。每个 destination 预置两个可区分的直属 Section anchors；每次 Reparent 后刷新快照，验证 ID、父级、Page 拓扑、内容和独立位置证据，默认逆序恢复，`--keep-worksite` 保留三项目标父级。只允许同一 Notebook。 |
+| `reparent-page` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_page` 提交精确 ID 与 confirmation，不要求 Raw XML。`00-Description/00-Reparent-Page-Description` 解释原生 `UpdateHierarchy` 与 ID 重映射；`01-Source-Section/01-Reparent-Page` 同页包含 Rich Text、Table、List、Tag、Image，再请求改属预置两个根 Page anchors 的 `02-Destination-Section`。工具与 runner 双层验证 Page/内容对象一对一映射、富内容、无关对象和独立位置证据；默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
+| `reparent-page-scope` | **typed 实验工具 / 待用户真实确认 / 不注册到 `all`**。同一个 disposable Notebook 准备两棵相互独立、选中根均为 level 2 的缩进树；`root-only-default` 省略 `include_descendants` 并验证排除后代留源且整体提升一级，`full-subtree` 显式为 `true` 并验证完整子树、相对层级和单射 `id_map`。两个 case 均从 after snapshot 独立计算并深比较仅属于 fresh 目标根的 `destination_position`；成功不使用 Reorder 权限恢复原缩进。 |
+| `reparent-section-group` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_section_group` 提交精确 ID 与 confirmation，不要求 Raw XML。三组编号 Group/Section/Page 覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；每个 destination 预置两个同类型 Group anchors，并按 read-back 固定名称顺序核对独立位置证据；要求目标及后代 ID、关系、Page 内容保持。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级。 |
 | `delete` | Delete-Sandbox 与 allowlisted disposable group；写入加非永久 Delete，永久删除关闭；`--keep-worksite` 保持 Notebook 打开并记录回收站目标 |
-| Page Copy | 双 Notebook `source`/`destination` bundle；同一 source Page 对同 Section、跨 Section、跨 Notebook 三种目标分别执行 root-only（省略参数）与 subtree（显式 `true`），合计六个 case。同 Section 以源 Child 自然形成同名碰撞，跨 Section/Notebook 目标各预置一个同标题、不同正文 anchor；每个 case 分别稳定 plan、执行、双侧回读并断言 fresh/disjoint target IDs、源端和 anchors 的 hash/order/level 不变；默认清理六个根目标并验证两侧恢复，`--keep-worksite` 保留六个目标和两个 working Notebook |
-| Section/Group Copy | 对应最小源和目标；源容器含严格富内容父页与三个混合 List/Tag 项的语义子页，并继续递归复制完整子树；默认执行可恢复清理，显式 `--keep-worksite` 在 after/mapping 验证后保留精确目标 ID |
+| Page Copy | 双 Notebook `source`/`destination` bundle；同一 source Page 对同 Section、跨 Section、跨 Notebook 三种目标分别执行 root-only（省略参数）与 subtree（显式 `true`），合计六个 case。同 Section 由既有源 Page 形成多项序列，跨 Section/Notebook 目标各预置同标题碰撞 anchor 与额外 position anchor；每个 case 分别稳定 plan、执行、双侧回读并断言 fresh/disjoint target IDs、源端、anchors 和独立位置证据不变；默认清理六个根目标并验证两侧恢复，`--keep-worksite` 保留六个目标和两个 working Notebook |
+| Section/Group Copy | 对应最小源和目标；每个 destination 预置两个同类型直属 anchors，源容器含严格富内容父页与三个混合 List/Tag 项的语义子页，并继续递归复制完整子树；每个 case 保存并深比较独立位置证据，默认执行可恢复清理，显式 `--keep-worksite` 在 after/mapping 验证后保留精确目标 ID |
 | Notebook Copy | 最小 Notebook 同样包含严格父页和 List/Tag 语义子页；Copy 开启、Delete 关闭，默认关闭副本；显式 `--keep-worksite` 保持副本打开并记录路径 |
-| Page Move | 固定双 Notebook `source`/`destination` bundle，只覆盖跨 Notebook 两个 case：root-only 省略 `include_descendants`，subtree 显式为 `true`。前者只复制/删除根 Page，并要求被排除子页在源 Section 中提升一级、ID 与内容不变；后者复制两页并按叶到根非永久删除两页。Move 场景只审计 verified Copy→安全删除组合，不重复内容类型 comparator；`--keep-worksite` 保留三个目标 Page 和双 Notebook供 UI 检查 |
-| Section/SectionGroup Move | 两个独立、已进入 `all` 的双 Notebook 场景；容器完整递归复制到 destination Notebook 根，要求完整单射 `id_map` 与 verified/lossless Copy，然后只允许一次对应 typed 根删除且固定非永久。after snapshot 必须证明全部原源子树 ID inactive、全部目标 ID 仅位于 destination role；不重复未验证 content type comparator |
+| Page Move | 固定双 Notebook `source`/`destination` bundle，destination 预置两个根 Page anchors，只覆盖跨 Notebook两个 case：root-only 省略 `include_descendants`，subtree 显式为 `true`。前者只复制/删除根 Page，并要求被排除子页在源 Section 中提升一级、ID 与内容不变；后者复制两页并按叶到根非永久删除两页。两者都从删除源后的最终 snapshot 深比较独立位置证据；`--keep-worksite` 保留目标 Page 和双 Notebook 供 UI 检查 |
+| Section/SectionGroup Move | 两个独立、已进入 `all` 的双 Notebook 场景；destination Notebook 根预置两个同类型 anchors。容器完整递归复制到 destination，要求完整单射 `id_map` 与 verified/lossless Copy，然后只允许一次对应 typed 根删除且固定非永久。after snapshot 必须证明全部原源子树 ID inactive、全部目标 ID 仅位于 destination role，并深比较删除后的独立位置证据；不重复未验证 content type comparator |
 | Report | 只读取本地 artifacts，不启动 MCP |
 | Source lifecycle | wrapper 仅支持 fresh create、working-copy open、受控 SectionGroup/`.one` 加载、精确 get/close 与只读 open-state probe；不启动额外 MCP，也不打开 template |
 
@@ -484,10 +503,13 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py reparent-page --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py reparent-page-scope --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py reparent-section-group --dry-run --json
 ```
 
-真实运行只能由用户本人分别显式启动。`reparent-page` 的 Description 明示编号 Page 从 `01-Source-Section` 到 `02-Destination-Section` 再恢复的状态和富内容门限；`reparent-section-group` 的 Description 明示 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup 三条编号路线。两个场景都把 COM 返回成功仅视为“请求已返回”，不视为能力成立。
+真实运行只能由用户本人分别显式启动。`reparent-page` 的 Description 明示编号 Page 从 `01-Source-Section` 到 `02-Destination-Section` 再恢复的状态和富内容门限；`reparent-page-scope` 明示默认 root-only 与显式 full-subtree 的两条非恢复路线；`reparent-section-group` 明示三条容器路线。所有场景都把 COM 返回成功仅视为“请求已返回”，不视为能力成立。
+
+十个 Reparent/Copy/Move 执行场景会在 mutation response 与 after snapshot 之外保存 `destination-position-evidence*.json`。expected evidence 由 manual-validation 自己的只读 projector 从 fresh target ID 和 after hierarchy 计算，不导入生产 position builder。Page 使用目标 Section 完整扁平 Page 序列，只核对目标根一份位置且拒绝 level/后代位置字段；Section/SectionGroup 使用同父级同类型直属 children；Notebook Copy 精确核对 `not_applicable`。字段不一致会非零退出并按场景规则保留现场。
 
 Page typed 场景接受两种原生结果：目标 ID 保持，或全树中恰好发生 `旧 Page ID 消失 + 目标 Section 新增一个 Page ID` 的一对一替换。后者必须记录 `old→new`，且新 Page 的 Notebook、标题、page level、父子缩进、富内容语义摘要和内容对象语义必须与原 Page 一致；Rich Text、Table、List、Tag、Image 的 fixture 能力在 mutation 前已经过门限。富内容摘要忽略 Page/内容对象 ID，并把 TagDef/Tag index 解析为类型和符号后比较，其余格式、结构、文本和 Image Data 保持严格。所有无关对象仍要求 ID、关系、稳定内容 hash 和内容对象身份不变。默认恢复使用正向回读得到的新 ID；OneNote 再次重映射时记录第三个 ID，并按逻辑位置和相同富内容摘要验证恢复，不虚构原 ID 已恢复。场景没有 Copy/Delete 权限，不调用 `copy_page` 或 `DeleteHierarchy`，也不把回收站可见性作为验收条件。
 

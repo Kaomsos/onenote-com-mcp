@@ -470,18 +470,22 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
         },
         "structure": structure,
     }
-    snapshots = iter(
-        {
+    created_targets: list[dict] = []
+
+    async def capture_bundle(_client, _notebooks):
+        return {
             "notebook_id": "source-notebook",
-            "items": [source_notebook, destination_notebook, source],
+            "items": [
+                source_notebook,
+                destination_notebook,
+                source,
+                same_destination,
+                cross_destination,
+                *created_targets,
+            ],
             "page_hashes": {},
             "page_objects": {},
         }
-        for _index in range(4)
-    )
-
-    async def capture_bundle(_client, _notebooks):
-        return next(snapshots)
 
     plan_destinations = iter(
         [
@@ -532,11 +536,35 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
             self.copy_arguments.append(dict(arguments))
             number = len(self.copy_arguments)
             target_id = f"target-{number}"
+            target = {
+                "resource_type": source_type,
+                "id": target_id,
+                "name": arguments["destination_name"],
+                "parent_id": arguments["destination_parent_id"],
+            }
+            created_targets.append(target)
+            siblings = [
+                item
+                for item in [source, same_destination, cross_destination, *created_targets]
+                if item.get("resource_type") == source_type
+                and item.get("parent_id") == target["parent_id"]
+            ]
+            parent_type = (
+                "notebook"
+                if target["parent_id"] in {"source-notebook", "destination-notebook"}
+                else "section_group"
+            )
             return {
-                "item": {
+                "item": target,
+                "destination_position": {
+                    "status": "observed",
                     "resource_type": source_type,
-                    "id": target_id,
-                    "name": arguments["destination_name"],
+                    "parent_id": target["parent_id"],
+                    "parent_type": parent_type,
+                    "sibling_scope": "same_type_direct_children",
+                    "index": len(siblings) - 1,
+                    "sibling_count": len(siblings),
+                    "sequence_source": "hierarchy_child_order",
                 },
                 "copy_report": {
                     "verified": True,
@@ -1041,6 +1069,8 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
         },
     )
 
+    created_pages: list[dict] = []
+
     async def fake_snapshot(_client, notebook_id):
         if notebook_id == "source-notebook":
             items = [
@@ -1056,9 +1086,19 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                 "source-child": "child-hash",
                 "cross-section-anchor": "cross-section-anchor-hash",
             }
+            items.extend(
+                item
+                for item in created_pages
+                if item["section_id"] in {"source-section", "cross-section"}
+            )
         else:
             items = [destination_notebook, cross_notebook_section, cross_notebook_anchor]
             hashes = {"cross-notebook-anchor": "cross-notebook-anchor-hash"}
+            items.extend(
+                item
+                for item in created_pages
+                if item["section_id"] == "cross-notebook-section"
+            )
         return {
             "notebook_id": notebook_id,
             "items": items,
@@ -1116,15 +1156,57 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
             copy_arguments.append(dict(arguments))
             index = len(copy_arguments)
             id_map = {"source-page": f"target-{index}"}
+            destination_section_id = arguments["destination_section_id"]
+            target = {
+                "id": f"target-{index}",
+                "resource_type": "page",
+                "title": arguments["destination_title"],
+                "section_id": destination_section_id,
+                "parent_id": destination_section_id,
+                "parent_page_id": None,
+                "page_level": 1,
+                "order": 100 + index * 2,
+            }
+            created_pages.append(target)
             if arguments.get("include_descendants") is True:
                 id_map["source-child"] = f"target-child-{index}"
+                created_pages.append(
+                    {
+                        **target,
+                        "id": f"target-child-{index}",
+                        "parent_page_id": target["id"],
+                        "page_level": 2,
+                        "order": target["order"] + 1,
+                    }
+                )
+            base_pages = [source, child, cross_section_anchor, cross_notebook_anchor]
+            siblings = sorted(
+                [
+                    item
+                    for item in [*base_pages, *created_pages]
+                    if item.get("section_id") == destination_section_id
+                ],
+                key=lambda item: int(item.get("order", 0)),
+            )
             return {
-                "item": {"id": f"target-{index}", "resource_type": "page"},
+                "item": target,
+                "destination_position": {
+                    "status": "observed",
+                    "resource_type": "page",
+                    "parent_id": destination_section_id,
+                    "parent_type": "section",
+                    "sibling_scope": "section_page_sequence",
+                    "index": [item["id"] for item in siblings].index(target["id"]),
+                    "sibling_count": len(siblings),
+                    "sequence_source": "page_order",
+                },
                 "copy_report": {"verified": True, "id_map": id_map},
             }
 
     async def fake_cleanup(_client, _snapshot, copied):
-        return list(copied["copy_report"]["id_map"].values())
+        deleted = list(copied["copy_report"]["id_map"].values())
+        created_pages[:] = [item for item in created_pages if item["id"] not in deleted]
+        return deleted
 
     monkeypatch.setattr(copy_runtime, "capture_snapshot", fake_snapshot)
     monkeypatch.setattr(copy_runtime, "stable_copy_plan", fake_plan)
