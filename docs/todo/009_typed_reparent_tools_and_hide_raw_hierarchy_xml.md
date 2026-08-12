@@ -110,3 +110,5 @@
 - 相关纯自动化合同和完整测试集通过；
 - 用户分别运行并确认迁移后的三个 typed Reparent 场景通过，证据中记录精确工具名、父级变化、ID 行为和内容/拓扑结果；
 - 当前设计、开发指南、README、对象模型评估和 TODO 索引与最终实现一致。
+
+后续 [TODO 013](013_reparent_default_placement_contract.md) 在不暴露 raw hierarchy XML、不新增 policy 的前提下扩展 `reparent_page.include_descendants` 与三个 Reparent execute 的目标根观察位置。位置投影不能替代本 TODO 的 typed identity、父级、拓扑和内容验证。

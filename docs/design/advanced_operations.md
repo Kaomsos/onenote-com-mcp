@@ -33,7 +33,8 @@ Page 与 SectionGroup Reparent 已由用户在全新隔离 Notebook 中通过人
 
 - 对象—操作矩阵中的 Page/Section/SectionGroup Reparent 均为 `E`；
 - 三个工具只允许同 Notebook，使用有界 before/after 快照并 fail closed；
-- Page 接受并报告原生 Page/内容对象 ID 一对一重映射，Section/SectionGroup 要求自身和适用后代 ID 保持；
+- Page 接受并报告原生 Page/内容对象 ID 一对一重映射；新的范围合同默认只 Reparent 选中 Page并提升排除后代，也可显式 Reparent 完整缩进子树，目标根归一化为 level 1。Section/SectionGroup 要求自身和适用后代 ID 保持；
+- 三类 Reparent 成功均返回目标根的最终观察位置；Page 即使包含子树也只报告一份根 Page index，不报告 level；
 - 用户已确认三个迁移后的 typed 场景在当前环境全部通过；单环境通过不能升级为跨版本保证。
 
 人工验证的精确场景与权限边界见 [隔离 mutation 验证](../dev/isolated_mutation_validation.md) 和 [`tests/manual_validation/README.md`](../../tests/manual_validation/README.md)。

@@ -115,6 +115,7 @@ classDiagram
     class MutationService
     class OperationsService
     class CopyService
+    class DestinationPositionProjector
     class OneNoteBridge {
         +int timeout_seconds
         +call(operation, params) dict
@@ -144,6 +145,8 @@ classDiagram
     BaseService <|-- MutationService
     BaseService <|-- OperationsService
     BaseService <|-- CopyService
+    MutationService --> DestinationPositionProjector
+    CopyService --> DestinationPositionProjector
     ServiceContainer *-- HierarchyService
     ServiceContainer *-- PageService
     ServiceContainer *-- SearchService
@@ -177,7 +180,7 @@ classDiagram
 | `BaseService` | `services.base` | 提供 bridge 错误归一化和 enum 校验。 |
 | `HierarchyService` | `services.hierarchy` | 获取 typed snapshot，完成 List/Get/Query/Path/Tree、ID/路径解析、层级更新 XML。 |
 | `PageService` | `services.pages` | 读取 Page XML/text/object/binary，确认 Page，计算内容摘要。 |
-| `SearchService` | `services.search` | 执行 typed scope 或全部已打开 Notebook scope 的 local scan / OneNote index 搜索；一次调用共享 hierarchy 快照、结果上限和硬预算。 |
+| `SearchService` | `services.search` | 以 root 或一个精确 Notebook/SectionGroup/Section 为原生 COM 起点执行 index-only `FindPages`；一次调用共享 hierarchy catalog、候选预算、当前页 hydration 和总耗时预算。 |
 | `MutationService` | `services.mutations` | typed 创建、修改、删除；策略检查、乐观确认和操作后回读均在此。 |
 | `CopyService` | `services.copying` | 无状态 Copy 计划、默认单页/显式 Page 子树范围、递归容器复制、Page XML 保真报告和 Move 删除门。 |
 | `OperationsService` | `services.operations` | 特殊目录、超链接、父级、导出、导航、同步、关闭及高级应用操作。 |
@@ -355,8 +358,10 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 
 ### 5.3 Search
 
-- `local_scan`：单次完整 typed hierarchy → typed scope 或全部已打开 Notebook 合成 scope → 全局候选数预检查 → 在调用级字符/耗时/结果预算内顺序读取 Page。
-- `onenote_index`：typed scope ID 或全局空 `start_id` → COM FindPages → 局部 XML → 用同一次完整 typed catalog hydration → 在调用级页数/字符/耗时预算内可选读取正文 snippet。
+- 公开路径固定为 `onenote_index`：严格 `root/start_node` scope → 单次完整 typed catalog → 一个 COM `FindPages` → 按 Page ID 补全并证明范围归属 → 候选预算检查 → `offset/page_size` 切片 → 仅对当前页可选 hydration snippet。
+- root 使用空 `start_id`；start node 只接受精确、属于已打开 Notebook 的 Notebook/SectionGroup/Section ID。范围外、关闭 Notebook、无法证明归属和不符合回收站参数的结果被过滤。
+- 分页标记为 `live_index`，每页重新执行 `FindPages`，不冻结跨页快照。候选预算默认 1000 且先于分页；页大小默认/最大 200。
+- `local_text_search` 暂作无公开入口的内部实现，不出现在 Tool、health、环境选择或失败 fallback 中。
 - 两个后端不会静默 fallback。
 
 ## 6. 运行时生命周期与并发

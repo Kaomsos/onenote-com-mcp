@@ -216,7 +216,7 @@
 - [TODO 002](002_p2_copy_and_reconstructive_page_move.md)：四层 Copy 与严格 Page Move 的基础合同；本 TODO 不撤销其历史完成状态，但补充后续发现的安全回归。
 - [TODO 005](005_page_copy_without_indentation_subtree.md)：root-only/subtree scope 合同；本 TODO 专注 fresh identity 与同名落点。
 - [TODO 009](009_typed_reparent_tools_and_hide_raw_hierarchy_xml.md)：证明 typed Reparent 已按精确 ID 收敛，也是 advanced generic mutation 进一步缩面的先例。
-- [TODO 013](013_reparent_default_placement_contract.md)：定义 Reparent 默认位置；与本 TODO 的 mutation identity 分离，不能用 placement 验证替代 ID 验证。
+- [TODO 013](013_reparent_default_placement_contract.md)：为 Reparent、Copy 与 Move 返回目标根的执行后观察位置；与本 TODO 的 mutation identity 分离，不能用 position 投影替代 ID 验证。
 - [TODO 014](014_recipe_fixture_validation_and_local_notebook_cache.md)：多 Notebook cache、Recipe version、live ID rebind 与失败 working lease；fixture 增强必须保持其安全边界。
 - [`OneNote mutation created-target identity Lesson`](../lesson/onenote_mutation_created_target_identity.md)：记录真实失败/修复对照、friendly path 的证据边界与可复用 fail-closed 设计影响。
 

@@ -47,3 +47,5 @@ Copy 允许尽力保留并显式报告不支持或尚未实测的内容。Move �
 2026-08-10，用户明确确认上述五个具名场景已经全部完成真实 OneNote 验收。代码、自动化合同、静态保真门、严格非永久源删除、当前文档和用户确认的真实证据均满足完成定义，因此本 TODO 正式标记为“已完成”。未验证内容继续阻止不满足保真门的 Move 删除源。2026-08-11，TODO 004 又完成 InkDrawing、UIShape 与录像 MediaFile 的隔离 Copy 取证并将其加入静态保真 allowlist；2026-08-12，InsertedFile 的 strict canonical Copy 和人工打开附件确认也完成并加入同一集合。FileAttachment/MeetingInfo 已删除专属验证入口并保留排除原因。Embedded Spreadsheet（内嵌电子表格）也按当前产品范围明确 unsupported；因尚无公开 `kind`/XML 证据，不建立别名或专属入口。
 
 2026-08-11，用户又完成增强后的三个容器场景：Section 与 SectionGroup 补齐同 Notebook/跨 Notebook 双 case，Notebook 补齐嵌套 SectionGroup 子树和最新 `modified` 关闭确认。三次 run 顶层均为 `passed`、均未打开 cache template 且 inventories unchanged；这是对已完成结论的增强回归，不改变 TODO 状态。
+
+后续返回契约由 [TODO 013](013_reparent_default_placement_contract.md) 独立扩展：Copy/Move execute 额外回传目标根的执行后观察位置，Move 在源删除后重新投影。该字段不是 Copy 保真门、Move 落点保证或隐式 Reorder，不改变本 TODO 的既有完成证据。

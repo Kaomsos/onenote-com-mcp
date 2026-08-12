@@ -352,3 +352,5 @@ move_section_group
 - manual-validation 纯测试与完整 pytest 通过；所有 Agent 执行的新场景命令都显式带 `--dry-run`；
 - 用户分别确认 `copy-section`、`copy-section-group` 以及两个新 container Move 场景的真实证据；失败或未运行不能标记为通过；
 - 当前 tool contracts、对象模型、architecture、manual-validation README、TODO 002/004/009/010/011 和 TODO 索引与最终实现一致。
+
+后续 [TODO 013](013_reparent_default_placement_contract.md) 要求容器 Move 在源根删除和目标最终复核后返回目标根的观察位置；不得复用 Copy 阶段旧索引，也不改变本 TODO 的 Copy gate、单次非永久根删除与失败保留边界。

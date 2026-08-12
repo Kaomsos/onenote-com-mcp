@@ -4,174 +4,206 @@
 > 状态：进行中
 > 优先级：P1
 > 类型：公开工具契约 / Search 能力
-> 更新日期：2026-08-11
+> 更新日期：2026-08-13
 
-## 背景
+## 背景与当前状态
 
-当前 `search_pages` 强制要求 `scope_type` 为 `notebook`、`section_group` 或 `section`，并把非空 `scope_id` 解析为一个真实 hierarchy 对象。因此单次调用的最大范围是一个 Notebook，不能表达 OneNote Desktop `Ctrl+E` 对全部已打开 Notebook 的检索。调用方虽然可以先 `list_notebooks` 再逐个搜索，但这会把 `max_results`、扫描预算和错误边界拆散到多个请求中，也无法形成稳定的全局结果契约。
+最初的 `search_pages` 只允许以一个 Notebook、SectionGroup 或 Section 为范围，无法表达 OneNote Desktop 对 root 下全部已打开 Notebook 的搜索。2026-08-10 的过渡实现已经加入 `all_open_notebooks`，并同时公开 `local_scan` 与 `onenote_index` 两个 backend；当前默认仍是 `local_scan`。
 
-## 目标
+2026-08-13 已完成公开参数和 index-only 生产迁移。`search_pages` 现在直接采用 OneNote COM `FindPages`，Tool 参数中不再暴露 `backend`：
 
-为 `search_pages` 增加向后兼容的全局 scope：
+- OneNote index 是唯一公开搜索实现；
+- `local_scan` 的生产代码可以保留为内部实现和诊断基础，但不能由公开 Tool 参数选择，也不能在 index 失败时自动回退；
+- scope 只表达 COM `FindPages.bstrStartNodeID` 原生支持的一个起点：root、Notebook、SectionGroup 或 Section；
+- 不支持多个离散 Notebook、多个子节点、混合节点集合或服务端合并多次 `FindPages` 结果。
+
+当前剩余工作是由用户显式执行具名真实场景并确认 OneNote index readiness 和真实 COM 结果；dry-run 与 mock 合同不能替代这项证据。因此 TODO 仍保持“进行中”。
+
+## 最终公开 Tool 契约
+
+```text
+search_pages(
+  query,
+  scope,
+  offset=0,
+  page_size=200,
+  include_snippets=true,
+  include_recycle_bin=false
+)
+```
+
+公开参数中没有 `backend`、`include_unindexed` 或 `display`。内部 COM 调用固定使用：
+
+```text
+FindPages(
+  start_id,
+  query,
+  include_unindexed=false,
+  display=false,
+  schema=xs2013
+)
+```
+
+- `include_unindexed=false` 保持 index-only 语义，不把未索引 Page 的额外扫描暴露为另一种隐式 backend；
+- `display=false` 确保 MCP 搜索不改变用户当前 OneNote UI；
+- index/COM 失败直接返回 backend error，不回退到 `local_scan`。
+
+## Scope：直接映射 COM 起点
+
+最终 `scope` 是必填的判别联合：
+
+```text
+SearchScope =
+  | { mode: "root" }
+  | { mode: "start_node", start_node_id: NonEmptyString }
+```
+
+### Root：全部已打开 Notebook
 
 ```json
 {
   "query": "needle",
-  "scope_type": "all_open_notebooks",
-  "scope_id": ""
+  "scope": {
+    "mode": "root"
+  }
 }
 ```
 
-- `scope_type="all_open_notebooks"` 表示查询本次 hierarchy 快照中的全部已打开 Notebook；
-- 该 scope 不扫描已关闭 Notebook、本地备份目录或磁盘上的 `.one` 文件，继续保持基于 OneNote COM hierarchy、local-only 且不直接解析二进制文件；
-- `scope_id` 对该 scope 必须为空，并在公开 tool 签名中变为可省略的默认空字符串；现有三种 typed scope 仍必须提供非空、类型匹配的 ID；
-- `max_results` 是整个全局查询的上限，不得按 Notebook 重置；
-- 现有调用者、默认 backend 和单 Notebook/Section 搜索语义保持不变。
+`mode="root"` 映射为 COM `FindPages(start_id="", ...)`，表示搜索本次 OneNote root 可见的全部已打开 Notebook。该分支不得携带 `start_node_id` 或其他额外字段，也不扫描已关闭 Notebook、备份目录或磁盘上的 `.one` 文件。
 
-## Backend 语义
+在具名真实场景通过前，空 `start_id` 与 Desktop `Ctrl+E` 的完全等价性仍只是假设，不作为已经验证的跨版本事实。
 
-### `local_scan`
+### 一个原生 hierarchy 起点
 
-- 从同一次 hierarchy 快照取得全部已打开 Notebook 的候选 Page，不通过名称重新选择对象；
-- 在读取首个 Page 正文前，对跨 Notebook 的候选 Page 总数执行一次 `SearchBudget.max_pages` 检查；
-- `max_page_chars`、`max_total_chars`、`max_seconds` 和 `max_results` 均按整个调用累计，不得为每个 Notebook 重新计数；
-- 结果保持稳定、可复现的 hierarchy 顺序，并保留每个 Page 的 `notebook_id`、路径及其他 typed 元数据；
-- `include_recycle_bin=false` 时排除所有 Notebook 的回收站 Page，`true` 时仍受同一全局预算约束。
+```json
+{
+  "query": "needle",
+  "scope": {
+    "mode": "start_node",
+    "start_node_id": "{A-REAL-ONENOTE-COM-ID}"
+  }
+}
+```
 
-### `onenote_index`
+`mode="start_node"` 将 `start_node_id` 原样映射为 COM `FindPages` 的单个 `bstrStartNodeID`。调用前必须使用同一次完整 hierarchy catalog 按精确 ID 验证：
 
-- 对 OneNote COM `FindPages` 传入空 `start_id`，由 OneNote index 在全部已打开 Notebook 中执行一次查询；
-- COM/index 失败必须作为 `onenote_index` 错误返回，不得静默回退到 `local_scan`；
-- 解析结果时使用同一次完整 hierarchy catalog 补全 `notebook_id`、父级和路径；
-- `max_results` 在跨 Notebook 结果上统一截断，snippet hydration 也必须受有界的页数、字符数和耗时控制；
-- 在真实 OneNote 验证前，不把空 `start_id` 与 Desktop `Ctrl+E` 的完全等价性视为已证实事实。
+- 允许 Notebook、SectionGroup 或 Section；
+- 拒绝 Page、未知对象、空 ID、名称、路径和任何模糊解析；
+- 对象必须属于当前可用的已打开 Notebook，不能通过显式 ID 绕过 root 的 local-only/open-only 边界；
+- 返回的 `scope` 使用 catalog 中的真实 `resource_type`、ID 和路径，不信任调用方重复声明对象类型。
+
+Tool schema 使用两个 `extra="forbid"` 的对象分支、`mode` discriminator，以及 `start_node_id` 的 trim 后 `minLength=1` 约束。`scope` 必填；不得把省略 scope 解释成 root，以免 Agent 漏传参数时意外扩大搜索范围。
+
+### Agent 调用规则
+
+- 用户要求“全部笔记本”或没有指定某个容器时，Agent 显式使用 `scope={"mode":"root"}`；
+- 用户指定一个 Notebook、SectionGroup 或 Section 时，Agent 先通过 typed list/query Tool 取得精确 ID，再使用 `scope={"mode":"start_node","start_node_id":"..."}`；
+- 用户指定多个离散节点时，`search_pages` 不接受 ID 数组。Agent 应说明单次 `FindPages` 只有一个原生起点，并请求用户选择共同祖先或分别发起独立搜索；不得悄悄扩大为 root，也不得在 Tool 内部合并多次搜索；
+- `start_node_id` 不接受 Page ID。搜索单个 Page 正文应使用 Page 读取能力，而不是伪造 `FindPages` scope。
+
+## OneNote Index 执行语义
+
+每次调用执行以下固定流程：
+
+1. 取得一次完整 hierarchy catalog，用于验证 scope、识别已打开 Notebook，并为局部结果补全 typed metadata；
+2. 将 root 归一化为 `start_id=""`，或将已验证的 `start_node_id` 作为唯一 COM 起点；
+3. 只调用一次 `FindPages`，不进行逐 Notebook/逐子节点调用；
+4. 解析 `FindPages` 返回的局部 hierarchy XML，并用同一次 catalog 按 Page ID 补全 `notebook_id`、Section、父级和路径；
+5. 排除不属于已验证范围、已关闭 Notebook 或按参数应排除的回收站结果；
+6. 先对过滤后的完整候选集执行候选预算检查，再应用 `offset/page_size`；
+7. 仅当 `include_snippets=true` 时，有界读取当前页命中 Page 的正文并生成 snippet。
+
+OneNote 决定查询解析、分词、索引相关性和原始结果顺序。调用方可传入 OneNote UI 接受的搜索字符串，包括其支持的 `AND` / `OR` 语法；本服务不把它重新解释为 `local_scan` 子串语义，也不对结果重新评分。
+
+## Index Budget
+
+移除 backend 参数不等于移除 SearchBudget。预算继续对唯一公开的 index 路径生效：
+
+| 预算 | Index 路径中的约束 |
+| --- | --- |
+| `max_pages` | `FindPages` 返回并通过 scope/回收站过滤后的候选 Page 总数上限；默认 1000，在分页切片和正文读取前检查。 |
+| `max_page_chars` | 生成 snippet 时，单个命中 Page 最多处理的正文字符数。 |
+| `max_total_chars` | 单次调用为 snippet hydration 累计处理的正文字符数上限。 |
+| `max_seconds` | 从发起 `FindPages` 前开始累计的搜索与 snippet hydration 时间上限；bridge 自身的进程超时仍是独立上限。 |
+| `snippet_chars` | 每个返回 snippet 的最大字符数。 |
+
+具体规则：
+
+- `offset >= 0`，`1 <= page_size <= 200`；默认页大小和最大页大小均为 200；
+- 每一页都会重新执行一次 `FindPages`，跨页一致性明确为 `live_index`，不承诺冻结快照；
+- 即使 `include_snippets=false`，index 候选页数与搜索耗时预算仍然有效；只有正文字符预算不会产生消耗；
+- `include_snippets=true` 时，在读取任何命中 Page 正文前，先确认待 hydration 的结果数不超过 `max_pages`；
+- 任一预算超限都明确失败，不返回一个被误认为完整的部分结果；
+- `scan_budget` 字段为兼容可以暂时保留，但其内容应明确采用 index 名称，例如 `candidate_pages/hydrated_pages/hydrated_chars/max_*`，不能暗示执行了 local scan；后续是否重命名为 `search_budget` 作为独立契约变更处理。
 
 ## 返回契约与错误边界
 
-- 全局查询继续返回 `pages`、`count`、`search_backend` 和 `scan_budget`；
-- `scope` 返回稳定的合成描述，例如 `resource_type="all_open_notebooks"`，并报告本次快照覆盖的 Notebook 数量；不得伪造真实 OneNote 对象 ID；
-- `scope_type="all_open_notebooks"` 搭配非空 `scope_id` 时 fail closed，避免调用方误以为该 ID 会进一步过滤范围；
-- typed scope 搭配空 `scope_id`、未知 scope、空查询和无效 backend 继续明确拒绝；
-- 没有已打开 Notebook 或没有候选 Page 时成功返回空结果，而不是退化为磁盘扫描；
-- 全局范围超过预算时返回明确的预算错误，且不得先读取部分 Page 后再以候选数量超限结束。
+成功继续返回：
+
+```text
+pages, count, total_matches,
+offset, page_size, has_more, next_offset,
+pagination_consistency, scope, search_backend, scan_budget
+```
+
+- `search_backend` 暂时保留为固定值 `onenote_index`，用于可观察性和兼容，不代表调用方仍可选择 backend；
+- root scope 返回合成描述，例如 `resource_type="root"`、`notebook_count`，不得伪造 COM root ID；
+- start-node scope 返回 catalog 中解析出的真实 Notebook、SectionGroup 或 Section；
+- root 中没有已打开 Notebook、或合法 scope 没有命中时，成功返回空结果；
+- `count=len(pages)`；`total_matches` 是过滤后、分页前候选数；末页 `next_offset=null`，越界 offset 成功返回空页；
+- 未知 mode、额外字段、缺失/空 `start_node_id`、Page ID、未知/关闭对象、空 query 或非法分页参数均 fail closed；
+- COM/index 不可用、索引尚未就绪或返回无法安全解析的 XML 时明确失败，不调用 `local_scan`。
+
+## Local Scan 的保留边界
+
+现有 `local_scan` 代码暂时保留，但迁移后必须满足：
+
+- 不出现在 `search_pages` 参数 schema、Tool 描述、README 示例或 `health_check` 的公开可选 backend 列表中；
+- 不作为 `FindPages` 失败、超时、无结果或索引未就绪时的 fallback；
+- 可以保留纯测试、内部诊断和未来显式设计决策所需的实现，但不得形成隐藏的环境变量或其他公开选择路径；
+- 若未来确认不再需要，应通过独立清理变更删除，不在本 TODO 中为了简化迁移强制移除。
 
 ## 实施范围
 
-1. 扩展 `search_pages` tool schema、`SearchService.search` 的 scope 校验与合成 scope 返回结构；
-2. 复用单次完整 hierarchy 快照实现 `local_scan` 全局候选集，避免逐 Notebook 重复枚举和重复预算；
-3. 为 `onenote_index` 接入空 `start_id` 的全局 `FindPages` 调用，并保持无隐式 backend fallback；
-4. 对 index 结果的 snippet hydration 增加全局有界行为，确保全局 scope 不绕过搜索资源上限；
-5. 补充自动化合同测试，覆盖两种 backend、跨 Notebook 命中、全局结果上限、全局预算、回收站过滤、空 hierarchy、scope 参数组合、metadata hydration 和显式失败；
-6. 开发具名、human-gated 的 `search-all-open-notebooks` 验证 scenario：程序化构建两个 run-scoped Notebook role 及同口令 Page fixture，再验证两种 backend 的跨 Notebook 命中、结果归属、全局上限和错误行为；真实场景仍只能由用户显式启动；
-7. 实现完成后同步更新 `docs/design/tool_contracts.md`、`docs/design/architecture.md`、根 README 及相关 search/health-check 文档。
+1. 将 `search_pages` 迁移为 `query + scope + offset + page_size + include_snippets + include_recycle_bin`，删除公开 `backend` 参数；
+2. 用 `root/start_node` 判别联合替换过渡的 `scope_type/scope_id`，并把它严格映射到一个 COM `start_id`；
+3. 让所有公开搜索固定执行 `onenote_index`，移除 health/tool schema 中的 backend 选择，同时保留无公开入口的 `local_scan` 实现；
+4. 对 index 候选结果、耗时和可选 snippet hydration 完整执行 SearchBudget，并保证候选预算先于分页切片；
+5. 补充自动化合同测试：Tool schema 不含旧参数、两个 scope 分支、root/Notebook/SectionGroup/Section、Page/未知/关闭 ID 拒绝、单次 `FindPages`、无 fallback、空结果、回收站、分页和全部 index budget 边界；
+6. 开发 human-gated 的 `search-all-open-notebooks` 场景，以两个 run-scoped Notebook 验证 root 搜索；同时在 fixture 内验证一个 Notebook、SectionGroup 和 Section 起点，但不测试多个离散起点；
+7. 同步更新 `docs/design/tool_contracts.md`、`docs/design/architecture.md`、根 README、health-check 文档及 manual validation 说明。
 
 ## 完成定义
 
-- `search_pages(query, "all_open_notebooks")` 可在一次调用中返回多个已打开 Notebook 的 Page，并允许省略 `scope_id`；
-- 原有 `notebook/section_group/section` 调用和默认 `local_scan` 行为保持兼容；
-- `local_scan` 对全部候选 Page 使用单一、先检查后读取的全局预算，结果数和耗时等计数不会按 Notebook 重置；
-- `onenote_index` 使用空 `start_id` 执行全局查询，失败时不回退，结果可正确补全所属 Notebook；
-- 全局 `scope`、空结果、回收站、snippet、预算超限和参数冲突拥有稳定响应或错误合同；
-- 自动化测试覆盖两种 backend 及关键边界，并通过完整纯测试集；
-- 用户显式运行双 Notebook `search-all-open-notebooks` scenario 并确认真实检索证据后，记录环境、调用参数、命中归属和 backend 结果；
-- 当前设计文档、README 和 TODO 索引与最终实现一致。
+- `search_pages(query, scope={"mode":"root"})` 只调用一次空 `start_id` 的 `FindPages`，并能返回多个已打开 Notebook 的命中；
+- `search_pages(query, scope={"mode":"start_node","start_node_id":"..."})` 原生支持一个 Notebook、SectionGroup 或 Section 起点；
+- Tool schema 不包含 backend 参数，也不支持多个起点或 ID 数组；
+- 所有公开调用固定返回 `search_backend="onenote_index"`，index 失败绝不回退；
+- index 候选页数、耗时、snippet 页数/单页字符/总字符和 snippet 长度预算均有稳定合同和自动化覆盖；
+- 原有 `local_scan` 实现可以继续存在，但没有公开选择入口；
+- 用户显式运行具名真实场景并确认 root 下双 Notebook 命中、单起点范围、结果归属、预算证据和 index readiness 行为；
+- 聚焦测试与完整纯测试集通过，canonical 设计文档、README、TODO 索引和实现一致。
 
-## 下一步：开发双 Notebook 验证 Scenario
+## 下一步：用户执行真实验证
 
-当前状态保持“进行中”。公开 Search 实现与纯合同已经交付，但真实验收不再以手工准备任意 Notebook 作为正式收口路径；下一步需要开发具名 `search-all-open-notebooks` scenario。
+TODO 状态保持“进行中”。公开参数、index budget、分页和具名多 role 场景均已实现；下一步只能由用户显式运行真实场景，确认空 root 起点、四层范围、索引 readiness、分页稳定性和预算错误。
 
-该 scenario 的最低合同为：
+该场景最低要求：
 
-- 由受 lifecycle lease 约束的通用 Notebook bundle 机制创建两个全新、run-scoped、同时保持打开的 role，例如 `search_a` 与 `search_b`；不得让场景 MCP 获得任意 `create_notebook` 能力，也不得复用用户 Notebook；
-- 在每个 role 中程序化创建一个 Section 和一个 Page，两个 Page 正文包含同一 run-unique 检索口令，标题分别稳定编号，fixture validator 证明 Notebook ID 不同、Page 归属正确且口令可回读；
-- fixture 创建需要 Writes，因此真实 scenario 仍为 human-gated，只能由用户显式运行；被验收的 `search_pages` 调用本身保持只读，pytest/CI/智能体只能运行 dry-run 和纯合同；
-- 同一场景 MCP 依次验证 `local_scan` 与 `onenote_index`：两个 backend 都必须命中两个 role，返回不同的非空 `notebook_id` 和正确 `path`，`scope.resource_type="all_open_notebooks"`，且没有 backend fallback；
-- 额外验证 `max_results=1` 是调用级全局上限，以及 `all_open_notebooks + 非空 scope_id` 明确 fail closed；
-- 对 `onenote_index` 使用有界、只读 readiness 轮询，并保存每次尝试。成功出现连续稳定的双 Notebook 命中可直接判定通过；超时只能报告 `index_not_ready_or_failed`，不得伪装成功或自动回退到 `local_scan`；
-- 保存 fixture manifest、两个 lifecycle lease、调用参数、脱敏后的命中归属、scope/backend/budget、readiness attempts 和错误响应；默认精确关闭两个 fixture Notebook，不删除本地 Notebook 文件；
-- 初始 `included_in_all=False`。在真实索引时序和双 role finalize 稳定前，不进入批量真实场景。
+- 创建两个全新、run-scoped、同时保持打开的 Notebook role，每个 role 中创建带同一 run-unique 口令的 Page；
+- `scope={"mode":"root"}` 必须命中两个 role，并返回不同的非空 `notebook_id` 和正确路径；
+- 分别以一个 Notebook、SectionGroup 和 Section ID 作为 `start_node_id`，证明结果不会越出该 COM 起点；
+- 验证 `page_size=2` 的两页结果、越界 offset 无法规避候选页数预算、snippet hydration 预算、无 backend 参数和 index 错误无 fallback；
+- 对 index readiness 使用有界只读轮询并保存每次尝试；超时只能报告 `index_not_ready_or_failed`；
+- 保存 fixture manifest、lifecycle lease、调用参数、脱敏命中归属、scope、固定 backend、budget 和错误证据；默认精确关闭 fixture Notebook，不删除本地 Notebook 文件；
+- 初始 `included_in_all=false`，在索引时序和双 role finalize 稳定前不进入批量真实场景。
 
-现有 runner 的 `NotebookLifecycleWrapper`、manifest 和 finalize 仍以单 Notebook/单 lease 为中心；scenario 开发应先抽取最小的 role-aware bundle lifecycle。无需先实现 TODO 014 的模板缓存，但 bundle/role 合同应与其设计一致，避免添加只服务于 TODO 008 的双 Notebook 特例。
+真实 scenario 只能由用户显式启动；Agent、pytest、CI、hook、timer 和 watcher 只能运行 dry-run 或纯合同测试。
 
-## 临时人工参考（正式收口将由 Scenario 替代）
+## 决策与实施记录
 
-在上述 scenario 完成前，本节仅用于理解预期结果或人工排障，不再作为 TODO 008 的首选正式验收路径。目标仍是证明一次全局调用能同时命中两个当前已打开的 Notebook，而不是分别搜索两次。
-
-### 1. 在 OneNote UI 准备两个命中
-
-1. 选择两个内容可控且当前保持打开的 Notebook，以下称为 Notebook A 和 Notebook B；为减少干扰，可以暂时关闭无关 Notebook。
-2. 在 A 中创建或编辑一个测试 Page，在 B 中创建或编辑另一个测试 Page。
-3. 在两个 Page 正文中写入完全相同且不会自然出现的口令，例如 `TODO8-ACCEPT-20260811-X7Q9`。两个 Page 标题应不同，例如 `TODO8-A`、`TODO8-B`。
-4. 等待 OneNote 保存。对于 index backend，先确认 OneNote UI 的 `Ctrl+E` 已能找到两个 Page；这一步只用于确认索引已更新，不把两者的完全等价性作为预设结论。
-
-### 2. 分别调用两个 backend
-
-通过当前连接 local-onenote MCP 的 Codex、Claude Code 或其他 MCP host 调用工具。`scope_id` 必须省略，不要填写 Notebook ID。
-
-第一次调用：
-
-```json
-{
-  "query": "TODO8-ACCEPT-20260811-X7Q9",
-  "scope_type": "all_open_notebooks",
-  "backend": "local_scan",
-  "max_results": 10,
-  "include_snippets": true
-}
-```
-
-第二次只把 backend 改为 `onenote_index`：
-
-```json
-{
-  "query": "TODO8-ACCEPT-20260811-X7Q9",
-  "scope_type": "all_open_notebooks",
-  "backend": "onenote_index",
-  "max_results": 10,
-  "include_snippets": true
-}
-```
-
-### 3. 判断是否通过
-
-两个响应都必须满足：
-
-- `search_backend` 与本次请求一致，没有 backend 静默回退；
-- `scope.resource_type == "all_open_notebooks"`，且 `scope.notebook_count >= 2`；
-- `pages` 至少包含 `TODO8-A` 和 `TODO8-B` 两项；
-- 两项具有不同的非空 `notebook_id`，其 `path` 分别指向 Notebook A 与 Notebook B；
-- `count <= max_results`，证明结果上限是整个调用的上限。
-
-再做一个 fail-closed 参数检查：
-
-```json
-{
-  "query": "TODO8-ACCEPT-20260811-X7Q9",
-  "scope_type": "all_open_notebooks",
-  "scope_id": "任意非空值"
-}
-```
-
-该调用必须失败并明确说明 `scope_id must be empty when scope_type is all_open_notebooks`，不能忽略该 ID，也不能退化为单 Notebook 搜索。
-
-### 4. 回传最小证据
-
-无需提交 Page 正文或完整 Notebook 数据。只需记录并回传下表；ID 可保留首尾少量字符，其余打码：
-
-| 项目 | local_scan | onenote_index |
-| --- | --- | --- |
-| `search_backend` |  |  |
-| `scope.notebook_count` |  |  |
-| Notebook A 命中：标题 / `notebook_id` / `path` |  |  |
-| Notebook B 命中：标题 / `notebook_id` / `path` |  |  |
-| `count` |  |  |
-| `scan_budget` 是否存在 |  |  |
-
-另附非空 `scope_id` 调用的错误文本。以上证据确认后即可关闭 TODO 008；测试 Page 是否保留由用户自行决定。
-
-## 实施与验证记录
-
-- 2026-08-10：`search_pages.scope_id` 已改为默认空字符串，并加入 fail-closed 的 `all_open_notebooks` 参数组合校验；原三类 typed scope 仍要求精确、类型匹配的非空 ID。
-- 2026-08-10：两种 backend 都复用一次完整 hierarchy catalog。`local_scan` 在任何 Page 正文读取前对跨 Notebook 候选集合执行一次预算检查；`onenote_index` 对全局 scope 传空 `start_id`，并对 snippet hydration 统一施加页数、字符和耗时限制。
-- 2026-08-10：已增加跨 Notebook 命中、统一 `max_results`、候选预算、回收站、已关闭 Notebook、空 hierarchy、scope 冲突、index metadata hydration、snippet 页数预算和 index 显式失败的纯合同测试。聚焦测试命令：`.venv\Scripts\python.exe -m pytest tests\test_search.py tests\test_server.py -q`。
-- 2026-08-11：评估确认双 Notebook fixture 可以程序化构建，并能自动判定成功路径；现有 runner 受单 Notebook lease/orchestrator 限制，尚不能直接承载。TODO 008 保持“进行中”，下一步为开发具名 `search-all-open-notebooks` scenario 及最小 role-aware bundle lifecycle；在该真实场景通过前，不宣称空 `start_id` 与 Desktop `Ctrl+E` 完全等价。
+- 2026-08-10：过渡实现加入 `all_open_notebooks`、空 `scope_id`、`local_scan/onenote_index` 两种 backend、完整 catalog hydration 和 index snippet budget；相关纯合同已加入。
+- 2026-08-11：确认正式收口需要两个 run-scoped Notebook 的具名、human-gated 场景；真实证据完成前，不宣称空 `start_id` 与 Desktop `Ctrl+E` 完全等价。
+- 2026-08-12：曾评估用判别联合表达多个指定 Notebook；该方案随后取消，不进入最终合同。
+- 2026-08-12：最终决定公开 Search 固定使用 OneNote index，删除 backend 选择；scope 只映射 COM 的 root 或一个 `start_node_id`，不支持多个离散子节点。`local_scan` 代码保留但不公开，SearchBudget 继续完整约束 index 路径。
+- 2026-08-13：完成 index-only Tool、严格 scope union、无状态分页、1000 默认候选预算、bridge 剩余时间 timeout、自动化合同和 fresh-only 双 Notebook 场景实现；真实场景尚未由用户执行，TODO 保持进行中。

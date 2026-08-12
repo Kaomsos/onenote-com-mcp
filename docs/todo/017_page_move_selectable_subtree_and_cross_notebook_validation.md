@@ -86,5 +86,6 @@ root-only Move 不能直接删除仍拥有缩进后代的根 Page。实现必须
 
 - [TODO 002](002_p2_copy_and_reconstructive_page_move.md)：原始 Page Move 重建与非永久删除合同；
 - [TODO 005](005_page_copy_without_indentation_subtree.md)：Page Copy 的同名范围参数与历史证据；
+- [TODO 013](013_reparent_default_placement_contract.md)：Page Move 删除源后的目标根观察位置；即使包含子树也不返回后代位置或 level；
 - [`tool_contracts.md`](../design/tool_contracts.md)：当前公开参数、返回和失败合同；
 - [`manual_validation/README.md`](../../tests/manual_validation/README.md)：用户真实运行和 evidence 说明。

@@ -36,7 +36,7 @@
 
 | 工具 | 参数 | 成功时的主要返回 |
 | --- | --- | --- |
-| `health_check` | 无 | 运行时位置、统计、`mutation_policy`、`search_backends`、`search_scope_types`、`search_budget`、`copy_budget`。 |
+| `health_check` | 无 | 运行时位置、统计、`mutation_policy`、固定 `search_backend`、`search_scope_modes`、`search_pagination`、`search_budget`、`copy_budget`。 |
 | `resolve_identifier` | `identifier`, `item_type=""` | `item`、`identifier_resolution_order`；仅只读辅助。 |
 | `list_notebooks` | `include_recycle_bin=false` | `notebooks`, `count`。 |
 | `get_notebook` | `notebook_id` | `item: Notebook`。 |
@@ -63,11 +63,11 @@
 | `get_page_xml` | `page_id`, `page_info="basic"` | `xml`。`page_info` 见下方枚举。 |
 | `get_page_objects` | `page_id` | `objects: PageContentObject[]`, `count`。 |
 | `get_binary_content` | `page_id`, `callback_id` | 已复核的 `object`、`base64`。 |
-| `search_pages` | `query`, `scope_type`, `scope_id=""`, `backend="local_scan"`, `max_results=20`, `include_snippets=true`, `include_recycle_bin=false` | `pages`, `count`, `scope`, `search_backend`, `scan_budget`。 |
+| `search_pages` | `query`, `scope`, `offset=0`, `page_size=200`, `include_snippets=true`, `include_recycle_bin=false` | `pages`, `count`, `total_matches`, `offset`, `page_size`, `has_more`, `next_offset`, `pagination_consistency`, `scope`, `search_backend`, `scan_budget`。 |
 
-`scope_type` 取 `all_open_notebooks/notebook/section_group/section`。前三种 typed 对象 scope 必须提交非空且类型匹配的 `scope_id`；`all_open_notebooks` 必须使用默认空 ID，并返回不伪造 COM ID 的合成 `scope={resource_type, notebook_count}`。全局 scope 只覆盖同一次完整 hierarchy 快照中 `is_open` 不为 false 的 Notebook，不扫描已关闭 Notebook、备份目录或 `.one` 文件。
+`scope` 是 `mode="root"` 或 `mode="start_node" + start_node_id` 的严格判别联合，两个对象分支都禁止额外字段。root 对 COM `FindPages` 传空 `start_id`；start node 只接受一个精确、属于已打开 Notebook 的 Notebook/SectionGroup/Section ID，不接受 Page、名称、路径或离散 ID 数组。每次公开调用只执行一次 `FindPages`，固定 `include_unindexed=false`、`display=false`，index 失败不回退。结果按原始 XML 顺序处理，并用同一次完整 catalog 补全和证明归属；范围外、已关闭、无法证明归属和不符合回收站参数的 Page 被排除。
 
-`backend` 只取 `local_scan/onenote_index`，index 失败不会静默回退。全局 `local_scan` 先合并全部候选 Page，再在读取首个正文前执行一次 `max_pages` 检查；页字符、总字符、耗时和 `max_results` 都按整个调用累计。全局 `onenote_index` 对 COM `FindPages` 传空 `start_id`，用同一完整 catalog 补全 Notebook、父级与路径；index snippet hydration 同样受页数、单页字符、总字符和耗时限制。`include_recycle_bin` 只控制已打开 Notebook 中的回收站结果，不会把已关闭 Notebook 纳入范围。空 hierarchy 正常返回空结果。空 `start_id` 与 Desktop `Ctrl+E` 的完全等价性仍需真实环境逐版本验证。
+分页是无状态 `live_index`：`offset >= 0`，`page_size` 默认和最大均为 200，每一页重新执行 `FindPages`，不承诺跨页冻结快照。过滤后的完整候选集必须先通过 `LOCAL_ONENOTE_MAX_SEARCH_PAGES`，随后才执行切片；因此较大 offset 不能绕过候选预算。snippet 只 hydration 当前页。空 hierarchy 和越界 offset 均返回成功空页；空 `start_id` 与 Desktop `Ctrl+E` 的完全等价性仍需真实环境逐版本验证。
 
 `page_info`：`basic/binary/selection/binary_selection/file_type/binary_file_type/selection_file_type/all`。
 
@@ -101,15 +101,17 @@ Create 的 COM 返回 ID 是第一身份来源。回读对象必须同时满足�
 | `reorder_page` | `page_id`, `expected_title`, `expected_section_id`, `after_page_id=""`, `page_level=0`, `expected_modified=null` | `item`, `pages`；验证位置与缩进。空 `after_page_id` 表示置顶，`page_level=0` 表示保留。 |
 | `reorder_section` | `section_id`, `expected_name`, `expected_parent_id`, `after_section_id=""`, `expected_modified=null` | `item`, `siblings`, `after_id`, `verified`；只在同一 Notebook/SectionGroup 父级的 Section 序列内移动。空 predecessor 表示置于同类型序列首位。 |
 | `reorder_section_group` | 不支持 | 必须拒绝，不能尝试通过 sibling XML、Rename、Copy/Delete 或 raw XML 模拟。OneNote 后端只提供按名称固定升序的 SectionGroup 集合，没有可验证的可变 sibling order。 |
-| `reparent_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `expected_modified=null` | `item`, `previous_parent_id`, `destination_parent_id`, `id_map`, `verified`, `warnings`；允许 Page/可观测内容对象 ID 一对一重映射，验证根 Page 拓扑、富内容和无关对象。 |
-| `reparent_section` | `section_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `expected_modified=null` | 同一响应骨架；验证 Section ID、Page ID/顺序、Page 内容和无关对象。 |
-| `reparent_section_group` | `section_group_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `expected_modified=null` | 同一响应骨架；验证 Group/后代 ID、父子拓扑、Page 内容和无关对象。 |
+| `reparent_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `expected_modified=null`, `include_descendants=false` | `item`, `destination_position`, `previous_parent_id`, `destination_parent_id`, `id_map`, `verified`, `include_descendants`, `preserved_descendants`, `warnings`。默认只换父级选中 Page，被排除后代留在源 Section 并整体提升一级；显式 `true` 换父级完整缩进子树。选中 Page 在目标中归一化为根 Page；允许纳入范围的 Page/可观测内容对象 ID 一对一重映射。 |
+| `reparent_section` | `section_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `expected_modified=null` | 同一响应骨架并含 `destination_position`；验证 Section ID、Page ID/顺序、Page 内容和无关对象。 |
+| `reparent_section_group` | `section_group_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `expected_modified=null` | 同一响应骨架并含 `destination_position`；验证 Group/后代 ID、父子拓扑、Page 内容和无关对象。 |
 
 Rename 与 Page Reorder 要求写开关。Section Reorder 还要求 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION=true`；它在 mutation 前精确确认 ID/名称/父级/可选 modified，使用完整直属容器 sibling XML，并在写后验证父级、sibling ID 集合以及所有受影响 Page 的顺序和内容摘要。Page 内容摘要忽略 OneNote 所有层级节点上的时钟、作者、选择与视图元数据，但保留内容对象 ID、格式、文本和二进制内容。验证读取受现有 Copy hierarchy/Page/XML budgets 限制。
 
 `reorder_section_group` 的早期实验实现不构成产品能力。2026-08-10 的用户触发隔离验证中，Notebook 直属 Group 的 `A,B,C → A,C,B` 请求通过 `UpdateHierarchy(xs2013)` 返回成功，但立即按 ID 回读仍为后端固定的名称升序。该结果排除了 confirmation、父级选择、fixture 和 Runner 后置判断问题；嵌套父级操作因根级失败而没有执行。基于“后端没有 SectionGroup 可变顺序原语”这一能力边界，产品契约对 Notebook 与 SectionGroup 两种父级统一拒绝 reorder，而不是继续用更多 mutation 猜测后端行为。
 
-Reparent 统一表示同一 Notebook 内的容器换父级，不包含 Copy/Delete，也不能跨 Notebook。三个 typed 工具默认注册，但执行同时要求 Writes 与 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT=true`。service 在任何 COM mutation 前完成精确 ID/类型、confirmation、活动对象、同 Notebook 和目标类型检查；SectionGroup 额外拒绝自身/后代目标。Page 的已验证合同只接受没有父/子缩进关系的根 Page，并允许 OneNote 原生操作把 Page 及内容对象 ID 一对一重映射；调用方必须从 `item.id`/`id_map` 继续。所有验证均受现有 hierarchy/Page/XML budget 限制。底层 bridge `update_hierarchy` 只由这些受约束 service 及 Reorder 内部编排，生产 MCP 不存在接受外部任意 hierarchy XML 的工具。跨 Notebook 转移若未来支持，应作为创建新 ID、验证目标并非永久删除源的 Move 独立设计，不能静默降级到 Reparent。
+Reparent 统一表示同一 Notebook 内的容器换父级，不包含 Copy/Delete，也不能跨 Notebook。三个 typed 工具默认注册，但执行同时要求 Writes 与 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT=true`。service 在任何 COM mutation 前完成精确 ID/类型、confirmation、活动对象、同 Notebook 和目标类型检查；SectionGroup 额外拒绝自身/后代目标。Page 可从任意合法缩进 level 选择根对象：默认 root-only 路线先验证排除后代整体提升，再换父级所选 Page；显式 subtree 路线一次提交完整缩进范围并验证完整单射 `id_map`、相对拓扑和内容。任何路线的目标根均归一化为 level 1。调用方必须从 `item.id`/`id_map` 继续。所有验证均受现有 hierarchy/Page/XML budget 限制。底层 bridge `update_hierarchy` 只由这些受约束 service 及 Reorder 内部编排，生产 MCP 不存在接受外部任意 hierarchy XML 的工具。
+
+十个 Reparent/Copy/Move 执行工具统一返回 `destination_position`。Page 的 `index/sibling_count` 来自最终 Section 按 `order` 的完整扁平 Page 序列，且只描述 fresh 目标根，不返回 `page_level`、`parent_page_id` 或后代位置；Section/SectionGroup 在最终父级的同类型直属 children 中计算；Notebook Copy 返回固定 `not_applicable`。Move 必须在源删除后重新投影。该字段只描述最终观察状态，不是位置请求、默认落点保证或隐式 Reorder。
 
 ## 6. Delete
 
@@ -212,10 +214,10 @@ Move 对选定范围内的每个源 Page 调用 `DeleteHierarchy(permanently=fal
 | `LOCAL_ONENOTE_ENABLE_MOVE_PAGE` | `false` | Page Move；还要求 Writes、Deletes 和 Experimental Copy。Move 天然采用重建语义。 |
 | `LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS` | `false` | 跨 Notebook Section/SectionGroup Move；还要求 Writes、Deletes 和 Experimental Copy，不替代 Page Move 开关。 |
 | `LOCAL_ONENOTE_ENABLE_RAW_XML` | `false` | 启动时注册剩余 6 个开发 profile 工具；不能开放 raw hierarchy mutation。 |
-| `LOCAL_ONENOTE_MAX_SEARCH_PAGES` | `200` | 本地扫描候选 Page 上限，也是 index snippet hydration 的 Page 上限。 |
-| `LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS` | `100000` | 单 Page 扫描字符上限。 |
-| `LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS` | `2000000` | 单次扫描总字符上限。 |
-| `LOCAL_ONENOTE_MAX_SEARCH_SECONDS` | `30` | 单次本地扫描或 index snippet hydration 秒数上限。 |
+| `LOCAL_ONENOTE_MAX_SEARCH_PAGES` | `1000` | 过滤后、分页前的 OneNote index 候选 Page 上限。 |
+| `LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS` | `100000` | snippet hydration 的单 Page 处理字符上限。 |
+| `LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS` | `2000000` | 当前调用、当前页 snippet hydration 的累计字符上限。 |
+| `LOCAL_ONENOTE_MAX_SEARCH_SECONDS` | `30` | 从 `FindPages` 到当前页 snippet hydration 的总耗时上限；COM 调用使用不超过全局 bridge timeout 的剩余时间。 |
 | `LOCAL_ONENOTE_MAX_SEARCH_SNIPPET_CHARS` | `400` | snippet 上限。 |
 | `LOCAL_ONENOTE_MAX_COPY_RESOURCES` | `1000` | 单次 Copy 的层级对象上限。 |
 | `LOCAL_ONENOTE_MAX_COPY_PAGES` | `200` | 单次 Copy 的 Page 上限。 |

@@ -84,3 +84,5 @@ Reorder returned success, but the requested sibling order was not observed.
 本 TODO 已完成：Section Reorder 保留 typed、同父级、ID-preserving 契约，并已有用户确认的真实 UI 排序证据；SectionGroup Reorder 则依据真实后端负能力证据，以“不支持并拒绝”结束评估。公开能力目录和验证指南不再要求用户运行 SectionGroup 正向验收。
 
 仓库中保留的早期 SectionGroup 实验 tool、policy 开关和 manual scenario 资产只属于遗留原型、独立诊断与历史证据；manual scenario 不进入 `all`，并以机器可读状态报告 `limited/failed`。这些资产默认 fail closed，不改变本 TODO 的最终能力结论，也不能重新把 SectionGroup reorder 描述为待验证或可启用能力。
+
+[TODO 013](013_reparent_default_placement_contract.md) 后续允许 Reparent/Copy/Move 返回 SectionGroup 在后端固定名称排序中的观察索引。该索引不恢复本 TODO 已否定的 Reorder 能力，也不是可控落点保证。
