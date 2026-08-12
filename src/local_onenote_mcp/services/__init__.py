@@ -7,7 +7,15 @@ from .hierarchy import HierarchyService, IDENTIFIER_RESOLUTION_ORDER, RESOURCE_T
 from .mutations import MutationService
 from .operations import OperationsService
 from .pages import PageService
-from .search import SEARCH_BACKENDS, SEARCH_SCOPE_TYPES, SearchService
+from .position import destination_position, unavailable_destination_position
+from .search import (
+    DEFAULT_SEARCH_PAGE_SIZE,
+    MAX_SEARCH_PAGE_SIZE,
+    PAGINATION_CONSISTENCY,
+    SEARCH_BACKEND,
+    SEARCH_SCOPE_MODES,
+    SearchService,
+)
 
 __all__ = [
     "HierarchyService",
@@ -16,10 +24,15 @@ __all__ = [
     "CopyService",
     "OperationsService",
     "PageService",
+    "destination_position",
+    "unavailable_destination_position",
     "PartialFailure",
     "RESOURCE_TYPES",
-    "SEARCH_BACKENDS",
-    "SEARCH_SCOPE_TYPES",
+    "DEFAULT_SEARCH_PAGE_SIZE",
+    "MAX_SEARCH_PAGE_SIZE",
+    "PAGINATION_CONSISTENCY",
+    "SEARCH_BACKEND",
+    "SEARCH_SCOPE_MODES",
     "SearchService",
     "ServiceContainer",
 ]

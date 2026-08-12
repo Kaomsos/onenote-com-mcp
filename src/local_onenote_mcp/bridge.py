@@ -181,7 +181,18 @@ class OneNoteBridge:
     timeout_seconds: int = 90
     audit_path: Path | None = None
 
-    def call(self, operation: str, **params: Any) -> dict[str, Any]:
+    def call(
+        self,
+        operation: str,
+        *,
+        _timeout_seconds: float | None = None,
+        **params: Any,
+    ) -> dict[str, Any]:
+        effective_timeout = float(self.timeout_seconds)
+        if _timeout_seconds is not None:
+            if _timeout_seconds <= 0:
+                raise OneNoteBridgeError("OneNote COM operation timeout must be positive.")
+            effective_timeout = min(effective_timeout, float(_timeout_seconds))
         started = time.perf_counter()
         succeeded = False
         request = {"operation": operation, "params": params}
@@ -196,7 +207,7 @@ class OneNoteBridge:
                 input=POWERSHELL_BRIDGE,
                 text=True,
                 capture_output=True,
-                timeout=self.timeout_seconds,
+                timeout=effective_timeout,
                 env=env,
             )
             if completed.returncode != 0:
@@ -217,7 +228,7 @@ class OneNoteBridge:
             return data if isinstance(data, dict) else {"value": data}
         except subprocess.TimeoutExpired as exc:
             raise OneNoteBridgeError(
-                f"OneNote COM operation timed out after {self.timeout_seconds} seconds."
+                f"OneNote COM operation timed out after {effective_timeout:g} seconds."
             ) from exc
         finally:
             self._remove_quietly(req_path)

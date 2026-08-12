@@ -17,6 +17,7 @@ from local_onenote_mcp.page import (
 from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.services.pages import stable_page_content_digest
 from local_onenote_mcp.tools.copying import copy_page, plan_copy
+from tests.destination_position_assertions import assert_destination_position_contract
 
 
 def page_xml(page_id: str, title: str, body: str = "") -> str:
@@ -1392,6 +1393,50 @@ def test_include_descendants_does_not_change_container_copy_scope(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    ("planner", "args"),
+    [
+        ("plan_copy", ("parent", "destination-section", "Copy")),
+        ("plan_move_page", ("parent", "destination-section", "Move")),
+    ],
+)
+def test_page_plan_tools_do_not_predict_destination_position(monkeypatch, planner, args):
+    install_plan_fakes(monkeypatch, body="")
+
+    result = getattr(server.services.copying, planner)(*args)
+
+    assert "destination_position" not in result
+
+
+@pytest.mark.parametrize(
+    ("source_id", "planner"),
+    [
+        ("source-container-section", "plan_move_section"),
+        ("source-group", "plan_move_section_group"),
+    ],
+)
+def test_container_move_plans_do_not_predict_destination_position(
+    monkeypatch, source_id, planner
+):
+    items = container_move_items()
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: items,
+    )
+    monkeypatch.setattr(
+        server.services.pages,
+        "xml",
+        lambda page_id, page_info="basic": page_xml(page_id, "Source Page", "Body"),
+    )
+
+    result = getattr(server.services.copying, planner)(
+        source_id, "destination-notebook", "Moved"
+    )
+
+    assert "destination_position" not in result
+
+
 def test_section_group_plan_rejects_destination_inside_source_tree(monkeypatch):
     items = hierarchy_items()
     group = {
@@ -1591,6 +1636,11 @@ def test_partial_create_reports_created_ids_without_rollback(monkeypatch):
     assert caught.value.details["source_untouched"] is True
     assert caught.value.details["source_deleted"] is False
     assert caught.value.details["outcome"] == "copy_unverified"
+    assert caught.value.details["destination_position"] == {
+        "status": "unavailable",
+        "resource_type": "page",
+        "reason": "destination_target_not_uniquely_observed",
+    }
     assert caught.value.details["created_ids"] == ["new-parent", "new-child"]
     assert caught.value.details["id_map"] == {"parent": "new-parent"}
     assert caught.value.details["failed_step"] == "initialize_created_page"
@@ -1721,7 +1771,7 @@ def test_execute_budget_is_checked_before_first_mutation(monkeypatch):
 
 @pytest.mark.write_contract
 def test_recursive_section_group_copy_executes_depth_first_and_verifies(monkeypatch):
-    install_recursive_execute_fakes(monkeypatch)
+    state = install_recursive_execute_fakes(monkeypatch)
     plan = server.services.copying._build_plan(
         "source-group", "destination-notebook", "Group Copy"
     )
@@ -1739,11 +1789,12 @@ def test_recursive_section_group_copy_executes_depth_first_and_verifies(monkeypa
     assert result["copy_report"]["fidelity"] == "lossless"
     assert result["copy_report"]["copy_contract_satisfied"] is True
     assert result["copy_report"]["copied_counts"] == {"resources": 4, "pages": 1}
+    assert_destination_position_contract(result, state, result["item"]["id"])
 
 
 @pytest.mark.write_contract
 def test_recursive_section_copy_executes_and_verifies(monkeypatch):
-    install_recursive_execute_fakes(monkeypatch)
+    state = install_recursive_execute_fakes(monkeypatch)
     plan = server.services.copying._build_plan(
         "source-section", "destination-notebook", "Section Copy"
     )
@@ -1754,11 +1805,12 @@ def test_recursive_section_copy_executes_and_verifies(monkeypatch):
     assert result["item"]["name"] == "Section Copy"
     assert result["copy_report"]["verified"] is True
     assert result["copy_report"]["lossless"] is True
+    assert_destination_position_contract(result, state, result["item"]["id"])
 
 
 @pytest.mark.write_contract
 def test_recursive_notebook_copy_creates_new_root_and_verifies(monkeypatch, tmp_path):
-    install_recursive_execute_fakes(monkeypatch)
+    state = install_recursive_execute_fakes(monkeypatch)
     plan = server.services.copying._build_plan(
         "source-notebook",
         destination_name="Notebook Copy",
@@ -1779,6 +1831,7 @@ def test_recursive_notebook_copy_creates_new_root_and_verifies(monkeypatch, tmp_
     assert result["copy_report"]["destination_path"] == str(tmp_path / "Notebook Copy")
     assert result["copy_report"]["verified"] is True
     assert result["copy_report"]["lossless"] is True
+    assert_destination_position_contract(result, state, result["item"]["id"])
 
 
 @pytest.mark.write_contract
@@ -1978,6 +2031,8 @@ def test_page_copy_scope_creates_only_selected_ids_and_verifies(monkeypatch, inc
         "resources": len(expected_map),
         "pages": len(expected_map),
     }
+    assert_destination_position_contract(result, state, result["item"]["id"])
+    assert "page_level" not in result["destination_position"]
     assert created[0]["page_level"] == 1
     if include_descendants:
         assert created[1]["page_level"] == 2
@@ -2068,6 +2123,12 @@ def test_video_preview_player_marker_loss_fails_strict_copy_readback(monkeypatch
         server.services.copying._execute_copy(plan)
 
     report = raised.value.details["copy_report"]
+    expected_position = assert_destination_position_contract(
+        {"destination_position": raised.value.details["destination_position"]},
+        state,
+        "new-preview-page",
+    )
+    assert expected_position["status"] == "observed"
     assert report["verified"] is False
     assert report["lossless"] is False
     assert report["fidelity"] == "unverified"
@@ -2174,7 +2235,19 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
     monkeypatch.setattr(
         server.services.copying,
         "_execute_copy",
-        lambda value: {
+        lambda value: state["items"].append(
+            {
+                "resource_type": "page",
+                "id": "new-parent",
+                "title": "Moved Parent",
+                "parent_id": "destination-section",
+                "section_id": "destination-section",
+                "notebook_id": "n",
+                "page_level": 1,
+                "parent_page_id": None,
+                "order": 0,
+            }
+        ) or {
             "item": {"id": "new-parent", "resource_type": "page"},
             "created_ids": ["new-parent"],
             "copy_report": {
@@ -2229,6 +2302,12 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
     assert result["preserved_descendants"]["preserved_descendant_ids"] == ["child"]
     assert child["page_level"] == 1
     assert child["parent_page_id"] is None
+    assert_destination_position_contract(
+        result,
+        state["items"],
+        result["item"]["id"],
+    )
+    assert "page_level" not in result["destination_position"]
 
 
 @pytest.mark.write_contract
@@ -2284,6 +2363,7 @@ def test_root_only_move_blocks_delete_when_descendant_promotion_fails(monkeypatc
     assert caught.value.details["source_deleted"] is False
     assert caught.value.details["source_topology_may_have_changed"] is True
     assert caught.value.details["preservation_error"] == "promotion failed"
+    assert caught.value.details["destination_position"]["status"] == "unavailable"
 
 
 @pytest.mark.write_contract
@@ -2326,6 +2406,7 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
 
     assert caught.value.details["outcome"] == "copy_only"
     assert caught.value.details["source_deleted"] is False
+    assert caught.value.details["destination_position"]["status"] == "unavailable"
 
 
 @pytest.mark.write_contract
@@ -2340,10 +2421,21 @@ def test_move_page_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
     plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
-    monkeypatch.setattr(
-        server.services.copying,
-        "_execute_copy",
-        lambda value: {
+    def execute_copy(_value):
+        state["items"].append(
+            {
+                "resource_type": "page",
+                "id": "new-parent",
+                "title": "Moved Parent",
+                "parent_id": "destination-section",
+                "section_id": "destination-section",
+                "notebook_id": "n",
+                "page_level": 1,
+                "parent_page_id": None,
+                "order": 0,
+            }
+        )
+        return {
             "item": {"id": "new-parent", "resource_type": "page"},
             "created_ids": ["new-parent"],
             "copy_report": {
@@ -2354,8 +2446,9 @@ def test_move_page_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
                 "id_map": {"parent": "new-parent"},
             },
             "warnings": [],
-        },
-    )
+        }
+
+    monkeypatch.setattr(server.services.copying, "_execute_copy", execute_copy)
     deleted = []
 
     def delete_page(page_id, *args, **kwargs):
@@ -2377,6 +2470,94 @@ def test_move_page_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
     assert deleted == ["parent"]
     assert result["outcome"] == "moved"
     assert result["copy_report"]["copy_contract_satisfied"] is True
+    assert result["destination_position"]["status"] == "observed"
+
+
+@pytest.mark.write_contract
+def test_move_page_same_section_recomputes_position_after_source_delete(monkeypatch):
+    state = install_plan_fakes(monkeypatch, body="")
+    state["items"] = [item for item in state["items"] if item["id"] != "child"]
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setattr(
+        server.services.copying, "_confirm_source", lambda *args, **kwargs: None
+    )
+    plan = server.services.copying.plan_move_page(
+        "parent", "source-section", "Moved Parent"
+    )
+    copy_stage_position: dict = {}
+
+    def execute_copy(_value):
+        target = {
+            "resource_type": "page",
+            "id": "new-parent",
+            "title": "Moved Parent",
+            "parent_id": "source-section",
+            "section_id": "source-section",
+            "notebook_id": "n",
+            "page_level": 1,
+            "parent_page_id": None,
+            "order": 3,
+        }
+        state["items"].append(target)
+        copy_stage_position.update(
+            assert_destination_position_contract(
+                {
+                    "destination_position": {
+                        "status": "observed",
+                        "resource_type": "page",
+                        "parent_id": "source-section",
+                        "parent_type": "section",
+                        "sibling_scope": "section_page_sequence",
+                        "index": 2,
+                        "sibling_count": 3,
+                        "sequence_source": "page_order",
+                    }
+                },
+                state["items"],
+                "new-parent",
+            )
+        )
+        return {
+            "item": target,
+            "destination_position": dict(copy_stage_position),
+            "created_ids": ["new-parent"],
+            "copy_report": {
+                "lossless": True,
+                "verified": True,
+                "copy_contract_satisfied": True,
+                "id_map": {"parent": "new-parent"},
+            },
+            "warnings": [],
+        }
+
+    def delete_page(page_id, *_args, **_kwargs):
+        assert page_id == "parent"
+        state["items"] = [item for item in state["items"] if item["id"] != page_id]
+        return {"deleted": True, "final_state": None}
+
+    monkeypatch.setattr(server.services.copying, "_execute_copy", execute_copy)
+    monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
+
+    result = server.services.copying.move_page(
+        "parent",
+        "source-section",
+        "Parent",
+        "source-section",
+        plan["plan_digest"],
+        destination_title="Moved Parent",
+    )
+
+    final_position = assert_destination_position_contract(
+        result, state["items"], "new-parent"
+    )
+    assert copy_stage_position["index"] == 2
+    assert copy_stage_position["sibling_count"] == 3
+    assert final_position["index"] == 1
+    assert final_position["sibling_count"] == 2
+    assert result["destination_position"] != copy_stage_position
 
 
 @pytest.mark.write_contract
@@ -2558,6 +2739,7 @@ def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch)
     assert caught.value.details["outcome"] == "copy_only"
     assert caught.value.details["created_ids"] == ["new-parent"]
     assert caught.value.details["source_revalidation_error"] == "source vanished"
+    assert caught.value.details["destination_position"]["status"] == "unavailable"
 
 
 @pytest.mark.write_contract
@@ -2611,7 +2793,7 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
 
 @pytest.mark.write_contract
 def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
-    install_plan_fakes(monkeypatch, body="")
+    state = install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
@@ -2620,10 +2802,34 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent", True
     )
-    monkeypatch.setattr(
-        server.services.copying,
-        "_execute_copy",
-        lambda value: {
+    def execute_copy(_value):
+        state["items"].extend(
+            [
+                {
+                    "resource_type": "page",
+                    "id": "new-parent",
+                    "title": "Moved Parent",
+                    "parent_id": "destination-section",
+                    "section_id": "destination-section",
+                    "notebook_id": "n",
+                    "page_level": 1,
+                    "parent_page_id": None,
+                    "order": 0,
+                },
+                {
+                    "resource_type": "page",
+                    "id": "new-child",
+                    "title": "Child",
+                    "parent_id": "destination-section",
+                    "section_id": "destination-section",
+                    "notebook_id": "n",
+                    "page_level": 2,
+                    "parent_page_id": "new-parent",
+                    "order": 1,
+                },
+            ]
+        )
+        return {
             "item": {"id": "new-parent", "resource_type": "page"},
             "created_ids": ["new-parent", "new-child"],
             "copy_report": {
@@ -2633,8 +2839,9 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
                 "id_map": {"parent": "new-parent", "child": "new-child"},
             },
             "warnings": [],
-        },
-    )
+        }
+
+    monkeypatch.setattr(server.services.copying, "_execute_copy", execute_copy)
     deleted = []
 
     def delete_page(page_id, expected_title, expected_section_id, expected_modified, permanently):
@@ -2660,6 +2867,7 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     assert result["source_deleted_to_recycle_bin"] is True
     assert result["recycle_bin_verification"] == "verified"
     assert result["outcome"] == "moved"
+    assert result["destination_position"]["status"] == "observed"
 
 
 @pytest.mark.write_contract
@@ -2728,10 +2936,21 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
     plan = server.services.copying.plan_move_page(
         "parent", "destination-section", "Moved Parent"
     )
-    monkeypatch.setattr(
-        server.services.copying,
-        "_execute_copy",
-        lambda value: {
+    def execute_copy(_value):
+        state["items"].append(
+            {
+                "resource_type": "page",
+                "id": "new-parent",
+                "title": "Moved Parent",
+                "parent_id": "destination-section",
+                "section_id": "destination-section",
+                "notebook_id": "n",
+                "page_level": 1,
+                "parent_page_id": None,
+                "order": 0,
+            }
+        )
+        return {
             "item": {"id": "new-parent", "resource_type": "page"},
             "created_ids": ["new-parent"],
             "copy_report": {
@@ -2741,8 +2960,9 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
                 "id_map": {"parent": "new-parent"},
             },
             "warnings": [],
-        },
-    )
+        }
+
+    monkeypatch.setattr(server.services.copying, "_execute_copy", execute_copy)
     monkeypatch.setattr(
         server.services.mutations,
         "delete_page",
@@ -2762,6 +2982,7 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
     assert result["source_deleted_nonpermanently"] is True
     assert result["source_deleted_to_recycle_bin"] is None
     assert result["recycle_bin_verification"] == "not_required_com_unavailable"
+    assert result["destination_position"]["status"] == "observed"
     assert result["attempted_source_ids"] == ["parent"]
     assert result["deleted_source_ids"] == ["parent"]
     assert result["recycled_source_ids"] == []
@@ -2949,13 +3170,24 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
     monkeypatch.setattr(server.services.copying, "_build_plan", lambda *args, **kwargs: plan)
     monkeypatch.setattr(server.services.copying, "_execute_copy", lambda _plan: copied)
     monkeypatch.setattr(server.services.copying, "_capture_source", lambda *args, **kwargs: next(captures))
+    final_items = [
+        {
+            "resource_type": "notebook",
+            "id": "destination-notebook",
+            "name": "Destination",
+            "parent_id": None,
+        },
+        {
+            "resource_type": resource_type,
+            "id": target_root,
+            "parent_id": "destination-notebook",
+        },
+        {"resource_type": "page", "id": target_child},
+    ]
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",
-        lambda include_recycle_bin=False: [
-            {"resource_type": resource_type, "id": target_root},
-            {"resource_type": "page", "id": target_child},
-        ],
+        lambda include_recycle_bin=False: final_items,
     )
 
     def delete_resource(*args):
@@ -2963,13 +3195,13 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
         return {"final_state": None}
 
     monkeypatch.setattr(server.services.mutations, "delete_resource", delete_resource)
-    return source_id, child_id, copied, delete_calls
+    return source_id, child_id, copied, delete_calls, final_items
 
 
 @pytest.mark.write_contract
 @pytest.mark.parametrize("resource_type", ["section", "section_group"])
 def test_container_move_uses_one_nonpermanent_root_delete(monkeypatch, resource_type):
-    source_id, child_id, _copied, delete_calls = install_container_move_execution_fakes(
+    source_id, child_id, _copied, delete_calls, final_items = install_container_move_execution_fakes(
         monkeypatch, resource_type
     )
     method = getattr(server.services.copying, f"move_{resource_type}")
@@ -2998,11 +3230,12 @@ def test_container_move_uses_one_nonpermanent_root_delete(monkeypatch, resource_
     assert result["deleted_source_ids"] == [source_id]
     assert result["inactive_source_ids"] == [source_id, child_id]
     assert result["source_deleted_nonpermanently"] is True
+    assert_destination_position_contract(result, final_items, result["item"]["id"])
 
 
 @pytest.mark.write_contract
 def test_container_move_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
-    source_id, _child_id, copied, delete_calls = install_container_move_execution_fakes(
+    source_id, _child_id, copied, delete_calls, _final_items = install_container_move_execution_fakes(
         monkeypatch, "section"
     )
     copied["copy_report"]["lossless"] = False
@@ -3024,7 +3257,7 @@ def test_container_move_uses_shared_copy_contract_without_lossless_gate(monkeypa
 
 @pytest.mark.write_contract
 def test_container_move_does_not_delete_when_source_revalidation_changes(monkeypatch):
-    source_id, _child_id, _copied, delete_calls = install_container_move_execution_fakes(
+    source_id, _child_id, _copied, delete_calls, final_items = install_container_move_execution_fakes(
         monkeypatch, "section"
     )
     monkeypatch.setattr(
@@ -3045,12 +3278,19 @@ def test_container_move_does_not_delete_when_source_revalidation_changes(monkeyp
         )
 
     assert raised.value.details["outcome"] == "copy_only"
+    assert raised.value.details["destination_position"] == (
+        assert_destination_position_contract(
+            {"destination_position": raised.value.details["destination_position"]},
+            final_items,
+            f"target-{source_id}",
+        )
+    )
     assert delete_calls == []
 
 
 @pytest.mark.write_contract
 def test_container_move_reports_remaining_descendant_without_extra_deletes(monkeypatch):
-    source_id, child_id, _copied, delete_calls = install_container_move_execution_fakes(
+    source_id, child_id, _copied, delete_calls, _final_items = install_container_move_execution_fakes(
         monkeypatch, "section_group"
     )
     monkeypatch.setattr("local_onenote_mcp.services.copying.time.sleep", lambda _seconds: None)

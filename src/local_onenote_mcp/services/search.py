@@ -15,9 +15,12 @@ from .hierarchy import HierarchyService
 from .pages import PageService
 
 
-TYPED_SEARCH_SCOPE_TYPES = ("notebook", "section_group", "section")
-SEARCH_SCOPE_TYPES = ("all_open_notebooks", *TYPED_SEARCH_SCOPE_TYPES)
-SEARCH_BACKENDS = ("local_scan", "onenote_index")
+SEARCH_BACKEND = "onenote_index"
+SEARCH_SCOPE_MODES = ("root", "start_node")
+DEFAULT_SEARCH_PAGE_SIZE = 200
+MAX_SEARCH_PAGE_SIZE = 200
+PAGINATION_CONSISTENCY = "live_index"
+START_NODE_TYPES = {"notebook", "section_group", "section"}
 
 
 class SearchService(BaseService):
@@ -108,118 +111,174 @@ class SearchService(BaseService):
     def search(
         self,
         query: str,
-        scope_type: str,
-        scope_id: str = "",
-        backend: str = "local_scan",
-        max_results: int = 20,
+        scope_request: dict[str, Any],
+        offset: int = 0,
+        page_size: int = DEFAULT_SEARCH_PAGE_SIZE,
         include_snippets: bool = True,
         include_recycle_bin: bool = False,
     ) -> dict[str, Any]:
         if not query.strip():
             raise ValueError("query is required.")
-        normalized_scope = scope_type.strip().casefold()
-        if normalized_scope not in SEARCH_SCOPE_TYPES:
+        if offset < 0:
+            raise ValueError("offset must be greater than or equal to 0.")
+        if page_size < 1 or page_size > MAX_SEARCH_PAGE_SIZE:
             raise ValueError(
-                "scope_type must be one of: all_open_notebooks, notebook, section_group, section."
+                f"page_size must be between 1 and {MAX_SEARCH_PAGE_SIZE}."
             )
-        normalized_backend = backend.strip().casefold()
-        if normalized_backend not in SEARCH_BACKENDS:
-            raise ValueError("backend must be one of: local_scan, onenote_index.")
-
-        if normalized_scope == "all_open_notebooks":
-            if scope_id.strip():
-                raise ValueError("scope_id must be empty when scope_type is all_open_notebooks.")
-        elif not scope_id.strip():
-            raise ValueError(f"scope_id is required when scope_type is {normalized_scope}.")
+        if not isinstance(scope_request, dict):
+            raise ValueError("scope must be an object.")
+        mode = str(scope_request.get("mode", "")).strip().casefold()
+        if mode not in SEARCH_SCOPE_MODES:
+            raise ValueError("scope.mode must be one of: root, start_node.")
 
         catalog = self.hierarchy.resources(include_recycle_bin=True)
-        notebook_ids: set[str] | None = None
-        if normalized_scope == "all_open_notebooks":
-            open_notebooks = [
-                item
-                for item in catalog
-                if item.get("resource_type") == "notebook"
-                and item.get("is_open") is not False
-                and item.get("is_in_recycle_bin") is not True
-            ]
-            notebook_ids = {item["id"] for item in open_notebooks}
+        by_id = {str(item.get("id", "")): item for item in catalog if item.get("id")}
+        open_notebooks = [
+            item
+            for item in catalog
+            if item.get("resource_type") == "notebook"
+            and item.get("is_open") is not False
+            and item.get("is_in_recycle_bin") is not True
+        ]
+        open_notebook_ids = {str(item["id"]) for item in open_notebooks}
+        allowed_page_ids: set[str]
+        if mode == "root":
+            if set(scope_request) != {"mode"}:
+                raise ValueError("root scope does not accept additional fields.")
             scope = {
-                "resource_type": "all_open_notebooks",
+                "resource_type": "root",
                 "notebook_count": len(open_notebooks),
             }
             start_id = ""
+            allowed_page_ids = {
+                str(item["id"])
+                for item in catalog
+                if item.get("resource_type") == "page"
+                and str(item.get("notebook_id", "")) in open_notebook_ids
+                and (include_recycle_bin or item.get("is_in_recycle_bin") is not True)
+            }
         else:
-            scope = find_resource_by_id(catalog, scope_id, normalized_scope)
-            if scope is None:
-                raise ValueError(f"No {normalized_scope} found for ID '{scope_id}'.")
-            start_id = scope["id"]
+            if set(scope_request) != {"mode", "start_node_id"}:
+                raise ValueError(
+                    "start_node scope requires only mode and start_node_id."
+                )
+            start_node_id = str(scope_request.get("start_node_id", "")).strip()
+            if not start_node_id:
+                raise ValueError("scope.start_node_id is required for start_node scope.")
+            start_node = by_id.get(start_node_id)
+            if start_node is None:
+                raise ValueError(f"No hierarchy object found for ID '{start_node_id}'.")
+            resource_type = str(start_node.get("resource_type", ""))
+            if resource_type not in START_NODE_TYPES:
+                raise ValueError(
+                    "scope.start_node_id must identify a notebook, section_group, or section."
+                )
+            notebook_id = (
+                start_node_id
+                if resource_type == "notebook"
+                else str(start_node.get("notebook_id", ""))
+            )
+            if notebook_id not in open_notebook_ids:
+                raise ValueError("scope.start_node_id must belong to an open Notebook.")
+            if start_node.get("is_in_recycle_bin") is True and not include_recycle_bin:
+                raise ValueError(
+                    "scope.start_node_id is in the recycle bin; set include_recycle_bin=true to use it."
+                )
+            scope = dict(start_node)
+            start_id = start_node_id
+
+            def belongs_to_start_node(page: dict[str, Any]) -> bool:
+                if str(page.get("notebook_id", "")) != notebook_id:
+                    return False
+                if resource_type == "notebook":
+                    return True
+                current_id = str(page.get("section_id", ""))
+                visited: set[str] = set()
+                while current_id and current_id not in visited:
+                    if current_id == start_node_id:
+                        return True
+                    visited.add(current_id)
+                    current = by_id.get(current_id)
+                    current_id = str(current.get("parent_id", "")) if current else ""
+                return False
+
+            allowed_page_ids = {
+                str(item["id"])
+                for item in catalog
+                if item.get("resource_type") == "page"
+                and belongs_to_start_node(item)
+                and (include_recycle_bin or item.get("is_in_recycle_bin") is not True)
+            }
 
         budget = SearchBudget.current()
-        budget_data: dict[str, Any] | None = None
-        if normalized_backend == "local_scan":
-            pages, budget_data = self.local_text_search(
-                start_id,
-                query,
-                max_results,
-                include_recycle_bin,
-                budget,
-                include_snippets,
-                catalog,
-                notebook_ids,
-            )
+        started = time.monotonic()
+
+        def elapsed() -> float:
+            return time.monotonic() - started
+
+        def remaining_seconds(label: str) -> float:
+            remaining = float(budget.max_seconds) - elapsed()
+            if remaining <= 0:
+                raise RuntimeError(
+                    f"OneNote index search exceeded its {budget.max_seconds}-second budget during {label}."
+                )
+            return remaining
+
+        if mode == "root" and not open_notebooks:
+            candidates: list[dict[str, Any]] = []
         else:
             xml = self.call(
                 "find_pages",
+                _timeout_seconds=remaining_seconds("FindPages"),
                 start_id=start_id,
                 query=query,
                 include_unindexed=False,
                 display=False,
                 schema=XML_SCHEMA_2013,
             )["xml"]
-            pages = filter_resources(parse_hierarchy(xml, catalog=catalog), "page")
-            if notebook_ids is not None:
-                pages = [page for page in pages if page.get("notebook_id") in notebook_ids]
-        if not include_recycle_bin:
-            pages = self.hierarchy.without_recycle_bin(pages)
-        index_candidate_pages = len(pages) if normalized_backend == "onenote_index" else 0
-        pages = pages[: max(1, max_results)]
-        if normalized_backend == "onenote_index":
-            budget_data = {
-                "candidate_pages": index_candidate_pages,
-                "hydrated_pages": 0,
-                "hydrated_chars": 0,
-                "max_pages": budget.max_pages,
-                "max_page_chars": budget.max_page_chars,
-                "max_total_chars": budget.max_total_chars,
-                "max_seconds": budget.max_seconds,
-            }
-        if include_snippets and normalized_backend == "onenote_index":
-            if len(pages) > budget.max_pages:
-                raise ValueError(
-                    f"Search result contains {len(pages)} pages requiring snippet hydration, exceeding "
-                    f"LOCAL_ONENOTE_MAX_SEARCH_PAGES={budget.max_pages}."
-                )
+            remaining_seconds("FindPages result processing")
+            parsed_pages = filter_resources(parse_hierarchy(xml, catalog=catalog), "page")
+            candidates = []
+            seen_page_ids: set[str] = set()
+            for page in parsed_pages:
+                page_id = str(page.get("id", ""))
+                if (
+                    not page_id
+                    or page_id in seen_page_ids
+                    or page_id not in allowed_page_ids
+                ):
+                    continue
+                seen_page_ids.add(page_id)
+                candidates.append(page)
+            remaining_seconds("FindPages result processing")
+
+        candidate_pages = len(candidates)
+        if candidate_pages > budget.max_pages:
+            raise ValueError(
+                f"OneNote index returned {candidate_pages} candidate pages, exceeding "
+                f"LOCAL_ONENOTE_MAX_SEARCH_PAGES={budget.max_pages}."
+            )
+        pages = candidates[offset : offset + page_size]
+        hydrated_pages = 0
+        hydrated_chars = 0
+        if include_snippets:
             query_lower = query.casefold()
-            total_chars = 0
-            hydrated_pages = 0
-            started = time.monotonic()
             for page in pages:
-                if time.monotonic() - started > budget.max_seconds:
-                    raise RuntimeError(
-                        "OneNote index snippet hydration exceeded its "
-                        f"{budget.max_seconds}-second budget."
-                    )
+                page_timeout = remaining_seconds("snippet hydration")
                 try:
-                    text = text_from_page_xml(self.pages.xml(page["id"], "basic"))
-                    hydrated_pages += 1
-                    if time.monotonic() - started > budget.max_seconds:
-                        raise RuntimeError(
-                            f"OneNote index snippet hydration exceeded its {budget.max_seconds}-second budget."
+                    text = text_from_page_xml(
+                        self.pages.xml(
+                            page["id"],
+                            "basic",
+                            _timeout_seconds=page_timeout,
                         )
+                    )
+                    hydrated_pages += 1
+                    remaining_seconds("snippet hydration")
                     if len(text) > budget.max_page_chars:
                         text = text[: budget.max_page_chars]
-                    total_chars += len(text)
-                    if total_chars > budget.max_total_chars:
+                    hydrated_chars += len(text)
+                    if hydrated_chars > budget.max_total_chars:
                         raise RuntimeError(
                             "OneNote index snippet hydration exceeded "
                             f"LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS={budget.max_total_chars}."
@@ -234,14 +293,34 @@ class SearchService(BaseService):
                     if isinstance(exc, RuntimeError):
                         raise
                     page["snippet_error"] = str(exc)
-            budget_data["hydrated_pages"] = hydrated_pages
-            budget_data["hydrated_chars"] = total_chars
+        total_elapsed = elapsed()
+        if total_elapsed > budget.max_seconds:
+            raise RuntimeError(
+                f"OneNote index search exceeded its {budget.max_seconds}-second budget."
+            )
+        has_more = offset + len(pages) < candidate_pages
         return {
             "pages": pages,
             "count": len(pages),
+            "total_matches": candidate_pages,
+            "offset": offset,
+            "page_size": page_size,
+            "has_more": has_more,
+            "next_offset": offset + len(pages) if has_more else None,
+            "pagination_consistency": PAGINATION_CONSISTENCY,
             "scope": scope,
-            "search_backend": normalized_backend,
-            "scan_budget": budget_data,
+            "search_backend": SEARCH_BACKEND,
+            "scan_budget": {
+                "candidate_pages": candidate_pages,
+                "hydrated_pages": hydrated_pages,
+                "hydrated_chars": hydrated_chars,
+                "elapsed_seconds": round(total_elapsed, 6),
+                "max_pages": budget.max_pages,
+                "max_page_chars": budget.max_page_chars,
+                "max_total_chars": budget.max_total_chars,
+                "max_seconds": budget.max_seconds,
+                "snippet_chars": budget.snippet_chars,
+            },
         }
 
     def find_meta(self, start_identifier: str, name: str, include_unindexed: bool = True) -> dict[str, Any]:

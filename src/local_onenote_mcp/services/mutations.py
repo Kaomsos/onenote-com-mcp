@@ -23,7 +23,8 @@ from ..policy import CopyBudget, MutationPolicy
 from .base import BaseService
 from .errors import PartialFailure
 from .hierarchy import HierarchyService
-from .pages import PageService
+from .pages import PageService, stable_page_content_digest
+from .position import destination_position, unavailable_destination_position
 
 
 REPLACE_BODY_OBJECT_TYPES = {"Outline", "Image", "InkDrawing", "FileAttachment", "InsertedFile", "MediaFile"}
@@ -874,6 +875,345 @@ class MutationService(BaseService):
             }
         return current, id_map, verified
 
+    @staticmethod
+    def _page_scope(items: list[dict[str, Any]], page_id: str) -> list[dict[str, Any]]:
+        target = next(
+            (
+                item
+                for item in items
+                if item.get("id") == page_id and item.get("resource_type") == "page"
+            ),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"No active Page found for ID '{page_id}'.")
+        pages = sorted(
+            (
+                item
+                for item in items
+                if item.get("resource_type") == "page"
+                and item.get("section_id") == target.get("section_id")
+            ),
+            key=lambda item: int(item.get("order", 0)),
+        )
+        start = next(index for index, item in enumerate(pages) if item["id"] == page_id)
+        root_level = int(target.get("page_level") or 1)
+        selected = [target]
+        for candidate in pages[start + 1 :]:
+            if int(candidate.get("page_level") or 1) <= root_level:
+                break
+            selected.append(candidate)
+        return selected
+
+    @staticmethod
+    def _page_parent_map(pages: list[dict[str, Any]]) -> dict[str, str | None]:
+        result: dict[str, str | None] = {}
+        stack: list[dict[str, Any]] = []
+        for page in pages:
+            level = int(page.get("page_level") or 1)
+            while stack and int(stack[-1].get("page_level") or 1) >= level:
+                stack.pop()
+            result[str(page["id"])] = str(stack[-1]["id"]) if stack else None
+            stack.append(page)
+        return result
+
+    def _promote_reparent_descendants(
+        self,
+        before: dict[str, Any],
+        target: dict[str, Any],
+        descendants: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if not descendants:
+            return before, {"promoted": False, "preserved_descendant_ids": []}
+        section_id = str(target["section_id"])
+        section = next(
+            item
+            for item in before["items"]
+            if item.get("id") == section_id and item.get("resource_type") == "section"
+        )
+        pages = sorted(
+            (
+                dict(item)
+                for item in before["items"]
+                if item.get("resource_type") == "page"
+                and str(item.get("section_id")) == section_id
+            ),
+            key=lambda item: int(item.get("order", 0)),
+        )
+        descendant_ids = {str(item["id"]) for item in descendants}
+        adjusted = [
+            {
+                **page,
+                "page_level": (
+                    int(page.get("page_level") or 1) - 1
+                    if str(page["id"]) in descendant_ids
+                    else int(page.get("page_level") or 1)
+                ),
+            }
+            for page in pages
+        ]
+        if any(int(page["page_level"]) < 1 for page in adjusted):
+            raise RuntimeError("A preserved Reparent descendant cannot be promoted above level 1.")
+        self.call(
+            "update_hierarchy",
+            xml=self.hierarchy.page_order_xml(section, adjusted),
+            schema=XML_SCHEMA_2013,
+        )
+        after = self._capture_reparent_snapshot(str(target["notebook_id"]))
+        current_pages = sorted(
+            (
+                item
+                for item in after["items"]
+                if item.get("resource_type") == "page"
+                and str(item.get("section_id")) == section_id
+            ),
+            key=lambda item: int(item.get("order", 0)),
+        )
+        if [item["id"] for item in current_pages] != [item["id"] for item in adjusted]:
+            raise RuntimeError("Descendant promotion changed source Page identity or order.")
+        expected_parents = self._page_parent_map(adjusted)
+        for expected, current in zip(adjusted, current_pages, strict=True):
+            page_id = str(expected["id"])
+            if (
+                int(current.get("page_level") or 0) != int(expected["page_level"])
+                or current.get("parent_page_id") != expected_parents[page_id]
+                or stable_page_content_digest(after["page_xml"][page_id])
+                != stable_page_content_digest(before["page_xml"][page_id])
+            ):
+                raise RuntimeError("Descendant promotion did not preserve Page topology/content.")
+        return after, {
+            "promoted": True,
+            "preserved_descendant_ids": [str(item["id"]) for item in descendants],
+        }
+
+    def _validate_reparent_page_scope(
+        self,
+        before: dict[str, Any],
+        after: dict[str, Any],
+        *,
+        selected: list[dict[str, Any]],
+        destination_section_id: str,
+        include_descendants: bool,
+    ) -> tuple[dict[str, Any], dict[str, str], dict[str, bool]]:
+        before_by_id = {str(item["id"]): item for item in before["items"]}
+        after_by_id = {str(item["id"]): item for item in after["items"]}
+        selected_ids = [str(item["id"]) for item in selected]
+        root = selected[0]
+        added_ids = set(after_by_id) - set(before_by_id)
+
+        root_candidates = []
+        for item in after["items"]:
+            item_id = str(item.get("id", ""))
+            if (
+                item.get("resource_type") == "page"
+                and item.get("section_id") == destination_section_id
+                and int(item.get("page_level") or 0) == 1
+                and item.get("parent_page_id") is None
+                and (item_id == selected_ids[0] or item_id in added_ids)
+                and display_name(item) == display_name(root)
+            ):
+                xml = after["page_xml"].get(item_id)
+                if xml is not None and self.pages.reparent_digest(xml) == self.pages.reparent_digest(
+                    before["page_xml"][selected_ids[0]]
+                ):
+                    root_candidates.append(item)
+        if len(root_candidates) != 1:
+            raise RuntimeError("Page reparent did not yield one exact destination root Page.")
+        current_root = root_candidates[0]
+
+        destination_pages = sorted(
+            (
+                item
+                for item in after["items"]
+                if item.get("resource_type") == "page"
+                and item.get("section_id") == destination_section_id
+            ),
+            key=lambda item: int(item.get("order", 0)),
+        )
+        root_index = next(
+            index for index, item in enumerate(destination_pages) if item["id"] == current_root["id"]
+        )
+        current_scope = [current_root]
+        if include_descendants:
+            for item in destination_pages[root_index + 1 :]:
+                if int(item.get("page_level") or 1) <= 1:
+                    break
+                current_scope.append(item)
+        if len(current_scope) != len(selected):
+            raise RuntimeError("Page reparent produced an incomplete or expanded destination scope.")
+
+        id_map: dict[str, str] = {}
+        reverse_ids: set[str] = set()
+        root_level = int(root.get("page_level") or 1)
+        for source, current in zip(selected, current_scope, strict=True):
+            source_id = str(source["id"])
+            current_id = str(current["id"])
+            expected_level = int(source.get("page_level") or 1) - root_level + 1
+            if (
+                current.get("section_id") != destination_section_id
+                or int(current.get("page_level") or 0) != expected_level
+                or display_name(current) != display_name(source)
+                or self.pages.reparent_digest(after["page_xml"][current_id])
+                != self.pages.reparent_digest(before["page_xml"][source_id])
+            ):
+                raise RuntimeError("Page reparent changed selected Page topology/content.")
+            if current_id in reverse_ids:
+                raise RuntimeError("Page reparent produced a non-injective Page ID mapping.")
+            id_map[source_id] = current_id
+            reverse_ids.add(current_id)
+            observable = self.pages.observable_id_map(
+                before["page_xml"][source_id], after["page_xml"][current_id]
+            )
+            for old_id, new_id in observable.items():
+                if old_id in id_map and id_map[old_id] != new_id:
+                    raise RuntimeError("Page reparent produced an ambiguous observable ID mapping.")
+                if new_id in reverse_ids:
+                    raise RuntimeError("Page reparent produced a non-injective observable ID mapping.")
+                id_map[old_id] = new_id
+                reverse_ids.add(new_id)
+
+        expected_scope_parents = self._page_parent_map(
+            [
+                {**source, "id": id_map[str(source["id"])], "page_level": int(source.get("page_level") or 1) - root_level + 1}
+                for source in selected
+            ]
+        )
+        for current in current_scope:
+            if current.get("parent_page_id") != expected_scope_parents[str(current["id"])]:
+                raise RuntimeError("Page reparent changed selected Page parent topology.")
+
+        current_ids = {str(item["id"]) for item in current_scope}
+        if set(before_by_id) - set(selected_ids) != set(after_by_id) - current_ids:
+            raise RuntimeError("Page reparent changed unrelated hierarchy identities.")
+
+        source_section_id = str(root["section_id"])
+        remaining_source = sorted(
+            (
+                dict(item)
+                for item in before["items"]
+                if item.get("resource_type") == "page"
+                and str(item.get("section_id")) == source_section_id
+                and str(item["id"]) not in selected_ids
+            ),
+            key=lambda item: int(item.get("order", 0)),
+        )
+        if not include_descendants:
+            preserved_ids = {str(item["id"]) for item in self._page_scope(before["items"], selected_ids[0])[1:]}
+            remaining_source = [
+                {
+                    **item,
+                    "page_level": int(item.get("page_level") or 1) - 1
+                    if str(item["id"]) in preserved_ids
+                    else int(item.get("page_level") or 1),
+                }
+                for item in remaining_source
+            ]
+        expected_source_parents = self._page_parent_map(remaining_source)
+
+        relationship_fields = ("parent_id", "section_id", "page_level", "parent_page_id")
+        for object_id, old in before_by_id.items():
+            if object_id in selected_ids:
+                continue
+            current = after_by_id[object_id]
+            if (
+                current.get("resource_type") != old.get("resource_type")
+                or display_name(current) != display_name(old)
+                or self._resource_notebook_id(current) != self._resource_notebook_id(old)
+            ):
+                raise RuntimeError(f"Page reparent changed unrelated object {object_id}.")
+            if old.get("resource_type") == "page" and old.get("section_id") == source_section_id:
+                expected_page = next(item for item in remaining_source if str(item["id"]) == object_id)
+                if (
+                    current.get("section_id") != source_section_id
+                    or int(current.get("page_level") or 0) != int(expected_page["page_level"])
+                    or current.get("parent_page_id") != expected_source_parents[object_id]
+                ):
+                    raise RuntimeError("Page reparent changed preserved source Page topology.")
+            elif any(current.get(field) != old.get(field) for field in relationship_fields):
+                raise RuntimeError(f"Page reparent changed an unrelated relationship for {object_id}.")
+            if old.get("resource_type") == "page" and stable_page_content_digest(
+                after["page_xml"][object_id]
+            ) != stable_page_content_digest(before["page_xml"][object_id]):
+                raise RuntimeError(f"Page reparent changed unrelated Page content for {object_id}.")
+
+        return current_root, id_map, {
+            "parent_applied": True,
+            "target_id_transition_valid": True,
+            "same_notebook_preserved": True,
+            "page_scope_complete": True,
+            "page_topology_preserved": True,
+            "rich_content_preserved": True,
+            "content_object_ids_mapped": True,
+            "unrelated_objects_preserved": True,
+        }
+
+    def _partial_reparent_page_position(
+        self,
+        before: dict[str, Any],
+        candidate: dict[str, Any] | None,
+        *,
+        selected_source_ids: list[str],
+        destination_section_id: str,
+    ) -> tuple[dict[str, Any], list[str], list[str]]:
+        """Return partial Page location evidence without claiming scope verification."""
+
+        if candidate is None:
+            return (
+                unavailable_destination_position(
+                    "page", "destination_snapshot_unavailable"
+                ),
+                [],
+                [],
+            )
+        source_root_id = selected_source_ids[0]
+        before_by_id = {str(item["id"]): item for item in before["items"]}
+        after_by_id = {str(item["id"]): item for item in candidate["items"]}
+        root = before_by_id[source_root_id]
+        added_ids = set(after_by_id) - set(before_by_id)
+        candidates = [
+            item
+            for item in candidate["items"]
+            if item.get("resource_type") == "page"
+            and item.get("section_id") == destination_section_id
+            and int(item.get("page_level") or 0) == 1
+            and item.get("parent_page_id") in {None, ""}
+            and (str(item.get("id")) == source_root_id or str(item.get("id")) in added_ids)
+            and display_name(item) == display_name(root)
+        ]
+        observed = []
+        for item in candidates:
+            item_id = str(item["id"])
+            xml = candidate.get("page_xml", {}).get(item_id)
+            if (
+                xml is not None
+                and self.pages.reparent_digest(xml)
+                == self.pages.reparent_digest(before["page_xml"][source_root_id])
+            ):
+                observed.append(item)
+        source_ids = [
+            source_id
+            for source_id in selected_source_ids
+            if source_id in after_by_id
+            and after_by_id[source_id].get("section_id") != destination_section_id
+        ]
+        destination_ids = [str(item["id"]) for item in observed]
+        if len(observed) == 1:
+            try:
+                return (
+                    destination_position(candidate["items"], destination_ids[0]),
+                    source_ids,
+                    destination_ids,
+                )
+            except RuntimeError:
+                pass
+        return (
+            unavailable_destination_position(
+                "page", "destination_target_not_uniquely_observed"
+            ),
+            source_ids,
+            destination_ids,
+        )
+
     def _reparent(
         self,
         object_id: str,
@@ -882,6 +1222,7 @@ class MutationService(BaseService):
         expected_name: str,
         expected_parent_id: str,
         expected_modified: str | None,
+        include_descendants: bool = False,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_experimental_reparent()
         all_items = self.hierarchy.resources(include_recycle_bin=True)
@@ -949,15 +1290,6 @@ class MutationService(BaseService):
             descendants = {item["id"] for item in self._container_subtree(active_items, object_id)}
             if destination_parent_id in descendants:
                 raise ValueError("A section_group cannot be reparented below itself or its descendant.")
-        if resource_type == "page":
-            if target.get("parent_page_id") is not None or any(
-                item.get("resource_type") == "page" and item.get("parent_page_id") == object_id
-                for item in active_items
-            ):
-                raise ValueError(
-                    "The validated Page reparent contract only supports a root Page without child Pages."
-                )
-
         before = self._capture_reparent_snapshot(notebook_id)
         before_by_id = {item["id"]: item for item in before["items"]}
         snap_target = before_by_id.get(object_id)
@@ -965,24 +1297,110 @@ class MutationService(BaseService):
         if snap_target != target or snap_destination != destination:
             raise RuntimeError("Hierarchy changed after Reparent confirmation; mutation was not attempted.")
 
-        self.call(
-            "update_hierarchy",
-            xml=self.hierarchy.reparent_xml(target, destination, catalog=active_items),
-            schema=XML_SCHEMA_2013,
-        )
+        selected: list[dict[str, Any]] = []
+        preservation: dict[str, Any] = {
+            "promoted": False,
+            "preserved_descendant_ids": [],
+        }
+        mutation_catalog = active_items
+        mutation_target = target
+        if resource_type == "page":
+            complete_scope = self._page_scope(before["items"], object_id)
+            selected = complete_scope if include_descendants else complete_scope[:1]
+            if not include_descendants:
+                try:
+                    promoted, preservation = self._promote_reparent_descendants(
+                        before,
+                        target,
+                        complete_scope[1:],
+                    )
+                except Exception as exc:
+                    raise PartialFailure(
+                        "Excluded Page descendants could not be promoted and verified; "
+                        "Reparent was not attempted.",
+                        partial=True,
+                        outcome="descendant_promotion_unverified",
+                        reparent_attempted=False,
+                        destination_position=unavailable_destination_position(
+                            "page", "destination_target_not_created"
+                        ),
+                        preserved_descendant_ids=[
+                            str(item["id"]) for item in complete_scope[1:]
+                        ],
+                        promotion_error=str(exc),
+                    ) from exc
+                mutation_catalog = promoted["items"]
+                mutation_by_id = {item["id"]: item for item in mutation_catalog}
+                mutation_target = mutation_by_id[object_id]
+                selected = [mutation_target]
+            xml = self.hierarchy.reparent_page_scope_xml(
+                selected,
+                destination,
+                catalog=mutation_catalog,
+            )
+        else:
+            xml = self.hierarchy.reparent_xml(
+                target,
+                destination,
+                catalog=active_items,
+            )
+        try:
+            self.call(
+                "update_hierarchy",
+                xml=xml,
+                schema=XML_SCHEMA_2013,
+            )
+        except Exception as exc:
+            if resource_type == "page" and preservation.get("promoted"):
+                failure_snapshot: dict[str, Any] | None = None
+                try:
+                    failure_snapshot = self._capture_reparent_snapshot(notebook_id)
+                except Exception:
+                    pass
+                partial_position, active_source_ids, observed_destination_ids = (
+                    self._partial_reparent_page_position(
+                        before,
+                        failure_snapshot,
+                        selected_source_ids=[str(item["id"]) for item in complete_scope[:1]],
+                        destination_section_id=destination_parent_id,
+                    )
+                )
+                raise PartialFailure(
+                    "Excluded descendants were promoted, but the selected Page was not reparented.",
+                    partial=True,
+                    outcome="descendants_promoted_reparent_not_completed",
+                    reparent_attempted=True,
+                    destination_position=partial_position,
+                    active_source_ids=active_source_ids,
+                    observed_destination_ids=observed_destination_ids,
+                    preserved_descendants=preservation,
+                    reparent_error=str(exc),
+                ) from exc
+            raise
 
         after: dict[str, Any] | None = None
+        last_candidate: dict[str, Any] | None = None
         last_error: RuntimeError | None = None
         for attempt in range(8):
             try:
                 candidate = self._capture_reparent_snapshot(notebook_id)
-                current, id_map, verified = self._validate_reparent_snapshots(
-                    before,
-                    candidate,
-                    target_id=object_id,
-                    destination_parent_id=destination_parent_id,
-                    resource_type=resource_type,
-                )
+                last_candidate = candidate
+                if resource_type == "page":
+                    current, id_map, verified = self._validate_reparent_page_scope(
+                        before,
+                        candidate,
+                        selected=(complete_scope if include_descendants else complete_scope[:1]),
+                        destination_section_id=destination_parent_id,
+                        include_descendants=include_descendants,
+                    )
+                else:
+                    current, id_map, verified = self._validate_reparent_snapshots(
+                        before,
+                        candidate,
+                        target_id=object_id,
+                        destination_parent_id=destination_parent_id,
+                        resource_type=resource_type,
+                    )
                 after = candidate
                 break
             except RuntimeError as exc:
@@ -990,15 +1408,48 @@ class MutationService(BaseService):
                 if attempt < 7:
                     time.sleep(0.5)
         if after is None:
+            if resource_type == "page":
+                partial_position, active_source_ids, observed_destination_ids = (
+                    self._partial_reparent_page_position(
+                        before,
+                        last_candidate,
+                        selected_source_ids=[str(item["id"]) for item in complete_scope],
+                        destination_section_id=destination_parent_id,
+                    )
+                )
+                raise PartialFailure(
+                    f"Page Reparent returned, but scope read-back verification failed: {last_error}",
+                    partial=True,
+                    outcome="reparent_subtree_incomplete",
+                    reparent_attempted=True,
+                    include_descendants=bool(include_descendants),
+                    destination_position=partial_position,
+                    active_source_ids=active_source_ids,
+                    observed_destination_ids=observed_destination_ids,
+                    preserved_descendants=preservation,
+                    manual_recovery_required=True,
+                )
             raise RuntimeError(
                 f"Reparent returned success, but read-back verification failed: {last_error}"
             )
         return {
             "item": current,
+            "destination_position": destination_position(
+                after["items"],
+                str(current["id"]),
+            ),
             "previous_parent_id": expected_parent_id,
             "destination_parent_id": destination_parent_id,
             "id_map": id_map,
             "verified": verified,
+            **(
+                {
+                    "include_descendants": bool(include_descendants),
+                    "preserved_descendants": preservation,
+                }
+                if resource_type == "page"
+                else {}
+            ),
             "warnings": [
                 "Experimental COM behavior verified only for the documented isolated OneNote/Office scenarios."
             ],
@@ -1011,6 +1462,7 @@ class MutationService(BaseService):
         expected_title: str,
         expected_section_id: str,
         expected_modified: str | None = None,
+        include_descendants: bool = False,
     ) -> dict[str, Any]:
         return self._reparent(
             page_id,
@@ -1019,6 +1471,7 @@ class MutationService(BaseService):
             expected_title,
             expected_section_id,
             expected_modified,
+            include_descendants,
         )
 
     def reparent_section(

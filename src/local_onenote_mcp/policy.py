@@ -135,7 +135,7 @@ class SearchBudget:
     @classmethod
     def current(cls) -> "SearchBudget":
         return cls(
-            max_pages=env_int("LOCAL_ONENOTE_MAX_SEARCH_PAGES", 200),
+            max_pages=env_int("LOCAL_ONENOTE_MAX_SEARCH_PAGES", 1_000),
             max_page_chars=env_int("LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS", 100_000),
             max_total_chars=env_int("LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS", 2_000_000),
             max_seconds=env_int("LOCAL_ONENOTE_MAX_SEARCH_SECONDS", 30),

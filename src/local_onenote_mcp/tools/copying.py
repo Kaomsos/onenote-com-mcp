@@ -38,7 +38,7 @@ async def copy_page(
     destination_title: str = "",
     include_descendants: bool = False,
 ) -> dict[str, Any]:
-    """Copy one Page by default, or its indentation subtree when explicitly requested."""
+    """Copy a Page scope and report the root's observed final position, never a placement guarantee."""
 
     return invoke(
         lambda: get_services().copying.copy_resource(
@@ -65,7 +65,7 @@ async def copy_section(
     expected_modified: str | None = None,
     destination_name: str = "",
 ) -> dict[str, Any]:
-    """Recursively copy a Section and all of its Pages."""
+    """Copy a Section tree and report its observed final position, not a placement guarantee."""
 
     return invoke(
         lambda: get_services().copying.copy_resource(
@@ -91,7 +91,7 @@ async def copy_section_group(
     expected_modified: str | None = None,
     destination_name: str = "",
 ) -> dict[str, Any]:
-    """Recursively copy a SectionGroup tree."""
+    """Copy a SectionGroup tree and report its backend name-sorted observed position."""
 
     return invoke(
         lambda: get_services().copying.copy_resource(
@@ -116,7 +116,7 @@ async def copy_notebook(
     destination_name: str = "",
     destination_base_folder: str = "",
 ) -> dict[str, Any]:
-    """Recursively copy a Notebook into a distinct local target folder."""
+    """Copy a Notebook; destination_position is explicitly not applicable."""
 
     return invoke(
         lambda: get_services().copying.copy_resource(
@@ -161,7 +161,7 @@ async def move_page(
     destination_title: str = "",
     include_descendants: bool = False,
 ) -> dict[str, Any]:
-    """Copy a selected Page scope and recycle its source only after verification."""
+    """Move a Page scope and report only the root's observed final position."""
 
     return invoke(
         lambda: get_services().copying.move_page(
@@ -200,7 +200,7 @@ async def move_section(
     expected_modified: str | None = None,
     destination_name: str = "",
 ) -> dict[str, Any]:
-    """Move a Section across Notebooks by verified Copy and non-permanent root deletion."""
+    """Move a Section and report its observed final position, not a placement guarantee."""
 
     return invoke(
         lambda: get_services().copying.move_section(
@@ -238,7 +238,7 @@ async def move_section_group(
     expected_modified: str | None = None,
     destination_name: str = "",
 ) -> dict[str, Any]:
-    """Move a SectionGroup tree across Notebooks by verified Copy and root deletion."""
+    """Move a SectionGroup tree and report its backend name-sorted observed position."""
 
     return invoke(
         lambda: get_services().copying.move_section_group(

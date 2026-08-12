@@ -188,6 +188,12 @@ def test_search_budget_reads_bounded_environment_values(monkeypatch):
     assert budget.max_total_chars == 5000
 
 
+def test_search_candidate_budget_defaults_to_one_thousand(monkeypatch):
+    monkeypatch.delenv("LOCAL_ONENOTE_MAX_SEARCH_PAGES", raising=False)
+
+    assert SearchBudget.current().max_pages == 1000
+
+
 def test_copy_budget_reads_bounded_environment_values(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_MAX_COPY_PAGES", "25")
     monkeypatch.setenv("LOCAL_ONENOTE_MAX_COPY_TOTAL_XML_BYTES", "5000")

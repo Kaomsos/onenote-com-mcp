@@ -42,3 +42,31 @@ def test_bridge_audit_records_operation_without_params_or_result(monkeypatch, tm
     rendered = json.dumps(record)
     assert "secret-id" not in rendered
     assert "hidden" not in rendered
+
+
+def test_bridge_timeout_override_is_internal_and_capped_by_global_timeout(monkeypatch, tmp_path) -> None:
+    request_path = tmp_path / "request.json"
+    response_path = tmp_path / "response.json"
+    observed = []
+    requests = []
+
+    def fake_write(payload):
+        requests.append(payload)
+        request_path.write_text(json.dumps(payload), encoding="utf-8")
+        return request_path
+
+    def fake_run(*_args, **kwargs):
+        observed.append(kwargs["timeout"])
+        response_path.write_text(json.dumps({"ok": True, "data": {}}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(OneNoteBridge, "_write_temp_json", staticmethod(fake_write))
+    monkeypatch.setattr(OneNoteBridge, "_reserve_temp_path", staticmethod(lambda: response_path))
+    monkeypatch.setattr(bridge_module.subprocess, "run", fake_run)
+
+    bridge = OneNoteBridge(timeout_seconds=10)
+    bridge.call("find_pages", _timeout_seconds=2.5, query="probe")
+    bridge.call("find_pages", _timeout_seconds=30, query="probe")
+
+    assert observed == [2.5, 10.0]
+    assert all("_timeout_seconds" not in request["params"] for request in requests)

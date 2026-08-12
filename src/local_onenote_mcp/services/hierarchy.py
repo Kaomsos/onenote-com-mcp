@@ -421,6 +421,64 @@ class HierarchyService(BaseService):
         )
         return ET.tostring(root, encoding="unicode")
 
+    def reparent_page_scope_xml(
+        self,
+        pages: list[dict[str, Any]],
+        destination: dict[str, Any],
+        *,
+        catalog: list[dict[str, Any]],
+    ) -> str:
+        """Build one typed Page-scope reparent update normalized below a Section."""
+
+        if not pages or any(page.get("resource_type") != "page" for page in pages):
+            raise ValueError("Page reparent scope must contain one or more Pages.")
+        if destination.get("resource_type") != "section":
+            raise ValueError("Page reparent destination must be a Section.")
+        source_section_ids = {page.get("section_id") for page in pages}
+        if len(source_section_ids) != 1 or None in source_section_ids:
+            raise ValueError("Page reparent scope must come from one Section.")
+
+        by_id = {candidate["id"]: candidate for candidate in catalog}
+        chain = [destination]
+        parent_id = destination.get("parent_id")
+        while parent_id:
+            parent = by_id.get(parent_id)
+            if parent is None:
+                raise RuntimeError(f"Cannot build reparent update: missing ancestor {parent_id}.")
+            chain.append(parent)
+            parent_id = parent.get("parent_id")
+        chain.reverse()
+
+        root = ET.Element(f"{{{ONE_NS}}}Notebooks")
+        current = root
+        tags = {
+            "notebook": "Notebook",
+            "section_group": "SectionGroup",
+            "section": "Section",
+        }
+        for candidate in chain:
+            current = ET.SubElement(
+                current,
+                f"{{{ONE_NS}}}{tags[candidate['resource_type']]}",
+                {"ID": candidate["id"], "name": display_name(candidate)},
+            )
+
+        root_level = int(pages[0].get("page_level") or 1)
+        for page in pages:
+            normalized_level = int(page.get("page_level") or 1) - root_level + 1
+            if normalized_level < 1:
+                raise ValueError("Page reparent scope has invalid relative indentation.")
+            ET.SubElement(
+                current,
+                f"{{{ONE_NS}}}Page",
+                {
+                    "ID": page["id"],
+                    "name": display_name(page),
+                    "pageLevel": str(normalized_level),
+                },
+            )
+        return ET.tostring(root, encoding="unicode")
+
     def page_order_xml(self, section: dict[str, Any], pages: list[dict[str, Any]]) -> str:
         root = ET.fromstring(self.update_xml(section))
         section_node = next(node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Section")

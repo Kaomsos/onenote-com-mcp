@@ -23,6 +23,7 @@ from .errors import PartialFailure
 from .hierarchy import HierarchyService
 from .mutations import MutationService
 from .pages import PageService, stable_page_content_digest
+from .position import destination_position, unavailable_destination_position
 
 
 COPY_EXECUTE_TOOLS = {
@@ -43,6 +44,40 @@ MOVE_EXECUTE_TOOLS = {
 }
 
 class CopyService(BaseService):
+    @staticmethod
+    def _snapshot_destination_position(
+        items: list[dict[str, Any]],
+        target: dict[str, Any] | None,
+        resource_type: str,
+        unavailable_reason: str,
+    ) -> dict[str, Any]:
+        target_id = str((target or {}).get("id", ""))
+        if target_id:
+            try:
+                return destination_position(items, target_id)
+            except Exception:
+                pass
+        return unavailable_destination_position(resource_type, unavailable_reason)
+
+    def _current_destination_position(
+        self,
+        target: dict[str, Any] | None,
+        resource_type: str,
+        unavailable_reason: str,
+    ) -> dict[str, Any]:
+        """Project a trustworthy current target position or explain why it is unavailable."""
+
+        target_id = str((target or {}).get("id", ""))
+        if target_id:
+            try:
+                return destination_position(
+                    self.hierarchy.resources(include_recycle_bin=False),
+                    target_id,
+                )
+            except Exception:
+                pass
+        return unavailable_destination_position(resource_type, unavailable_reason)
+
     def __init__(
         self,
         bridge: OneNoteBridge,
@@ -923,6 +958,12 @@ class CopyService(BaseService):
                     manual_recovery_required=True,
                     source_deleted=False,
                     destination=target_root,
+                    destination_position=self._snapshot_destination_position(
+                        refreshed,
+                        target_root,
+                        str(source["resource_type"]),
+                        "destination_target_not_uniquely_observed",
+                    ),
                     copy_report=copy_report,
                     created_ids=[item["target_id"] for item in created],
                     allocated_ids=list(allocated_ids),
@@ -932,6 +973,10 @@ class CopyService(BaseService):
                 )
             return {
                 "item": target_root,
+                "destination_position": destination_position(
+                    refreshed,
+                    str(target_root["id"]),
+                ),
                 "copy_report": copy_report,
                 "created_ids": [item["target_id"] for item in created],
                 "allocated_ids": list(allocated_ids),
@@ -977,6 +1022,14 @@ class CopyService(BaseService):
                 ],
             )
             details.setdefault("partial", True)
+            details.setdefault(
+                "destination_position",
+                self._current_destination_position(
+                    details.get("destination"),
+                    str(source["resource_type"]),
+                    "destination_target_not_uniquely_observed",
+                ),
+            )
             raise PartialFailure(str(exc), **details) from exc
         except Exception as exc:
             if created or allocated_ids:
@@ -998,6 +1051,11 @@ class CopyService(BaseService):
                         value for value in allocated_ids if value not in resolved_target_ids
                     ],
                     id_map=id_map,
+                    destination_position=self._current_destination_position(
+                        created_items.get(source["id"]),
+                        str(source["resource_type"]),
+                        "destination_target_not_uniquely_observed",
+                    ),
                     completed_steps=completed_steps,
                     failed_step=failed_step,
                 ) from exc
@@ -1244,6 +1302,11 @@ class CopyService(BaseService):
                 ) from exc
             details.setdefault("source_deleted", False)
             raise PartialFailure(str(exc), **details) from exc
+        partial_position = lambda reason: self._current_destination_position(
+            copied.get("item"),
+            "page",
+            reason,
+        )
         report = copied["copy_report"]
         if report.get("copy_contract_satisfied") is not True:
             raise PartialFailure(
@@ -1253,6 +1316,9 @@ class CopyService(BaseService):
                 outcome="copy_only",
                 source_deleted=False,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
                 warnings=copied.get("warnings", []),
@@ -1274,6 +1340,9 @@ class CopyService(BaseService):
                 outcome="copy_only",
                 source_deleted=False,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
                 source_revalidation_error=str(exc),
@@ -1287,6 +1356,9 @@ class CopyService(BaseService):
                 outcome="copy_only",
                 source_deleted=False,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
             )
@@ -1302,6 +1374,9 @@ class CopyService(BaseService):
                 source_deleted=False,
                 source_topology_may_have_changed=True,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
                 preservation_error=str(exc),
@@ -1357,6 +1432,9 @@ class CopyService(BaseService):
                 deleted_source_ids=removed,
                 remaining_source_ids=remaining,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
                 preserved_descendants=preservation,
@@ -1375,6 +1453,9 @@ class CopyService(BaseService):
                 recycle_unverified_source_ids=recycle_unverified,
                 deleted_source_ids=removed,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
                 preserved_descendants=preservation,
@@ -1412,6 +1493,11 @@ class CopyService(BaseService):
                     ),
                 ],
             }
+        )
+        final_items = self.hierarchy.resources(include_recycle_bin=False)
+        copied["destination_position"] = destination_position(
+            final_items,
+            str(copied["item"]["id"]),
         )
         return copied
 
@@ -1475,6 +1561,12 @@ class CopyService(BaseService):
                 **details,
             ) from exc
 
+        partial_position = lambda reason: self._current_destination_position(
+            copied.get("item"),
+            resource_type,
+            reason,
+        )
+
         report = copied["copy_report"]
         planned_source_ids = [str(item["id"]) for item in plan["resources"]]
         id_map = report.get("id_map")
@@ -1493,6 +1585,9 @@ class CopyService(BaseService):
                 outcome="copy_only",
                 source_deleted=False,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
             )
@@ -1521,6 +1616,9 @@ class CopyService(BaseService):
                 outcome="copy_only",
                 source_deleted=False,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
                 source_revalidation_error=str(exc),
@@ -1573,6 +1671,9 @@ class CopyService(BaseService):
                 inactive_source_ids=inactive_source_ids,
                 remaining_source_ids=remaining_source_ids,
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
             ) from deletion_error
@@ -1599,6 +1700,9 @@ class CopyService(BaseService):
                 inactive_source_ids=inactive_source_ids,
                 remaining_source_ids=[],
                 destination=copied.get("item"),
+                destination_position=partial_position(
+                    "destination_target_not_uniquely_observed"
+                ),
                 copy_report=report,
                 created_ids=copied["created_ids"],
                 destination_revalidation_error=str(exc),
@@ -1636,6 +1740,11 @@ class CopyService(BaseService):
                     ),
                 ],
             }
+        )
+        final_items = self.hierarchy.resources(include_recycle_bin=False)
+        copied["destination_position"] = destination_position(
+            final_items,
+            str(copied["item"]["id"]),
         )
         return copied
 

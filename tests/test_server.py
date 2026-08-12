@@ -11,7 +11,7 @@ from local_onenote_mcp.tools.advanced import merge_sections, open_hierarchy, set
 from local_onenote_mcp.tools.hierarchy import list_hierarchy
 from local_onenote_mcp.tools.mutations import create_page, create_section, delete_page_content
 from local_onenote_mcp.tools.operations import publish_object
-from local_onenote_mcp.tools.pages import search_pages
+from local_onenote_mcp.tools.pages import RootSearchScope, StartNodeSearchScope, search_pages
 from local_onenote_mcp.tools.system import health_check, resolve_identifier
 
 
@@ -30,14 +30,15 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
     assert result["ok"] is True
     assert result["server"] == "local-onenote"
     assert result["identifier_resolution_order"] == ["id", "exact_path", "unique_name"]
-    assert result["search_default_backend"] == "local_scan"
-    assert result["search_backends"] == ["local_scan", "onenote_index"]
-    assert result["search_scope_types"] == [
-        "all_open_notebooks",
-        "notebook",
-        "section_group",
-        "section",
-    ]
+    assert result["search_backend"] == "onenote_index"
+    assert result["search_scope_modes"] == ["root", "start_node"]
+    assert result["search_pagination"] == {
+        "default_page_size": 200,
+        "max_page_size": 200,
+        "consistency": "live_index",
+    }
+    assert "search_default_backend" not in result
+    assert "search_backends" not in result
     assert result["content_formats"] == ["plain", "html", "markdown"]
     assert result["copy_budget"]["max_pages"] > 0
     assert result["python_executable"]
@@ -84,53 +85,37 @@ def test_without_recycle_bin_removes_container_and_children():
     ]
 
 
-def test_search_pages_uses_explicit_local_scan_without_index_fallback(monkeypatch):
-    expected_scope = {"resource_type": "section", "id": "section-id", "name": "Sec"}
-    monkeypatch.setattr(
-        server.services.hierarchy,
-        "resources",
-        lambda include_recycle_bin=False: [expected_scope],
-    )
+def test_search_pages_forwards_strict_scope_and_pagination(monkeypatch):
+    expected = {
+        "pages": [{"resource_type": "page", "id": "page-id", "title": "Found"}],
+        "count": 1,
+        "search_backend": "onenote_index",
+    }
 
-    def fake_local_text_search(
-        start_id,
-        query,
-        max_results,
-        include_recycle_bin,
-        budget=None,
-        include_snippets=True,
-        catalog=None,
-        notebook_ids=None,
-    ):
-        assert start_id == "section-id"
+    def fake_search(query, scope, offset, page_size, include_snippets, include_recycle_bin):
         assert query == "needle"
-        assert max_results == 3
-        assert include_recycle_bin is False
+        assert scope == {"mode": "start_node", "start_node_id": "section-id"}
+        assert offset == 2
+        assert page_size == 3
         assert include_snippets is False
-        assert catalog is not None
-        assert notebook_ids is None
-        return ([{"resource_type": "page", "id": "page-id", "title": "Found"}], {"scanned_pages": 1})
+        assert include_recycle_bin is False
+        return expected
 
-    monkeypatch.setattr(server.services.search, "local_text_search", fake_local_text_search)
-    monkeypatch.setattr(
-        server.services.search,
-        "call",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("OneNote index must not be used")),
-    )
+    monkeypatch.setattr(server.services.search, "search", fake_search)
 
     result = asyncio.run(
         search_pages(
             "needle",
-            scope_type="section",
-            scope_id="section-id",
-            max_results=3,
+            StartNodeSearchScope(mode="start_node", start_node_id="section-id"),
+            offset=2,
+            page_size=3,
             include_snippets=False,
         )
     )
 
     assert result["ok"] is True
-    assert result["count"] == 1
-    assert result["search_backend"] == "local_scan"
+    assert result["pages"] == expected["pages"]
+    assert result["search_backend"] == "onenote_index"
 
 
 def test_local_search_rejects_candidate_overflow_before_page_reads(monkeypatch):
@@ -160,11 +145,42 @@ def test_local_search_rejects_candidate_overflow_before_page_reads(monkeypatch):
         server.services.search.local_text_search("section-id", "needle", 10, False, budget)
 
 
-def test_search_pages_schema_allows_omitted_scope_id():
+def test_search_pages_schema_is_a_strict_discriminated_scope_union_with_bounded_pagination():
     schema = server.mcp._tool_manager._tools["search_pages"].parameters
 
-    assert set(schema.get("required", [])) == {"query", "scope_type"}
-    assert schema["properties"]["scope_id"]["default"] == ""
+    assert set(schema.get("required", [])) == {"query", "scope"}
+    assert set(schema["properties"]) == {
+        "query",
+        "scope",
+        "offset",
+        "page_size",
+        "include_snippets",
+        "include_recycle_bin",
+    }
+    assert schema["properties"]["offset"] == {"default": 0, "minimum": 0, "title": "Offset", "type": "integer"}
+    assert schema["properties"]["page_size"] == {
+        "default": 200,
+        "maximum": 200,
+        "minimum": 1,
+        "title": "Page Size",
+        "type": "integer",
+    }
+    scope_schema = schema["properties"]["scope"]
+    assert scope_schema["discriminator"]["propertyName"] == "mode"
+    assert len(scope_schema["oneOf"]) == 2
+    assert schema["$defs"]["RootSearchScope"]["additionalProperties"] is False
+    assert schema["$defs"]["StartNodeSearchScope"]["additionalProperties"] is False
+    for removed in ("backend", "scope_type", "scope_id", "max_results"):
+        assert removed not in schema["properties"]
+
+
+def test_search_scope_models_forbid_extra_fields_and_blank_start_ids():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        RootSearchScope(mode="root", start_node_id="section-id")
+    with pytest.raises(ValidationError):
+        StartNodeSearchScope(mode="start_node", start_node_id="   ")
 
 
 def test_default_tool_profile_excludes_generic_raw_mutations():
@@ -248,6 +264,17 @@ def test_reparent_tool_schemas_require_exact_typed_confirmation():
     for name in ("reparent_page", "reparent_section", "reparent_section_group"):
         assert "xml" not in tools[name].parameters["properties"]
         assert "force" not in tools[name].parameters["properties"]
+    assert tools["reparent_page"].parameters["properties"]["include_descendants"] == {
+        "default": False,
+        "title": "Include Descendants",
+        "type": "boolean",
+    }
+    for name in ("reparent_section", "reparent_section_group"):
+        assert "include_descendants" not in tools[name].parameters["properties"]
+    for name in ("reparent_page", "reparent_section", "reparent_section_group"):
+        description = tools[name].description.casefold()
+        assert "position" in description
+        assert "observed" in description
 
 
 def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
@@ -312,6 +339,23 @@ def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
     assert tools["move_page"].parameters["properties"]["include_descendants"]["default"] is False
     for name in ("copy_section", "copy_section_group", "copy_notebook"):
         assert "include_descendants" not in tools[name].parameters["properties"]
+    for name in (
+        "copy_page",
+        "copy_section",
+        "copy_section_group",
+        "copy_notebook",
+        "move_page",
+        "move_section",
+        "move_section_group",
+    ):
+        assert "position" in tools[name].description.casefold()
+    for name in (
+        "plan_copy",
+        "plan_move_page",
+        "plan_move_section",
+        "plan_move_section_group",
+    ):
+        assert "destination_position" not in tools[name].description
 
 
 def test_container_reorder_tool_schemas_require_exact_confirmation():

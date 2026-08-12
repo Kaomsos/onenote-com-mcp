@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ..settings import MAX_TEXT_CHARS
 from .context import get_services
 from .responses import invoke
+
+
+class RootSearchScope(BaseModel):
+    """Search every Notebook visible below the live OneNote root."""
+
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["root"]
+
+
+class StartNodeSearchScope(BaseModel):
+    """Search below one exact Notebook, SectionGroup, or Section ID."""
+
+    model_config = ConfigDict(extra="forbid")
+    mode: Literal["start_node"]
+    start_node_id: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+SearchScope = Annotated[
+    RootSearchScope | StartNodeSearchScope,
+    Field(discriminator="mode"),
+]
 
 
 async def get_page(page_id: str) -> dict[str, Any]:
@@ -41,22 +64,20 @@ async def get_binary_content(page_id: str, callback_id: str) -> dict[str, Any]:
 
 async def search_pages(
     query: str,
-    scope_type: str,
-    scope_id: str = "",
-    backend: str = "local_scan",
-    max_results: int = 20,
+    scope: SearchScope,
+    offset: Annotated[int, Field(ge=0)] = 0,
+    page_size: Annotated[int, Field(ge=1, le=200)] = 200,
     include_snippets: bool = True,
     include_recycle_bin: bool = False,
 ) -> dict[str, Any]:
-    """Search Page text in a typed scope or across all open Notebooks."""
+    """Search the live OneNote index below the root or one exact hierarchy node."""
 
     return invoke(
         lambda: get_services().search.search(
             query,
-            scope_type,
-            scope_id,
-            backend,
-            max_results,
+            scope.model_dump(),
+            offset,
+            page_size,
             include_snippets,
             include_recycle_bin,
         )

@@ -131,9 +131,16 @@ class PageService(BaseService):
         self.hierarchy = hierarchy
         self.max_text_chars = max_text_chars
 
-    def xml(self, page_id: str, page_info: str = "basic") -> str:
+    def xml(
+        self,
+        page_id: str,
+        page_info: str = "basic",
+        *,
+        _timeout_seconds: float | None = None,
+    ) -> str:
         return self.call(
             "get_page_content",
+            _timeout_seconds=_timeout_seconds,
             page_id=page_id,
             page_info=self.enum("page_info", page_info, PAGE_INFO),
             schema=XML_SCHEMA_2013,

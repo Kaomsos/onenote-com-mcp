@@ -168,7 +168,7 @@ async def reparent_section(
     expected_parent_id: str,
     expected_modified: str | None = None,
 ) -> dict[str, Any]:
-    """Experimentally reparent a Section within one Notebook."""
+    """Reparent a Section and report its observed position, not a placement guarantee."""
 
     return invoke(
         lambda: get_services().mutations.reparent_section(
@@ -187,8 +187,16 @@ async def reparent_page(
     expected_title: str,
     expected_section_id: str,
     expected_modified: str | None = None,
+    include_descendants: bool = False,
 ) -> dict[str, Any]:
-    """Experimentally reparent a Page within one Notebook."""
+    """Reparent one Page or its indentation subtree within one Notebook.
+
+    The selected Page becomes a root Page in the destination Section.  By
+    default only that Page moves and excluded descendants remain in the source
+    Section, promoted by one level.  Set include_descendants=true to move the
+    complete indentation subtree.  The response reports only the destination
+    root Page's observed final position; it does not request or guarantee placement.
+    """
 
     return invoke(
         lambda: get_services().mutations.reparent_page(
@@ -197,6 +205,7 @@ async def reparent_page(
             expected_title,
             expected_section_id,
             expected_modified,
+            include_descendants,
         )
     )
 
@@ -208,7 +217,7 @@ async def reparent_section_group(
     expected_parent_id: str,
     expected_modified: str | None = None,
 ) -> dict[str, Any]:
-    """Experimentally reparent a SectionGroup within one Notebook."""
+    """Reparent a SectionGroup and report its backend name-sorted observed position."""
 
     return invoke(
         lambda: get_services().mutations.reparent_section_group(
