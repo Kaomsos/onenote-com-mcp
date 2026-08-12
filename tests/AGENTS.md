@@ -20,4 +20,5 @@
 
 - 迭代时运行最小的受影响测试文件。
 - 对共享行为的变更，或在完成跨领域变更并准备交付前，运行 `.venv\Scripts\python.exe -m pytest -q`。
+- Windows 默认临时根可能使深层 fixture-cache 测试路径超过传统 `MAX_PATH`；若 cache 路径报告 `WinError 3`，保留默认命令结果并按 [`docs/dev/cached_fixture_operation_validation.md`](../docs/dev/cached_fixture_operation_validation.md#windows-下-pytest-临时路径的路径预算) 使用唯一短 `--basetemp` 复验，不得把短路径通过表述为默认基线通过。
 - 修改 `tests/manual_validation/` 下的内容时，遵循其嵌套 `AGENTS.md` 中的允许命令清单。
