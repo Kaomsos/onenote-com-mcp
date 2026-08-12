@@ -59,9 +59,11 @@ reconstruction read-back: n_(k+1) = n_k + 1
 ## 产品影响与当前设计决策
 
 - `DisplayEquation` 由完整、有界且带 `display="block"` 的 Presentation MathML 分类，不是公开 PageContentObject 的 `kind`；行内公式仍属于 RichText。前置包装是 COM 写入行为，不依赖是否进入 Copy 分类。
+- 此处的 standalone 只表示 block MathML 所在文本没有可见残留；真实 COM 结构不保证公式独占一个 `OE`，也不保证存在非空前驱 `OE`。`copy-page` v9 在 `run-2026-08-12-15-54-16` 和 `run-2026-08-12-16-11-26` 中首次真实证明这两个旧布局假设不成立，但公式计数、display 属性和 MathML 本体均完整。v10 因此用独立 append 创建公式，并直接验证同一已知 `span + br` 前置空行，而不再把 OE 独占或前驱内容当作保真条件。
 - 所有最终通过 COM `UpdatePageContent` 写入 standalone block MathML 的产品路径，都不得承诺 Page XML 字节等同于输入，也不得承诺公式前绝无 OneNote 生成的间距或空行。当前涉及 HTML MathML 的 `create_page`、`append_to_page`、`replace_page_body` 以及 Copy/Move reconstruction 都在这个产品局限边界内。
 - 当前专用发送前清理只实施在 Copy reconstruction：它删除紧邻 DisplayEquation 的纯空白 span 及其中全部 break；span 含可见文字、其他子标签或不在公式前时不删除。普通 Create/Append/Replace 的成功合同不伪称已经消除 OneNote 首次写回的基准包装。
-- DisplayEquation comparator 严格比较 MathML 语义、可见文本、对象和二进制，只额外容忍 OneNote 写回零个或一个纯空白 `span + br`。span 的字体属性不参与判定；第二个 break、额外包装、可见正文或其他 markup 仍拒绝。
+- DisplayEquation comparator 严格比较 MathML 语义、可见文本、对象和二进制，只额外容忍 OneNote 写回零个或一个纯空白 `span + br`、完整配对公式条件包装的序列化差异，以及严格识别的 formula-only Outline 派生 Size。span 的字体属性不参与判定；第二个 break、混合内容 Outline 的边界变化、Position 变化、额外包装、可见正文或其他 markup 仍拒绝。
+- 完整富页面的 `run-2026-08-12-16-30-58` 首次通过 v10 fixture 门并进入 Copy：目标页、拓扑、可见正文、内容对象、图片 binary 和两个 MathML 语义投影均相等，已知 `span + br` 也符合门限，但旧 canonicalizer 在清理空白 span 后仍报告 MathML 外文本 hash 不同。旧证据没有保存条件包装计数或差异路径，曾把 MathML 条件注释重排列为候选原因；随后 `run-2026-08-12-16-44-30` 的增强证据显示 source/target 都精确具有两个完整条件包装，排除了包装计数差异，并把首个 canonical 差异定位到 `Page/Outline[6]/Size[1]` 的 `width/height` 值。该 Outline 正是 v10 独立 append 创建、唯一 authored 内容为 block MathML 的公式 Outline；公式、正文、对象、binary、Position 和拓扑仍相等。因此 comparator 只把这种严格识别的 formula-only Outline 的 Size 视为 COM 派生边界，混合内容 Outline、Position、额外节点或属性继续严格比较。完整条件包装的有界规范化仍保留，但不再作为本次真实失败的成因。失败证据继续记录 source/target 包装数、派生 Size Outline 数以及不含正文的首个差异路径、字段、长度和 hash。
 - 该受限比较通过时允许 `verified=true`、`lossless=true` 与 `copy_contract_satisfied=true` 并存。这里的 lossless 是 Copy 合同中的语义保真，不是 XML/CDATA 字节相同。
 - 已观察到的空白包装属于明确记录的平台规范化限制，不作为意料外失败，也不单独阻止 Copy/Move 合同；但任何超出这一精确形状的漂移继续 fail closed。
 - 当前真实回归入口是完全程序化的 `copy-display-equation`：它不读取 stdin、不依赖 interactive bootstrap/cache consumer 配对，固定执行三跳 Copy，并在默认模式下逆序非永久清理目标。旧的 `bootstrap-display-equation-fixture` 与 `interactive-copy-display-equation` 只作为下述历史证据来源，不再是公开场景。

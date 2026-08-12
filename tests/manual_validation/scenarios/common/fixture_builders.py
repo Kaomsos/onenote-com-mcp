@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-import re
 from typing import Any
 import xml.etree.ElementTree as ET
 
@@ -14,6 +13,7 @@ from ...mcp_stdio_client import MCPStdioClient
 from ...runtime import EXIT_MCP, InvariantFailure, RunnerFailure
 from ...test_utils import (
     display_name,
+    mathml_structure_projection,
     write_json,
 )
 from .config import (
@@ -29,89 +29,71 @@ from .lookup import exactly_one
 INLINE_EQUATION_MARKER = "Inline equation fixture:"
 DISPLAY_EQUATION_MARKER = "Display equation fixture:"
 MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML"
-REDUNDANT_DISPLAY_BREAK_PATTERN = re.compile(
-    r"<br\s*/?>\s*(?=<math\b(?=[^>]*\bdisplay\s*=\s*(['\"])block\1)[^>]*>)",
-    flags=re.IGNORECASE,
-)
-DISPLAY_MATHML_PATTERN = re.compile(
-    r"<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\b"
-    r"(?=[^>]*\bdisplay\s*=\s*(['\"])block\1)[^>]*>"
-    r".*?</(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\s*>",
-    flags=re.IGNORECASE | re.DOTALL,
-)
 EXPECTED_EQUATION_EVIDENCE = {
     "mathml_roots": 2,
     "inline_equations": 1,
     "display_equations": 1,
     "namespace_declarations": 2,
-    "redundant_breaks_before_display": 0,
-    "standalone_display_oes": 1,
-    "nonempty_display_predecessors": 1,
-    "empty_oes_before_display": 0,
+    "inline_candidates_with_visible_context": 1,
+    "display_candidate_text_nodes": 1,
+    "display_candidates_with_visible_residual": 0,
+    "display_candidates_with_known_leading_blank": 1,
 }
 
 
 def _equation_evidence(xml: str) -> dict[str, int]:
-    root = ET.fromstring(xml)
     projection = page_content_capability_projection(xml)
+    structure = mathml_structure_projection(xml)
     tags = projection.get("embedded_markup_tag_counts", {})
     attributes = projection.get("embedded_markup_attribute_name_counts", {})
     roots = int(tags.get("math", 0))
     display = int(attributes.get("math@display", 0))
-    redundant_breaks = sum(
-        len(REDUNDANT_DISPLAY_BREAK_PATTERN.findall(node.text or ""))
-        for node in root.iter()
-        if node.tag.rsplit("}", 1)[-1] == "T"
-    )
-    parents = {id(child): parent for parent in root.iter() for child in list(parent)}
-    standalone_display_oes = 0
-    nonempty_display_predecessors = 0
-    empty_oes_before_display = 0
-    for node in root.iter():
-        if node.tag.rsplit("}", 1)[-1] != "T" or not node.text:
-            continue
-        matches = list(DISPLAY_MATHML_PATTERN.finditer(node.text))
-        if len(matches) != 1:
-            continue
-        residual = DISPLAY_MATHML_PATTERN.sub("", node.text, count=1)
-        residual = re.sub(r"</?span\b[^>]*>", "", residual, flags=re.IGNORECASE)
-        oe = parents.get(id(node))
-        if (
-            residual.strip()
-            or oe is None
-            or oe.tag.rsplit("}", 1)[-1] != "OE"
-            or [child.tag.rsplit("}", 1)[-1] for child in list(oe)] != ["T"]
-        ):
-            continue
-        standalone_display_oes += 1
-        container = parents.get(id(oe))
-        siblings = list(container) if container is not None else []
-        index = siblings.index(oe) if oe in siblings else -1
-        predecessor = siblings[index - 1] if index > 0 else None
-        predecessor_has_content = predecessor is not None and any(
-            (candidate.text or "").strip()
-            for candidate in predecessor.iter()
-            if candidate.tag.rsplit("}", 1)[-1] == "T"
+    candidates = tuple(structure.get("candidates", ()))
+
+    def contains_display(candidate: dict[str, Any]) -> bool:
+        return any(
+            equation.get("complete") is True and equation.get("display") == "block"
+            for equation in candidate.get("equations", ())
+            if isinstance(equation, dict)
         )
-        if predecessor_has_content:
-            nonempty_display_predecessors += 1
-        elif predecessor is not None:
-            empty_oes_before_display += 1
+
+    display_candidates = tuple(
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict) and contains_display(candidate)
+    )
+    inline_candidates = tuple(
+        candidate
+        for candidate in candidates
+        if isinstance(candidate, dict)
+        and any(
+            equation.get("complete") is True and equation.get("display") is None
+            for equation in candidate.get("equations", ())
+            if isinstance(equation, dict)
+        )
+    )
     return {
         "mathml_roots": roots,
         "inline_equations": max(roots - display, 0),
         "display_equations": display,
         "namespace_declarations": int(attributes.get("math@xmlns", 0)),
-        "redundant_breaks_before_display": redundant_breaks,
-        "standalone_display_oes": standalone_display_oes,
-        "nonempty_display_predecessors": nonempty_display_predecessors,
-        "empty_oes_before_display": empty_oes_before_display,
+        "inline_candidates_with_visible_context": sum(
+            candidate.get("inline_visible_text_context") is True
+            for candidate in inline_candidates
+        ),
+        "display_candidate_text_nodes": len(display_candidates),
+        "display_candidates_with_visible_residual": sum(
+            candidate.get("residual_visible_text") is True
+            for candidate in display_candidates
+        ),
+        "display_candidates_with_known_leading_blank": sum(
+            candidate.get("known_onenote_display_break_wrapper") is True
+            and int(candidate.get("oe_direct_t_break_count", 0)) == 1
+            and candidate.get("residual_markup_tags") == {"br": 1, "span": 1}
+            and candidate.get("residual_visible_text") is False
+            for candidate in display_candidates
+        ),
     }
-
-
-def _has_exact_equation_fixture(xml: str) -> bool:
-    report = _equation_fixture_report(xml)
-    return report["passed"] is True
 
 
 def _equation_fixture_report(xml: str) -> dict[str, Any]:
@@ -234,7 +216,6 @@ async def ensure_copy_rich_fixture(
         (await client.call_tool("get_page_xml", {"page_id": page_id, "page_info": "all"}))["xml"]
     )
     has_table = any(node.tag.rsplit("}", 1)[-1] == "Table" for node in ET.fromstring(xml).iter())
-    has_equations = not include_equations or _has_exact_equation_fixture(xml)
 
     async def current_page() -> dict[str, Any]:
         listed = await client.call_tool("list_pages", {"section_id": section_id})
@@ -243,7 +224,7 @@ async def ensure_copy_rich_fixture(
             raise RunnerFailure(f"Copy fixture Page disappeared: {page_id}", EXIT_MCP)
         return current
 
-    if marker not in xml or not has_table or not has_equations:
+    if marker not in xml or not has_table:
         current = await current_page()
         equation_html = ""
         if include_equations:
@@ -252,12 +233,7 @@ async def ensure_copy_rich_fixture(
                 f'<math xmlns="{MATHML_NAMESPACE}"><mrow><mi>E</mi><mo>=</mo>'
                 "<mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow></math>"
                 " after.</p>"
-                f"<span>{DISPLAY_EQUATION_MARKER}</span>"
-                f'<math xmlns="{MATHML_NAMESPACE}" display="block"><mrow>'
-                "<mi>x</mi><mo>=</mo><mfrac><mrow><mo>−</mo><mi>b</mi><mo>±</mo>"
-                "<msqrt><mrow><msup><mi>b</mi><mn>2</mn></msup><mo>−</mo>"
-                "<mn>4</mn><mi>a</mi><mi>c</mi></mrow></msqrt></mrow>"
-                "<mrow><mn>2</mn><mi>a</mi></mrow></mfrac></mrow></math>"
+                f"<p>{DISPLAY_EQUATION_MARKER}</p>"
             )
         await client.call_tool(
             "append_to_page",
@@ -278,6 +254,37 @@ async def ensure_copy_rich_fixture(
                 "y": 180.0,
             },
         )
+
+    if include_equations:
+        interim_xml = str(
+            (
+                await client.call_tool(
+                    "get_page_xml",
+                    {"page_id": page_id, "page_info": "all"},
+                )
+            )["xml"]
+        )
+        if _equation_evidence(interim_xml)["display_equations"] == 0:
+            current = await current_page()
+            await client.call_tool(
+                "append_to_page",
+                {
+                    "page_id": page_id,
+                    "content": (
+                        f'<p><math xmlns="{MATHML_NAMESPACE}" display="block"><mrow>'
+                        "<mi>x</mi><mo>=</mo><mfrac><mrow><mo>−</mo><mi>b</mi><mo>±</mo>"
+                        "<msqrt><mrow><msup><mi>b</mi><mn>2</mn></msup><mo>−</mo>"
+                        "<mn>4</mn><mi>a</mi><mi>c</mi></mrow></msqrt></mrow>"
+                        "<mrow><mn>2</mn><mi>a</mi></mrow></mfrac></mrow></math></p>"
+                    ),
+                    "content_format": "html",
+                    "expected_title": display_name(current),
+                    "expected_section_id": section_id,
+                    "expected_modified": current.get("modified"),
+                    "x": 36.0,
+                    "y": 360.0,
+                },
+            )
 
     objects = (
         await client.call_tool("get_page_objects", {"page_id": page_id})
@@ -330,7 +337,7 @@ async def ensure_copy_rich_fixture(
             if isinstance(item, dict) and item.get("kind")
         ]
         detection = {
-            "schema_version": 1,
+            "schema_version": 2,
             "fixture_label": fixture_label,
             "page_id": page_id,
             "checks": structure_checks,

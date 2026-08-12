@@ -336,7 +336,7 @@ def test_copy_page_fixture_description_covers_six_case_bundle_matrix() -> None:
 
 
 def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree() -> None:
-    assert SCENARIO_REGISTRY.get("copy-page").fixture_recipe.recipe_version == 9
+    assert SCENARIO_REGISTRY.get("copy-page").fixture_recipe.recipe_version == 10
     assert tuple(
         role.role
         for role in SCENARIO_REGISTRY.get("copy-page").fixture_recipe.cache_identity.notebook_roles
@@ -422,10 +422,10 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
             "inline_equations": 1,
             "display_equations": 1,
             "namespace_declarations": 2,
-            "redundant_breaks_before_display": 0,
-            "standalone_display_oes": 1,
-            "nonempty_display_predecessors": 1,
-            "empty_oes_before_display": 0,
+            "inline_candidates_with_visible_context": 1,
+            "display_candidate_text_nodes": 1,
+            "display_candidates_with_visible_residual": 0,
+            "display_candidates_with_known_leading_blank": 1,
         },
         "semantic_page": {
             "page_id": "child-page",
@@ -465,7 +465,10 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
     assert (
         "semantic child live Page XML exposes List/Tag to Copy planning" in checks
     )
-    assert "rich parent contains one inline and one display MathML equation" in checks
+    assert (
+        "rich parent contains one inline equation and one display equation with the known COM leading blank"
+        in checks
+    )
     assert "cross-Section destination contains a distinct same-title anchor" in checks
     assert (
         "cross-Section anchor body hash differs from the same-title source Child"
@@ -962,14 +965,14 @@ def test_keep_worksite_preserves_source_lifecycle_after_copy_success(
     assert result["ordered_steps"][-1] == "preserve-notebook-bundle"
 
 
-def test_cli_exposes_flat_scenarios_and_special_all_entry() -> None:
+def test_cli_exposes_flat_scenarios_special_all_and_clear_maintenance() -> None:
     parser = build_parser()
     choices = next(
         action.choices
         for action in parser._actions
         if isinstance(action, argparse._SubParsersAction)
     )
-    assert set(choices) == {*SCENARIOS, "all"}
+    assert set(choices) == {*SCENARIOS, "all", "clear"}
     for removed in ("validate", "inspect", "read", "baseline", "report", "suite"):
         assert removed not in choices
 

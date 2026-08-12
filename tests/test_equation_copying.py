@@ -1,3 +1,4 @@
+import json
 import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.page import (
@@ -22,6 +23,23 @@ def equation_page_xml(page_id: str) -> str:
         f'<one:OE><one:T><![CDATA[<math xmlns="{namespace}" display="block">'
         "<mfrac><mi>x</mi><mi>y</mi></mfrac></math>]]></one:T></one:OE>"
         "</one:OEChildren></one:Outline></one:Page>"
+    )
+
+
+def standalone_display_outline_page_xml(page_id: str) -> str:
+    namespace = "http://www.w3.org/1998/Math/MathML"
+    return (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
+        f'ID="{page_id}"><one:Title><one:OE><one:T>Equations</one:T></one:OE>'
+        "</one:Title><one:Outline><one:Position x=\"10\" y=\"20\" />"
+        '<one:Size width="100" height="40"/><one:OEChildren><one:OE><one:T>'
+        f'<![CDATA[before <math xmlns="{namespace}"><mi>x</mi></math> after]]>'
+        "</one:T></one:OE></one:OEChildren></one:Outline>"
+        '<one:Outline><one:Position x="10" y="80" />'
+        '<one:Size width="120" height="60"/><one:OEChildren><one:OE><one:T>'
+        f'<![CDATA[<math xmlns="{namespace}" display="block"><mfrac><mi>x</mi>'
+        "<mi>y</mi></mfrac></math>]]></one:T></one:OE></one:OEChildren>"
+        "</one:Outline></one:Page>"
     )
 
 
@@ -96,6 +114,121 @@ def test_equation_copy_uses_bounded_mathml_semantics_for_com_reserialization() -
     assert comparison["source_projection_sha256"] == comparison[
         "target_projection_sha256"
     ]
+
+
+def test_equation_copy_normalizes_only_complete_onenote_mathml_comments() -> None:
+    source = equation_page_xml("source")
+    target = equation_page_xml("target").replace(
+        '<math xmlns="http://www.w3.org/1998/Math/MathML"',
+        '<!-- [if mathML] >\n<math xmlns="http://www.w3.org/1998/Math/MathML"',
+    ).replace("</math>", "</math>\n<! [endif] -->")
+
+    comparison = semantic_display_equation_comparison(source, target)
+
+    assert comparison["projection_equal"] is True
+    assert comparison["expected_conditional_mathml_wrapper_count"] == 0
+    assert comparison["actual_conditional_mathml_wrapper_count"] == 2
+    assert comparison["outside_mathml_canonical"] is True
+    assert comparison[
+        "outside_mathml_canonical_after_display_equation_normalization"
+    ] is True
+    assert comparison["outside_mathml_mismatch"] is None
+    assert comparison["passed"] is True
+
+
+def test_equation_copy_keeps_unrelated_comments_strict_and_reports_no_content() -> None:
+    source = equation_page_xml("source")
+    target = equation_page_xml("target").replace(
+        "before <math",
+        "before <!--not-a-mathml-wrapper--><math",
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+    mismatch = comparison["outside_mathml_mismatch"]
+
+    assert comparison["projection_equal"] is True
+    assert comparison["passed"] is False
+    assert mismatch["field"] == "text"
+    assert mismatch["path"].endswith("/T[0]")
+    serialized = json.dumps(mismatch, sort_keys=True)
+    assert "before" not in serialized
+    assert "not-a-mathml-wrapper" not in serialized
+
+
+def test_equation_copy_keeps_incomplete_mathml_comment_wrapper_strict() -> None:
+    source = equation_page_xml("source")
+    target = equation_page_xml("target").replace(
+        "before <math",
+        "before <!--[if mathML]><math",
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+
+    assert comparison["projection_equal"] is True
+    assert comparison["outside_mathml_mismatch"]["field"] == "text"
+    assert comparison["passed"] is False
+
+
+def test_display_equation_copy_normalizes_formula_only_outline_size() -> None:
+    source = standalone_display_outline_page_xml("source")
+    target = standalone_display_outline_page_xml("target").replace(
+        'width="120" height="60"',
+        'width="143.25" height="82.5"',
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+
+    assert comparison["expected_derived_size_outline_count"] == 1
+    assert comparison["actual_derived_size_outline_count"] == 1
+    assert comparison["outside_mathml_mismatch"] is None
+    assert comparison["passed"] is True
+
+
+def test_display_equation_copy_keeps_formula_only_outline_position_strict() -> None:
+    source = standalone_display_outline_page_xml("source")
+    target = standalone_display_outline_page_xml("target").replace(
+        'x="10" y="80"',
+        'x="11" y="80"',
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+
+    assert comparison["outside_mathml_mismatch"]["field"] == "attributes"
+    assert comparison["outside_mathml_mismatch"]["path"].endswith("/Position[0]")
+    assert comparison["passed"] is False
+
+
+def test_display_equation_copy_rejects_extra_formula_outline_size_attribute() -> None:
+    source = standalone_display_outline_page_xml("source")
+    target = standalone_display_outline_page_xml("target").replace(
+        'width="120" height="60"',
+        'width="143.25" height="82.5" isSetByUser="true"',
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+
+    assert comparison["expected_derived_size_outline_count"] == 1
+    assert comparison["actual_derived_size_outline_count"] == 0
+    assert comparison["outside_mathml_mismatch"]["field"] == "attributes"
+    assert comparison["passed"] is False
+
+
+def test_display_equation_copy_keeps_mixed_content_outline_size_strict() -> None:
+    source = equation_page_xml("source").replace(
+        '<one:Outline objectID="outline">',
+        '<one:Outline objectID="outline"><one:Size width="100" height="40"/>',
+    )
+    target = equation_page_xml("target").replace(
+        '<one:Outline objectID="outline">',
+        '<one:Outline objectID="outline"><one:Size width="101" height="40"/>',
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+
+    assert comparison["expected_derived_size_outline_count"] == 0
+    assert comparison["actual_derived_size_outline_count"] == 0
+    assert comparison["outside_mathml_mismatch"]["field"] == "attributes"
+    assert comparison["passed"] is False
 
 
 def test_equation_copy_rejects_changed_mathml_tokens() -> None:

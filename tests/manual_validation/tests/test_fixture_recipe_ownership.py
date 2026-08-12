@@ -210,10 +210,10 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
                 "inline_equations": 1,
                 "display_equations": 1,
                 "namespace_declarations": 2,
-                "redundant_breaks_before_display": 0,
-                "standalone_display_oes": 1,
-                "nonempty_display_predecessors": 1,
-                "empty_oes_before_display": 0,
+                "inline_candidates_with_visible_context": 1,
+                "display_candidate_text_nodes": 1,
+                "display_candidates_with_visible_residual": 0,
+                "display_candidates_with_known_leading_blank": 1,
             }
         return page, evidence
 

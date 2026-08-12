@@ -84,11 +84,20 @@ MATHML_FRAGMENT_PATTERN = re.compile(
     r"</(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\s*>",
     flags=re.IGNORECASE | re.DOTALL,
 )
+MATHML_CONDITIONAL_FRAGMENT_PATTERN = re.compile(
+    r"<!--\s*\[if\s+mathML\]\s*>\s*"
+    r"<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\b[^>]*>"
+    r"(?:(?!<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\b).)*?"
+    r"</(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\s*>"
+    r"\s*<!\s*\[endif\]\s*-->",
+    flags=re.IGNORECASE | re.DOTALL,
+)
 MATHML_START_PATTERN = re.compile(
     r"<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\b",
     flags=re.IGNORECASE,
 )
 MATHML_PLACEHOLDER = "[[local-onenote-mcp:mathml]]"
+DISPLAY_EQUATION_DERIVED_SIZE_PLACEHOLDER = "[[local-onenote-mcp:derived-size]]"
 DISPLAY_MATHML_LOOKAHEAD = (
     r"(?=\s*(?:<!--\s*\[if\s+mathML\]\s*>)?\s*"
     r"<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\b"
@@ -780,6 +789,11 @@ def _canonical_node(
     if local_name(node.tag) == "Data":
         text = "".join(text.split())
     elif normalize_mathml and local_name(node.tag) == "T":
+        # OneNote may add, remove, or re-space its documented conditional
+        # comment wrapper while reserializing the same complete MathML root.
+        # Match the complete paired wrapper first.  Unrelated comments and
+        # incomplete wrappers remain in the canonical text and fail closed.
+        text = MATHML_CONDITIONAL_FRAGMENT_PATTERN.sub(MATHML_PLACEHOLDER, text)
         text = MATHML_FRAGMENT_PATTERN.sub(MATHML_PLACEHOLDER, text)
     return [
         local_name(node.tag),
@@ -962,19 +976,153 @@ def _display_equation_empty_markup_projection(xml: str) -> dict[str, int]:
     }
 
 
-def _canonical_display_equation_page_digest(xml: str) -> str:
-    """Canonicalize MathML and the one documented COM display wrapper."""
+def _canonical_display_equation_page_projection(xml: str) -> list[Any]:
+    """Build the internal canonical tree used by DisplayEquation comparison."""
 
     root = parse_xml(xml)
     for node in root.iter():
         if local_name(node.tag) == "T" and node.text:
             node.text, _, _ = _normalize_display_equation_outbound_markup(node.text)
-    payload = json.dumps(
-        _canonical_node(root, is_root=True, normalize_mathml=True),
-        ensure_ascii=False,
-        separators=(",", ":"),
+    _normalize_standalone_display_equation_outline_sizes(root)
+    return _canonical_node(root, is_root=True, normalize_mathml=True)
+
+
+def _standalone_display_equation_outline(outline: ET.Element) -> bool:
+    """Recognize an Outline whose only authored content is one block MathML root."""
+
+    allowed_nodes = {"Outline", "Position", "Size", "OEChildren", "OE", "T"}
+    if any(local_name(node.tag) not in allowed_nodes for node in outline.iter()):
+        return False
+    size_nodes = [
+        child for child in list(outline) if local_name(child.tag) == "Size"
+    ]
+    if len(size_nodes) != 1 or set(size_nodes[0].attrib) != {"width", "height"}:
+        return False
+
+    equation_count = 0
+    display_count = 0
+    substantive_text_nodes = 0
+    for node in outline.iter():
+        if local_name(node.tag) != "T" or not node.text:
+            continue
+        text = node.text
+        matches = list(MATHML_FRAGMENT_PATTERN.finditer(text))
+        if matches:
+            substantive_text_nodes += 1
+        equation_count += len(matches)
+        for match in matches:
+            try:
+                equation = ET.fromstring(match.group(0))
+            except ET.ParseError:
+                return False
+            if equation.attrib.get("display") == "block":
+                display_count += 1
+        residual, _, _ = _normalize_display_equation_outbound_markup(text)
+        residual = MATHML_CONDITIONAL_FRAGMENT_PATTERN.sub("", residual)
+        residual = MATHML_FRAGMENT_PATTERN.sub("", residual)
+        if residual.strip():
+            return False
+    return equation_count == display_count == substantive_text_nodes == 1
+
+
+def _normalize_standalone_display_equation_outline_sizes(root: ET.Element) -> int:
+    """Ignore only COM-derived bounds of a formula-only Outline."""
+
+    normalized = 0
+    for outline in root.iter():
+        if (
+            local_name(outline.tag) != "Outline"
+            or not _standalone_display_equation_outline(outline)
+        ):
+            continue
+        size = next(
+            child for child in list(outline) if local_name(child.tag) == "Size"
+        )
+        size.attrib["width"] = DISPLAY_EQUATION_DERIVED_SIZE_PLACEHOLDER
+        size.attrib["height"] = DISPLAY_EQUATION_DERIVED_SIZE_PLACEHOLDER
+        normalized += 1
+    return normalized
+
+
+def _standalone_display_equation_outline_count(xml: str) -> int:
+    return sum(
+        _standalone_display_equation_outline(node)
+        for node in parse_xml(xml).iter()
+        if local_name(node.tag) == "Outline"
     )
-    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _mathml_conditional_wrapper_count(xml: str) -> int:
+    """Count only complete, paired OneNote MathML conditional wrappers."""
+
+    return sum(
+        len(MATHML_CONDITIONAL_FRAGMENT_PATTERN.findall(node.text))
+        for node in parse_xml(xml).iter()
+        if local_name(node.tag) == "T" and node.text
+    )
+
+
+def _canonical_mismatch_projection(
+    expected: list[Any],
+    actual: list[Any],
+    *,
+    path: str = "Page",
+) -> dict[str, Any] | None:
+    """Return the first content-free canonical-tree mismatch."""
+
+    expected_kind, expected_attributes, expected_text, expected_children = expected
+    actual_kind, actual_attributes, actual_text, actual_children = actual
+    if expected_kind != actual_kind:
+        return {
+            "path": path,
+            "field": "kind",
+            "expected_kind": expected_kind,
+            "actual_kind": actual_kind,
+        }
+    if expected_attributes != actual_attributes:
+        expected_payload = json.dumps(
+            expected_attributes, ensure_ascii=False, separators=(",", ":")
+        )
+        actual_payload = json.dumps(
+            actual_attributes, ensure_ascii=False, separators=(",", ":")
+        )
+        return {
+            "path": path,
+            "field": "attributes",
+            "expected_attribute_names": [name for name, _ in expected_attributes],
+            "actual_attribute_names": [name for name, _ in actual_attributes],
+            "expected_sha256": sha256(expected_payload.encode("utf-8")).hexdigest(),
+            "actual_sha256": sha256(actual_payload.encode("utf-8")).hexdigest(),
+        }
+    if expected_text != actual_text:
+        return {
+            "path": path,
+            "field": "text",
+            "expected_chars": len(expected_text),
+            "actual_chars": len(actual_text),
+            "expected_sha256": sha256(expected_text.encode("utf-8")).hexdigest(),
+            "actual_sha256": sha256(actual_text.encode("utf-8")).hexdigest(),
+        }
+    for index, (expected_child, actual_child) in enumerate(
+        zip(expected_children, actual_children, strict=False)
+    ):
+        mismatch = _canonical_mismatch_projection(
+            expected_child,
+            actual_child,
+            path=f"{path}/{expected_child[0]}[{index}]",
+        )
+        if mismatch is not None:
+            return mismatch
+    if len(expected_children) != len(actual_children):
+        return {
+            "path": path,
+            "field": "children",
+            "expected_count": len(expected_children),
+            "actual_count": len(actual_children),
+            "expected_kinds": [child[0] for child in expected_children],
+            "actual_kinds": [child[0] for child in actual_children],
+        }
+    return None
 
 
 def semantic_display_equation_comparison(
@@ -1004,9 +1152,15 @@ def semantic_display_equation_comparison(
         == actual_markup["span_break_count"]
         and actual_markup["span_count"] <= actual_display_count
     )
+    expected_canonical = _canonical_display_equation_page_projection(expected_xml)
+    actual_canonical = _canonical_display_equation_page_projection(actual_xml)
     outside_mathml_canonical_after_normalization = (
-        _canonical_display_equation_page_digest(expected_xml)
-        == _canonical_display_equation_page_digest(actual_xml)
+        expected_canonical == actual_canonical
+    )
+    outside_mathml_mismatch = (
+        None
+        if outside_mathml_canonical_after_normalization
+        else _canonical_mismatch_projection(expected_canonical, actual_canonical)
     )
     passed = (
         mathml["source_complete"]
@@ -1020,6 +1174,18 @@ def semantic_display_equation_comparison(
     )
     return {
         **mathml,
+        "expected_conditional_mathml_wrapper_count": (
+            _mathml_conditional_wrapper_count(expected_xml)
+        ),
+        "actual_conditional_mathml_wrapper_count": (
+            _mathml_conditional_wrapper_count(actual_xml)
+        ),
+        "expected_derived_size_outline_count": (
+            _standalone_display_equation_outline_count(expected_xml)
+        ),
+        "actual_derived_size_outline_count": (
+            _standalone_display_equation_outline_count(actual_xml)
+        ),
         "expected_display_equation_count": expected_display_count,
         "actual_display_equation_count": actual_display_count,
         "expected_empty_markup": expected_markup,
@@ -1029,6 +1195,7 @@ def semantic_display_equation_comparison(
         "outside_mathml_canonical_after_display_equation_normalization": (
             outside_mathml_canonical_after_normalization
         ),
+        "outside_mathml_mismatch": outside_mathml_mismatch,
         "passed": passed,
     }
 

@@ -8,6 +8,8 @@ from tests.manual_validation.runtime import InvariantFailure
 from tests.manual_validation.scenarios.common.fixture_builders import (
     DISPLAY_EQUATION_MARKER,
     INLINE_EQUATION_MARKER,
+    MATHML_NAMESPACE,
+    _equation_fixture_report,
     ensure_copy_rich_fixture,
 )
 from tests.manual_validation.scenarios.fixture_recipes.copy_page import RECIPE
@@ -19,7 +21,7 @@ from tests.manual_validation.test_utils import read_json
 
 
 def test_copy_page_recipe_requires_inline_and_display_equations() -> None:
-    assert RECIPE.recipe_version == 9
+    assert RECIPE.recipe_version == 10
     assert RECIPE.config.kind is LayeredFixtureKind.PAGE
     assert RECIPE.config.include_equations is True
 
@@ -48,6 +50,48 @@ def test_semantic_fixture_capabilities_do_not_overwrite_equation_evidence() -> N
     ]
 
 
+def test_copy_page_equation_detector_requires_exactly_one_known_com_leading_blank() -> None:
+    clean = build_page_update_xml(
+        "page-id",
+        title="Parent",
+        content=(
+            f"<p>{INLINE_EQUATION_MARKER} before "
+            f'<math xmlns="{MATHML_NAMESPACE}"><mi>x</mi></math> after.</p>'
+            f"<p>{DISPLAY_EQUATION_MARKER}</p>"
+            f'<p><math xmlns="{MATHML_NAMESPACE}" display="block">'
+            "<mi>y</mi></math></p>"
+        ),
+        content_format="html",
+    )
+    display_start = f'<math xmlns="{MATHML_NAMESPACE}" display="block"'
+    one_blank = clean.replace(
+        display_start,
+        '<span style="font-family:Calibri" lang="en-US"><br/></span>'
+        + display_start,
+        1,
+    )
+    two_blanks = clean.replace(
+        display_start,
+        '<span style="font-family:Calibri" lang="en-US"><br/><br/></span>'
+        + display_start,
+        1,
+    )
+
+    assert _equation_fixture_report(one_blank)["passed"] is True
+    assert _equation_fixture_report(clean)["mismatches"] == {
+        "display_candidates_with_known_leading_blank": {
+            "actual": 0,
+            "expected": 1,
+        }
+    }
+    assert _equation_fixture_report(two_blanks)["mismatches"] == {
+        "display_candidates_with_known_leading_blank": {
+            "actual": 0,
+            "expected": 1,
+        }
+    }
+
+
 def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) -> None:
     state = {
         "xml": (
@@ -69,6 +113,7 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
         def __init__(self) -> None:
             self.append_arguments = []
             self.image_calls = 0
+            self.contents = []
 
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
@@ -79,11 +124,17 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
                 return {"pages": [page]}
             if name == "append_to_page":
                 self.append_arguments.append(dict(arguments))
+                self.contents.append(arguments["content"])
                 state["xml"] = build_page_update_xml(
                     "page-id",
                     title="Parent",
-                    content=arguments["content"],
+                    content="".join(self.contents),
                     content_format=arguments["content_format"],
+                ).replace(
+                    '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"',
+                    '<span style="font-family:Calibri" lang="en-US"><br/></span>'
+                    '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"',
+                    1,
                 )
                 return {"appended": True}
             if name == "add_image_to_page":
@@ -110,16 +161,16 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
         )
     )
 
-    assert len(client.append_arguments) == 1
+    assert len(client.append_arguments) == 2
     assert client.image_calls == 1
     assert client.append_arguments[0]["content_format"] == "html"
     assert INLINE_EQUATION_MARKER in client.append_arguments[0]["content"]
     assert DISPLAY_EQUATION_MARKER in client.append_arguments[0]["content"]
-    assert client.append_arguments[0]["content"].count("<math ") == 2
-    assert client.append_arguments[0]["content"].count('display="block"') == 1
-    assert f"<span>{DISPLAY_EQUATION_MARKER}</span><math" in client.append_arguments[0][
-        "content"
-    ]
+    assert client.append_arguments[0]["content"].count("<math ") == 1
+    assert 'display="block"' not in client.append_arguments[0]["content"]
+    assert DISPLAY_EQUATION_MARKER not in client.append_arguments[1]["content"]
+    assert client.append_arguments[1]["content"].count("<math ") == 1
+    assert client.append_arguments[1]["content"].count('display="block"') == 1
     assert first == second
     assert first["automated_content"] == [
         "rich_text",
@@ -133,12 +184,13 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
         "inline_equations": 1,
         "display_equations": 1,
         "namespace_declarations": 2,
-        "redundant_breaks_before_display": 0,
-        "standalone_display_oes": 1,
-        "nonempty_display_predecessors": 1,
-        "empty_oes_before_display": 0,
+        "inline_candidates_with_visible_context": 1,
+        "display_candidate_text_nodes": 1,
+        "display_candidates_with_visible_residual": 0,
+        "display_candidates_with_known_leading_blank": 1,
     }
     detection = read_json(tmp_path / "fixture-equation-detection.json")
+    assert detection["schema_version"] == 2
     assert detection["passed"] is True
     assert detection["checks"] == {
         "equations_passed": True,
@@ -168,6 +220,9 @@ def test_copy_page_rich_fixture_writes_equation_detection_before_failure(tmp_pat
     }
 
     class ComNormalizedClient:
+        def __init__(self) -> None:
+            self.contents = []
+
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
                 return {"xml": state["xml"]}
@@ -176,14 +231,16 @@ def test_copy_page_rich_fixture_writes_equation_detection_before_failure(tmp_pat
             if name == "list_pages":
                 return {"pages": [page]}
             if name == "append_to_page":
+                self.contents.append(arguments["content"])
                 state["xml"] = build_page_update_xml(
                     "page-id",
                     title="Parent",
-                    content=arguments["content"],
+                    content="".join(self.contents),
                     content_format=arguments["content_format"],
                 ).replace(
-                    "<![CDATA[<math xmlns=",
-                    "<![CDATA[<br/><math xmlns=",
+                    '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"',
+                    'visible-display-residual '
+                    '<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"',
                     1,
                 )
                 return {"appended": True}
@@ -206,11 +263,13 @@ def test_copy_page_rich_fixture_writes_equation_detection_before_failure(tmp_pat
         )
 
     detection = read_json(tmp_path / "fixture-equation-detection.json")
+    assert detection["schema_version"] == 2
     assert detection["passed"] is False
     assert detection["checks"]["equations_passed"] is False
-    assert detection["equations"]["actual"]["redundant_breaks_before_display"] == 1
-    assert detection["equations"]["mismatches"]["redundant_breaks_before_display"] == {
+    assert detection["equations"]["actual"]["display_candidates_with_visible_residual"] == 1
+    assert detection["equations"]["mismatches"]["display_candidates_with_visible_residual"] == {
         "actual": 1,
         "expected": 0,
     }
+    assert detection["equations"]["actual"]["display_candidates_with_known_leading_blank"] == 0
     assert "xml" not in detection

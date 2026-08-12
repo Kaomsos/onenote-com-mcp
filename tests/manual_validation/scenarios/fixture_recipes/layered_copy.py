@@ -163,13 +163,13 @@ class LayeredCopyFixtureRecipe(RecipeBase):
                     "inline_equations": 1,
                     "display_equations": 1,
                     "namespace_declarations": 2,
-                    "redundant_breaks_before_display": 0,
-                    "standalone_display_oes": 1,
-                    "nonempty_display_predecessors": 1,
-                    "empty_oes_before_display": 0,
+                    "inline_candidates_with_visible_context": 1,
+                    "display_candidate_text_nodes": 1,
+                    "display_candidates_with_visible_residual": 0,
+                    "display_candidates_with_known_leading_blank": 1,
                 },
                 "Rich Copy fixture is missing its exact inline/display equation pair.",
-                "rich parent contains one inline and one display MathML equation",
+                "rich parent contains one inline equation and one display equation with the known COM leading blank",
             )
         semantic_evidence = (copy_fixture or {}).get("semantic_page")
         checks.require(isinstance(semantic_evidence, dict) and {"List", "Tag"}.issubset(semantic_evidence.get("observed_capabilities", [])) and semantic_evidence.get("observed_counts", {}).get("List") == 3 and semantic_evidence.get("observed_counts", {}).get("Tag") == 3, "Semantic Copy fixture is missing the three generated List/Tag items.", "semantic child contains three generated mixed List/Tag items")
