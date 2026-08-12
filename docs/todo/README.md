@@ -7,9 +7,9 @@
 | ID | 待办 | 状态 | 优先级 | 说明 |
 | --- | --- | --- | --- | --- |
 | 001 | [本地程序化 OneNote 隔离验证 Runner](001_programmatic_isolated_mutation_runner.md) | 已完成 | P1 | 扁平 scenario 唯一入口、单命令隔离闭环、最小权限、证据和保留式生命周期已交付；用户确认真实验收矩阵完成。 |
-| 002 | [P2 四层 Copy 与 Page Move](002_p2_copy_and_reconstructive_page_move.md) | 已完成 | P2 | 四层 Copy 与严格 Page Move 已交付；用户确认五个统一 fixture 场景全部完成真实成功闭环。 |
+| 002 | [P2 四层 Copy 与 Page Move](002_p2_copy_and_reconstructive_page_move.md) | 已完成 | P2 | 四层 Copy 与严格 Page Move 已交付；增强后的 Section/SectionGroup 双范围与含嵌套组的 Notebook Copy 也已完成用户真实回归。 |
 | 003 | [Scenario 独立 Fixture 与单 MCP 进程闭环](003_scenario_scoped_mcp_and_fixtures.md) | 已完成 | P2 | 单 MCP/最小 fixture 架构、性能实测和修复后的严格 `copy_only` 安全门均已验证。 |
-| 004 | [交互式 Copy/Move 未验证内容保真验收](004_interactive_copy_move_content_fidelity_validation.md) | 进行中 | P2 | 当前 Copy 取证聚焦 InkDrawing、UI Shape、MediaFile；FileAttachment 与 MeetingInfo 已明确排除，三类 consumer/comparator 和真实证据仍待完成。 |
+| 004 | [交互式 Copy 未验证内容保真验收](004_interactive_copy_move_content_fidelity_validation.md) | 已完成 | P2 | InkDrawing、UIShape、MediaFile、InsertedFile 的逐类别 Copy 证据、生产 comparator 和静态保真 allowlist 已闭合；Move 统一复用 Copy 类别门禁。 |
 | 005 | [Page Copy 默认仅复制单页，可选包含缩进子树](005_page_copy_without_indentation_subtree.md) | 已完成 | P2 | 默认单页与显式完整子树均已交付；用户已确认双 case 真实 OneNote 人工验收通过。 |
 | 006 | [Typed Section 与 SectionGroup Reorder](006_typed_section_and_section_group_reorder.md) | 已完成 | P1 | Section typed 同父级排序已确认；SectionGroup 后端仅固定名称升序，最终契约明确不支持并拒绝。 |
 | 007 | [跨版本兼容性证据与环境元数据](007_cross_version_compatibility_evidence.md) | 待办 | P3 | 后续设计非阻塞、local-only 的环境识别与跨版本验证矩阵；当前场景不要求用户填写版本或 channel。 |
@@ -19,10 +19,11 @@
 | 011 | [Scenario 自管理 Fixture Recipe 与拆分集中式 Fixtures](011_scenario_owned_fixture_recipes.md) | 已完成 | P1 | 14 个 Scenario 已各自拥有唯一 recipe；中央 1439 行 fixture switch 已由增量 recorder、无分支 runtime、场景 validator 和共享 typed primitive 取代。 |
 | 012 | [跨 Notebook Section 与 SectionGroup 重建式 Move](012_reconstructive_section_and_section_group_move.md) | 已完成 | P2 | typed 工具、独立门控与严格单次根删除已交付；用户确认 Section/SectionGroup 两个跨 Notebook 真实场景均通过。 |
 | 013 | [Reparent 默认落点与 Agent 可见顺序合同](013_reparent_default_placement_contract.md) | 待办 | P2 | 先验证并固化 Page/Section 的默认末位合同，通过 tool 描述和结构化响应告知 Agent；自定义位置继续显式调用独立 Reorder。 |
-| 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 进行中 | P2 | A–C 已闭合 fresh/cold/hit、双 Notebook Copy、同 entry 多 working-bundle 隔离、真实 ID 冲突恢复、精确失效及 InsertedFile 证据；三类目标 Copy 与 D–F 其余验收仍待完成。 |
-| 015 | [Mutation 目标精确定位收尾与重名 Page 回归](015_mutation_target_identity_hardening_and_duplicate_page_regression.md) | 已完成 | P1 | allocated-ID-first、四类 Copy/Move/Advanced 精确身份合同已交付；Create、v4 六 case Copy 和 Move 均有用户真实成功证据，最终 Copy 完成 9 targets cleanup/restore、双 Notebook close 与 cache template unchanged。 |
+| 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 进行中 | P2 | A–C 及 InsertedFile bootstrap/cache/Copy 有真实证据；D 的 InkDrawing/UIShape/MediaFile/InsertedFile Copy 与静态 allowlist 已闭合，UserAuthored 和 E–F 剩余真实证据仍待完成。 |
+| 015 | [Mutation 目标精确定位收尾与重名 Page 回归](015_mutation_target_identity_hardening_and_duplicate_page_regression.md) | 已完成 | P1 | allocated-ID-first 与精确身份合同已交付；Create、v4 Page Copy、Move 及增强后的三个容器 Copy 均有用户真实成功证据，cleanup/close 与 cache immutability 门通过。 |
 | 016 | [Page Copy 人工验证只读取证降本](016_copy_page_manual_validation_read_evidence_efficiency.md) | 待办 | P3 | 复用单次 Page XML 生成 hash、能力与对象证据，优先消除 75 次重复 `get_page_objects`/COM 读取；不得削弱六 case、plan/tree 稳定、保护对象或 cleanup/restore 门。 |
 | 017 | [Page Move 可选子树与跨 Notebook 双范围验收](017_page_move_selectable_subtree_and_cross_notebook_validation.md) | 已完成 | P1 | 默认 root-only 与显式 subtree 已交付；用户确认修复后的跨 Notebook 双 case、保留后代和非永久删除均通过。 |
+| 018 | [在线视频表示与 Copy 保真验证](018_online_video_copy_fidelity_validation.md) | 已取消 | P2 | 不再建立独立 OnlineVideo 类型或有损 Copy 合同；仅保留局限性 Lesson。 |
 
 ## 文件命名
 

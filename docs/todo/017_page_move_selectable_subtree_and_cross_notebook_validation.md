@@ -19,7 +19,7 @@ root-only Move 不能直接删除仍拥有缩进后代的根 Page。实现必须
 1. `cross-notebook-root-only`：省略参数，只复制/删除根 Page，被排除子页留在源 Notebook 并提升一级；
 2. `cross-notebook-subtree`：显式 `include_descendants=true`，父子两页均复制并按叶到根非永久删除。
 
-同 Notebook 跨 Section 不再在 Move 中重复，因为位置变化已由 typed `reparent-page` 场景覆盖。Move fixture 只使用最小、已验证的 Outline/RichText；逐内容类型保真由 Copy 场景及 comparator 负责，Move 只审计 `verified/lossless Copy → 精确范围 → 安全非永久删除` 组合。
+同 Notebook 跨 Section 不再在 Move 中重复，因为位置变化已由 typed `reparent-page` 场景覆盖。Move fixture 只使用最小、已验证的 Outline/RichText；逐内容类型合同由 Copy 场景及 comparator 负责，Move 只审计 `copy_contract_satisfied → 精确范围 → 安全非永久删除` 组合，不另建 Move 内容类别或 lossless 门。
 
 ## 自动化状态
 

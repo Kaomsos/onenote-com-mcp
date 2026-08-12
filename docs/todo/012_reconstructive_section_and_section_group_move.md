@@ -4,7 +4,7 @@
 > 状态：已完成
 > 优先级：P2
 > 类型：公开 mutation 契约 / 容器级 Copy-Verify-Delete
-> 更新日期：2026-08-11
+> 更新日期：2026-08-12
 
 ## 背景
 
@@ -27,9 +27,9 @@
 - 默认注册 `plan_move_section` / `move_section` / `plan_move_section_group` / `move_section_group`；
 - 新增独立、默认关闭的 `LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS` 与 health-check 字段；
 - plan 强制绑定不同的源/目标 Notebook ID，同 Notebook 在 mutation 前拒绝并指向对应 `reparent_*`；
-- execute 复用生产 Copy gate，要求完整单射 `id_map`、`verified=true`、`lossless=true`、无 skipped content 和稳定源 digest；
+- execute 复用生产 Copy gate，要求 `copy_contract_satisfied=true`、完整单射 `id_map` 和稳定源 digest；Move 不另建内容类别或 `lossless` 条件；
 - Section/SectionGroup 均只调用一次 typed 根删除，`permanently=false` 固定在 service 内；删除后验证全部计划源 ID 不再活动，并比较删除前后的目标子树 digest；
-- 已注册 `move-section` 与 `move-section-group` 双 Notebook 场景，均设置 `included_in_all=False`，fixture 只使用 Outline/RichText，场景只审计 verified Copy→安全根删除，不重复未验证内容类型 comparator；
+- 已注册 `move-section` 与 `move-section-group` 双 Notebook 场景，fixture 只使用 Outline/RichText，场景只审计 verified Copy→安全根删除，不重复未验证内容类型 comparator；两项独立真实验收完成后又通过 `all` 稳定性审查，现均显式设置 `included_in_all=True`；
 - 聚焦生产测试、manual-validation 纯合同和注册 dry-run 已覆盖；Agent 未运行真实 scenario。
 
 2026-08-11，用户本人依次运行两个真实场景，完成本 TODO 的最终后端验收：
@@ -111,7 +111,7 @@ require Writes + Experimental Copy + Deletes + Container Move
 → rebuild and match Move-specific plan digest
 → copy complete source subtree
 → require complete injective id_map
-→ require copy_report.lossless=true and verified=true for every Page
+→ require copy_report.copy_contract_satisfied=true for every Page
 → require no skipped/unknown/unverified content
 → recapture source subtree and match original source digest
 → issue exactly one typed root Delete with permanently=false
@@ -124,7 +124,7 @@ require Writes + Experimental Copy + Deletes + Container Move
 任何检查失败都不得继续下一阶段。尤其：
 
 - Copy 创建或 read-back 失败：返回 `copy_only`/`copy_unverified` 的归一化 partial failure，源保持活动；
-- Copy 有 issue、非 lossless、非 verified 或 `id_map` 不完整：`outcome=copy_only`，禁止源删除；
+- Copy 合同未满足、非 verified、存在 omitted/unverified issue 或 `id_map` 不完整：`outcome=copy_only`，禁止源删除；
 - Copy 后源 digest 变化：`outcome=copy_only`，禁止源删除；
 - 源根 Delete 调用失败：保留已验证目标，返回 `source_delete_failed`；
 - Delete 返回后仍有部分源 ID 活动：返回 `source_partially_removed`，记录精确 removed/remaining IDs，不猜测恢复；
@@ -155,7 +155,7 @@ Page Move 需要从叶到根逐个删除 Page 缩进子树；Section/SectionGrou
 - Copy 未改变源/目标 Notebook 中的无关对象；
 - 全部工作处于 Copy resource/Page/XML/time budgets 内。
 
-当前静态 allowlist 中的 `Outline/Image/RichText/Table/List/Tag` 仍只代表已有指定环境证据。`FileAttachment`、`InsertedFile`、`InkDrawing`、`MediaFile`、`MeetingInfo` 或未知节点继续阻止 Move 删除源；本 TODO 不因容器层级扩大而放宽内容保真门。
+当前静态 allowlist 中的 `Outline/Image/RichText/Table/List/Tag/InkDrawing/UIShape/MediaFile/InsertedFile` 仍只代表已有指定环境证据；后四类于 TODO 004 的隔离 Copy 评审后加入，并继续复用既有 Copy→验证→非永久删除门。`FileAttachment`、`MeetingInfo`、尚无公开 `kind`/XML 证据的 `Embedded Spreadsheet` 产品能力类别，或任何未知节点，都会使共享 Copy 合同不成立，Move 因而不得删除源；本 TODO 不因容器层级扩大而自行放宽内容保真门。
 
 ## Policy 与注册
 
@@ -229,7 +229,7 @@ move_section_group
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section-group --dry-run --json
 ```
 
-真实命令仍只能由用户本人显式启动。两个场景保持 `included_in_all=False`；本次真实评审完成不等于自动取得 `all` 批处理资格，后续若要纳入仍需独立权限与稳定性审查。
+真实命令仍只能由用户本人显式启动。两个场景最初保持 `included_in_all=False`，没有因首次真实评审自动取得批处理资格；后续独立复核确认它们与 `move-page` 具有相同的 disposable bundle、单 MCP、最小权限、非永久删除和失败保留边界，现已显式纳入 `all`。`all` 仍逐场景启动独立进程并保留各自 policy，不合并 Move 权限。
 
 ### 双 Notebook fixture
 
@@ -278,7 +278,7 @@ move_section_group
 
 风险：Section/SectionGroup 包含多页或多层后代，任一内容/拓扑遗漏都会在源删除后造成数据损失风险。
 
-缓解：Move 只接受完整且 lossless/verified 的 Copy report；任何 issue 或未知类型返回 `copy_only`；源删除路径保持独立默认关闭，并要求真实 Copy 场景证据。
+缓解：Move 只接受 `copy_contract_satisfied=true` 的 Copy report；omitted/unverified issue 或未知类型返回 `copy_only`；源删除路径保持独立默认关闭，并要求真实 Copy 场景证据。
 
 ### P0：根删除后的部分状态
 
@@ -322,7 +322,7 @@ move_section_group
 2. 以已完成的 [TODO 002](002_p2_copy_and_reconstructive_page_move.md) 为基线：用户已确认 `copy-section`、`copy-section-group` 的最终真实闭环，当前静态内容 tier 在容器复制中成立；
 3. 建议先落地 TODO 011/010 的 Scenario recipe 与 dry-run registration 基础，避免新场景继续扩大中央模块；
 4. 实现 Move 专属 plan、policy、typed tools、service pipeline 与纯合同测试；
-5. 实现双 Notebook lifecycle 和两个不进入 `all` 的具名场景；
+5. 实现双 Notebook lifecycle 和两个默认不进入 `all` 的具名场景；真实验收与独立稳定性审查完成后再显式纳入；
 6. 用户先运行 `move-section`，确认较小容器的成功/失败边界；再运行 `move-section-group`；
 7. 未验证内容类型继续由 [TODO 004](004_interactive_copy_move_content_fidelity_validation.md) 跟踪，不阻塞代码识别，但必须阻止源删除；
 8. 用户确认真实证据后再更新能力矩阵；单环境结果不外推为跨版本保证。
@@ -348,7 +348,7 @@ move_section_group
 - Section/SectionGroup 仅执行一次 `permanently=false` 的 typed 根删除，并验证全部原源 ID 从活动 hierarchy 消失；
 - Copy、源重校验、删除和最终目标复核的每类失败都有明确 outcome、created/removed/remaining IDs 和失败保留证据；
 - `LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS`、health-check、README、设计文档和 policy 测试完成，现有 Page Move 配置保持兼容；
-- `move-section`、`move-section-group` 具名场景使用两个 fresh disposable Notebook、单 MCP、角色化 lease、静态最小权限和 `included_in_all=False`；
+- `move-section`、`move-section-group` 具名场景使用两个 fresh disposable Notebook、单 MCP、角色化 lease和静态最小权限；初始评审保持 `included_in_all=False`，独立真实验收及后续稳定性审查完成后已显式改为 `True`；
 - manual-validation 纯测试与完整 pytest 通过；所有 Agent 执行的新场景命令都显式带 `--dry-run`；
 - 用户分别确认 `copy-section`、`copy-section-group` 以及两个新 container Move 场景的真实证据；失败或未运行不能标记为通过；
 - 当前 tool contracts、对象模型、architecture、manual-validation README、TODO 002/004/009/010/011 和 TODO 索引与最终实现一致。

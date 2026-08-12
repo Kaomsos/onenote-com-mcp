@@ -32,7 +32,7 @@
 - 用户随后运行 `run-2026-08-11-14-54-05` 与 `run-2026-08-11-14-57-01`，同 Section、跨 Section、跨 Notebook各自 root-only/subtree 的六个 `copy-page` case 连续两次全部 `verified=true`、`lossless=true`；所有 subtree 的父子 target ID 均为 fresh ID，未再复用 source child ID。前一 run 完成默认 cleanup/restore/close，后一 run 按 `--keep-worksite` 保留现场。这两次 run 证明核心 helper 修复，但跨 Section/Notebook destination 当时尚未预置同标题 anchors，不能充当 v4 完成证据。
 - public Create 现在同时校验 allocated ID、type、friendly path、active state、计划父级与 before-ID 集；只有 allocated ID 不可见且存在唯一 fresh typed path match 时才记录一对一 remap。`create_page` 在任何初始化正文写入前拒绝既有/forbidden ID。
 - 四类 Copy 共用 `_validate_created_target()`，并在 Page 正文写入与 `UpdateHierarchy` 前完成 source/target disjoint、target uniqueness、type/parent/recycle 校验；partial evidence 现在区分 `allocated_ids/resolved_target_ids/possibly_untracked_allocated_ids/source_touched/topology_touched/manual_recovery_required`。
-- `copy_section/copy_section_group/copy_notebook` 的自动化重复标题矩阵通过，共享 primitive 未出现容器分支差异，因此没有触发三个真实容器 Scenario 的升级门。
+- `copy_section/copy_section_group/copy_notebook` 的自动化重复标题矩阵通过，共享 primitive 未出现身份分支差异。随后按用户要求进一步升级原容器 Scenario：Section/SectionGroup recipe version 3 增加同 Notebook 与跨 Notebook 双 case，Notebook recipe version 3 增加真实嵌套 SectionGroup 子树，并修复目标 Notebook 关闭时使用过期 `modified` 的 confirmation 问题；三个增强场景均已取得用户真实成功证据。
 - Advanced `delete_hierarchy` 已从全部生产注册与 service 公共入口移除；`open_hierarchy` existing path 重复时拒绝；`merge_sections/set_filing_location` 改为 exact typed ID 参数。兼容 `find_resource_by_path` 仅保留给只读调用，新 unique/all-match 接口承担安全调用。
 - 原 `create` Recipe/Scenario 已加入空 `Duplicate-Title-Target`、连续同标题 Create、allocated/read-back/before-after 证据和默认 exact non-permanent cleanup；原 `copy-page` v4 已在跨 Section/Notebook destination 各加入同标题不同正文 anchor，并逐 case 验证 anchor hash/order/level/parent；原 `move-page` Recipe/Scenario 已加入同名不同正文 anchor、fresh-ID/anchor/source-delete gates。
 - 用户运行 `run-2026-08-11-15-41-20`：两次同标题 Create 的 allocated/read-back IDs 完全一致且互异，均为 fresh、正文可独立读取；默认 exact non-permanent cleanup、`restored=true` 与 lifecycle close 全部完成。
@@ -55,7 +55,7 @@
 | `create_page` | 同 Section 重名时可能返回旧 Page ID，并遗失真正 allocated Page 的跟踪 | 直接受影响；实现、自动化与增强后的真实 `create` 证据已完成 |
 | `copy_page` | 子树后代保留源标题，可能与源 Section 或非空目标 Section 的 Page 重名 | 已完成；ID 防碰撞与增强后六 case、9 targets cleanup/restore、双 Notebook close 和 cache immutability 均有最终真实证据 |
 | `move_page` | 复用 Copy 重建；误映射既可能写错对象，也可能使后续源删除判断失真 | 直接受影响；实现、自动化与增强后的 anchor/fresh-ID/source-delete 真实证据已完成 |
-| `copy_section` / `copy_section_group` / `copy_notebook` | 源 Section 自身存在同名 Page 时，递归创建第二个同名 Page 可触发同一 helper 缺陷 | 条件性受影响；共享实现和三类重复标题自动化矩阵通过，未触发真实 Scenario 升级门 |
+| `copy_section` / `copy_section_group` / `copy_notebook` | 源 Section 自身存在同名 Page 时，递归创建第二个同名 Page 可触发同一 helper 缺陷 | 条件性受影响；共享实现和三类重复标题自动化矩阵通过；后续增强的双范围 Section/SectionGroup 与嵌套 Notebook Copy 也已由用户真实复验通过 |
 | Programmatic fixture build | Recipe 创建重名 Page 时可能把错误 ID 写进 manifest/snapshot | 条件性受影响；原场景增强不得依赖 path-only 地址区分重名 Page |
 | Cache lifecycle | Notebook/Section 激活共用 `wait_for_created` | 旧 wrapper 另有 exact ID、parent 和实际 working path 门禁，主要风险为 false failure；仍需保留回归 |
 | Typed Reparent | 从 target/destination 精确 ID 开始，并验证唯一 old→new Page ID、父级、内容与无关对象 | 不经过该 helper，未发现直接扩散 |
@@ -163,9 +163,10 @@
 ### 容器 Copy
 
 - `copy-section`、`copy-section-group`、`copy-notebook` 继续使用各自原 Scenario，不新增替代入口。
-- 第一阶段以共享生产 primitive 的自动化重复标题矩阵和现有真实容器 Copy 证据为门；不为了制造重复 path 破坏当前 cache 的唯一 typed-address rebind。
+- 第一阶段以共享生产 primitive 的自动化重复标题矩阵和现有真实容器 Copy 证据为门；不为了制造重复 path 破坏当前 cache 的唯一 typed-address rebind。该门没有发现容器专属 identity 分支差异。
 - 若自动化或后续真实结果表明容器分支与 Page Copy 不同，则在对应原 Recipe 内通过“先创建唯一标题并记录 ID，再按精确 ID Rename 为重复标题”的方式加入两个同名 Page，并同步扩展 cache remap 的唯一身份合同；不得按 path 任选一个 Page。
-- 该升级需要分别提升相关 Recipe version，并由用户重跑原 `copy-section`、`copy-section-group`、`copy-notebook`，不能用 `copy-page` 的真实结果冒充容器证据。
+- 用户后续要求的范围升级已直接落入三个原 Scenario：`copy-section`/`copy-section-group` 提升至 recipe version 3 并各自覆盖 Notebook 内部与跨 Notebook；`copy-notebook` version 3 增加源 Notebook 的 SectionGroup/Section/Page 子树，并在关闭复制目标前按 exact ID 重新读取最新 `modified`。这不是用 `copy-page` 结果替代容器证据，三个原场景已分别重跑。
+- `run-2026-08-11-21-33-01` 与 `run-2026-08-11-21-36-13` 的四个容器 case 均 `verified=true`、`lossless=true`，Section 每个 case 映射 3 个对象，SectionGroup 每个 case 映射 4 个对象；两次都完成反向 cleanup、双 Notebook restore/close。`run-2026-08-11-21-31-17` 的 Notebook Copy 映射 7 个对象，包含根 Section 双页与嵌套 SectionGroup/Section/Page，目标通过刷新后的 confirmation 一次关闭并记录 `closed_not_deleted`。三次均 `opened_template=false`、cache inventories unchanged。
 
 ## 用户真实复验顺序
 
@@ -176,7 +177,7 @@
 5. 六 case/cleanup 证据：`run-2026-08-11-16-11-01` 的六 case 全部 fresh、`verified=true/lossless=true`，source/anchors 不变并清理全部目标；保存的 restored evidence 通过最终收窄门。旧通用 restore 只因无关 Description Page 重序列化停止，未产生 lifecycle close。
 6. 已完成：`run-2026-08-11-16-18-20` 取得全部六 case、9 个 fresh target、默认 cleanup/restore、双 Notebook lifecycle close、cache template unchanged 与顶层 `passed` 的单 run 完整证据。
 7. 已完成：`run-2026-08-11-15-43-26` 证明 Move fresh target、anchor 不变和严格 source deletion gate。
-8. 只有触发“容器 Copy”决策门时，再依次运行增强后的三个原容器 scenario；当前自动化未触发。
+8. 补充完成：用户依次运行增强后的 `copy-notebook`（`run-2026-08-11-21-31-17`）、`copy-section`（`run-2026-08-11-21-33-01`）与 `copy-section-group`（`run-2026-08-11-21-36-13`）；三次顶层均 `passed`，容器范围、保真、cleanup/close 与 cache immutability 证据均通过。
 9. 每个失败立即停止并保留现场；Agent 只检查用户产生的 evidence，不执行真实命令。
 
 ## 非目标
@@ -229,7 +230,7 @@
 - Advanced `delete_hierarchy/open_hierarchy/merge_sections/set_filing_location` 完成逐项决策与实现；默认 profile 不扩大，任何保留 mutation 都 fail closed。
 - Copy partial-failure evidence 准确记录 allocated/resolved/source-touch/topology-touch 状态，不再无条件声称 source untouched。
 - 原 `create`、`copy-page`、`move-page` Recipe/Scenario 已按本文件增强，未新增旁路 scenario；fixture version、dry-run、权限、失败保留与 cache immutability 合同通过。
-- 容器 Copy 的自动化门通过；如触发真实差异，三个原容器 Scenario 按决策门增强并由用户逐一复验。
+- 容器 Copy 的自动化门通过；三个原容器 Scenario 的后续范围增强也已由用户逐一复验，Notebook 内/跨 Notebook、嵌套 SectionGroup、精确关闭确认和 cache immutability 证据完整。
 - manual-validation 纯测试、完整 pytest、所有相关 `--dry-run --json` 与 `git diff --check` 通过；Agent 未执行真实 scenario。
 - 用户运行并确认增强后的 `create`、六 case `copy-page` 和 `move-page` 真实成功，证据包含 fresh ID disjoint、正确 Section/order/level、anchors/source 不变和严格删除门。
 - README、tool contracts、object model、manual-validation README、相关 Lesson/TODO 和本索引与最终行为及真实证据一致。

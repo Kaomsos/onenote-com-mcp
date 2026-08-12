@@ -91,7 +91,15 @@ Page 不公开 `name`，统一使用 `title`：
 
 公开 Page 对象只使用 `kind`。Page XML parser 为 element local name 使用的内部中间字段 `type` 不属于公开合同；domain mapper 会把它映射到 `PageContentObject.kind`。调用方、manual-validation snapshot、detector 和 comparator 不得接受 `type` fallback，缺少 `kind` 或公开形状中残留 `type` 时应 fail closed。
 
+OneNote UI Shape 当前没有独立的公开 `kind=Shape`。2026-08-11 的矩形与箭头真实回读都得到 `kind=InkDrawing`，但其 XML 子树共同含 `ShapeInfo`；箭头另含 `AnchorPoint`。因此 `UIShape` 只是 content-free capability projection 的复合分类：它要求公开对象仍为 `InkDrawing` 且结构 marker 完整，用来与普通自由墨迹严格区分，不是新增或伪造的 `PageContentObject.kind`。
+
+`DisplayEquation` 同样是 Page 语义 capability/content type，不是公开 `PageContentObject.kind`。它只在一个完整、有界的 Presentation MathML root 明确带有 `display="block"` 时由 Page XML 投影产生，Copy 用它选择单行公式专属的输出规范化和读回 comparator。无 `display` 属性的行内公式继续属于 RichText；未知、残缺或不合约 MathML 不得通过 `DisplayEquation` 分类绕过 fail-closed 比较。COM 初次生成和后续重建都可能增加公式前空白包装，该限制并非 Copy 独有；证据边界见 [`lesson/display_equation_com_leading_whitespace_normalization.md`](../lesson/display_equation_com_leading_whitespace_normalization.md)。
+
+OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实测环境都公开一个 `kind=MediaFile`。Page XML 还会包含 `MediaPlaylist/MediaReference`，以及同一含 MediaFile 的 Outline 中的 `OE/MediaIndex/MediaReference` 和 `OE/MediaFile/MediaReference`；Template materialize 后，媒体时间轴可能规范化为只含 `MediaIndex + T` 的 OE，T 使用单一 `span` 富文本。它们都是媒体支撑而不是额外的公开 PageContentObject kind；projection 和 Copy 转换只在精确媒体关联结构内接受节点/时间轴 span，普通 RichText 仍保持独立能力。录像 v8 bootstrap 与 materialized live validation 均未观察到额外 unknown/unsupported 节点。
+
 `FileAttachment` 与 `InsertedFile` 是不同的 XML element local name 和不同的公开 `kind`，不得互设别名。2026-08-11 在一个 OneNote `16.0.20228.20158`、Office x64 环境中，菜单“插入 → 文件附件”的三份机器回读都只观察到 `InsertedFile`；这意味着该环境没有通过此 UI 路径观察到独立 `FileAttachment`，不改变跨版本对象模型。证据边界和环境详情见 [`lesson/onenote_page_object_kind_and_file_attachment_representation.md`](../lesson/onenote_page_object_kind_and_file_attachment_representation.md)。
+
+`Embedded Spreadsheet`（内嵌电子表格）目前只是产品能力类别，不是已观察到的公开对象模型枚举。项目尚未收集它的 `PageContentObject.kind`、Page XML 或引用边界，因此不得把它建模为 `Table`、`InsertedFile`、`FileAttachment` 或猜测的 Office/OLE kind。当前支持状态明确为 unsupported；未知或未验证表示由 Copy 合同 fail closed。证据边界见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。
 
 `get_binary_content` 会在当前 Page 的最新对象快照中再次校验 `callback_id`，不把它当作全局句柄。`delete_page_content` 同样要求对象仍存在且 `can_delete=true`。
 

@@ -27,7 +27,9 @@
 
 第四次菜单操作的用户观察与前三次一致，但该次 run 的确认短语不匹配，runner 在确认后 COM capture 之前停止。因此它属于用户报告的 UI 观察，不计作第四份机器 snapshot。另有一次更早的拖放文件运行留下 COM 回读证据，同样只观察到 `InsertedFile`；拖放证据与菜单证据分别记录，不能互相冒充操作来源。
 
-后续修复 fixture cache 的 working hierarchy 加载和 live ID 重绑定后，用户于 2026-08-11 完成了一次独立 InsertedFile cache consumer 和一次新的 InsertedFile bootstrap。consumer 的 materialized live projection 精确观察到 `InsertedFile=1`，无 missing/unexpected/unknown；bootstrap 在人工 ACCEPT 后同样观察到精确 `InsertedFile=1`，发布 ready template，并在 Notebook、Section、Page ID 均由 OneNote 重建的第二份 working bundle 上再次通过 detector。两次运行都证明 template 未被打开且 working Notebook 已正常关闭。这补强了当前环境中 `InsertedFile` recipe/cache 链路的真实证据，但仍不构成独立 `FileAttachment` 表示或 Copy/Move 保真的证据。
+后续修复 fixture cache 的 working hierarchy 加载和 live ID 重绑定后，用户于 2026-08-11 完成了一次独立 InsertedFile cache consumer 和一次新的 InsertedFile bootstrap。consumer 的 materialized live projection 精确观察到 `InsertedFile=1`，无 missing/unexpected/unknown；bootstrap 在人工 ACCEPT 后同样观察到精确 `InsertedFile=1`，发布 ready template，并在 Notebook、Section、Page ID 均由 OneNote 重建的第二份 working bundle 上再次通过 detector。两次运行都证明 template 未被打开且 working Notebook 已正常关闭。
+
+2026-08-12，用户又执行 `interactive-copy-inserted-file` 的 `run-2026-08-12-12-34-58`：同一 ready cache materialize 后，source/target 都精确回读为 `InsertedFile=1`，strict canonical 机器比较和 detector/comparator 全部通过，无 omitted content；用户实际打开目标附件确认合成内容一致并提交 run-bound ACCEPT，working Notebook 正常关闭。该证据支持当前环境中的 InsertedFile reconstruction Copy，并通过生产共享 Copy 门参与 Move；它仍不构成独立 `FileAttachment` 表示或程序化创建证据。
 
 pytest 和 `--dry-run` 只证明调整后的分类、证据落盘和 fail-closed 编排，不被用来证明真实 OneNote 行为。本文不记录 Page 正文、附件名称、Notebook 名称、对象 ID、用户路径或二进制内容。
 

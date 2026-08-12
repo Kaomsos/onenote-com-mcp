@@ -4,7 +4,7 @@
 > 状态：已完成
 > 优先级：P2
 > 类型：公开 mutation 契约 / 递归 Copy 与重建式 Page Move
-> 更新日期：2026-08-10
+> 更新日期：2026-08-11
 
 ## 目标
 
@@ -24,6 +24,7 @@ Copy 允许尽力保留并显式报告不支持或尚未实测的内容。Move �
 - 自动测试覆盖四层执行、计划过期、预算、权限、未知 XML、二进制 hash、链接改写、分层 Page 回读、部分失败和非永久源删除门；`tests/manual_validation/run.py` 的五个扁平显式场景已实现。四个 Copy 场景和 `move-page` 均自动准备严格富内容父页，以及包含三个编号/项目符号与 To Do 标签混合项的语义子页；Runner 会独立重算 `id_map`/拓扑并持久化成功或部分失败 envelope；
 - Move 的验收关口已调整为：逐 Page 的 `DeleteHierarchy(permanently=false)` 完成通用有界回读，且 manual scenario 的 after snapshot 证明整棵源子树不再处于活动 hierarchy。真实环境已观察到 OneNote UI 能显示已删除页面、但 COM 回收站 hierarchy 不返回其旧 ID，因此 `is_in_recycle_bin=true` 降为可选诊断证据，不再阻塞成功；
 - 用户已在保留现场中确认 `Outline/Image/RichText/Table` 以及 `List/Tag` 的 Page Copy 在 UI 中一致；后者会被 COM 重编号并重排布局，不能用 canonical XML 相等作为唯一保真证明。六类均已进入静态保真 allowlist，List/Tag Page 改用 `semantic_list_tag` 比较可见文本、二进制、列表种类、标签类型和完成状态，同时保留 strict 差异作诊断。用户随后明确确认 `copy-page`、`copy-section`、`copy-section-group`、`copy-notebook` 与最终 `move-page` 五个统一 fixture 场景均已完成真实成功闭环。
+- 2026-08-11 的补充真实回归进一步扩展容器覆盖：`run-2026-08-11-21-33-01` 与 `run-2026-08-11-21-36-13` 分别证明 Section/SectionGroup 在 Notebook 内部和跨 Notebook 两种目标下均 `verified=true`、`lossless=true`，并完成反向 cleanup、双 Notebook restore/close；`run-2026-08-11-21-31-17` 证明 Notebook Copy 同时保留根 Section 富内容子树和新增 SectionGroup/Section/Page 子树，7 个对象全部精确映射。目标 Notebook 通过刷新后的 exact-ID confirmation 一次关闭并按 `closed_not_deleted` 保留，未再出现 stale `modified` confirmation mismatch。
 
 ## 已满足的发布门
 
@@ -43,4 +44,6 @@ Copy 允许尽力保留并显式报告不支持或尚未实测的内容。Move �
 
 ## 完成状态
 
-2026-08-10，用户明确确认上述五个具名场景已经全部完成真实 OneNote 验收。代码、自动化合同、静态保真门、严格非永久源删除、当前文档和用户确认的真实证据均满足完成定义，因此本 TODO 正式标记为“已完成”。未验证内容继续阻止不满足保真门的 Move 删除源；当前 TODO 004 只继续取证墨迹、UI 形状与在线视频，FileAttachment/MeetingInfo 已删除专属验证入口并保留排除原因。
+2026-08-10，用户明确确认上述五个具名场景已经全部完成真实 OneNote 验收。代码、自动化合同、静态保真门、严格非永久源删除、当前文档和用户确认的真实证据均满足完成定义，因此本 TODO 正式标记为“已完成”。未验证内容继续阻止不满足保真门的 Move 删除源。2026-08-11，TODO 004 又完成 InkDrawing、UIShape 与录像 MediaFile 的隔离 Copy 取证并将其加入静态保真 allowlist；2026-08-12，InsertedFile 的 strict canonical Copy 和人工打开附件确认也完成并加入同一集合。FileAttachment/MeetingInfo 已删除专属验证入口并保留排除原因。Embedded Spreadsheet（内嵌电子表格）也按当前产品范围明确 unsupported；因尚无公开 `kind`/XML 证据，不建立别名或专属入口。
+
+2026-08-11，用户又完成增强后的三个容器场景：Section 与 SectionGroup 补齐同 Notebook/跨 Notebook 双 case，Notebook 补齐嵌套 SectionGroup 子树和最新 `modified` 关闭确认。三次 run 顶层均为 `passed`、均未打开 cache template 且 inventories unchanged；这是对已完成结论的增强回归，不改变 TODO 状态。

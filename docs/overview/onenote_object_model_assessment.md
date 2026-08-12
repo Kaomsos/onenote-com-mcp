@@ -6,7 +6,7 @@
 > 方法：静态检查生产代码、当前设计契约、自动化测试与已保存的人工验证记录；未操作真实 OneNote 数据。
 > 结论补充：2026-08-10 用户触发的 Reorder 隔离验证；Section 保留，SectionGroup 明确拒绝。
 > 合同同步：2026-08-10 后续工作树已实现全部已打开 Notebook 搜索与默认单页 Page Copy；Page Copy 已获用户真实证据，全局搜索仍待独立验收。
-> 取证范围同步：2026-08-11 后续 Copy 内容取证聚焦 InkDrawing、UI Shape、MediaFile；FileAttachment 与 MeetingInfo 排除。
+> 取证范围同步：2026-08-11 后续 Copy 内容取证聚焦 InkDrawing、UI Shape、MediaFile；FileAttachment、MeetingInfo 与 Embedded Spreadsheet（内嵌电子表格）排除。
 > Move 同步：2026-08-11 用户确认更新后的 Page root-only/subtree 以及跨 Notebook Section/SectionGroup 三个 Move 场景全部通过；证据分别来自 `run-2026-08-11-20-29-19`、`run-2026-08-11-20-31-28`、`run-2026-08-11-20-33-29`。
 
 ## 核心阅读入口
@@ -38,9 +38,9 @@
 - Search 要求显式 scope，local scan 具有候选 Page、单页字符、总字符和总耗时硬预算，且不会静默切换 backend；
 - Writes、Deletes、Permanent Deletes、统一 Reparent、Copy、Page Move、容器 Move 和 raw XML 分别 fail closed；
 - raw XML 与 legacy generic destructive 工具不进入默认 profile；
-- 四层 Copy、Page Move 与跨 Notebook Section/SectionGroup Move 已有实验实现、Move 专属 plan digest、预算和部分失败语义；容器 Move 只允许跨 Notebook，并只在 verified/lossless Copy、完整单射映射和源重校验通过后执行一次非永久根删除。
+- 四层 Copy、Page Move 与跨 Notebook Section/SectionGroup Move 已有实验实现、Move 专属 plan digest、预算和部分失败语义；容器 Move 只允许跨 Notebook，并只在共享 `copy_contract_satisfied`、完整单射映射和源重校验通过后执行一次非永久根删除。Move 不另设 lossless 或逐类别门禁。
 
-项目当前的主要差距已从“缺少稳定对象模型”转移到“扩展能力与跨环境证据”：用户已确认四层 Copy、默认单页/显式子树 Page Copy、更新后的 Page Move、跨 Notebook Section/SectionGroup Move 和三类迁移后的 typed Reparent 场景在当前环境完成真实闭环。容器 Move 的证据覆盖最小 Outline/RichText 子树与严格 Copy→单次非永久根删除编排，不扩大附件、插入文件、墨迹、媒体和 MeetingInfo 的保真集合。后续内容 Copy 取证只聚焦 InkDrawing、OneNote UI Shape 和 MediaFile（在线视频）；FileAttachment 因当前 GUI 无法生成独立表示而排除，MeetingInfo 因小众、难生成且价值低而排除。Shape 的实际公开 kind/XML 投影尚待观察。SectionGroup Reorder 已依据后端固定名称升序结束评估，不再等待正向复跑。COM bridge 也仍然每次调用启动 PowerShell 并创建 `OneNote.Application`，尚未用正式基准证明是否值得引入长驻 broker。
+项目当前的主要差距已从“缺少稳定对象模型”转移到“扩展能力与跨环境证据”：用户已确认四层 Copy、默认单页/显式子树 Page Copy、更新后的 Page Move、跨 Notebook Section/SectionGroup Move 和三类迁移后的 typed Reparent 场景在当前环境完成真实闭环。InkDrawing、UIShape、本地录像 `MediaFile` 和 `InsertedFile` 已完成 lossless Copy。FileAttachment 因当前 GUI 无法生成独立表示而排除，MeetingInfo 因小众、难生成且价值低而排除；Embedded Spreadsheet（内嵌电子表格）尚无公开 `kind`/XML 证据，按当前产品范围明确不支持。
 
 ## 2. 复审范围与证据等级
 
@@ -266,9 +266,9 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | SectionGroup Reparent                                                   | typed service 与 runner 已覆盖防循环、三种父级路线、后代 ID/拓扑、Page 内容、无关对象和逆序恢复                                         | 用户确认迁移后的 `reparent_section_group` 场景在当前环境真实通过                                              | typed 实验工具；仍不进入`all`   |
 | Page/Section/SectionGroup/Notebook Copy 与 Page Move                    | 已覆盖 root-only/subtree、递归容器、Runner 与生产合同                                                                                       | 用户已确认四层 Copy、默认单页/完整子树 Page Copy；`run-2026-08-11-20-29-19` 再确认 Page Move 两种范围、保留后代和非永久删除 | 当前环境真实闭环已完成            |
 | 跨 Notebook Section/SectionGroup Move                                  | 已覆盖专属 digest、独立 policy、完整单射映射、源重校验、单次根删除、源子树 inactive、目标复核和双 Notebook 场景                           | `run-2026-08-11-20-31-28` 与 `run-2026-08-11-20-33-29` 均由用户运行通过；完整源子树 inactive，双 role lease 关闭 | 当前环境真实闭环已完成            |
-| FileAttachment/InsertedFile/InkDrawing/MediaFile/MeetingInfo；UI Shape 待确认实际投影 | 已知 XML 类型有识别和 fail-closed 分支；Shape 尚不能预设公开 kind | 当前只计划补齐 InkDrawing、UI Shape、MediaFile；FileAttachment/MeetingInfo 已排除，InsertedFile 仅保留 fixture/cache 证据 | 全部未获 Copy 证据的能力保持 unverified，阻止 Move 删除源 |
+| InkDrawing/UIShape/MediaFile/InsertedFile Copy；FileAttachment/MeetingInfo/Embedded Spreadsheet 保留边界 | 四种已验证类型具备 detector、生产 comparator 和 fail-closed XML 分支；Shape 保持公开 `kind=InkDrawing`；InsertedFile 使用可读本地 source/cache 路径重建；Embedded Spreadsheet 尚无公开表示证据 | 四种类型的用户隔离 Copy 已通过；MediaFile 覆盖同/跨 Section，InsertedFile 另由用户打开目标附件确认合成内容一致；Embedded Spreadsheet 未执行真实 backend run | 四种已进入保真 allowlist；FileAttachment/MeetingInfo/Embedded Spreadsheet 保持 unverified/unsupported |
 
-`Outline/Image/RichText/Table/List/Tag` 的证据只适用于已记录的真实环境与验证 tier，不应改写为 OneNote COM 的跨版本普遍保证。
+`Outline/Image/RichText/Table/List/Tag/DisplayEquation/InkDrawing/UIShape/MediaFile/InsertedFile` 的证据只适用于已记录的真实环境与验证 tier，不应改写为 OneNote COM 的跨版本普遍保证。
 
 ## 8. 剩余缺口与下一阶段路线
 
@@ -279,7 +279,7 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | [001：本地程序化 OneNote 隔离验证 Runner](../todo/001_programmatic_isolated_mutation_runner.md)              | 已完成 | Runner 架构、纯合同与用户确认的逐 scenario 真实验收矩阵均已闭环     |
 | [002：P2 四层 Copy 与 Page Move](../todo/002_p2_copy_and_reconstructive_page_move.md)                        | 已完成 | 用户确认四层 Copy 与最终 Page Move 的五个统一 fixture 场景全部通过  |
 | [003：Scenario 独立 Fixture 与单 MCP 进程闭环](../todo/003_scenario_scoped_mcp_and_fixtures.md)              | 已完成 | 架构、合同、低风险运行、性能单样本和严格失败门已有证据              |
-| [004：交互式 Copy/Move 未验证内容保真验收](../todo/004_interactive_copy_move_content_fidelity_validation.md) | 进行中 | 聚焦 InkDrawing、UI Shape、MediaFile 的逐类型证据和静态 allowlist 评审；FileAttachment/MeetingInfo 已排除 |
+| [004：交互式 Copy 未验证内容保真验收](../todo/004_interactive_copy_move_content_fidelity_validation.md) | 已完成 | InkDrawing、UI Shape、MediaFile 的逐类型 Copy 证据、生产 comparator 和静态 allowlist 已闭合；Move 复用 Copy 类别门禁，FileAttachment/MeetingInfo/Embedded Spreadsheet 已排除 |
 | [005：Page Copy 默认仅复制单页，可选包含缩进子树](../todo/005_page_copy_without_indentation_subtree.md)      | 已完成 | 默认单页与显式完整子树已交付，用户已确认双 case 真实验收通过       |
 | [006：Typed Section 与 SectionGroup Reorder](../todo/006_typed_section_and_section_group_reorder.md)         | 已完成 | Section 真实排序已确认；SectionGroup 因后端固定名称升序而明确拒绝   |
 | [007：跨版本兼容性证据与环境元数据](../todo/007_cross_version_compatibility_evidence.md)                     | 待办   | 后续补充非阻塞的跨版本证据，不重开 SectionGroup Reorder 能力结论    |
@@ -289,18 +289,19 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | [011：Scenario 自管理 Fixture Recipe](../todo/011_scenario_owned_fixture_recipes.md)                         | 已完成 | Scenario-owned recipe、增量 recorder 和共享 typed primitive 已交付  |
 | [012：跨 Notebook 容器重建式 Move](../todo/012_reconstructive_section_and_section_group_move.md)            | 已完成 | 四个 typed 工具、独立门控与双 Notebook 场景已交付；用户确认 Section/SectionGroup 真实 Move 均通过 |
 | [013：Reparent 默认落点合同](../todo/013_reparent_default_placement_contract.md)                             | 待办   | 固化 Page/Section 默认落点并向 Agent 返回结构化 placement            |
+| [018：在线视频表示与 Copy 保真验证](../todo/018_online_video_copy_fidelity_validation.md)                  | 已取消 | 不建立独立对象类型或有损 Copy 合同；局限性证据保留在 Lesson |
 
 ### 8.2 优先事项
 
 1. 完成 TODO 008 的双 Notebook 只读真实验收，核对两种 backend 的归属与错误行为，不把空 `start_id` 未经证据地等同于 Desktop `Ctrl+E`。
 2. 推进 TODO 013 的 Reparent 默认落点合同。
-3. 实施 TODO 004 的交互式、非 `all` 场景，为未验证内容分别建立机器 comparator 与用户 UI verdict；不能用运行时输入动态扩展生产 allowlist。
+3. 保持 TODO 004 已完成的静态边界：InkDrawing、UIShape、MediaFile、InsertedFile 的 Copy comparator、用户 UI verdict 和 allowlist 评审已经完成，运行时输入不得动态扩展生产 allowlist，Move 不另建逐类别门禁。
 4. 继续保持统一 Reparent、Copy、Page Move 和容器 Move 的独立实验开关；SectionGroup Reorder 的遗留开关保持关闭。若 Page body replacement 的审查需求提高，再为 Replace 设计独立 plan/execute。只有在收集正式基准后才评估长驻单线程 COM broker。
 
 ## 9. 最终判断
 
 原审计的架构取舍已经实施：项目现在是 local-only、COM-first、typed-object-first 的 MCP，而不是把 COM 方法和 raw XML 直接当成产品模型。P0/P1 的主要对象、查询、安全和 mutation 边界已有代码与自动化合同，README 中模糊的“Full CRUD”也已被具体能力目录取代。
 
-下一阶段不需要再次设计一套对象模型。四层 Copy、默认单页/完整子树 Page Copy、更新后的 Page Move 和两个跨 Notebook 容器 Move 都已由用户确认完成当前环境真实闭环；全局搜索仍需独立真实验收。接下来应推进默认落点，并为墨迹、UI 形状和在线视频建立可审查的保真比较。FileAttachment/MeetingInfo 的排除原因见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。特定 Office 环境中的成功仍不能外推为普遍产品承诺。
+下一阶段不需要再次设计一套对象模型。四层 Copy、默认单页/完整子树 Page Copy、更新后的 Page Move 和两个跨 Notebook 容器 Move 都已由用户确认完成当前环境真实闭环；全局搜索仍需独立真实验收。墨迹、UI 形状和录像 MediaFile 的可审查保真比较及静态 allowlist 已完成，Move 统一复用 Copy 类别门禁；接下来应推进默认落点。FileAttachment、MeetingInfo 与 Embedded Spreadsheet 的排除原因见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。特定 Office 环境中的成功仍不能外推为普遍产品承诺；Embedded Spreadsheet 的当前不支持结论属于未取证的产品范围决定，也不能反向写成平台失败。
 
 仍应坚持的长期边界包括：Notebook Delete 不受支持，Close 不等于 Delete；SectionGroup 只按名称固定升序，Reorder 请求必须拒绝；路径只用于展示和只读解析；Replace 与递归 Copy/Move 是多步、非原子操作；raw XML 不能进入默认工具面；真实 OneNote mutation 只能由用户通过具名、隔离、最小权限的 scenario 显式启动。

@@ -86,7 +86,9 @@
 | `add_image_to_page` | `page_id`, `image_path`, `expected_title`, `expected_section_id`, `expected_modified=null`, `image_format=""`, `x=36`, `y=120`, `width=null`, `height=null` | `item`, `image_path`, 实际 `width/height`；验证内容摘要变化。 |
 | `replace_page_body` | `page_id`, `content`, `expected_title`, `expected_section_id`, `expected_modified=null`, `title=null`, `content_format="plain"` | `item`, `deleted_objects`, `replaced`, `partial`；非原子。 |
 
-`content_format` 取 `plain/html/markdown`；`new_page_style` 取 `default/blank_with_title/blank_no_title`。Markdown 富转换依赖可选 OneMore，缺失时按现有转换器边界处理。受限 HTML 还支持原生扁平列表：`ol/ul` 与 `li`；`li data-tag="to-do"`、`li data-tag="to-do:completed"` 分别生成未完成/已完成的原生 OneNote To Do 标签。嵌套列表及未知 `data-tag` fail closed，不开放 raw XML。
+`content_format` 取 `plain/html/markdown`；`new_page_style` 取 `default/blank_with_title/blank_no_title`。Markdown 富转换依赖可选 OneMore，缺失时按现有转换器边界处理。受限 HTML 还支持原生扁平列表：`ol/ul` 与 `li`；`li data-tag="to-do"`、`li data-tag="to-do:completed"` 分别生成未完成/已完成的原生 OneNote To Do 标签。它也接受使用规范命名空间的有界 Presentation MathML；`math` 不带 `display` 表示行内公式，`display="block"` 表示独立单行公式并单独生成一个非空 `TextBlock/OE/T`，避免从混合富文本拆分 block 公式。未知元素、属性、命名空间或 display 值 fail closed。嵌套列表及未知 `data-tag` 同样 fail closed，不开放 raw XML。
+
+独立 `TextBlock/OE/T` 不消除 OneNote COM 自身的 DisplayEquation 写回限制。在当前实测环境中，任何通过 `UpdatePageContent` 初次生成的 standalone block MathML 都可能在公式前获得一个纯空白 `span + br`；若将该包装原样再次提交，break 会继续累积。这个边界适用于最终走相同 COM 写入的 `create_page`、`append_to_page`、`replace_page_body` 和 reconstruction Copy/Move，不是 Copy 专属问题。上述普通 Page 写工具不承诺 XML/CDATA 字节等同或公式前绝无 OneNote 生成的间距；Copy 另在发送前实施受限清理以阻止累积。行内公式不在该特例内。证据与版本边界见 [`lesson/display_equation_com_leading_whitespace_normalization.md`](../lesson/display_equation_com_leading_whitespace_normalization.md)。
 
 Create 的 COM 返回 ID 是第一身份来源。回读对象必须同时满足预期 type、friendly path、active state 与计划父级；Page 必须属于请求的 Section。只有 COM 返回 ID 在 hierarchy 中不可见、同一路径恰有一个新出现的 typed 对象时，才以 `identity_remapped=true` 接受一对一 remap。重复 path、既有对象 ID、错误 type/parent 或 recycle-bin 对象一律拒绝；失败响应保留 `allocated_ids`，不得按标题或 path 任选旧对象。合法的同 Section 重名 Page 因此返回互异的精确 Page IDs。
 
@@ -124,7 +126,7 @@ Notebook 没有 Delete 工具。
 
 ## 7. P2 Copy 与重建式 Move（实验）
 
-计划工具只读；执行工具除现有确认字段外必须提交刚生成的 `plan_digest`。摘要包含源树、每页完整 XML hash、目标直属子项、名称、执行模式和 Page Copy/Move 的 `include_descendants`；执行前重算不一致即在 mutation 前拒绝。计划返回的 `snapshots.source` 公开实际选择范围的稳定资源列表与 Page hash、`snapshots.destination` 公开目标直属快照；root-only Move 另以 `snapshots.move_source` 绑定将被保留的后代，但不返回原始 Page XML。
+计划工具只读；执行工具除现有确认字段外必须提交刚生成的 `plan_digest`。摘要包含源树、每页稳定内容 hash、目标直属子项、名称、执行模式和 Page Copy/Move 的 `include_descendants`；稳定内容 hash 保留内容对象身份、正文、格式和二进制，但忽略 OneNote 自有的时钟、选择、视图和本地 cache/path 元数据。执行前重算不一致即在 mutation 前拒绝。计划返回的 `snapshots.source` 公开实际选择范围的稳定资源列表、`page_hashes` 和仅供诊断的 raw `page_xml_hashes`，`snapshots.destination` 公开目标直属快照；root-only Move 另以 `snapshots.move_source` 绑定将被保留的后代，但不返回原始 Page XML。
 
 | 工具 | 参数 | 成功时的主要返回/验证 |
 | --- | --- | --- |
@@ -134,13 +136,13 @@ Notebook 没有 Delete 工具。
 | `copy_section_group` | `section_group_id`, 其余确认/目标字段同上 | 递归创建 SectionGroup、Section 和 Page。 |
 | `copy_notebook` | `notebook_id`, `expected_name`, `plan_digest`, `expected_modified=null`, `destination_name=""`, `destination_base_folder=""` | 新 Notebook 及全部后代；不提供 Notebook 删除回滚。 |
 | `plan_move_page` | `page_id`, `destination_section_id`, `destination_title=""`, `include_descendants=false` | 选定范围的 Copy 计划、源 Page 回收步骤、被排除后代的保留绑定和外部入站链接警告。 |
-| `move_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `plan_digest`, `expected_modified=null`, `destination_title=""`, `include_descendants=false` | lossless/verified 后仅叶到根回收选定 Page；root-only 时先提升并验证被排除后代；否则返回结构化 partial failure。 |
+| `move_page` | `page_id`, `destination_section_id`, `expected_title`, `expected_section_id`, `plan_digest`, `expected_modified=null`, `destination_title=""`, `include_descendants=false` | `copy_contract_satisfied=true` 后仅叶到根回收选定 Page；root-only 时先提升并验证被排除后代；否则返回结构化 partial failure。 |
 | `plan_move_section` | `section_id`, `destination_parent_id`, `destination_name=""` | 只读生成跨 Notebook Section Move 专属 digest，绑定完整源子树和两个 Notebook ID。 |
-| `move_section` | `section_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `plan_digest`, `expected_modified=null`, `destination_name=""` | 完整 verified/lossless Copy 后重校验源，只调用一次非永久 Section 根删除，并验证全部源子树 ID 不再活动。 |
+| `move_section` | `section_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `plan_digest`, `expected_modified=null`, `destination_name=""` | 完整通过共享 Copy 合同后重校验源，只调用一次非永久 Section 根删除，并验证全部源子树 ID 不再活动。 |
 | `plan_move_section_group` | `section_group_id`, `destination_parent_id`, `destination_name=""` | 只读生成跨 Notebook SectionGroup Move 专属 digest。 |
 | `move_section_group` | `section_group_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `plan_digest`, `expected_modified=null`, `destination_name=""` | 完整复制 Group/Section/Page 子树后只删除一次 Group 根，并复核源全部不活动和目标未变化。 |
 
-`copy_report` 固定包含 `id_map/allocated_ids/resolved_target_ids/copied_counts/skipped_content/issues/lossless/verified/page_results`；Notebook Copy 还包含经过创建返回值核对的 `destination_path`。已知有损但执行完整的 Copy 可返回成功和 warning；运行中失败保留已创建目标，返回 `created_ids/allocated_ids/resolved_target_ids/possibly_untracked_allocated_ids/id_map/source_touched/source_untouched/topology_touched/manual_recovery_required/completed_steps/failed_step`。字段只陈述已证明的阶段状态，不做破坏性自动回滚，也不在证据不足时默认声称 source untouched。
+`copy_report` 固定包含 `id_map/allocated_ids/resolved_target_ids/copied_counts/skipped_content/issues/lossless/verified/fidelity/copy_contract_satisfied/page_results`。`fidelity` 为 `lossless` 或 `unverified`；`copy_contract_satisfied` 只在拓扑/机器 read-back 通过且没有 omitted/unverified issue 时为 true。`content_type_unverified` 与 omitted content 会阻止。Notebook Copy 还包含经过创建返回值核对的 `destination_path`。运行中失败保留已创建目标，返回 `created_ids/allocated_ids/resolved_target_ids/possibly_untracked_allocated_ids/id_map/source_touched/source_untouched/topology_touched/manual_recovery_required/completed_steps/failed_step`。
 
 Page Copy 与 Page Move 省略 `include_descendants` 或显式为 `false` 时只选择根 Page；显式为 `true` 时才选择完整缩进子树。计划的 source snapshot、估算、步骤、预算以及执行的 `id_map/created_ids/copied_counts/page_results` 都只覆盖实际选择范围；计划与执行值不一致时在创建目标前拒绝。`destination_section_id` 始终标识 Section，不标识父 Page：执行先为范围内每个 Page 分配并精确回读全新 ID，保留目标 Section 的既有 Page 顺序，再把新目标块整体追加到末尾；目标根归一化为 level 1，选定后代按相对源根的 `page_level` 恢复缩进。创建回读优先使用 COM 返回的精确 ID；同名路径只允许无歧义回退，任何源 ID 命中、目标 ID 复用或错误 Section 落点都必须在写入 Page 正文或层级前 fail closed。Page Copy 不改变被排除后代；root-only Move 则在删除根页前将完整排除子树整体提升一级，保持其 ID、Section、相对层级和内容，并在删除后再次回读。提升前后的内容门使用稳定正文摘要，忽略此次操作必然改变的 Page 根 `pageLevel` 与 OneNote 管理的时钟/视图元数据；Page ID、Section、顺序、层级和 `parent_page_id` 仍由独立拓扑关口严格比较，普通正文、格式、内容对象和二进制变化仍会阻止删除。提升或保留证据不完整时不得删除源；删除已发生但保留页无法验证时返回需要人工接管的 partial failure。Section、SectionGroup、Notebook Copy 继续递归，`include_descendants` 不改变其范围。
 
@@ -154,20 +156,32 @@ Page Copy 与 Page Move 省略 `include_descendants` 或显式为 `false` 时只
 
 Move 删除阶段的部分失败分别返回 `attempted_source_ids`、已从活动树移除的 `deleted_source_ids`、其中带回收站标记的 `recycled_source_ids`、未暴露回收站元数据的 `recycle_unverified_source_ids` 和尚未完成步骤的 `remaining_source_ids`。只有 `deleted_source_ids` 参与源删除完成判断，未取得标记的 ID 不得计入 `recycled_source_ids`。
 
-容器 Move 与 Page Move 的删除策略不同。Section/SectionGroup Move 强制源、目标属于不同已打开 Notebook；同 Notebook 在任何 mutation 前拒绝并指向 `reparent_section` / `reparent_section_group`。容器 Move 的 plan/execute 都隐含完整子树，不提供 `include_descendants`；Copy gate、完整单射 `id_map` 和源 digest 重校验通过后，只允许对源容器根调用一次 typed Delete，且 `permanently=false` 在 service 内固定。之后枚举活动 hierarchy，要求计划中的根及全部后代 ID 均消失，再比较删除前后的目标子树 digest。删除后目标复核失败使用 `source_removed_destination_revalidation_failed`，不得虚报成功或自动回滚。
+容器 Move 与 Page Move 的删除策略不同。Section/SectionGroup Move 强制源、目标属于不同已打开 Notebook；同 Notebook 在任何 mutation 前拒绝并指向 `reparent_section` / `reparent_section_group`。容器 Move 的 plan/execute 都隐含完整子树，不提供 `include_descendants`；共享 `copy_contract_satisfied`、完整单射 `id_map` 和源 digest 重校验通过后，只允许对源容器根调用一次 typed Delete，且 `permanently=false` 在 service 内固定。Move 不维护额外内容类型或 lossless 门，只消费 Copy 的共享合同结论。之后枚举活动 hierarchy，要求计划中的根及全部后代 ID 均消失，再比较删除前后的目标子树 digest。
 
 2026-08-11 的用户触发隔离运行确认了当前环境中的三条 Move 成功路径：`move-page` 同时通过跨 Notebook root-only 与显式 subtree case，root-only 被排除子页在提升后保持活动且内容稳定；`move-section` 与 `move-section-group` 均通过 verified/lossless Copy、完整单射映射、一次非永久根删除、完整源子树活动态缺席和目标复核。Section 删除取得回收站正向标记；SectionGroup 和 Page 的部分运行中 COM 未暴露回收站元数据，但精确源 ID 均从活动 hierarchy 消失，符合既定成功门。该证据不扩大内容类型 allowlist，也不取消默认关闭的实验 policy。
 
-当前候选 XML 内容会尽力保留；能力清单除 Outline/Image/附件/墨迹/媒体对象外，还单独识别 `RichText/Table/List/Tag/MeetingInfo`。基于用户确认的隔离真实后端证据，`Outline/Image/RichText/Table/List/Tag` 已进入保真 allowlist；其余尚未确认的类型产生 `content_type_unverified`，使 `lossless=false` 并阻止 Move 删除源。当前后续 Copy 取证只聚焦 `InkDrawing`、OneNote UI `Shape` 和 `MediaFile`（在线视频）；UI Shape 的实际公开 `kind`/XML 投影尚待真实观察，在此之前不把字面量 `Shape` 加入能力或 allowlist。`FileAttachment` 与 `InsertedFile` 继续按不同 XML kind 分类：当前 OneNote `16.0.20228.20158` 环境的“插入 → 文件附件”操作只回读到 `InsertedFile`，因此 `FileAttachment` 仍未验证，且不会通过类型别名继承 `InsertedFile` 的任何证据；该类型因当前 GUI 无法生成独立表示而排除出本轮取证。`MeetingInfo` 也因低价值和高生成成本排除。排除只改变验证优先级，不会把类型标记为已验证或放宽 Move。详见 [`lesson/onenote_page_object_kind_and_file_attachment_representation.md`](../lesson/onenote_page_object_kind_and_file_attachment_representation.md)。已知顶层内容块内只要出现不在 OneNote 2013 静态节点 allowlist 的后代节点，整个顶层块即省略并返回 `unsupported_nested_page_node`，不会静默透传未来扩展。
+当前候选 XML 内容会尽力保留。`Outline/Image/RichText/Table/List/Tag/DisplayEquation/InkDrawing/UIShape/MediaFile/InsertedFile` 属于 lossless 集合。`DisplayEquation` 是 Copy 对包含 `display="block"` 的有界 Presentation MathML 建立的语义内容类型，不是公开 PageContentObject `kind`；行内公式仍属于 RichText。UI Shape 的公开 kind 仍为 `InkDrawing`，由 `ShapeInfo`（箭头另含 `AnchorPoint`）分类。未知类型产生 `content_type_unverified` 并阻止共享 Copy 合同。`OCRData/OCRText/OCRToken` 只在 Image 子树内接受；其他上下文及未知后代仍 fail closed。
+
+当前环境观察到的 `InsertedFile` 是 `OE` 的无子节点后代，使用 `pathSource/pathCache/preferredName`，不含内联 `Data`。重建 Copy 在 plan 阶段要求其中至少一个本地文件路径可读：优先使用有效 `pathSource`，否则回退到有效 `pathCache` 或旧式 `path`，并只把选中的值作为 outbound `pathSource` 交给 `UpdatePageContent`。若全部不可读，plan 以不包含实际路径的 `validation_error` 在创建目标前 fail closed。机器本地路径继续作为 volatile 属性从 canonical/stable 比较和普通 evidence 中排除。2026-08-12 的隔离真实 Copy 已通过 strict canonical 机器比较和用户打开附件后的 run-bound ACCEPT，因此 `InsertedFile` 已进入 validated/lossless 集合；这不与 `FileAttachment` 建立别名。
 
 Page 回读采用按页面内容组合选择的分层验收：
 
 - `strict_canonical`：不含 List/Tag，或把 List/Tag 与 Table/Image/MeetingInfo 等其他结构混在同一 Page 时使用。它要求 canonical XML、可见文本、内容对象计数和二进制 hash 全部相等。
+- `semantic_mathml`：Page XML 中只出现行内的有界 Presentation MathML 时使用。它要求公式数量、元素树和 token hash 精确相等，并要求移除完整 MathML root 后的其余 Page XML canonical 相等；可见文本、内容对象计数和二进制 hash 仍是接受条件。
+- `semantic_display_equation`：只要 Page 中包含 `display="block"` 的有界 Presentation MathML 即使用。除继续严格比较全部 MathML 语义、可见文本、对象和二进制外，只容忍每个单行公式前零个或一个纯空白 `<span><br/></span>`；该空 span 只允许已观察到的 `font-family` style 和可选 language 展示属性，具体字体值不参与判定。两个或更多 break、其他 span 属性、可见 span 正文、其他残留 markup、公式数量/display/元素/token 变化均 fail closed。比较通过时可产生 `verified=true/lossless=true/copy_contract_satisfied=true`；这里的 lossless 表示本项目定义的语义保真，不表示 CDATA 字节相同。
 - `semantic_list_tag`：Page 的能力集合限于 `Outline/RichText/List/Tag` 且实际出现 List 或 Tag 时使用。它要求可见文本、二进制 hash，以及列表种类、标签类型、完成状态的语义投影相等；canonical XML 和对象计数仍记录为诊断，但不作为接受条件。
 
-这个分层是 OneNote COM 复制语义的一部分，而不只是测试便利：`UpdatePageContent` 会重新生成或规范化 `TagDef` index、列表序号状态、对象 ID、Outline/OE 分块和部分属性，因此视觉及行为完全相同的 List/Tag 页面可能无法 canonical 相等。若对所有内容统一使用严格 XML，会把成功复制误报为失败；若对整页统一放宽，又可能掩盖 Table/Image 等稳定结构的真实丢失。把两类内容放在独立 Page，并逐页选择验收 tier，可以同时保留稳定类型的强门禁和 List/Tag 的 COM 等价性。
+这个分层是 OneNote COM 复制语义的一部分，而不只是测试便利：`UpdatePageContent` 会重新生成或规范化 MathML namespace 序列化、`TagDef` index、列表序号状态、对象 ID、Outline/OE 分块和部分属性。若对所有内容统一使用严格 XML，会把成功复制误报为失败；若对整页统一放宽，又可能掩盖 Table/Image 等稳定结构的真实丢失。MathML tier 因此只替换完整公式 root 后比较页面其余 canonical 结构，并单独严格比较 content-free 公式语义投影；List/Tag 则继续使用自己的受限语义门。
 
-`List/Tag` 已是 validated/lossless 类型；“语义 tier”描述的是证明保真的方法，不代表它仍未验证。只要每页按其 tier 等价且拓扑回读通过，Copy 可报告 `lossless=true`；Move 只消费生产 Copy 的 `lossless/verified` 结论，并额外验证选定范围、源快照、非永久删除和排除后代保留，不在 Move 场景重复承担逐内容类型取证。四个 Copy scenario 继续覆盖内容保真；`move-page` 使用最小 Outline/RichText fixture，仅覆盖跨 Notebook root-only/subtree 的 Copy→安全删除组合。`FileAttachment` 与 `MeetingInfo` 不属于当前取证范围，但仍保持 unverified。验证流程见 `tests/manual_validation/README.md`。
+Copy 输出规范化只针对 `DisplayEquation` 前已验证为纯空白的包装：在每次 `UpdatePageContent` 前移除紧邻 block MathML 的整个空白 span 及其中全部 `<br/>`，也移除同位置遗留的裸 `<br/>`。带可见文字、嵌套其他标签或不紧邻 display MathML 的 span/break 不会被清理。这样即使 OneNote COM 在写回时重新生成一个空白 span/break，链式 Copy 也保持有界，而不会继续从 `1 → 2 → 3` 累积。普通换行、行内公式及 MathML 外其他富文本不受影响。`page_results[].normalizations.redundant_breaks_before_display_mathml_removed` 与 `display_equation_empty_spans_removed` 分别记录清理的 break 和 span 数量。
+
+`List/Tag/InkDrawing/UIShape/InsertedFile` 已是 validated/lossless 类型；InkDrawing 使用 `1e-4` 几何容差，UIShape 使用 `0.02`，InsertedFile 与 MediaFile 保持 strict canonical。Move 只消费生产 Copy 的 `copy_contract_satisfied`，不再次按类别或 `lossless` 分流；之后仍独立验证选定范围、源快照、非永久删除和排除后代保留。`FileAttachment` 与 `MeetingInfo` 仍保持 unverified。`Embedded Spreadsheet`（内嵌电子表格）是尚未取得公开 `kind`/XML 证据的产品能力类别，当前明确 unsupported，不属于 Copy fidelity 集合。
+
+内容类型的 Copy/Move 验证不构成创建能力。当前没有为 `InsertedFile`、`InkDrawing`、`UIShape` 或 `MediaFile` 提供已验证的生产创建合同，也不宣称 `create_page`、`append_to_page` 或其他 typed mutation 能程序化生成这些原生对象。四种类型的已验证范围都是 reconstruction Copy，以及在共享 Copy 门通过后消费该结果的 Move；InsertedFile 的路径准备合同不属于程序化创建能力。
+
+Online Video 当前不能满足 lossless Copy 合同。已观察到的 reconstruction 会保留预览图、可见文本、图片 binary 和外部链接，但丢失播放器绑定；它没有独立的公开 `kind` 或可证明播放器保真的 capability。Copy 必须 fail closed，Move 不得删除源。证据与环境边界见 [`lesson/online_video_copy_loses_player_semantics.md`](../lesson/online_video_copy_loses_player_semantics.md)。
+
+D 阶段的交互证据已将 comparator 校准结果纳入生产 tier：`semantic_ink_drawing` 对 InkDrawing 子树结构、数据 hash 和 `Position/Size` 有界几何误差取证，自由墨迹使用 `1e-4` 绝对容差；`semantic_ui_shape` 复用相同的 Decimal 逐字段比较机制，但根据真实 Shape bounding-box 重算证据使用独立 `0.02` 绝对容差，并额外要求 source/target 的 `ShapeInfo` 及可选 `AnchorPoint` marker/子树一致。超过容差、非数字、结构或数据差异仍 fail closed。
 
 Move 对选定范围内的每个源 Page 调用 `DeleteHierarchy(permanently=false)`。通用删除服务会有界回读：对象必须从活动 hierarchy 消失，或者明确回读为 `is_in_recycle_bin=true`；若仍处于活动树则失败。root-only Move 在此之前先提升被排除的后代，并在删除后确认它们仍活动且内容未变。全部选定 Page 与保留页通过对应关口后 Move 才成功；manual scenario 再以双 Notebook after snapshot 独立确认。COM 是否再次暴露旧 ID 及其回收站标记不是验收条件，因为实际 OneNote UI 可能已在“已删除的笔记”中显示页面，而 COM hierarchy 仍不返回对应对象。返回中的 `recycle_bin_verification=verified|not_required_com_unavailable`、`recycled_source_ids` 和 `recycle_unverified_source_ids` 只表达诊断置信度，不改变非永久删除与活动树缺失的成功语义。该限制的观察证据、错误验收模型和可复用结论见 [`lesson/onenote_com_recycle_bin_visibility.md`](../lesson/onenote_com_recycle_bin_visibility.md)。
 
