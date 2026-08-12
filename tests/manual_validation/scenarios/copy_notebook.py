@@ -14,8 +14,8 @@ class CopyNotebookScenario(CopyScenario):
     fixture_recipe = RECIPE
     worksite_dry_run_action = "preserve-open-copy-notebook"
     help_text = (
-        "GATED: create and copy the Notebook; close the copy by default or preserve "
-        "both open Notebooks as a verified worksite for inspection."
+        "GATED: create and copy a Notebook containing root and grouped Sections; close "
+        "the copy with fresh confirmation by default or preserve both open Notebooks."
     )
 
     execute_copy = staticmethod(execute_copy)

@@ -341,7 +341,10 @@ def test_internal_report_renders_scenario_evidence_without_collecting_environmen
   "notebook": {"id": "notebook-id", "name": "Notebook"},
   "structure": {},
   "copy_scenario": {
-    "validated_content_types": ["Image", "List", "Outline", "RichText", "Table", "Tag"]
+    "validated_content_types": [
+      "DisplayEquation", "Image", "InkDrawing", "InsertedFile", "List", "MediaFile",
+      "Outline", "RichText", "Table", "Tag", "UIShape"
+    ]
   },
   "copy_fixture": {
     "page_id": "page-id",
@@ -425,7 +428,10 @@ def test_internal_report_renders_scenario_evidence_without_collecting_environmen
     assert '"validation_environment"' not in manifest
     assert "## Validated environment" not in report
     assert "Automated content: `rich_text, table, image, list, tag`" in report
-    assert "Validated content types: `Image, List, Outline, RichText, Table, Tag`" in report
+    assert (
+        "Validated content types: `DisplayEquation, Image, InkDrawing, InsertedFile, List, "
+        "MediaFile, Outline, RichText, Table, Tag, UIShape`"
+    ) in report
     assert "Planned content capabilities: `Image, List, Outline, RichText, Table, Tag`" in report
     assert "Semantic Page ID: `semantic-page-id`" in report
     assert "Semantic capabilities: `List, Tag`" in report
@@ -441,3 +447,68 @@ def test_internal_report_renders_scenario_evidence_without_collecting_environmen
     assert "Worksite preserved: `True`" in report
     assert "Manual cleanup required: `True`" in report
     assert "Preserved target IDs: `new-page`" in report
+
+
+def test_internal_report_renders_interactive_copy_and_discovery_evidence(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    test_utils.write_json(
+        run_dir / "manifest.json",
+        {
+            "schema_version": 1,
+            "run_id": "run",
+            "notebook": {"id": "notebook-id", "name": "Notebook"},
+            "structure": {},
+        },
+    )
+    copy_out = test_utils.scenario_dir(run_dir, "interactive-copy-ink-drawing")
+    test_utils.write_json(
+        copy_out / "result.json",
+        {
+            "scenario": "interactive-copy-ink-drawing",
+            "status": "passed",
+            "capability": "InkDrawing",
+            "target_id": "target-page",
+            "machine_comparator_passed": True,
+            "human_verdict": "accepted",
+            "production_verified": True,
+            "production_lossless": False,
+            "diagnostic_partial_admitted": True,
+            "verification_tier": "semantic_ink_drawing",
+            "source_deleted": False,
+        },
+    )
+    discovery_out = test_utils.scenario_dir(run_dir, "bootstrap-shape-fixture")
+    test_utils.write_json(
+        discovery_out / "result.json",
+        {
+            "scenario": "bootstrap-shape-fixture",
+            "status": "evidence_only",
+            "representation_status": "single_candidate_observed",
+            "candidate_added_kinds": ["InkDrawing"],
+            "candidate_added_capabilities": ["InkDrawing"],
+            "interactive_bootstrap": False,
+            "template_published": False,
+            "mutation_eligible": False,
+            "move_source_deletion_allowed": False,
+        },
+    )
+
+    asyncio.run(run_report(argparse.Namespace(run_dir=run_dir)))
+
+    report = (run_dir / "report.md").read_text(encoding="utf-8")
+    assert "Capability: `InkDrawing`" in report
+    assert "Machine comparator passed: `True`" in report
+    assert "Human verdict: `accepted`" in report
+    assert "Production verified: `True`" in report
+    assert "Production lossless: `False`" in report
+    assert "Diagnostic partial admitted: `True`" in report
+    assert "Verification tier: `semantic_ink_drawing`" in report
+    assert "Source deleted: `False`" in report
+    assert "Representation status: `single_candidate_observed`" in report
+    assert "Candidate added kinds: `InkDrawing`" in report
+    assert "Candidate added capabilities: `InkDrawing`" in report
+    assert "Interactive bootstrap: `False`" in report
+    assert "Template published: `False`" in report
+    assert "Mutation eligible: `False`" in report
+    assert "Move source deletion allowed: `False`" in report

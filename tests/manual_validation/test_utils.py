@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+from collections import Counter
 from datetime import datetime, timezone
 import hashlib
 from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 from pathlib import Path
+import re
 from typing import Any
 import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.page import (
     canonical_page_digest,
     page_content_capability_projection,
+    semantic_mathml_projection,
 )
+from local_onenote_mcp.page.copying import MATHML_FRAGMENT_PATTERN
+from local_onenote_mcp.page.parser import html_fragment_to_text, local_name, parse_xml
 from local_onenote_mcp.services.pages import stable_page_content_digest
 
 from .mcp_stdio_client import COPY_BUDGET_ENV, MCPStdioClient, ScenarioPolicy
@@ -46,6 +53,59 @@ def write_json(path: Path, value: Any) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+_BINARY_DATA_PATTERN = re.compile(
+    r"(<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?Data\b[^>]*>)"
+    r"(.*?)"
+    r"(</(?:[A-Za-z_][A-Za-z0-9_.-]*:)?Data\s*>)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def write_sensitive_page_xml(path: Path, xml: str) -> dict[str, Any]:
+    """Persist opted-in Page XML while replacing embedded binary payloads."""
+
+    redactions: list[dict[str, Any]] = []
+
+    def redact(match: re.Match[str]) -> str:
+        payload = match.group(2)
+        compact = "".join(payload.split())
+        decoded_as_base64 = True
+        try:
+            binary = base64.b64decode(compact, validate=True)
+        except (ValueError, binascii.Error):
+            decoded_as_base64 = False
+            binary = payload.encode("utf-8")
+        redactions.append(
+            {
+                "encoded_chars": len(compact),
+                "decoded_bytes": len(binary),
+                "decoded_as_base64": decoded_as_base64,
+                "binary_sha256": hashlib.sha256(binary).hexdigest(),
+            }
+        )
+        marker = (
+            "[[local-onenote-mcp:binary-data-redacted:"
+            f"index={len(redactions) - 1}]]"
+        )
+        return f"{match.group(1)}{marker}{match.group(3)}"
+
+    redacted_xml = _BINARY_DATA_PATTERN.sub(redact, xml)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(redacted_xml, encoding="utf-8")
+    temporary.replace(path)
+    return {
+        "path": str(path.resolve()),
+        "source_xml_chars": len(xml),
+        "saved_xml_chars": len(redacted_xml),
+        "binary_payload_count": len(redactions),
+        "binary_payloads": redactions,
+        "body_text_retained": True,
+        "raw_oe_t_mathml_retained": True,
+        "binary_data_retained": False,
+    }
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -150,6 +210,332 @@ def page_reparent_content_hash(xml: str) -> str:
     return canonical_page_digest(ET.tostring(root, encoding="unicode"))
 
 
+def mathml_structure_projection(xml: str) -> dict[str, Any]:
+    """Describe UI-authored MathML placement without retaining formula text."""
+
+    root = parse_xml(xml)
+    parents = {child: parent for parent in root.iter() for child in list(parent)}
+    semantic = semantic_mathml_projection(xml)
+    candidates: list[dict[str, Any]] = []
+
+    def nearest(node: ET.Element, kind: str) -> ET.Element | None:
+        current = parents.get(node)
+        while current is not None:
+            if local_name(current.tag) == kind:
+                return current
+            current = parents.get(current)
+        return None
+
+    def oe_summary(node: ET.Element | None) -> dict[str, Any] | None:
+        if node is None:
+            return None
+        texts = [
+            child.text or ""
+            for child in node.iter()
+            if local_name(child.tag) == "T"
+        ]
+        return {
+            "child_kinds": [local_name(child.tag) for child in list(node)],
+            "contains_mathml": any(MATHML_FRAGMENT_PATTERN.search(value) for value in texts),
+            "contains_visible_text": any(html_fragment_to_text(value) for value in texts),
+        }
+
+    def text_summary(node: ET.Element | None) -> dict[str, Any] | None:
+        if node is None:
+            return None
+        raw = node.text or ""
+        residual = MATHML_FRAGMENT_PATTERN.sub("", raw)
+        markup_tags = Counter(
+            match.group(1).casefold()
+            for match in re.finditer(
+                r"<\s*(?!/|!|\?)([A-Za-z][A-Za-z0-9:_-]*)\b",
+                residual,
+            )
+        )
+        return {
+            "contains_mathml": bool(MATHML_FRAGMENT_PATTERN.search(raw)),
+            "contains_visible_text": bool(html_fragment_to_text(residual)),
+            "markup_tags": dict(sorted(markup_tags.items())),
+        }
+
+    def known_display_break_wrapper(residual: str) -> bool:
+        cleaned = re.sub(
+            r"<!--\s*\[if\s+mathML\]\s*>|<!\s*\[endif\]\s*-->",
+            "",
+            residual,
+            flags=re.IGNORECASE,
+        ).strip()
+        if not cleaned:
+            return False
+        return bool(
+            re.fullmatch(
+                r"<span\b"
+                r"(?=[^>]*\bstyle\s*=\s*(['\"])[^>]*font-family\s*:\s*Calibri[^>]*\1)"
+                r"(?=[^>]*\blang\s*=\s*(?:['\"][^'\"]+['\"]|[^\s>]+))"
+                r"[^>]*>\s*(?:<br\s*/>\s*)+</span>",
+                cleaned,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        ) and not html_fragment_to_text(cleaned)
+
+    for text_node in root.iter():
+        if local_name(text_node.tag) != "T" or not text_node.text:
+            continue
+        matches = list(MATHML_FRAGMENT_PATTERN.finditer(text_node.text))
+        if not matches:
+            continue
+        equations: list[dict[str, Any]] = []
+        for match in matches:
+            try:
+                equation = ET.fromstring(match.group(0))
+            except ET.ParseError:
+                equations.append({"complete": False, "display": None})
+            else:
+                equations.append(
+                    {
+                        "complete": True,
+                        "display": equation.attrib.get("display"),
+                    }
+                )
+
+        residual = MATHML_FRAGMENT_PATTERN.sub("", text_node.text)
+        residual_tags = Counter(
+            match.group(1).casefold()
+            for match in re.finditer(
+                r"<\s*(?!/|!|\?)([A-Za-z][A-Za-z0-9:_-]*)\b",
+                residual,
+            )
+        )
+        oe = nearest(text_node, "OE")
+        direct_text_nodes = (
+            [child for child in list(oe) if local_name(child.tag) == "T"]
+            if oe is not None
+            else []
+        )
+        text_sibling_index = (
+            direct_text_nodes.index(text_node) if text_node in direct_text_nodes else None
+        )
+        previous_text = (
+            direct_text_nodes[text_sibling_index - 1]
+            if text_sibling_index is not None and text_sibling_index > 0
+            else None
+        )
+        next_text = (
+            direct_text_nodes[text_sibling_index + 1]
+            if text_sibling_index is not None
+            and text_sibling_index + 1 < len(direct_text_nodes)
+            else None
+        )
+        previous_text_summary = text_summary(previous_text)
+        next_text_summary = text_summary(next_text)
+        same_oe_surrounding_visible_text = bool(
+            previous_text_summary
+            and previous_text_summary["contains_visible_text"]
+            and next_text_summary
+            and next_text_summary["contains_visible_text"]
+        )
+        direct_text_break_count = sum(
+            int((text_summary(child) or {}).get("markup_tags", {}).get("br", 0))
+            for child in direct_text_nodes
+        )
+        oe_children = parents.get(oe) if oe is not None else None
+        siblings = (
+            [child for child in list(oe_children) if local_name(child.tag) == "OE"]
+            if oe_children is not None and local_name(oe_children.tag) == "OEChildren"
+            else []
+        )
+        sibling_index = siblings.index(oe) if oe in siblings else None
+        ancestor_kinds: list[str] = []
+        current: ET.Element | None = text_node
+        while current is not None:
+            ancestor_kinds.append(local_name(current.tag))
+            current = parents.get(current)
+        candidates.append(
+            {
+                "equations": equations,
+                "ancestor_kinds": ancestor_kinds,
+                "oe_child_kinds": (
+                    [local_name(child.tag) for child in list(oe)] if oe is not None else []
+                ),
+                "t_sibling_index": text_sibling_index,
+                "t_sibling_count": len(direct_text_nodes),
+                "previous_t": previous_text_summary,
+                "next_t": next_text_summary,
+                "same_oe_surrounding_visible_text": same_oe_surrounding_visible_text,
+                "oe_direct_t_break_count": direct_text_break_count,
+                "oe_sibling_index": sibling_index,
+                "oe_sibling_count": len(siblings),
+                "previous_oe": (
+                    oe_summary(siblings[sibling_index - 1])
+                    if sibling_index is not None and sibling_index > 0
+                    else None
+                ),
+                "next_oe": (
+                    oe_summary(siblings[sibling_index + 1])
+                    if sibling_index is not None and sibling_index + 1 < len(siblings)
+                    else None
+                ),
+                "residual_markup_tags": dict(sorted(residual_tags.items())),
+                "residual_visible_text": bool(html_fragment_to_text(residual)),
+                "known_onenote_display_break_wrapper": (
+                    known_display_break_wrapper(residual)
+                ),
+                "inline_visible_text_context": (
+                    bool(html_fragment_to_text(residual))
+                    or same_oe_surrounding_visible_text
+                ),
+            }
+        )
+
+    display_attribute_count = sum(
+        equation.get("display") == "block"
+        for candidate in candidates
+        for equation in candidate["equations"]
+    )
+    standalone_candidate_count = sum(
+        len(candidate["equations"]) == 1
+        and candidate["inline_visible_text_context"] is False
+        for candidate in candidates
+    )
+    return {
+        "schema_version": 2,
+        "semantic_mathml": semantic,
+        "candidate_text_node_count": len(candidates),
+        "display_attribute_equation_count": display_attribute_count,
+        "equations_without_display_attribute": (
+            semantic["equation_count"] - display_attribute_count
+        ),
+        "standalone_candidate_count": standalone_candidate_count,
+        "candidates": candidates,
+        "complete": semantic["complete"] is True,
+    }
+
+
+def mathml_oe_adjacency_projection(xml: str) -> dict[str, Any]:
+    """Project the exact OE siblings around MathML without retaining body text."""
+
+    root = parse_xml(xml)
+    parents = {child: parent for parent in root.iter() for child in list(parent)}
+
+    def nearest(node: ET.Element, kind: str) -> ET.Element | None:
+        current = parents.get(node)
+        while current is not None:
+            if local_name(current.tag) == kind:
+                return current
+            current = parents.get(current)
+        return None
+
+    def text_projection(node: ET.Element) -> dict[str, Any]:
+        raw = node.text or ""
+        matches = list(MATHML_FRAGMENT_PATTERN.finditer(raw))
+        display_block_count = 0
+        complete = True
+        for match in matches:
+            try:
+                equation = ET.fromstring(match.group(0))
+            except ET.ParseError:
+                complete = False
+            else:
+                display_block_count += equation.attrib.get("display") == "block"
+        residual = MATHML_FRAGMENT_PATTERN.sub("", raw)
+        whitespace_codepoints = Counter(
+            f"U+{ord(value):04X}" for value in raw if value.isspace()
+        )
+        return {
+            "raw_chars": len(raw),
+            "whitespace_chars": sum(value.isspace() for value in raw),
+            "only_whitespace": bool(raw) and raw.isspace(),
+            "whitespace_codepoint_counts": dict(sorted(whitespace_codepoints.items())),
+            "mathml_root_count": len(matches),
+            "display_block_count": display_block_count,
+            "mathml_complete": complete,
+            "residual_chars": len(residual),
+            "residual_whitespace_chars": sum(value.isspace() for value in residual),
+            "residual_only_whitespace": bool(residual) and residual.isspace(),
+            "residual_visible_text": bool(html_fragment_to_text(residual)),
+        }
+
+    def oe_projection(node: ET.Element | None) -> dict[str, Any] | None:
+        if node is None:
+            return None
+        direct_text_nodes = [
+            child for child in list(node) if local_name(child.tag) == "T"
+        ]
+        return {
+            "child_kinds": [local_name(child.tag) for child in list(node)],
+            "direct_t_count": len(direct_text_nodes),
+            "direct_t": [text_projection(child) for child in direct_text_nodes],
+        }
+
+    candidates: list[dict[str, Any]] = []
+    for text_node in root.iter():
+        if local_name(text_node.tag) != "T" or not text_node.text:
+            continue
+        if not MATHML_FRAGMENT_PATTERN.search(text_node.text):
+            continue
+        oe = nearest(text_node, "OE")
+        oe_children = parents.get(oe) if oe is not None else None
+        siblings = (
+            [child for child in list(oe_children) if local_name(child.tag) == "OE"]
+            if oe_children is not None and local_name(oe_children.tag) == "OEChildren"
+            else []
+        )
+        sibling_index = siblings.index(oe) if oe in siblings else None
+        previous = (
+            siblings[sibling_index - 1]
+            if sibling_index is not None and sibling_index > 0
+            else None
+        )
+        following = (
+            siblings[sibling_index + 1]
+            if sibling_index is not None and sibling_index + 1 < len(siblings)
+            else None
+        )
+        previous_projection = oe_projection(previous)
+        formula_projection = oe_projection(oe)
+        next_projection = oe_projection(following)
+        previous_text = (
+            previous_projection["direct_t"][0]
+            if previous_projection
+            and previous_projection["child_kinds"] == ["T"]
+            and previous_projection["direct_t_count"] == 1
+            else None
+        )
+        formula_text = (
+            formula_projection["direct_t"][0]
+            if formula_projection
+            and formula_projection["child_kinds"] == ["T"]
+            and formula_projection["direct_t_count"] == 1
+            else None
+        )
+        candidates.append(
+            {
+                "formula_oe_sibling_index": sibling_index,
+                "oe_sibling_count": len(siblings),
+                "previous_oe": previous_projection,
+                "formula_oe": formula_projection,
+                "next_oe": next_projection,
+                "matches_literal_space_oe_then_display_formula_oe": (
+                    previous_text is not None
+                    and previous_text["raw_chars"] == 1
+                    and previous_text["only_whitespace"] is True
+                    and previous_text["whitespace_codepoint_counts"]
+                    == {"U+0020": 1}
+                    and formula_text is not None
+                    and formula_text["mathml_root_count"] == 1
+                    and formula_text["display_block_count"] == 1
+                    and formula_text["residual_chars"] == 0
+                ),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "mathml_candidate_count": len(candidates),
+        "candidates": candidates,
+        "content_exposed": False,
+    }
+
+
 async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str, Any]:
     tree_result = await client.call_tool("get_tree", {"root_id": notebook_id, "max_depth": 8})
     tree = tree_result["tree"]
@@ -164,6 +550,7 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
     page_xml_hashes: dict[str, str] = {}
     page_objects: dict[str, list[dict[str, Any]]] = {}
     page_capability_projections: dict[str, dict[str, Any]] = {}
+    page_mathml_structure_projections: dict[str, dict[str, Any]] = {}
     for page in pages:
         page_id = str(page["id"])
         xml_result = await client.call_tool("get_page_xml", {"page_id": page_id, "page_info": "all"})
@@ -173,6 +560,7 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
         page_reparent_hashes[page_id] = page_reparent_content_hash(xml)
         page_xml_hashes[page_id] = hashlib.sha256(xml.encode("utf-8")).hexdigest()
         page_capability_projections[page_id] = page_content_capability_projection(xml)
+        page_mathml_structure_projections[page_id] = mathml_structure_projection(xml)
         objects_result = await client.call_tool("get_page_objects", {"page_id": page_id})
         page_objects[page_id] = [
             {field: obj.get(field) for field in OBJECT_FIELDS if field in obj}
@@ -199,6 +587,7 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
         "page_xml_hashes": page_xml_hashes,
         "page_objects": page_objects,
         "page_capability_projections": page_capability_projections,
+        "page_mathml_structure_projections": page_mathml_structure_projections,
     }
 
 

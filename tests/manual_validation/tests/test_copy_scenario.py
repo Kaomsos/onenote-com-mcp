@@ -15,6 +15,7 @@ from tests.manual_validation.scenarios.common import copy_runtime
 from tests.manual_validation.scenarios.common.copy_runtime import (
     call_with_result_evidence,
     cleanup_copy,
+    close_copied_notebook,
     copy_spec,
 )
 from tests.manual_validation.scenarios.common.fixture_builders import (
@@ -301,6 +302,279 @@ def test_notebook_copy_uses_a_short_run_unique_destination_name(tmp_path) -> Non
     assert spec["destination_name"].startswith("Copy-Notebook-")
     assert source_name not in spec["destination_name"]
     assert len(spec["destination_name"]) < len(source_name)
+
+
+@pytest.mark.parametrize(
+    ("scenario_name", "source_key", "destination_keys"),
+    [
+        (
+            "copy-section",
+            "source_section",
+            ("group_b", "cross_notebook_group"),
+        ),
+        (
+            "copy-section-group",
+            "group_a",
+            ("source_notebook", "destination_notebook"),
+        ),
+    ],
+)
+def test_container_copy_specs_declare_same_and_cross_notebook_cases(
+    tmp_path, scenario_name, source_key, destination_keys
+) -> None:
+    manifest = {
+        "schema_version": 1,
+        "notebook": {"id": "source-notebook", "name": "Source"},
+        "notebooks": {
+            "source": {"id": "source-notebook", "name": "Source"},
+            "destination": {"id": "destination-notebook", "name": "Destination"},
+        },
+        "structure": {
+            "source_section": {"id": "source-section"},
+            "group_a": {"id": "source-group"},
+            "group_b": {"id": "same-notebook-group"},
+            "cross_notebook_group": {"id": "cross-notebook-group"},
+        },
+    }
+
+    spec = copy_spec(
+        scenario_name,
+        manifest,
+        tmp_path,
+        name_suffix="2026-08-11-20-00-00",
+    )
+
+    assert spec["source"]["id"] == manifest["structure"][source_key]["id"]
+    assert [case["destination_scope"] for case in spec["cases"]] == [
+        "same-notebook",
+        "cross-notebook",
+    ]
+    assert [case["destination_role"] for case in spec["cases"]] == [
+        "source",
+        "destination",
+    ]
+    if destination_keys[0] == "source_notebook":
+        expected_ids = ["source-notebook", "destination-notebook"]
+    else:
+        expected_ids = ["same-notebook-group", "cross-notebook-group"]
+    assert [case["destination"]["id"] for case in spec["cases"]] == expected_ids
+
+
+def test_notebook_copy_close_refreshes_modified_confirmation(tmp_path) -> None:
+    target = {
+        "resource_type": "notebook",
+        "id": "copied-notebook",
+        "name": "Copy",
+        "modified": "2026-08-11T13:12:01.000Z",
+    }
+
+    class FakeClient:
+        def __init__(self):
+            self.close_arguments = None
+
+        async def call_tool(self, name, arguments):
+            if name == "get_notebook":
+                assert arguments == {"notebook_id": "copied-notebook"}
+                return {
+                    "item": {
+                        **target,
+                        "modified": "2026-08-11T13:12:02.000Z",
+                    }
+                }
+            if name == "close_notebook":
+                self.close_arguments = dict(arguments)
+                return {"closed": True}
+            raise AssertionError(name)
+
+    client = FakeClient()
+    result = asyncio.run(
+        close_copied_notebook(
+            client,
+            target,
+            tmp_path / "close-confirmation.json",
+        )
+    )
+
+    assert result == {"closed": True}
+    assert client.close_arguments == {
+        "notebook_id": "copied-notebook",
+        "expected_name": "Copy",
+        "expected_modified": "2026-08-11T13:12:02.000Z",
+    }
+    assert test_utils.read_json(tmp_path / "close-confirmation.json")["modified"] == (
+        "2026-08-11T13:12:02.000Z"
+    )
+
+
+@pytest.mark.parametrize(
+    ("scenario_name", "tool_name", "source_key", "source_type"),
+    [
+        ("copy-section", "copy_section", "source_section", "section"),
+        (
+            "copy-section-group",
+            "copy_section_group",
+            "group_a",
+            "section_group",
+        ),
+    ],
+)
+def test_container_copy_executor_runs_same_then_cross_notebook_cases(
+    monkeypatch,
+    tmp_path,
+    scenario_name,
+    tool_name,
+    source_key,
+    source_type,
+) -> None:
+    source_notebook = {
+        "resource_type": "notebook",
+        "id": "source-notebook",
+        "name": "Source",
+    }
+    destination_notebook = {
+        "resource_type": "notebook",
+        "id": "destination-notebook",
+        "name": "Destination",
+    }
+    source = {
+        "resource_type": source_type,
+        "id": "source-container",
+        "name": "Source-Container",
+        "parent_id": "source-notebook",
+        "modified": "source-modified",
+    }
+    same_destination = {
+        "resource_type": "section_group",
+        "id": "same-notebook-group",
+        "name": "Same",
+        "parent_id": "source-notebook",
+    }
+    cross_destination = {
+        "resource_type": "section_group",
+        "id": "cross-notebook-group",
+        "name": "Cross",
+        "parent_id": "destination-notebook",
+    }
+    structure = {
+        "source_section": source,
+        "group_a": source,
+        "group_b": same_destination,
+        "cross_notebook_group": cross_destination,
+    }
+    manifest = {
+        "schema_version": 1,
+        "notebook": source_notebook,
+        "notebooks": {
+            "source": source_notebook,
+            "destination": destination_notebook,
+        },
+        "structure": structure,
+    }
+    snapshots = iter(
+        {
+            "notebook_id": "source-notebook",
+            "items": [source_notebook, destination_notebook, source],
+            "page_hashes": {},
+            "page_objects": {},
+        }
+        for _index in range(4)
+    )
+
+    async def capture_bundle(_client, _notebooks):
+        return next(snapshots)
+
+    plan_destinations = iter(
+        [
+            same_destination if scenario_name == "copy-section" else source_notebook,
+            cross_destination if scenario_name == "copy-section" else destination_notebook,
+        ]
+    )
+
+    async def stable_plan(_client, arguments, **_paths):
+        destination = next(plan_destinations)
+        return {
+            "plan_digest": f"digest-{arguments['destination_parent_id']}",
+            "source_snapshot_digest": "source-digest",
+            "source": source,
+            "snapshots": {
+                "source": {"resources": [source], "page_hashes": {}},
+                "destination": {"parent": destination},
+            },
+            "content_capabilities": ["Outline", "RichText"],
+        }
+
+    cleanup_order = []
+
+    async def cleanup(_client, _snapshot, copied):
+        cleanup_order.append(copied["item"]["id"])
+        return [copied["item"]["id"]]
+
+    monkeypatch.setattr(copy_runtime, "_capture_notebook_bundle", capture_bundle)
+    monkeypatch.setattr(copy_runtime, "stable_copy_plan", stable_plan)
+    monkeypatch.setattr(copy_runtime, "plan_bound_before_snapshot", lambda before, _plan: before)
+    monkeypatch.setattr(copy_runtime, "assert_copy_fixture_capabilities", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(copy_runtime, "assert_copy_mapping", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(copy_runtime, "assert_pages_unchanged", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(copy_runtime, "assert_restored", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(copy_runtime, "cleanup_copy", cleanup)
+    monkeypatch.setattr(copy_runtime, "render_report", lambda _run_dir: None)
+
+    class FakeClient:
+        policy = copy_runtime.COPY_POLICY
+        allowed_tools = set(copy_runtime.COPY_TOOLS) | {"health_check"}
+        timeout_seconds = 1_800
+
+        def __init__(self):
+            self.copy_arguments = []
+
+        async def call_tool(self, name, arguments):
+            assert name == tool_name
+            self.copy_arguments.append(dict(arguments))
+            number = len(self.copy_arguments)
+            target_id = f"target-{number}"
+            return {
+                "item": {
+                    "resource_type": source_type,
+                    "id": target_id,
+                    "name": arguments["destination_name"],
+                },
+                "copy_report": {
+                    "verified": True,
+                    "lossless": True,
+                    "id_map": {"source-container": target_id},
+                },
+            }
+
+    run_dir = tmp_path / "run"
+    (run_dir / "scenarios" / scenario_name).mkdir(parents=True)
+    client = FakeClient()
+    result = asyncio.run(
+        copy_runtime.execute_copy_container(
+            SimpleNamespace(
+                scenario=scenario_name,
+                notebook_name="Source",
+                keep_worksite=False,
+            ),
+            RuntimeOptions(run_dir, 1_800, False, False),
+            manifest,
+            client=client,
+        )
+    )
+
+    expected_destination_ids = (
+        ["same-notebook-group", "cross-notebook-group"]
+        if scenario_name == "copy-section"
+        else ["source-notebook", "destination-notebook"]
+    )
+    assert [value["destination_parent_id"] for value in client.copy_arguments] == (
+        expected_destination_ids
+    )
+    assert [case["destination_scope"] for case in result["case_results"]] == [
+        "same-notebook",
+        "cross-notebook",
+    ]
+    assert cleanup_order == ["target-2", "target-1"]
+    assert result["restored"] is True
 
 
 def test_keep_worksite_copy_spec_removes_cleanup_permissions(tmp_path) -> None:
@@ -818,7 +1092,15 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                     "existing_children": [],
                 },
             },
-            "content_capabilities": ["Image", "List", "Outline", "RichText", "Table", "Tag"],
+            "content_capabilities": [
+                "DisplayEquation",
+                "Image",
+                "List",
+                "Outline",
+                "RichText",
+                "Table",
+                "Tag",
+            ],
             "include_descendants": include_descendants,
         }
 

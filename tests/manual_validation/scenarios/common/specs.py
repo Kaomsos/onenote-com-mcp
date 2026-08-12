@@ -382,7 +382,7 @@ SCENARIO_SPECS = {
             "rich-page-copy",
             (
                 "source:00-Description/00-Copy-Page-Description[3 scopes x 2 subtree modes]",
-                "Source/01-Source-Parent[strict rich text+table+image]",
+                "Source/01-Source-Parent[strict rich text+inline/display equations+table+image]",
                 "Source/01-Source-Parent/02-Source-Child[semantic list+tag]",
                 "source:Destination/02-Source-Child[duplicate-title anchor]",
                 "destination:Cross-Notebook-Destination/02-Source-Child[duplicate-title anchor]",
@@ -399,9 +399,18 @@ SCENARIO_SPECS = {
                 "cross_notebook_anchor",
             ),
             {"create_section", "get_page_text"} | LAYERED_PAGE_FIXTURE_TOOLS,
-            content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
+            content=(
+                "RichText",
+                "DisplayEquation",
+                "Table",
+                "Image",
+                "Outline",
+                "List",
+                "Tag",
+            ),
             checks=(
                 "Description Page states all three destination scopes and both subtree modes",
+                "source parent contains one inline RichText equation and one DisplayEquation",
                 "every omitted scope maps only the strict parent",
                 "every explicit true scope maps the complete parent/child subtree",
                 "source parent and child remain unchanged after all six copies",
@@ -473,16 +482,25 @@ SCENARIO_SPECS = {
         _profile(
             "rich-section-copy",
             (
-                "Source-Group/Source-Section/Rich-Page[strict rich text+table+image]",
-                "Source-Group/Source-Section/Rich-Page/List-Tag-Page[semantic list+tag]",
-                "Group-B",
+                "source:Source-Group/Source-Section/Rich-Page[strict rich text+table+image]",
+                "source:Source-Group/Source-Section/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "source:Group-B",
+                "destination:Cross-Notebook-Group",
             ),
-            ("group_a", "group_b", "source_section", "parent_page", "semantic_page"),
+            (
+                "group_a",
+                "group_b",
+                "source_section",
+                "parent_page",
+                "semantic_page",
+                "cross_notebook_group",
+            ),
             {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
             checks=(
                 "strict parent uses canonical read-back verification",
                 "semantic child uses List/Tag semantic read-back verification",
+                "same-Notebook and cross-Notebook destination Groups are role-bound",
             ),
         ),
         COPY_POLICY,
@@ -491,21 +509,45 @@ SCENARIO_SPECS = {
             | {"create_section_group", "create_section"}
             | LAYERED_PAGE_FIXTURE_TOOLS
         ),
+        {
+            "cases": [
+                {
+                    "name": "same-notebook",
+                    "destination_role": "source",
+                    "destination_key": "group_b",
+                    "destination_scope": "same-notebook",
+                },
+                {
+                    "name": "cross-notebook",
+                    "destination_role": "destination",
+                    "destination_key": "cross_notebook_group",
+                    "destination_scope": "cross-notebook",
+                },
+            ]
+        },
     ),
     "copy-section-group": ScenarioSpec(
         "copy-section-group",
         _profile(
             "rich-group-copy",
             (
-                "Group-A/Source-Section/Rich-Page[strict rich text+table+image]",
-                "Group-A/Source-Section/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "source:Group-A/Source-Section/Rich-Page[strict rich text+table+image]",
+                "source:Group-A/Source-Section/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "destination:Cross-Notebook-Anchor",
             ),
-            ("group_a", "source_section", "parent_page", "semantic_page"),
+            (
+                "group_a",
+                "source_section",
+                "parent_page",
+                "semantic_page",
+                "cross_notebook_anchor_section",
+            ),
             {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
             checks=(
                 "strict parent uses canonical read-back verification",
                 "semantic child uses List/Tag semantic read-back verification",
+                "same-Notebook and cross-Notebook destination roots are role-bound",
             ),
         ),
         COPY_POLICY,
@@ -514,6 +556,22 @@ SCENARIO_SPECS = {
             | {"create_section_group", "create_section"}
             | LAYERED_PAGE_FIXTURE_TOOLS
         ),
+        {
+            "cases": [
+                {
+                    "name": "same-notebook",
+                    "destination_role": "source",
+                    "destination_key": "source_notebook",
+                    "destination_scope": "same-notebook",
+                },
+                {
+                    "name": "cross-notebook",
+                    "destination_role": "destination",
+                    "destination_key": "destination_notebook",
+                    "destination_scope": "cross-notebook",
+                },
+            ]
+        },
     ),
     "copy-notebook": ScenarioSpec(
         "copy-notebook",
@@ -522,20 +580,29 @@ SCENARIO_SPECS = {
             (
                 "Source-Section/Rich-Page[strict rich text+table+image]",
                 "Source-Section/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "Source-Group/Grouped-Section/Grouped-Page[plain synthetic content]",
                 "allowlisted local Copy root",
             ),
-            ("source_section", "parent_page", "semantic_page"),
-            {"create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
+            (
+                "source_section",
+                "parent_page",
+                "semantic_page",
+                "source_group",
+                "group_section",
+                "group_page",
+            ),
+            {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
             checks=(
                 "strict parent uses canonical read-back verification",
                 "semantic child uses List/Tag semantic read-back verification",
+                "source Notebook contains a SectionGroup/Section/Page subtree",
             ),
         ),
         COPY_NO_DELETE_POLICY,
         frozenset(
             COPY_NOTEBOOK_TOOLS
-            | {"create_section"}
+            | {"create_section_group", "create_section"}
             | LAYERED_PAGE_FIXTURE_TOOLS
         ),
     ),
@@ -640,6 +707,7 @@ for _scenario_name, _capability in (
     ("bootstrap-inserted-file-fixture", "InsertedFile"),
     ("bootstrap-ink-drawing-fixture", "InkDrawing"),
     ("bootstrap-media-file-fixture", "MediaFile"),
+    ("bootstrap-shape-fixture", "UIShape"),
 ):
     SCENARIO_SPECS[_scenario_name] = ScenarioSpec(
         _scenario_name,
@@ -659,6 +727,108 @@ for _scenario_name, _capability in (
         frozenset(_INTERACTIVE_TOOLS),
         {"interactive_bootstrap": True, "included_in_all": False},
     )
+
+for _scenario_name, _bootstrap_name, _capability in (
+    ("interactive-copy-inserted-file", "bootstrap-inserted-file-fixture", "InsertedFile"),
+    ("interactive-copy-ink-drawing", "bootstrap-ink-drawing-fixture", "InkDrawing"),
+    ("interactive-copy-media-file", "bootstrap-media-file-fixture", "MediaFile"),
+    ("interactive-copy-ui-shape", "bootstrap-shape-fixture", "UIShape"),
+):
+    _copy_tools = READ_TOOLS | {"plan_copy", "copy_page"}
+    if _scenario_name == "interactive-copy-media-file":
+        _copy_tools |= {"create_section"}
+    SCENARIO_SPECS[_scenario_name] = ScenarioSpec(
+        _scenario_name,
+        SCENARIO_SPECS[_bootstrap_name].fixture,
+        COPY_NO_DELETE_POLICY,
+        frozenset(_copy_tools),
+        {
+            "interactive_copy_evidence": True,
+            "capability": _capability,
+            "cache_only": True,
+            "bootstrap_on_miss": _bootstrap_name,
+            "delete_permission": False,
+            "page_xml_capture": "explicit_opt_in_sensitive_evidence",
+            "same_and_cross_section": _scenario_name
+            == "interactive-copy-media-file",
+            "included_in_all": False,
+        },
+    )
+
+SCENARIO_SPECS["copy-display-equation"] = ScenarioSpec(
+    "copy-display-equation",
+    _profile(
+        "programmatic-display-equation-copy",
+        (
+            "Source/01-Source-Parent[prepared rich text, table, image, and one automatic display equation]",
+        ),
+        ("canvas_section", "canvas_page"),
+        {"create_section", "create_page", "append_to_page", "add_image_to_page"},
+        content=("Outline", "RichText", "Table", "Image", "DisplayEquation"),
+        checks=(
+            "exact Source Parent IDs remain active",
+            "prepared rich text, table, and image remain present",
+            "exactly one complete standalone display-block MathML equation is observed",
+            "content-free MathML OE placement evidence is captured",
+        ),
+    ),
+    COPY_POLICY,
+    frozenset(
+        COPY_PAGE_TOOLS
+        | {"create_section", "create_page", "append_to_page", "add_image_to_page"}
+    ),
+    {
+        "programmatic_display_equation": True,
+        "bounded_copy_chain": 3,
+        "documented_com_normalization": (
+            "zero_or_one_empty_span_br_per_display_equation"
+        ),
+        "included_in_all": False,
+    },
+)
+
+SCENARIO_SPECS["bootstrap-inline-equation-fixture"] = ScenarioSpec(
+    "bootstrap-inline-equation-fixture",
+    _profile(
+        "interactive-inline-equation",
+        (
+            "Source/01-Source-Parent[prepared rich text, table, image, and one automatic inline equation]",
+        ),
+        ("canvas_section", "canvas_page"),
+        {"create_section", "create_page", "append_to_page", "add_image_to_page"},
+        content=("Outline", "RichText", "Table", "Image", "InlineEquation"),
+        checks=(
+            "exact Source Parent IDs remain active",
+            "prepared rich text, table, and image remain present",
+            "exactly one complete MathML equation remains inline with visible surrounding text",
+            "the inline equation has no display attribute and no standalone formula line",
+        ),
+    ),
+    WRITE_POLICY,
+    frozenset(_INTERACTIVE_TOOLS | {"append_to_page", "add_image_to_page"}),
+    {
+        "interactive_bootstrap": True,
+        "programmatic_inline_equation": True,
+        "included_in_all": False,
+    },
+)
+
+SCENARIO_SPECS["interactive-copy-inline-equation"] = ScenarioSpec(
+    "interactive-copy-inline-equation",
+    SCENARIO_SPECS["bootstrap-inline-equation-fixture"].fixture,
+    COPY_NO_DELETE_POLICY,
+    frozenset(READ_TOOLS | {"plan_copy", "copy_page"}),
+    {
+        "interactive_copy_evidence": True,
+        "capability": "InlineEquation",
+        "cache_only": True,
+        "bootstrap_on_miss": "bootstrap-inline-equation-fixture",
+        "delete_permission": False,
+        "page_xml_capture": "explicit_opt_in_sensitive_evidence",
+        "same_and_cross_section": False,
+        "included_in_all": False,
+    },
+)
 
 SCENARIO_SPECS["bootstrap-user-authored-fixture"] = ScenarioSpec(
     "bootstrap-user-authored-fixture",
@@ -693,19 +863,6 @@ SCENARIO_SPECS["user-authored-fixture-consumer"] = ScenarioSpec(
     ScenarioPolicy(),
     frozenset(READ_TOOLS),
     {"interactive_consumer": True, "requires_explicit_instance": True, "included_in_all": False},
-)
-
-SCENARIO_SPECS["inserted-file-fixture-consumer"] = ScenarioSpec(
-    "inserted-file-fixture-consumer",
-    SCENARIO_SPECS["bootstrap-inserted-file-fixture"].fixture,
-    ScenarioPolicy(),
-    frozenset(READ_TOOLS),
-    {
-        "interactive_consumer": True,
-        "cache_only": True,
-        "bootstrap_on_miss": "bootstrap-inserted-file-fixture",
-        "included_in_all": False,
-    },
 )
 
 SCENARIO_SPECS["cache-invalidation"] = ScenarioSpec(

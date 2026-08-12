@@ -179,9 +179,12 @@ def test_capture_snapshot_refreshes_hierarchy_after_page_evidence() -> None:
     assert snapshot["page_reparent_hashes"]["page"]
     assert snapshot["page_xml_hashes"]["page"]
     assert snapshot["page_capability_projections"]["page"] == {
-        "schema_version": 1,
+        "schema_version": 4,
         "capabilities": ["Outline"],
         "object_kind_counts": {"Outline": 1},
+        "structural_marker_counts": {},
+        "embedded_markup_tag_counts": {},
+        "embedded_markup_attribute_name_counts": {},
         "unknown_nodes": [],
         "unsupported_page_roots": [],
         "complete": True,

@@ -9,6 +9,7 @@ from .fixture_recipes.move_section_group import RECIPE
 @SCENARIO_REGISTRY.register
 class MoveSectionGroupScenario(ContainerMoveScenario):
     name = "move-section-group"
+    included_in_all = True
     fixture_recipe = RECIPE
     help_text = (
         "GATED: move one disposable SectionGroup tree across Notebooks by verified Copy "

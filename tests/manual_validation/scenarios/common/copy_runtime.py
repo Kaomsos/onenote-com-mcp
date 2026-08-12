@@ -20,6 +20,7 @@ from ...test_utils import (
     display_name,
     find_snapshot_item,
     flatten_tree,
+    mathml_structure_projection,
     resolve_manifest_item,
     scenario_dir,
     validate_manifest_notebook,
@@ -115,21 +116,47 @@ def copy_spec(
             "policy": copy_policy,
             "tools": page_tools,
         }
-    if scenario == "copy-section":
+    if scenario in {"copy-section", "copy-section-group"}:
+        execution_contract = get_scenario_spec(scenario).execution_contract
+        notebooks = dict(manifest.get("notebooks", {"source": manifest["notebook"]}))
+        if set(notebooks) != {"destination", "source"}:
+            raise RunnerFailure(
+                f"{scenario} requires exact source/destination Notebook roles."
+            )
+        cases = []
+        for index, case in enumerate(execution_contract.get("cases", []), start=1):
+            destination_key = str(case["destination_key"])
+            if destination_key == "source_notebook":
+                destination = notebooks["source"]
+            elif destination_key == "destination_notebook":
+                destination = notebooks["destination"]
+            else:
+                destination = resolve_manifest_item(manifest, destination_key)
+            scope = str(case["destination_scope"])
+            cases.append(
+                {
+                    "name": str(case["name"]),
+                    "destination": destination,
+                    "destination_role": str(case["destination_role"]),
+                    "destination_scope": scope,
+                    "destination_name": (
+                        f"{index:02d}-"
+                        + ("Same-Notebook" if scope == "same-notebook" else "Cross-Notebook")
+                        + ("-Section-Copy-" if scenario == "copy-section" else "-Group-Copy-")
+                        + suffix
+                    ),
+                }
+            )
+        if len(cases) != 2:
+            raise RunnerFailure(f"{scenario} execution contract must declare exactly two cases.")
         return {
-            "source": resolve_manifest_item(manifest, "source_section"),
-            "destination": resolve_manifest_item(manifest, "group_b"),
-            "destination_name": f"Copy-Section-{suffix}",
-            "tool": "copy_section",
-            "policy": copy_policy,
-            "tools": copy_tools,
-        }
-    if scenario == "copy-section-group":
-        return {
-            "source": resolve_manifest_item(manifest, "group_a"),
-            "destination": manifest["notebook"],
-            "destination_name": f"Copy-Group-{suffix}",
-            "tool": "copy_section_group",
+            "source": resolve_manifest_item(
+                manifest,
+                "source_section" if scenario == "copy-section" else "group_a",
+            ),
+            "notebooks": notebooks,
+            "cases": cases,
+            "tool": "copy_section" if scenario == "copy-section" else "copy_section_group",
             "policy": copy_policy,
             "tools": copy_tools,
         }
@@ -232,8 +259,13 @@ def plan_bound_before_snapshot(
         )
     planned_resources = source_snapshot.get("resources")
     planned_page_hashes = source_snapshot.get("page_hashes")
+    planned_page_xml_hashes = source_snapshot.get("page_xml_hashes")
     if not isinstance(planned_resources, list) or not isinstance(planned_page_hashes, dict):
         raise InvariantFailure("Copy plan source snapshot is incomplete.")
+    if planned_page_xml_hashes is not None and not isinstance(
+        planned_page_xml_hashes, dict
+    ):
+        raise InvariantFailure("Copy plan raw Page XML hash evidence is invalid.")
 
     before_ids = {
         str(item["id"])
@@ -313,7 +345,11 @@ def plan_bound_before_snapshot(
                 if isinstance(destination_parent, dict)
                 else None
             ),
-            "raw_page_hashes": planned_page_hashes,
+            "raw_page_hashes": (
+                planned_page_xml_hashes
+                if isinstance(planned_page_xml_hashes, dict)
+                else planned_page_hashes
+            ),
             "include_descendants": planned.get("include_descendants"),
         },
     }
@@ -343,6 +379,9 @@ async def stable_copy_plan(
         destination_parent = (
             destination.get("parent") if isinstance(destination, dict) else None
         )
+        source_snapshot = (
+            snapshots.get("source", {}) if isinstance(snapshots, dict) else {}
+        )
         attempts.append(
             {
                 "attempt": attempt,
@@ -357,6 +396,16 @@ async def stable_copy_plan(
                     else None
                 ),
                 "include_descendants": planned.get("include_descendants"),
+                "source_page_hashes": (
+                    source_snapshot.get("page_hashes")
+                    if isinstance(source_snapshot, dict)
+                    else None
+                ),
+                "source_raw_xml_hashes": (
+                    source_snapshot.get("page_xml_hashes")
+                    if isinstance(source_snapshot, dict)
+                    else None
+                ),
             }
         )
         stabilized = bool(digest) and digest == previous_digest
@@ -479,6 +528,78 @@ async def call_with_result_evidence(
     return result
 
 
+async def close_copied_notebook(
+    client: MCPStdioClient,
+    target: dict[str, Any],
+    evidence_path: Path,
+) -> dict[str, Any]:
+    """Refresh the exact copied Notebook before binding the close confirmation."""
+
+    refreshed = await client.call_tool(
+        "get_notebook",
+        {"notebook_id": target["id"]},
+    )
+    close_target = refreshed.get("item")
+    if (
+        not isinstance(close_target, dict)
+        or close_target.get("resource_type") != "notebook"
+        or close_target.get("id") != target["id"]
+        or display_name(close_target) != display_name(target)
+    ):
+        raise InvariantFailure(
+            "Notebook Copy close confirmation did not refresh the exact target."
+        )
+    write_json(evidence_path, close_target)
+    return await client.call_tool(
+        "close_notebook",
+        {
+            "notebook_id": close_target["id"],
+            "expected_name": display_name(close_target),
+            "expected_modified": close_target.get("modified"),
+        },
+    )
+
+
+async def _capture_notebook_bundle(
+    client: MCPStdioClient,
+    notebooks: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    role_order = tuple(sorted(notebooks))
+    role_snapshots = {
+        role: await capture_snapshot(client, str(notebooks[role]["id"]))
+        for role in role_order
+    }
+    merged: dict[str, Any] = {
+        "notebook_id": str(notebooks["source"]["id"]),
+        "notebook_ids": {
+            role: str(notebooks[role]["id"]) for role in role_order
+        },
+        "roles": role_snapshots,
+        "items": [],
+        "page_hashes": {},
+        "page_canonical_hashes": {},
+        "page_reparent_hashes": {},
+        "page_xml_hashes": {},
+        "page_objects": {},
+        "page_capability_projections": {},
+    }
+    for role in role_order:
+        snapshot = role_snapshots[role]
+        merged["items"].extend(snapshot.get("items", []))
+        for field in (
+            "page_hashes",
+            "page_canonical_hashes",
+            "page_reparent_hashes",
+            "page_xml_hashes",
+            "page_objects",
+            "page_capability_projections",
+        ):
+            value = snapshot.get(field, {})
+            if isinstance(value, dict):
+                merged[field].update(value)
+    return merged
+
+
 async def execute_copy_page(
     args: argparse.Namespace,
     options: RuntimeOptions,
@@ -509,34 +630,6 @@ async def execute_copy_page(
             "Copy Page requires exact source Parent/Child and two collision-anchor IDs."
         )
 
-    async def capture_bundle(active_client: MCPStdioClient) -> dict[str, Any]:
-        role_snapshots = {
-            role: await capture_snapshot(active_client, str(notebooks[role]["id"]))
-            for role in ("source", "destination")
-        }
-        merged: dict[str, Any] = {
-            "notebook_id": str(notebooks["source"]["id"]),
-            "notebook_ids": {
-                role: str(notebooks[role]["id"]) for role in ("source", "destination")
-            },
-            "roles": role_snapshots,
-            "items": [],
-            "page_hashes": {},
-            "page_objects": {},
-            "page_capability_projections": {},
-        }
-        for role in ("source", "destination"):
-            snapshot = role_snapshots[role]
-            merged["items"].extend(snapshot.get("items", []))
-            for field in (
-                "page_hashes",
-                "page_objects",
-                "page_capability_projections",
-            ):
-                value = snapshot.get(field, {})
-                if isinstance(value, dict):
-                    merged[field].update(value)
-        return merged
     out = scenario_dir(options.run_dir, "copy-page")
     async with scenario_client(
         client,
@@ -546,7 +639,7 @@ async def execute_copy_page(
         timeout_seconds=options.timeout,
         client_factory=MCPStdioClient,
     ) as client:
-        original_before = await capture_bundle(client)
+        original_before = await _capture_notebook_bundle(client, notebooks)
         write_json(out / "before.json", original_before)
         current_snapshot = original_before
         copied_results: list[dict[str, Any]] = []
@@ -587,11 +680,14 @@ async def execute_copy_page(
                     f"Page Copy plan scope differs from case '{case_name}'."
                 )
             if effective_scope:
-                assert_copy_fixture_capabilities(planned, RELAXED_COPY_CAPABILITIES)
+                assert_copy_fixture_capabilities(
+                    planned,
+                    {*RELAXED_COPY_CAPABILITIES, "DisplayEquation"},
+                )
             else:
                 assert_copy_fixture_capabilities(
                     planned,
-                    ROOT_PAGE_COPY_CAPABILITIES,
+                    {*ROOT_PAGE_COPY_CAPABILITIES, "DisplayEquation"},
                     include_automated_defaults=False,
                 )
             case_before = plan_bound_before_snapshot(current_snapshot, planned)
@@ -640,7 +736,7 @@ async def execute_copy_page(
                     f"expected {case['expected_page_count']}."
                 )
 
-            case_after = await capture_bundle(client)
+            case_after = await _capture_notebook_bundle(client, notebooks)
             write_json(out / f"after-{case_name}.json", case_after)
             assert_copy_mapping(
                 case_before,
@@ -750,7 +846,7 @@ async def execute_copy_page(
         deleted_ids: list[str] = []
         for copied in reversed(copied_results):
             deleted_ids.extend(await cleanup_copy(client, current_snapshot, copied))
-        restored = await capture_bundle(client)
+        restored = await _capture_notebook_bundle(client, notebooks)
         write_json(out / "restored.json", restored)
         assert_copy_page_restored(
             original_before,
@@ -759,6 +855,432 @@ async def execute_copy_page(
         )
         result = {
             "scenario": "copy-page",
+            "status": "passed",
+            "target_ids": target_ids,
+            "restored": True,
+            "worksite_preserved": False,
+            "cleanup_deleted_ids": deleted_ids,
+            "case_results": case_results,
+        }
+        write_json(out / "result.json", result)
+        render_report(options.run_dir)
+        return result
+
+
+async def execute_copy_display_equation(
+    args: argparse.Namespace,
+    options: RuntimeOptions,
+    manifest: dict[str, Any],
+    *,
+    client: MCPStdioClient | None = None,
+) -> dict[str, Any]:
+    """Run a fixed three-hop DisplayEquation Copy chain without human input."""
+
+    notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
+    keep_worksite = bool(getattr(args, "keep_worksite", False))
+    source_id = str(resolve_manifest_item(manifest, "canvas_page")["id"])
+    section_id = str(resolve_manifest_item(manifest, "canvas_section")["id"])
+    out = scenario_dir(options.run_dir, "copy-display-equation")
+    policy = COPY_NO_DELETE_POLICY if keep_worksite else COPY_POLICY
+    tools = COPY_PAGE_PRESERVE_TOOLS if keep_worksite else COPY_PAGE_TOOLS
+
+    async with scenario_client(
+        client,
+        policy=policy,
+        allowed_tools=tools,
+        run_dir=out,
+        timeout_seconds=options.timeout,
+        client_factory=MCPStdioClient,
+    ) as active_client:
+        original_before = await capture_snapshot(active_client, notebook_id)
+        write_json(out / "before.json", original_before)
+        current_snapshot = original_before
+        current_source_id = source_id
+        copied_results: list[dict[str, Any]] = []
+        hops: list[dict[str, Any]] = []
+
+        for hop in range(1, 4):
+            current_source = find_snapshot_item(current_snapshot, current_source_id)
+            if current_source is None or current_source.get("resource_type") != "page":
+                raise InvariantFailure(
+                    f"DisplayEquation chain source is missing before hop {hop}."
+                )
+            destination_title = f"{hop + 1:02d}-DisplayEquation-Copy-Hop-{hop}-" + run_safe_timestamp(args)
+            planned = await stable_copy_plan(
+                active_client,
+                {
+                    "source_id": current_source_id,
+                    "destination_parent_id": section_id,
+                    "destination_name": destination_title,
+                    "include_descendants": False,
+                },
+                attempts_path=out / f"plan-attempts-hop-{hop}.json",
+                plan_path=out / f"plan-hop-{hop}.json",
+            )
+            assert_copy_fixture_capabilities(
+                planned,
+                {*ROOT_PAGE_COPY_CAPABILITIES, "DisplayEquation"},
+                include_automated_defaults=False,
+            )
+            protected_page_ids = [
+                str(item["id"])
+                for item in current_snapshot.get("items", ())
+                if isinstance(item, dict)
+                and item.get("resource_type") == "page"
+                and item.get("id")
+            ]
+            copied = await call_with_result_evidence(
+                active_client,
+                "copy_page",
+                copy_execute_arguments(
+                    {
+                        "tool": "copy_page",
+                        "destination": {"id": section_id},
+                        "destination_name": destination_title,
+                        "include_descendants": False,
+                    },
+                    dict(planned["source"]),
+                    str(planned["plan_digest"]),
+                ),
+                out / f"copy-result-hop-{hop}.json",
+            )
+            report = copied.get("copy_report", {})
+            page_results = report.get("page_results", ())
+            page_result = page_results[0] if len(page_results) == 1 else {}
+            equivalence = (
+                page_result.get("equivalence", {})
+                if isinstance(page_result, dict)
+                else {}
+            )
+            display_comparison = equivalence.get(
+                "display_equation_comparison", {}
+            )
+            normalizations = (
+                page_result.get("normalizations", {})
+                if isinstance(page_result, dict)
+                else {}
+            )
+            if not (
+                report.get("verified") is True
+                and report.get("lossless") is True
+                and report.get("copy_contract_satisfied") is True
+                and equivalence.get("equivalent") is True
+                and equivalence.get("verification_tier")
+                == "semantic_display_equation"
+                and display_comparison.get("passed") is True
+                and int(
+                    normalizations.get(
+                        "display_equation_empty_spans_removed", 0
+                    )
+                )
+                == 1
+                and int(
+                    normalizations.get(
+                        "redundant_breaks_before_display_mathml_removed", 0
+                    )
+                )
+                == 1
+            ):
+                raise InvariantFailure(
+                    f"DisplayEquation production Copy gate failed at hop {hop}."
+                )
+
+            target = copied.get("item", {})
+            target_id = str(target.get("id", ""))
+            if not target_id:
+                raise InvariantFailure(
+                    f"DisplayEquation Copy returned no exact target at hop {hop}."
+                )
+            after = await capture_snapshot(active_client, notebook_id)
+            write_json(out / f"after-hop-{hop}.json", after)
+            assert_copy_mapping(
+                current_snapshot,
+                after,
+                current_source_id,
+                section_id,
+                destination_title,
+                copied,
+                include_descendants=False,
+            )
+            assert_pages_unchanged(
+                current_snapshot,
+                after,
+                protected_page_ids,
+            )
+            target_projection = after.get("page_capability_projections", {}).get(
+                target_id, {}
+            )
+            if not (
+                isinstance(target_projection, dict)
+                and target_projection.get("complete") is True
+                and "DisplayEquation"
+                in set(target_projection.get("capabilities", ()))
+            ):
+                raise InvariantFailure(
+                    f"DisplayEquation target detector failed at hop {hop}."
+                )
+            target_xml_result = await active_client.call_tool(
+                "get_page_xml",
+                {"page_id": target_id, "page_info": "all"},
+            )
+            target_structure = mathml_structure_projection(
+                str(target_xml_result["xml"])
+            )
+            candidates = target_structure.get("candidates", ())
+            candidate = candidates[0] if len(candidates) == 1 else {}
+            target_break_count = int(candidate.get("oe_direct_t_break_count", -1))
+            if not (
+                target_structure.get("complete") is True
+                and target_structure.get("display_attribute_equation_count") == 1
+                and target_structure.get("standalone_candidate_count") == 1
+                and target_break_count == 1
+                and candidate.get("known_onenote_display_break_wrapper") is True
+            ):
+                raise InvariantFailure(
+                    f"DisplayEquation target wrapper is not bounded at hop {hop}."
+                )
+            hops.append(
+                {
+                    "hop": hop,
+                    "source_id": current_source_id,
+                    "target_id": target_id,
+                    "verification_tier": equivalence.get("verification_tier"),
+                    "verified": report.get("verified"),
+                    "lossless": report.get("lossless"),
+                    "copy_contract_satisfied": report.get(
+                        "copy_contract_satisfied"
+                    ),
+                    "removed_empty_spans": normalizations.get(
+                        "display_equation_empty_spans_removed"
+                    ),
+                    "removed_breaks": normalizations.get(
+                        "redundant_breaks_before_display_mathml_removed"
+                    ),
+                    "target_break_count": target_break_count,
+                }
+            )
+            copied_results.append(copied)
+            current_source_id = target_id
+            current_snapshot = after
+
+        write_json(out / "copy-chain.json", {"schema_version": 2, "hops": hops})
+        target_ids = [str(value["target_id"]) for value in hops]
+        if keep_worksite:
+            remaining = {
+                "status": "preserved_active_for_manual_inspection",
+                "target_ids": target_ids,
+                "manual_cleanup_required": True,
+            }
+            write_json(out / "worksite.json", remaining)
+            result = {
+                "scenario": "copy-display-equation",
+                "status": "passed",
+                "target_ids": target_ids,
+                "hops": hops,
+                "restored": False,
+                "worksite_preserved": True,
+                "cleanup_deleted_ids": [],
+                "remaining_state": remaining,
+            }
+            write_json(out / "result.json", result)
+            render_report(options.run_dir)
+            return result
+
+        deleted_ids: list[str] = []
+        for copied in reversed(copied_results):
+            deleted_ids.extend(await cleanup_copy(active_client, current_snapshot, copied))
+        restored = await capture_snapshot(active_client, notebook_id)
+        write_json(out / "restored.json", restored)
+        assert_copy_page_restored(original_before, restored, [source_id])
+        result = {
+            "scenario": "copy-display-equation",
+            "status": "passed",
+            "target_ids": target_ids,
+            "hops": hops,
+            "restored": True,
+            "worksite_preserved": False,
+            "cleanup_deleted_ids": deleted_ids,
+        }
+        write_json(out / "result.json", result)
+        render_report(options.run_dir)
+        return result
+
+
+async def execute_copy_container(
+    args: argparse.Namespace,
+    options: RuntimeOptions,
+    manifest: dict[str, Any],
+    *,
+    client: MCPStdioClient | None = None,
+) -> dict[str, Any]:
+    """Copy one Section or SectionGroup inside and across a two-Notebook bundle."""
+
+    validate_manifest_notebook(manifest, args.notebook_name)
+    keep_worksite = bool(getattr(args, "keep_worksite", False))
+    spec = copy_spec(
+        args.scenario,
+        manifest,
+        options.run_dir,
+        keep_worksite=keep_worksite,
+        name_suffix=run_safe_timestamp(args),
+    )
+    cases = spec.get("cases")
+    notebooks = spec.get("notebooks")
+    if not isinstance(cases, list) or len(cases) != 2:
+        raise RunnerFailure(f"{args.scenario} requires two declared execution cases.")
+    if not isinstance(notebooks, dict) or set(notebooks) != {"destination", "source"}:
+        raise RunnerFailure(
+            f"{args.scenario} requires exact source/destination Notebook roles."
+        )
+
+    out = scenario_dir(options.run_dir, args.scenario)
+    async with scenario_client(
+        client,
+        policy=spec["policy"],
+        allowed_tools=spec["tools"],
+        run_dir=out,
+        timeout_seconds=options.timeout,
+        client_factory=MCPStdioClient,
+    ) as active_client:
+        original_before = await _capture_notebook_bundle(active_client, notebooks)
+        write_json(out / "before.json", original_before)
+        current_snapshot = original_before
+        copied_results: list[dict[str, Any]] = []
+        case_results: list[dict[str, Any]] = []
+        plan_index: list[dict[str, Any]] = []
+
+        for case in cases:
+            case_name = str(case["name"])
+            pre_plan_source = find_snapshot_item(current_snapshot, spec["source"]["id"])
+            if pre_plan_source is None:
+                raise RunnerFailure(
+                    f"Manifest Copy source is not active before case '{case_name}'."
+                )
+            case_spec = {
+                **spec,
+                "destination": dict(case["destination"]),
+                "destination_name": str(case["destination_name"]),
+            }
+            plan_arguments = {
+                "source_id": pre_plan_source["id"],
+                "destination_parent_id": case_spec["destination"]["id"],
+                "destination_name": case_spec["destination_name"],
+            }
+            planned = await stable_copy_plan(
+                active_client,
+                plan_arguments,
+                attempts_path=out / f"plan-attempts-{case_name}.json",
+                plan_path=out / f"plan-{case_name}.json",
+            )
+            assert_copy_fixture_capabilities(planned, RELAXED_COPY_CAPABILITIES)
+            case_before = plan_bound_before_snapshot(current_snapshot, planned)
+            write_json(out / f"before-{case_name}.json", case_before)
+            current_source = dict(planned["source"])
+            copied = await call_with_result_evidence(
+                active_client,
+                spec["tool"],
+                copy_execute_arguments(
+                    case_spec,
+                    current_source,
+                    str(planned["plan_digest"]),
+                ),
+                out / f"copy-result-{case_name}.json",
+            )
+            report = copied.get("copy_report", {})
+            target = copied.get("item")
+            expected_type = (
+                "section" if spec["tool"] == "copy_section" else "section_group"
+            )
+            if report.get("verified") is not True:
+                raise InvariantFailure(
+                    f"Copy case '{case_name}' did not report verified read-back."
+                )
+            if not isinstance(target, dict) or target.get("resource_type") != expected_type:
+                raise InvariantFailure(
+                    f"Copy case '{case_name}' did not return a typed {expected_type} root."
+                )
+
+            case_after = await _capture_notebook_bundle(active_client, notebooks)
+            write_json(out / f"after-{case_name}.json", case_after)
+            assert_copy_mapping(
+                case_before,
+                case_after,
+                current_source["id"],
+                case_spec["destination"]["id"],
+                case_spec["destination_name"],
+                copied,
+            )
+            protected_pages = [
+                str(item["id"])
+                for item in case_before.get("items", [])
+                if item.get("resource_type") == "page" and item.get("id")
+            ]
+            assert_pages_unchanged(case_before, case_after, protected_pages)
+            copied_results.append(copied)
+            case_results.append(
+                {
+                    "case": case_name,
+                    "destination_name": case_spec["destination_name"],
+                    "destination_role": case["destination_role"],
+                    "destination_scope": case["destination_scope"],
+                    "destination_parent_id": case_spec["destination"]["id"],
+                    "target_id": target["id"],
+                    "mapped_resource_count": len(report.get("id_map", {})),
+                    "copy_report": report,
+                }
+            )
+            plan_index.append(
+                {
+                    "case": case_name,
+                    "plan_digest": planned["plan_digest"],
+                    "source_snapshot_digest": planned.get("source_snapshot_digest"),
+                }
+            )
+            current_snapshot = case_after
+
+        write_json(out / "plans.json", {"cases": plan_index})
+        write_json(out / "after.json", current_snapshot)
+        target_ids = [
+            str(target_id)
+            for copied in copied_results
+            for target_id in copied.get("copy_report", {}).get("id_map", {}).values()
+        ]
+        if keep_worksite:
+            remaining = {
+                "status": "preserved_active_for_manual_inspection",
+                "target_ids": target_ids,
+                "target_root_ids": [
+                    str(copied.get("item", {}).get("id")) for copied in copied_results
+                ],
+                "cases": case_results,
+                "manual_cleanup_required": True,
+                "reason": (
+                    f"--keep-worksite preserved both verified {args.scenario} targets."
+                ),
+            }
+            write_json(out / "worksite.json", remaining)
+            result = {
+                "scenario": args.scenario,
+                "status": "passed",
+                "target_ids": target_ids,
+                "restored": False,
+                "worksite_preserved": True,
+                "cleanup_deleted_ids": [],
+                "remaining_state": remaining,
+                "case_results": case_results,
+            }
+            write_json(out / "result.json", result)
+            render_report(options.run_dir)
+            return result
+
+        deleted_ids: list[str] = []
+        for copied in reversed(copied_results):
+            deleted_ids.extend(await cleanup_copy(active_client, current_snapshot, copied))
+        restored = await _capture_notebook_bundle(active_client, notebooks)
+        write_json(out / "restored.json", restored)
+        assert_restored(original_before, restored)
+        result = {
+            "scenario": args.scenario,
             "status": "passed",
             "target_ids": target_ids,
             "restored": True,
@@ -780,6 +1302,13 @@ async def execute_copy(
 ) -> dict[str, Any]:
     if args.scenario == "copy-page":
         return await execute_copy_page(
+            args,
+            options,
+            manifest,
+            client=client,
+        )
+    if args.scenario in {"copy-section", "copy-section-group"}:
+        return await execute_copy_container(
             args,
             options,
             manifest,
@@ -882,13 +1411,10 @@ async def execute_copy(
                 }
                 write_json(out / "worksite.json", remaining)
             else:
-                closed = await client.call_tool(
-                    "close_notebook",
-                    {
-                        "notebook_id": target["id"],
-                        "expected_name": display_name(target),
-                        "expected_modified": target.get("modified"),
-                    },
+                closed = await close_copied_notebook(
+                    client,
+                    target,
+                    out / "close-confirmation.json",
                 )
                 remaining = {
                     "status": "closed_not_deleted",
@@ -969,8 +1495,10 @@ async def execute_copy(
 __all__ = [
     "call_with_result_evidence",
     "cleanup_copy",
+    "close_copied_notebook",
     "copy_execute_arguments",
     "copy_spec",
     "execute_copy",
+    "execute_copy_container",
     "execute_copy_page",
 ]

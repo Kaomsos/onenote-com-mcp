@@ -63,6 +63,17 @@ class Scenario:
                 case_id=f"{self.name}.use-cache",
                 scenario_name=self.name,
                 scenario_args=("--use-cache",),
+                expected=DryRunExpectations(
+                    expected_mcp_process_starts=(
+                        0
+                        if getattr(
+                            self.fixture_recipe,
+                            "representation_discovery_only",
+                            False,
+                        )
+                        else 1
+                    )
+                ),
             ),
         ]
         cases.extend(

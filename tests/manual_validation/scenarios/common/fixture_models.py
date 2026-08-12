@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from ...mcp_stdio_client import MCPStdioClient
 from ...runtime import InvariantFailure, RuntimeOptions
 from ...test_utils import installed_runner_version, manifest_path, stable_item, utc_now, write_json
-from .config import AUTOMATED_COPY_CAPABILITIES
+from .config import VALIDATED_COPY_CAPABILITIES
 from .specs import FixtureProfile, ScenarioSpec
 
 
@@ -136,7 +136,7 @@ class FixtureRecorder:
             "copy_scenario": {
                 "supported": True,
                 "real_backend_confirmed": True,
-                "validated_content_types": sorted(AUTOMATED_COPY_CAPABILITIES),
+                "validated_content_types": sorted(VALIDATED_COPY_CAPABILITIES),
             },
         }
         manifest["scenario_policies"] = {self.spec.name: self.spec.policy.as_dict()}

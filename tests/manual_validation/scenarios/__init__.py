@@ -25,16 +25,23 @@ from .copy_page import CopyPageScenario
 from .copy_section import CopySectionScenario
 from .copy_section_group import CopySectionGroupScenario
 from .copy_notebook import CopyNotebookScenario
+from .copy_display_equation import CopyDisplayEquationScenario
 from .move_page import MovePageScenario
 from .move_section import MoveSectionScenario
 from .move_section_group import MoveSectionGroupScenario
 from .bootstrap_inserted_file_fixture import BootstrapInsertedFileFixtureScenario
 from .bootstrap_ink_drawing_fixture import BootstrapInkDrawingFixtureScenario
 from .bootstrap_media_file_fixture import BootstrapMediaFileFixtureScenario
+from .bootstrap_shape_fixture import BootstrapShapeFixtureScenario
+from .bootstrap_inline_equation_fixture import BootstrapInlineEquationFixtureScenario
 from .bootstrap_user_authored_fixture import BootstrapUserAuthoredFixtureScenario
 from .cache_invalidation import CacheInvalidationScenario
 from .user_authored_fixture_consumer import UserAuthoredFixtureConsumerScenario
-from .inserted_file_fixture_consumer import InsertedFileFixtureConsumerScenario
+from .interactive_copy_inserted_file import InteractiveCopyInsertedFileScenario
+from .interactive_copy_ink_drawing import InteractiveCopyInkDrawingScenario
+from .interactive_copy_media_file import InteractiveCopyMediaFileScenario
+from .interactive_copy_ui_shape import InteractiveCopyUIShapeScenario
+from .interactive_copy_inline_equation import InteractiveCopyInlineEquationScenario
 
 from .common.registry import SCENARIO_REGISTRY
 from .common.orchestrator import PUBLIC_SCENARIOS, run_validate
@@ -103,15 +110,22 @@ __all__ = [
     "CopySectionScenario",
     "CopySectionGroupScenario",
     "CopyNotebookScenario",
+    "CopyDisplayEquationScenario",
     "MovePageScenario",
     "MoveSectionScenario",
     "MoveSectionGroupScenario",
     "BootstrapInsertedFileFixtureScenario",
     "BootstrapInkDrawingFixtureScenario",
     "BootstrapMediaFileFixtureScenario",
+    "BootstrapShapeFixtureScenario",
+    "BootstrapInlineEquationFixtureScenario",
     "BootstrapUserAuthoredFixtureScenario",
     "CacheInvalidationScenario",
     "UserAuthoredFixtureConsumerScenario",
-    "InsertedFileFixtureConsumerScenario",
+    "InteractiveCopyInsertedFileScenario",
+    "InteractiveCopyInkDrawingScenario",
+    "InteractiveCopyMediaFileScenario",
+    "InteractiveCopyUIShapeScenario",
+    "InteractiveCopyInlineEquationScenario",
     "dispatch_command",
 ]

@@ -113,6 +113,36 @@ def render_report(run_dir: Path) -> Path:
                 ]
             )
             lines.append("")
+            evidence_fields = (
+                ("Capability", "capability"),
+                ("Machine comparator passed", "machine_comparator_passed"),
+                ("Human verdict", "human_verdict"),
+                ("Production verified", "production_verified"),
+                ("Production lossless", "production_lossless"),
+                ("Diagnostic partial admitted", "diagnostic_partial_admitted"),
+                ("Verification tier", "verification_tier"),
+                ("Source deleted", "source_deleted"),
+                ("Representation status", "representation_status"),
+                ("Interactive bootstrap", "interactive_bootstrap"),
+                ("Template published", "template_published"),
+                ("Mutation eligible", "mutation_eligible"),
+                ("Move source deletion allowed", "move_source_deletion_allowed"),
+            )
+            for label, field in evidence_fields:
+                if field in result:
+                    lines.append(f"- {label}: `{result[field]}`")
+            for label, field in (
+                ("Candidate added kinds", "candidate_added_kinds"),
+                ("Candidate added capabilities", "candidate_added_capabilities"),
+            ):
+                values = result.get(field)
+                if isinstance(values, list):
+                    lines.append(f"- {label}: `{', '.join(str(value) for value in values)}`")
+            if any(field in result for _, field in evidence_fields) or any(
+                field in result
+                for field in ("candidate_added_kinds", "candidate_added_capabilities")
+            ):
+                lines.append("")
             remaining_state = result.get("remaining_state")
             if isinstance(remaining_state, dict) and remaining_state.get(
                 "manual_cleanup_required"

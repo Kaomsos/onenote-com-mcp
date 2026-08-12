@@ -38,16 +38,23 @@ SCENARIO_MODULES = {
     "copy_section": "CopySectionScenario",
     "copy_section_group": "CopySectionGroupScenario",
     "copy_notebook": "CopyNotebookScenario",
+    "copy_display_equation": "CopyDisplayEquationScenario",
     "move_page": "MovePageScenario",
     "move_section": "MoveSectionScenario",
     "move_section_group": "MoveSectionGroupScenario",
     "bootstrap_inserted_file_fixture": "BootstrapInsertedFileFixtureScenario",
     "bootstrap_ink_drawing_fixture": "BootstrapInkDrawingFixtureScenario",
     "bootstrap_media_file_fixture": "BootstrapMediaFileFixtureScenario",
+    "bootstrap_shape_fixture": "BootstrapShapeFixtureScenario",
+    "bootstrap_inline_equation_fixture": "BootstrapInlineEquationFixtureScenario",
     "bootstrap_user_authored_fixture": "BootstrapUserAuthoredFixtureScenario",
     "cache_invalidation": "CacheInvalidationScenario",
     "user_authored_fixture_consumer": "UserAuthoredFixtureConsumerScenario",
-    "inserted_file_fixture_consumer": "InsertedFileFixtureConsumerScenario",
+    "interactive_copy_inserted_file": "InteractiveCopyInsertedFileScenario",
+    "interactive_copy_ink_drawing": "InteractiveCopyInkDrawingScenario",
+    "interactive_copy_media_file": "InteractiveCopyMediaFileScenario",
+    "interactive_copy_ui_shape": "InteractiveCopyUIShapeScenario",
+    "interactive_copy_inline_equation": "InteractiveCopyInlineEquationScenario",
 }
 SCENARIO_INFRASTRUCTURE_MODULES = {
     "__init__",
@@ -222,10 +229,22 @@ def test_all_runs_every_scenario_serially_and_is_quiet_by_default(capsys) -> Non
 
     assert [command[2] for command in commands] == list(registered)
     output = capsys.readouterr().out
-    assert "[1/10] create ..." in output
+    assert "[1/12] create ..." in output
     assert "PASS move-page" in output
-    assert "Completed 10 scenarios: 10 passed, 0 failed" in output
+    assert "PASS move-section" in output
+    assert "PASS move-section-group" in output
+    assert "Completed 12 scenarios: 12 passed, 0 failed" in output
     assert "result for" not in output
+
+
+def test_all_includes_all_three_stable_move_scenarios() -> None:
+    included = set(get_all_scenario_names())
+
+    assert {"move-page", "move-section", "move-section-group"} <= included
+    assert all(
+        SCENARIO_REGISTRY.get(name).included_in_all is True
+        for name in ("move-page", "move-section", "move-section-group")
+    )
 
 
 def test_all_passes_dry_run_timeout_and_json_to_each_child(capsys) -> None:

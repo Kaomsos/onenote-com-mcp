@@ -58,15 +58,20 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "reorder-section-group",
         "reparent-page",
         "reparent-section-group",
-        "move-section",
-        "move-section-group",
         "bootstrap-inserted-file-fixture",
         "bootstrap-ink-drawing-fixture",
         "bootstrap-media-file-fixture",
+        "bootstrap-shape-fixture",
+        "copy-display-equation",
+        "bootstrap-inline-equation-fixture",
         "bootstrap-user-authored-fixture",
         "cache-invalidation",
         "user-authored-fixture-consumer",
-        "inserted-file-fixture-consumer",
+        "interactive-copy-inserted-file",
+        "interactive-copy-ink-drawing",
+        "interactive-copy-media-file",
+        "interactive-copy-ui-shape",
+        "interactive-copy-inline-equation",
     }
     assert excluded <= covered
 
@@ -113,6 +118,17 @@ def test_registered_named_case_round_trips_through_guarded_cli(
             "preflight-cache-required"
         ]
         assert payload["cache"]["decision"] == "rejected_missing_use_cache"
+    elif (
+        getattr(scenario.fixture_recipe, "representation_discovery_only", False)
+        and "--use-cache" in case.scenario_args
+    ):
+        assert [step["step"] for step in payload["ordered_steps"]] == [
+            "preflight-discovery-rejects-cache"
+        ]
+        assert payload["cache"]["decision"] == (
+            "rejected_cache_for_representation_discovery"
+        )
+        assert payload["expected_mcp_process_starts"] == 0
     else:
         assert payload["ordered_steps"][0]["step"] == (
             "resolve-fixture-bundle"
@@ -125,6 +141,10 @@ def test_registered_named_case_round_trips_through_guarded_cli(
             )
         )
         assert payload["ordered_steps"][1]["tool_allowlist"] == sorted(spec.tool_allowlist)
+    if getattr(scenario.fixture_recipe, "representation_discovery_only", False):
+        assert payload["cache"]["cache_mode"] == "representation_discovery"
+        assert payload["cache"]["enabled"] is False
+        assert payload["cache"]["templates_opened"] is False
     assert payload["filesystem_cleanup"]["enabled"] is False
     if case.scenario_name == "copy-page":
         cases = payload["scenario_spec"]["execution_contract"]["cases"]

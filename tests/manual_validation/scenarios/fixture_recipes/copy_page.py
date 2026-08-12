@@ -29,7 +29,7 @@ DESCRIPTION = """Copy Page 人工验收说明
 同 Section、跨 Section、跨 Notebook，各自覆盖不带子树与带子树。
 
 原始状态：
-Source/01-Source-Parent：page_level=1，包含 Rich Text、Table 和 Image
+Source/01-Source-Parent：page_level=1，包含 Rich Text、行内公式、单行公式、Table 和 Image
   Source/02-Source-Child：page_level=2，缩进在 Parent 下，包含 List 和 Tag
 Source-Destination/02-Source-Child：同标题、不同正文的跨 Section anchor
 Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、不同正文的跨 Notebook anchor
@@ -47,7 +47,7 @@ Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、�
 """
 
 class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
-    recipe_version = 4
+    recipe_version = 9
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "the cross-Notebook destination Section belongs only to destination",
@@ -93,6 +93,7 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
                 LayeredFixtureKind.PAGE,
                 parent_title="01-Source-Parent",
                 semantic_title="02-Source-Child",
+                include_equations=True,
             ),
             notebook_roles=(
                 NotebookRoleSpec(
@@ -154,6 +155,7 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
         markers = (
             "原始状态：",
             "同 Section、跨 Section、跨 Notebook",
+            "行内公式、单行公式",
             "不带子树",
             "带子树",
             "默认运行会在自动 read-back 验证后清理六个目标",

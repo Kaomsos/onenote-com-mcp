@@ -13,8 +13,8 @@ class CopySectionGroupScenario(CopyScenario):
     name = "copy-section-group"
     fixture_recipe = RECIPE
     help_text = (
-        "GATED: create and copy the prepared Section Group; clean up by default or "
-        "preserve the verified worksite for inspection."
+        "GATED: copy one prepared Section Group inside its source Notebook and across "
+        "to a destination Notebook; clean up by default or preserve both verified targets."
     )
 
     execute_copy = staticmethod(execute_copy)

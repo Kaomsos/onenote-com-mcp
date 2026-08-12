@@ -88,18 +88,38 @@ def required_recipe_contract_cases(registry) -> tuple[RecipeContractCase, ...]:
                         "checkpoint-failure",
                         ContractOutcome.FAIL_CLOSED,
                     ),
-                    (
-                        RecipeContractDimension.INTERACTIVE_DETECTOR,
-                        "success",
-                        ContractOutcome.PASS,
-                    ),
-                    (
-                        RecipeContractDimension.INTERACTIVE_DETECTOR,
-                        "failure",
-                        ContractOutcome.FAIL_CLOSED,
-                    ),
                 )
             )
+            if getattr(recipe, "representation_discovery_only", False):
+                declarations.extend(
+                    (
+                        (
+                            RecipeContractDimension.INTERACTIVE_DETECTOR,
+                            "single-candidate",
+                            ContractOutcome.EVIDENCE_ONLY,
+                        ),
+                        (
+                            RecipeContractDimension.INTERACTIVE_DETECTOR,
+                            "ambiguous",
+                            ContractOutcome.EVIDENCE_ONLY,
+                        ),
+                    )
+                )
+            else:
+                declarations.extend(
+                    (
+                        (
+                            RecipeContractDimension.INTERACTIVE_DETECTOR,
+                            "success",
+                            ContractOutcome.PASS,
+                        ),
+                        (
+                            RecipeContractDimension.INTERACTIVE_DETECTOR,
+                            "failure",
+                            ContractOutcome.FAIL_CLOSED,
+                        ),
+                    )
+                )
         if isinstance(recipe, UserAuthoredRecipe):
             declarations.extend(
                 (

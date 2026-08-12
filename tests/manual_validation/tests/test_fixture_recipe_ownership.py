@@ -12,6 +12,7 @@ import pytest
 
 from tests.manual_validation import test_utils
 from tests.manual_validation.runtime import InvariantFailure, RunnerFailure, RuntimeOptions
+from tests.manual_validation.scenarios.common.config import READ_TOOLS
 from tests.manual_validation.scenarios.common.fixture_models import FixtureBuildResult, FixtureContext, FixtureRecorder
 from tests.manual_validation.scenarios.common.fixture_runtime import prepare_fixture
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
@@ -66,6 +67,7 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
     assert role_specs["destination"].profile.content_capabilities == ("plain_text",)
     assert role_specs["source"].profile.content_capabilities == (
         "RichText",
+        "DisplayEquation",
         "Table",
         "Image",
         "Outline",
@@ -89,6 +91,41 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
         recipe.manifest_keys_for_role("destination")
         | recipe.manifest_keys_for_role("source")
         == recipe.manifest_keys
+    )
+
+
+@pytest.mark.parametrize(
+    ("scenario_name", "destination_keys"),
+    [
+        ("copy-section", {"cross_notebook_group"}),
+        ("copy-section-group", {"cross_notebook_anchor_section"}),
+    ],
+)
+def test_container_copy_recipes_partition_two_notebook_roles(
+    scenario_name, destination_keys
+) -> None:
+    recipe = SCENARIO_REGISTRY.get(scenario_name).fixture_recipe
+
+    assert recipe.recipe_version == 3
+    assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
+        "destination",
+        "source",
+    )
+    assert recipe.manifest_keys_for_role("destination") == destination_keys
+    assert (
+        recipe.manifest_keys_for_role("destination")
+        | recipe.manifest_keys_for_role("source")
+        == recipe.manifest_keys
+    )
+
+
+def test_copy_notebook_recipe_declares_nested_section_group_subtree() -> None:
+    recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
+
+    assert recipe.recipe_version == 3
+    assert {"source_group", "group_section", "group_page"} <= recipe.manifest_keys
+    assert {"create_section_group", "create_section", "create_page"} <= (
+        recipe.profile.creation_tools
     )
 
 
@@ -159,12 +196,26 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
             "parent_page_id": after_page_id if page_level > 1 else None,
         }
 
-    async def rich(_client, page, _run_dir):
+    async def rich(_client, page, _run_dir, *, include_equations=False, **_kwargs):
         calls.extend(["append_to_page", "add_image_to_page"])
-        return page, {
+        automated_content = ["rich_text", "table", "image"]
+        evidence = {
             "page_id": page["id"],
-            "automated_content": ["rich_text", "table", "image"],
+            "automated_content": automated_content,
         }
+        if include_equations:
+            automated_content.extend(("inline_equation", "display_equation"))
+            evidence["equations"] = {
+                "mathml_roots": 2,
+                "inline_equations": 1,
+                "display_equations": 1,
+                "namespace_declarations": 2,
+                "redundant_breaks_before_display": 0,
+                "standalone_display_oes": 1,
+                "nonempty_display_predecessors": 1,
+                "empty_oes_before_display": 0,
+            }
+        return page, evidence
 
     async def list_tag(_client, page):
         calls.append("append_to_page")
@@ -201,8 +252,28 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
     )
 
     class Client:
-        async def call_tool(self, name, _arguments):
+        async def call_tool(self, name, arguments):
             calls.append(name)
+            if name == "append_to_page":
+                return {
+                    "item": {
+                        "id": arguments["page_id"],
+                        "resource_type": "page",
+                        "title": "01-Source-Parent",
+                        "section_id": arguments["expected_section_id"],
+                        "parent_id": arguments["expected_section_id"],
+                    }
+                }
+            if name == "get_page_xml":
+                return {
+                    "xml": (
+                        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">'
+                        "<one:Outline><one:OEChildren><one:OE><one:T>before "
+                        '&lt;math xmlns="http://www.w3.org/1998/Math/MathML"&gt;'
+                        "&lt;mi&gt;x&lt;/mi&gt;&lt;/math&gt; after"
+                        "</one:T></one:OE></one:OEChildren></one:Outline></one:Page>"
+                    )
+                }
             return {"text": descriptions}
 
     args = _args(tmp_path, scenario_name)
@@ -241,7 +312,8 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
     )
     assert set(result.structure) == set(expected_keys)
     assert set(calls) <= set(scenario.spec.tool_allowlist)
-    mutation_calls = {name for name in calls if name not in {"get_page_text"}}
+    read_calls = READ_TOOLS | {"get_page_text"}
+    mutation_calls = {name for name in calls if name not in read_calls}
     assert mutation_calls <= set(recipe.profile.creation_tools)
 
 

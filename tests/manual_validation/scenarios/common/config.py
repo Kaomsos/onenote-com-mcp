@@ -15,6 +15,13 @@ AUTOMATED_COPY_CAPABILITIES = {
     "Table",
     "Tag",
 }
+VALIDATED_COPY_CAPABILITIES = AUTOMATED_COPY_CAPABILITIES | {
+    "DisplayEquation",
+    "InkDrawing",
+    "InsertedFile",
+    "MediaFile",
+    "UIShape",
+}
 ROOT_PAGE_COPY_CAPABILITIES = {"Image", "Outline", "RichText", "Table"}
 RELAXED_COPY_CAPABILITIES = {"List", "Tag"}
 

@@ -149,6 +149,11 @@ def build_isolated_dry_run_plan(
         recipe.build_mode.value == "human_bootstrap_required"
         and getattr(recipe, "bootstrap_scenario_name", None) == args.scenario
     )
+    representation_discovery = bool(
+        interactive_bootstrap
+        and getattr(recipe, "representation_discovery_only", False)
+    )
+    discovery_cache_rejected = representation_discovery and use_cache
     if use_cache and not interactive_bootstrap:
         cache_operations = (
             [
@@ -182,11 +187,33 @@ def build_isolated_dry_run_plan(
                 "target": "exact disposable role/Canvas or authoring zone",
             },
             {
-                "step": "close-stage-publish-materialize-live-validate",
-                "trust_boundary": "managed local fixture cache",
-                "target": "closed opaque template bundle then a second working bundle",
+                "step": (
+                    "record-evidence-only-and-close"
+                    if representation_discovery
+                    else "close-stage-publish-materialize-live-validate"
+                ),
+                "trust_boundary": (
+                    "local content-free evidence"
+                    if representation_discovery
+                    else "managed local fixture cache"
+                ),
+                "target": (
+                    "no template publication or mutation eligibility"
+                    if representation_discovery
+                    else "closed opaque template bundle then a second working bundle"
+                ),
                 "templates_opened": False,
             },
+        ]
+    if discovery_cache_rejected:
+        steps = [
+            {
+                "step": "preflight-discovery-rejects-cache",
+                "trust_boundary": "static representation-discovery contract",
+                "allowed_operations": [],
+                "target": "reject before lifecycle, MCP, cache, stdin, or mutation",
+                "reason": "UI representation discovery never reads or publishes fixture cache",
+            }
         ]
     if consumer_cache_required:
         steps = [
@@ -236,7 +263,9 @@ def build_isolated_dry_run_plan(
             )
             for role in roles
         },
-        "expected_mcp_process_starts": 0 if consumer_cache_required else 1,
+        "expected_mcp_process_starts": (
+            0 if consumer_cache_required or discovery_cache_rejected else 1
+        ),
         "server_started": False,
         "ordered_steps": steps,
         "filesystem_cleanup": {
@@ -258,13 +287,15 @@ def build_isolated_dry_run_plan(
         "cache_mode": (
             "cache_required"
             if consumer_cache_required
+            else "representation_discovery"
+            if representation_discovery
             else "interactive_bootstrap"
             if interactive_bootstrap
             else "use_cache"
             if use_cache
             else "fresh"
         ),
-        "enabled": use_cache or interactive_bootstrap,
+        "enabled": (use_cache or interactive_bootstrap) and not representation_discovery,
         "cache_root": str(cache_root),
         "fingerprint": recipe.cache_fingerprint,
         "template_instance_id": template_instance_id,
@@ -287,6 +318,10 @@ def build_isolated_dry_run_plan(
         "decision": (
             "rejected_missing_use_cache"
             if consumer_cache_required
+            else "rejected_cache_for_representation_discovery"
+            if discovery_cache_rejected
+            else "evidence_only_no_publish"
+            if representation_discovery
             else "bootstrap_plan_not_executed"
             if interactive_bootstrap
             else "runtime_lookup_not_performed_in_dry_run"
@@ -296,6 +331,14 @@ def build_isolated_dry_run_plan(
         "planned_branches": (
             ["fail closed before lifecycle: rerun with --use-cache and an exact instance"]
             if consumer_cache_required
+            else ["fail closed before lifecycle: representation discovery forbids --use-cache"]
+            if discovery_cache_rejected
+            else [
+                "fresh scaffold and run-bound UI confirmation",
+                "record content-free kind/capability delta as evidence_only",
+                "never publish a template or enable Copy/Move",
+            ]
+            if representation_discovery
             else [
                 "validated-hit: materialize, load hierarchy, rebind live IDs, validate",
                 "working activation failure: preserve run/lease; validated template remains retryable after close",
@@ -306,7 +349,11 @@ def build_isolated_dry_run_plan(
             [
                 "validated-hit: lock, inventory, materialize, open working paths, live validate",
                 "cold-miss: build fresh, live validate, close all, stage, inventory, publish, materialize",
-                "invalid: exact safe cleanup then rebuild or interactive-bootstrap-required",
+                (
+                    "invalid: exact safe cleanup then interactive bootstrap"
+                    if interactive_bootstrap
+                    else "invalid: exact safe cleanup then programmatic rebuild"
+                ),
             ]
             if use_cache or interactive_bootstrap
             else ["fresh build and live validation; zero cache access"]

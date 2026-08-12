@@ -31,7 +31,14 @@ from tests.manual_validation.scenarios.common.fixture_models import FixtureBuild
 CASES = required_recipe_contract_cases(SCENARIO_REGISTRY)
 
 
-def _interactive_observation(recipe, objects, capabilities, *, complete=True):
+def _interactive_observation(
+    recipe,
+    objects,
+    capabilities,
+    *,
+    complete=True,
+    structural_marker_counts=None,
+):
     page_id = "canvas-page"
     build = FixtureBuildResult(
         {
@@ -54,6 +61,7 @@ def _interactive_observation(recipe, objects, capabilities, *, complete=True):
                 "schema_version": 1,
                 "capabilities": list(capabilities),
                 "object_kind_counts": {},
+                "structural_marker_counts": dict(structural_marker_counts or {}),
                 "unknown_nodes": [],
                 "unsupported_page_roots": [],
                 "complete": complete,
@@ -138,12 +146,18 @@ def test_interactive_miss_never_calls_scaffold_or_waits_for_input(monkeypatch) -
         "bootstrap-inserted-file-fixture",
         "bootstrap-ink-drawing-fixture",
         "bootstrap-media-file-fixture",
+        "bootstrap-shape-fixture",
     ],
 )
 def test_each_concrete_interactive_detector_has_success_and_failure_cases(scenario_name) -> None:
     scenario = SCENARIO_REGISTRY.get(scenario_name)
     recipe = scenario.fixture_recipe
-    assert recipe.recipe_version == 3
+    assert recipe.recipe_version == {
+        "bootstrap-inserted-file-fixture": 3,
+        "bootstrap-ink-drawing-fixture": 3,
+        "bootstrap-media-file-fixture": 8,
+        "bootstrap-shape-fixture": 5,
+    }[scenario_name]
     cases = [case for case in CASES if case.scenario_name == scenario_name]
     variants = {
         case.variant
@@ -151,7 +165,8 @@ def test_each_concrete_interactive_detector_has_success_and_failure_cases(scenar
         if case.dimension == RecipeContractDimension.INTERACTIVE_DETECTOR
     }
     assert variants == {"success", "failure"}
-    requested = ({"kind": recipe.capability},)
+    public_kind = next(iter(recipe.requested_object_types))
+    requested = ({"kind": public_kind},)
     assert recipe.compare_capability(requested, requested)["equivalent"] is True
     assert recipe.compare_capability(requested, ())["equivalent"] is False
 
@@ -159,16 +174,26 @@ def test_each_concrete_interactive_detector_has_success_and_failure_cases(scenar
         recipe,
         ({"kind": "Outline"}, {"kind": "OE"}, *requested),
         ("Outline", recipe.capability),
+        structural_marker_counts=(
+            {"ShapeInfo": 1} if recipe.capability == "UIShape" else {}
+        ),
     )
     success_report = recipe.authored_content_report(observation)
     assert success_report["passed"] is True
-    assert success_report["representation_status"] == "requested_kind_observed"
+    assert success_report["representation_status"] == (
+        "requested_composite_observed"
+        if recipe.capability == "UIShape"
+        else "requested_kind_observed"
+    )
     assert success_report["template_publish_allowed"] is True
 
     legacy = _interactive_observation(
         recipe,
         ({"type": recipe.capability},),
         (recipe.capability,),
+        structural_marker_counts=(
+            {"ShapeInfo": 1} if recipe.capability == "UIShape" else {}
+        ),
     )
     report = recipe.authored_content_report(legacy)
     assert report["passed"] is False

@@ -133,7 +133,18 @@ def test_each_dry_run_declares_one_process_and_scenario_fixture(
     ]
     if scenario.startswith("bootstrap-"):
         expected_steps.extend(
-            ["interactive-checkpoint", "close-stage-publish-materialize-live-validate"]
+            [
+                "interactive-checkpoint",
+                (
+                    "record-evidence-only-and-close"
+                    if getattr(
+                        SCENARIO_REGISTRY.get(scenario).fixture_recipe,
+                        "representation_discovery_only",
+                        False,
+                    )
+                    else "close-stage-publish-materialize-live-validate"
+                ),
+            ]
         )
     expected_steps.extend(
         ["report", "close-notebook-bundle" if multi_role else "close-source-notebook"]
@@ -170,7 +181,23 @@ def test_fixture_profiles_are_scenario_specific() -> None:
         },
         "interactive-insertedfile": {
             "bootstrap-inserted-file-fixture",
-            "inserted-file-fixture-consumer",
+            "interactive-copy-inserted-file",
+        },
+        "interactive-inkdrawing": {
+            "bootstrap-ink-drawing-fixture",
+            "interactive-copy-ink-drawing",
+        },
+        "interactive-mediafile": {
+            "bootstrap-media-file-fixture",
+            "interactive-copy-media-file",
+        },
+        "interactive-uishape": {
+            "bootstrap-shape-fixture",
+            "interactive-copy-ui-shape",
+        },
+        "interactive-inline-equation": {
+            "bootstrap-inline-equation-fixture",
+            "interactive-copy-inline-equation",
         },
     }
     assert "create_notebook" not in SCENARIO_SPECS["create"].tool_allowlist
@@ -183,7 +210,20 @@ def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
         missing = spec.fixture.creation_tools - spec.tool_allowlist
         recipe = SCENARIO_REGISTRY.get(name).fixture_recipe
         if recipe.consumer_scenario:
-            assert spec.policy.writes_enabled is False
+            if spec.execution_contract.get("interactive_copy_evidence"):
+                assert spec.policy.writes_enabled is True
+                assert spec.policy.experimental_copy_enabled is True
+                assert spec.policy.deletes_enabled is False
+                assert {"plan_copy", "copy_page"} <= spec.tool_allowlist
+            else:
+                assert spec.policy.writes_enabled is False
+                assert spec.policy.experimental_copy_enabled is False
+            runtime_creation_tools = (
+                {"create_section"}
+                if spec.execution_contract.get("same_and_cross_section")
+                else set()
+            )
+            assert missing == spec.fixture.creation_tools - runtime_creation_tools
             continue
         assert not missing, f"{name} fixture tools missing from allowlist: {sorted(missing)}"
 
@@ -289,13 +329,14 @@ def test_copy_page_fixture_description_covers_six_case_bundle_matrix() -> None:
     assert "02-Source-Child" in spec.fixture.expected_structure[2]
     assert "原始状态：" in COPY_PAGE_DESCRIPTION
     assert "同 Section、跨 Section、跨 Notebook" in COPY_PAGE_DESCRIPTION
+    assert "行内公式、单行公式" in COPY_PAGE_DESCRIPTION
     assert "不带子树" in COPY_PAGE_DESCRIPTION
     assert "带子树" in COPY_PAGE_DESCRIPTION
     assert "默认运行会在自动 read-back 验证后清理六个目标" in COPY_PAGE_DESCRIPTION
 
 
 def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree() -> None:
-    assert SCENARIO_REGISTRY.get("copy-page").fixture_recipe.recipe_version == 4
+    assert SCENARIO_REGISTRY.get("copy-page").fixture_recipe.recipe_version == 9
     assert tuple(
         role.role
         for role in SCENARIO_REGISTRY.get("copy-page").fixture_recipe.cache_identity.notebook_roles
@@ -367,7 +408,25 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
     ]
     copy_fixture = {
         "page_id": "parent-page",
-        "automated_content": ["rich_text", "table", "image", "list", "tag"],
+        "automated_content": [
+            "rich_text",
+            "table",
+            "image",
+            "inline_equation",
+            "display_equation",
+            "list",
+            "tag",
+        ],
+        "equations": {
+            "mathml_roots": 2,
+            "inline_equations": 1,
+            "display_equations": 1,
+            "namespace_declarations": 2,
+            "redundant_breaks_before_display": 0,
+            "standalone_display_oes": 1,
+            "nonempty_display_predecessors": 1,
+            "empty_oes_before_display": 0,
+        },
         "semantic_page": {
             "page_id": "child-page",
             "observed_capabilities": ["List", "Tag"],
@@ -384,7 +443,13 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
         "page_capability_projections": {
             "parent-page": {
                 "schema_version": 1,
-                "capabilities": ["Image", "Outline", "RichText", "Table"],
+                "capabilities": [
+                    "DisplayEquation",
+                    "Image",
+                    "Outline",
+                    "RichText",
+                    "Table",
+                ],
                 "complete": True,
             },
             "child-page": {
@@ -400,6 +465,7 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
     assert (
         "semantic child live Page XML exposes List/Tag to Copy planning" in checks
     )
+    assert "rich parent contains one inline and one display MathML equation" in checks
     assert "cross-Section destination contains a distinct same-title anchor" in checks
     assert (
         "cross-Section anchor body hash differs from the same-title source Child"
@@ -1041,15 +1107,14 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
     assert calls[1] == scenario
     assert FakeLifecycle.instances[0].closed is True
     assert result["metrics"]["observed_mcp_process_starts"] == 1
+    multi_role = len(
+        SCENARIO_REGISTRY.get(scenario).fixture_recipe.cache_identity.notebook_roles
+    ) > 1
     assert result["ordered_steps"] == [
-        "create-notebook-bundle"
-            if scenario in {"copy-page", "move-page", "move-section", "move-section-group"}
-        else "create-source-notebook",
+        "create-notebook-bundle" if multi_role else "create-source-notebook",
         scenario,
         "report",
-        "close-notebook-bundle"
-            if scenario in {"copy-page", "move-page", "move-section", "move-section-group"}
-        else "close-source-notebook",
+        "close-notebook-bundle" if multi_role else "close-source-notebook",
     ]
 
 

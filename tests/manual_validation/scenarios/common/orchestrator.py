@@ -430,11 +430,19 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
         raise RunnerFailure("--page-level must be at least 1.")
     if options.dry_run:
         return isolated_dry_run(args, options)
+    scenario = SCENARIO_REGISTRY.get(args.scenario)
+    if (
+        options.use_cache
+        and getattr(scenario.fixture_recipe, "representation_discovery_only", False)
+    ):
+        raise RunnerFailure(
+            "Representation discovery never reads or publishes fixture cache; "
+            "remove --use-cache."
+        )
     _assert_fresh_run_dir(options.run_dir)
     state = _initial_state(args, options)
     state_path = options.run_dir / "run-state.json"
     write_json(state_path, state)
-    scenario = SCENARIO_REGISTRY.get(args.scenario)
     if scenario.fixture_recipe.consumer_scenario and not options.use_cache:
         raise RunnerFailure(
             "Interactive fixture consumers require --use-cache and never build a fresh authored fixture."

@@ -44,7 +44,7 @@ def _source(tmp_path: Path, role: str = "source") -> Path:
 
 
 def _publish(tmp_path: Path):
-    recipe = SCENARIO_REGISTRY.get("copy-section").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     store = BundleCacheStore(tmp_path / "cache")
     store.initialize()
     source = _source(tmp_path)
@@ -85,7 +85,7 @@ def test_publish_and_materialize_preserve_opaque_byte_inventory(tmp_path) -> Non
 
 
 def test_publish_requires_every_declared_role_to_be_closed(tmp_path) -> None:
-    recipe = SCENARIO_REGISTRY.get("copy-section").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     store = BundleCacheStore(tmp_path / "cache")
     store.initialize()
     with pytest.raises(RunnerFailure, match="precisely closed"):
@@ -100,7 +100,7 @@ def test_publish_requires_every_declared_role_to_be_closed(tmp_path) -> None:
 
 
 def test_exact_entry_state_distinguishes_missing_matchable_and_invalid(tmp_path) -> None:
-    recipe = SCENARIO_REGISTRY.get("copy-section").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     store = BundleCacheStore(tmp_path / "cache")
     store.initialize()
 
@@ -144,7 +144,7 @@ def test_unusable_exact_entry_state_blocks_automatic_rebuild(tmp_path, state) ->
 
 
 def test_exact_entry_missing_ownership_metadata_blocks_cleanup_and_rebuild(tmp_path) -> None:
-    recipe = SCENARIO_REGISTRY.get("copy-section").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     store = BundleCacheStore(tmp_path / "cache")
     store.initialize()
     path = store.instance_path(
@@ -244,8 +244,8 @@ def test_invalid_entry_active_lease_blocks_orchestration_before_lifecycle_or_mcp
     monkeypatch.setattr(validation, "MCPStdioClient", ForbiddenMCP)
     run_dir = tmp_path / "blocked-run"
     args = argparse.Namespace(
-        command="copy-section",
-        scenario="copy-section",
+        command="copy-notebook",
+        scenario="copy-notebook",
         notebook_name="Disposable",
         run_dir=run_dir,
         timeout=180,
@@ -437,7 +437,7 @@ def test_run_local_materialized_open_failure_does_not_quarantine_template(tmp_pa
 
     validation._record_materialized_failure(
         store,
-        SCENARIO_REGISTRY.get("copy-section"),
+        SCENARIO_REGISTRY.get("copy-notebook"),
         hit,
         RuntimeOptions(run_dir, 180, False, False, use_cache=True),
         RunnerFailure("injected activation timeout"),
@@ -523,7 +523,7 @@ def test_consumer_retryable_open_failure_is_recovered_before_invalid_cleanup(
         def validate(self, context, build):
             return ("recording validator",)
 
-    recipe = ConsumerRecipe("copy-section")
+    recipe = ConsumerRecipe("copy-notebook")
     store = BundleCacheStore(tmp_path / "cache")
     store.initialize()
     source = _source(tmp_path)
@@ -625,11 +625,11 @@ def test_materialized_structure_rebinds_changed_notebook_section_and_page_ids() 
     assert rebound["canvas_page"]["id"] == "working-page"
 
 
-def test_inserted_file_consumer_live_validates_rebound_cached_structure(
+def test_inserted_file_copy_live_validates_rebound_cached_structure(
     monkeypatch,
     tmp_path,
 ) -> None:
-    scenario = SCENARIO_REGISTRY.get("inserted-file-fixture-consumer")
+    scenario = SCENARIO_REGISTRY.get("interactive-copy-inserted-file")
     artifact_root = tmp_path / "entry" / "notebooks" / "source"
     source_manifest = {
         "notebook": {"id": "source-notebook", "name": "Original", "path": "Original"},
@@ -754,26 +754,30 @@ def test_fixed_invalidation_scenario_exposes_no_arbitrary_entry_selector() -> No
             parser.parse_args(["cache-invalidation", unsafe, "value", "--dry-run"])
 
 
-def test_inserted_file_consumer_shares_bootstrap_identity_and_is_read_only() -> None:
+def test_inserted_file_copy_shares_bootstrap_identity_and_has_copy_only_policy() -> None:
     bootstrap = SCENARIO_REGISTRY.get("bootstrap-inserted-file-fixture")
-    consumer = SCENARIO_REGISTRY.get("inserted-file-fixture-consumer")
+    consumer = SCENARIO_REGISTRY.get("interactive-copy-inserted-file")
 
     assert consumer.fixture_recipe.cache_fingerprint == bootstrap.fixture_recipe.cache_fingerprint
     assert (
         consumer.fixture_recipe.default_template_instance_id
         == bootstrap.fixture_recipe.default_template_instance_id
     )
-    assert consumer.spec.policy.writes_enabled is False
+    assert consumer.spec.policy.writes_enabled is True
+    assert consumer.spec.policy.experimental_copy_enabled is True
+    assert consumer.spec.policy.deletes_enabled is False
+    assert {"plan_copy", "copy_page"} <= consumer.spec.tool_allowlist
+    assert not any(tool.startswith("delete_") for tool in consumer.spec.tool_allowlist)
     assert consumer.spec.fixture.creation_tools.isdisjoint(consumer.spec.tool_allowlist)
 
 
-def test_inserted_file_consumer_cache_miss_names_bootstrap_before_notebook_open(
+def test_inserted_file_copy_cache_miss_names_bootstrap_before_notebook_open(
     tmp_path,
 ) -> None:
     run_dir = tmp_path / "run"
     args = argparse.Namespace(
-        command="inserted-file-fixture-consumer",
-        scenario="inserted-file-fixture-consumer",
+        command="interactive-copy-inserted-file",
+        scenario="interactive-copy-inserted-file",
         notebook_name="Disposable",
         run_dir=run_dir,
         timeout=180,
@@ -826,14 +830,14 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
         datetime(2026, 8, 11, 11, 5, 49, 123_000, tzinfo=timezone(timedelta(hours=8)))
     )
     fresh_names = validation_notebook_names(
-        "copy-section", identity, ("source",), cached=False
+        "copy-notebook", identity, ("source",), cached=False
     )
     cached_names = validation_notebook_names(
-        "copy-section", identity, ("source",), cached=True
+        "copy-notebook", identity, ("source",), cached=True
     )
     initial_name = fresh_names["source"]
     working_name = cached_names["source"]
-    recipe = SCENARIO_REGISTRY.get("copy-section").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     seed_store = BundleCacheStore(cache_root)
     seed_store.initialize()
     seed_hit: CacheHit | None = None
@@ -1027,11 +1031,11 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
         fake_prepare_materialized_fixture_bundle,
     )
     monkeypatch.setattr(validation, "render_report", lambda path: path / "report.md")
-    monkeypatch.setattr(SCENARIO_REGISTRY.get("copy-section"), "execute", fake_execute)
+    monkeypatch.setattr(SCENARIO_REGISTRY.get("copy-notebook"), "execute", fake_execute)
 
     args = argparse.Namespace(
-        command="copy-section",
-        scenario="copy-section",
+        command="copy-notebook",
+        scenario="copy-notebook",
         notebook_name=initial_name,
         run_dir=run_dir,
         timeout=1_800,

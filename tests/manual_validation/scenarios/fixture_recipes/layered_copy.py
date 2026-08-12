@@ -26,11 +26,25 @@ class LayeredFixtureKind(Enum):
     MOVE = "move"
 
 
+def _merge_automated_content(
+    copy_fixture: dict,
+    capabilities: tuple[str, ...],
+) -> None:
+    automated_content = list(copy_fixture.get("automated_content", ()))
+    automated_content.extend(
+        capability
+        for capability in capabilities
+        if capability not in automated_content
+    )
+    copy_fixture["automated_content"] = automated_content
+
+
 @dataclass(frozen=True)
 class LayeredFixtureConfig:
     kind: LayeredFixtureKind
     parent_title: str = "Rich-Page"
     semantic_title: str = "List-Tag-Page"
+    include_equations: bool = False
 
 
 class LayeredCopyFixtureRecipe(RecipeBase):
@@ -61,11 +75,16 @@ class LayeredCopyFixtureRecipe(RecipeBase):
         )
         r.record_structure(parent_key, parent)
         r.record_structure("semantic_page", semantic)
-        parent, copy_fixture = await ensure_copy_rich_fixture(context.client, parent, context.options.run_dir)
+        parent, copy_fixture = await ensure_copy_rich_fixture(
+            context.client,
+            parent,
+            context.options.run_dir,
+            include_equations=self.config.include_equations,
+        )
         parent = await enforce_page_position(context.client, section["id"], parent["id"], "", 1)
         semantic = await enforce_page_position(context.client, section["id"], semantic["id"], parent["id"], 2)
         semantic, semantic_fixture = await ensure_copy_list_tag_fixture(context.client, semantic)
-        copy_fixture["automated_content"] = ["rich_text", "table", "image", "list", "tag"]
+        _merge_automated_content(copy_fixture, ("list", "tag"))
         copy_fixture["semantic_page"] = semantic_fixture
         r.refresh_structure(parent_key, parent)
         r.refresh_structure("semantic_page", semantic)
@@ -134,6 +153,24 @@ class LayeredCopyFixtureRecipe(RecipeBase):
         copy_fixture = evidence(build, "copy_fixture")
         automated = {str(value).casefold() for value in (copy_fixture or {}).get("automated_content", [])}
         checks.require({"rich_text", "table", "image"}.issubset(automated), "Rich Copy fixture is missing a required automated content capability.", "rich text, table, and image capabilities were created and observed")
+        if self.config.include_equations:
+            equation_evidence = (copy_fixture or {}).get("equations")
+            checks.require(
+                {"inline_equation", "display_equation"}.issubset(automated)
+                and equation_evidence
+                == {
+                    "mathml_roots": 2,
+                    "inline_equations": 1,
+                    "display_equations": 1,
+                    "namespace_declarations": 2,
+                    "redundant_breaks_before_display": 0,
+                    "standalone_display_oes": 1,
+                    "nonempty_display_predecessors": 1,
+                    "empty_oes_before_display": 0,
+                },
+                "Rich Copy fixture is missing its exact inline/display equation pair.",
+                "rich parent contains one inline and one display MathML equation",
+            )
         semantic_evidence = (copy_fixture or {}).get("semantic_page")
         checks.require(isinstance(semantic_evidence, dict) and {"List", "Tag"}.issubset(semantic_evidence.get("observed_capabilities", [])) and semantic_evidence.get("observed_counts", {}).get("List") == 3 and semantic_evidence.get("observed_counts", {}).get("Tag") == 3, "Semantic Copy fixture is missing the three generated List/Tag items.", "semantic child contains three generated mixed List/Tag items")
         projections = context.snapshot.get("page_capability_projections")
@@ -158,7 +195,14 @@ class LayeredCopyFixtureRecipe(RecipeBase):
             )
 
         checks.require(
-            has_live_capabilities(parent_projection, ROOT_PAGE_COPY_CAPABILITIES),
+            has_live_capabilities(
+                parent_projection,
+                (
+                    {*ROOT_PAGE_COPY_CAPABILITIES, "DisplayEquation"}
+                    if self.config.include_equations
+                    else ROOT_PAGE_COPY_CAPABILITIES
+                ),
+            ),
             "Rich Copy fixture live Page XML is missing a required capability.",
             "rich parent live Page XML exposes the capabilities required by Copy planning",
         )
