@@ -3,7 +3,7 @@
 > [!CAUTION]
 > 本目录只承载由用户本人显式启动的真实 OneNote mutation 验证。Agent、CI、pytest、hook、安装脚本、timer、watcher、前台或后台任务不得执行真实 scenario。每次运行必须创建全新隔离 Notebook，并使用 scenario 级静态最小权限。智能体的强制行动边界见本目录的 [AGENTS.md](AGENTS.md)。
 
-## 公开接口：扁平 Scenario 与特殊 `all`
+## 公开接口：扁平 Scenario、特殊 `all` 与 `clear`
 
 `run.py` 后通常直接接一个具名 scenario。没有 `validate` 分组，也没有公开的 `inspect`、`read`、`report`、`suite` 或其他辅助 action。`create` 是正式的 fixture-only scenario：
 
@@ -24,6 +24,28 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section-group
 ```
+
+历史验证 artifact 与 fixture cache 只通过独立的 `clear` maintenance 分组维护。它不是 Scenario，不进入 registry 或 `all`，不会启动 scenario MCP、修改或关闭 OneNote，也不接受任意路径或强制绕过参数：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py clear runs --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py clear cache --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py clear all --dry-run --json
+```
+
+Dry-run 只读受管 metadata，并获取一次当前 OneNote 已打开 Notebook 的实际本地路径快照；不创建目录、receipt，不删除文件，也不修改或关闭 Notebook。真实执行只能由用户本人在交互式前台终端明确运行。命令行不接受 `--confirm`；安全检查完成后，Runner 才在后续提示中要求用户现场输入对应的动作绑定值：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py clear runs
+.venv\Scripts\python.exe tests\manual_validation\run.py clear cache
+.venv\Scripts\python.exe tests\manual_validation\run.py clear all
+```
+
+三个命令分别提示输入 `CLEAR-RUNS`、`CLEAR-CACHE`、`CLEAR-ALL`。提示写入 stderr，最终 `--json` 结果仍只写 stdout；stdin 不是交互式终端、输入不匹配或 EOF 时，在创建 marker/receipt 或删除任何目标前拒绝。
+
+`runs` 逐个评估直接 `run-*` 子目录，`cache` 逐个评估 index/磁盘相互证明的 exact `(fingerprint, template_instance_id)` entry 以及受管 staging/legacy lease metadata，`all` 在同一次 open-path snapshot 下组合两者。任一目标只有在固定 root、ownership、无 reparse point、实际未打开和 pending receipt 全部通过后才删除；开放中或无法证明的目标单独 `refused`，其他安全目标仍可处理，整体以非零 partial result 返回。
+
+清理结束后会自动收敛 maintenance 自身的残留：成功 target 的完整逐项证据先嵌入 durable summary，再删除对应 `deleted` receipt；pending、failed、无 summary 绑定或内容不匹配的 receipt 原样保留。`clear cache/all` 还会从 index 移除已无 payload 的 tombstone，并用逐层 `rmdir` 清理可证明为空、名称为 canonical fingerprint 的 `instances`/fingerprint scaffold；非空、含 lock、未知形状或 reparse point 的目录不碰。Dry-run 的 `finalization_plan` 会列出可收敛数量。`.local-validation/` 根、managed marker、summary，以及 cache marker/quarantine/recovery history 始终保留。
 
 每个具名 action 都可显式保留已验证的操作现场，供 OneNote UI 人工验收：
 
@@ -50,7 +72,7 @@
 
 `move-section` 与 `move-section-group` 同样不重复内容类型取证。每个场景创建精确的 `source`/`destination` 双 Notebook bundle，只把一个最小 Outline/RichText 容器子树移动到 destination Notebook 根。场景要求完整 `id_map` 和 verified/lossless Copy，只允许一次源容器根删除，且结果必须声明 `source_deleted_nonpermanently=true`、全部原源子树 ID inactive、目标 ID 全部位于 destination role。两者在独立真实验收与稳定性审查完成后均设置 `included_in_all=True`，与 `move-page` 一起进入显式 human-gated 的 `all` 批处理；真实命令仍只能由用户本人运行。
 
-`copy-page` 是一个 `source`/`destination` 双 Notebook bundle。早期 recipe 在严格 Parent 中新增一个行内公式和一个独立单行公式，并要求回读恰好两个 MathML root、一个 `display="block"` 与两个规范 namespace 声明。`run-2026-08-12-01-11-36` 与 `run-2026-08-12-01-25-30` 证明 MathML 本身保持，但单行公式前出现空白；后续 detector/capture 又把该差异定位为 OneNote 在独立 DisplayEquation 前写入纯空白 `span + br`。当前 recipe v9 将单行公式分类为 `DisplayEquation`，发送前清除已知空白包装并使用 `semantic_display_equation`，行内公式继续作为 RichText 的有界 MathML 严格比较。v9 fingerprint 使旧 cache 不会命中；独立 `copy-display-equation` 的三跳真实运行已经证明规范化稳定，但完整 `copy-page` 六 case 仍需单独用户运行。六个 case 继续覆盖同 Section、同 Notebook 跨 Section、跨 Notebook三种目标范围，各自再覆盖 root-only 与完整子树；每个 case 都要求新 target IDs 与 source/anchor IDs 不相交，保持 Parent/Child 相对层级和两个 destination anchor 的正文、order、level 与 parent。默认按反向 case 顺序清理六个根目标并验证两个 Notebook 恢复；`--keep-worksite` 则保留全部目标供 UI 对照。
+`copy-page` 是一个 `source`/`destination` 双 Notebook bundle。早期 recipe 在严格 Parent 中新增一个行内公式和一个独立单行公式，并要求回读恰好两个 MathML root、一个 `display="block"` 与两个规范 namespace 声明。`run-2026-08-12-01-11-36` 与 `run-2026-08-12-01-25-30` 证明 MathML 本身保持，但单行公式前出现空白；后续 detector/capture 又把该差异定位为 OneNote 在 DisplayEquation 前写入纯空白 `span + br`。v9 首次进入完整 `all --use-cache` 时，`run-2026-08-12-15-54-16` 与单独复跑 `run-2026-08-12-16-11-26` 都证明把 display marker 与公式放在同一次 append 会被真实 COM 合并，旧 detector 对“公式独占一个 OE、前驱 OE 非空”的布局假设不成立。当前 recipe v10 先写入普通富内容、行内公式和 marker，再用独立 append 写入 block MathML；fixture 门要求公式所在文本没有可见残留，并精确观察到当前环境已验证的一个 `span + br` 前置空行，不再依赖 OE 独占或前驱 OE。`run-2026-08-12-16-30-58` 已证明 v10 fixture/cold publish/materialization 成功，首个 Copy 目标的拓扑、正文、对象、binary 和两条公式语义也保持；失败只剩清除已知 span 后的页面 canonical 差异。增强诊断后的 `run-2026-08-12-16-44-30` 进一步证明 source/target 条件包装数同为 2，并把首差异定位到 formula-only Outline 的 `Size.width/height`。Comparator 现在只规范化完整配对公式条件包装，以及节点集合受限、恰好一个完整 block 公式且没有正文/其他 markup 的独立 Outline 派生 Size；Position、混合内容 Outline 和普通/不完整注释继续 fail closed。Copy 发送前仍清除已知空白包装并使用 `semantic_display_equation`，行内公式继续作为 RichText 的有界 MathML 严格比较。v10 fingerprint 使旧 cache 不会命中；独立 `copy-display-equation` 的三跳真实运行已经证明空白包装规范化稳定，但新增 formula-only Size 规则和完整 `copy-page` 六 case 仍需单独用户运行确认。六个 case 继续覆盖同 Section、同 Notebook 跨 Section、跨 Notebook三种目标范围，各自再覆盖 root-only 与完整子树；每个 case 都要求新 target IDs 与 source/anchor IDs 不相交，保持 Parent/Child 相对层级和两个 destination anchor 的正文、order、level 与 parent。默认按反向 case 顺序清理六个根目标并验证两个 Notebook 恢复；`--keep-worksite` 则保留全部目标供 UI 对照。
 
 唯一特殊入口 `all` 会按显式 `included_in_all` 资格的顺序串行启动其中的 scenario：
 
@@ -74,13 +96,13 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py all --use-cache --dry-run --json
 ```
 
-`--use-cache` 只改变 fixture 来源：validated hit 把关闭的 immutable template opaque-copy 到本次 run 的 role-specific working 路径。lifecycle 为每个 role 使用独立 lease（`source` 保持 `lifecycle-lease.json`，其他 role 使用 `lifecycle-lease-<role>.json`），先证明实际打开路径是 working path、不是任一 template path，并立即把全部实际 working Notebook ID/name/path 写入 bundle lease。相同 fingerprint/instance 不构成排他锁：多个 run 可以从同一 immutable entry materialize 各自唯一的 working paths；只有实际 live Notebook ID 集相交、同 ID 异路径、role 内重复或身份尚未可靠重绑定时才拒绝。任一 active lease 都会阻止对应 entry 的 invalidation/cleanup，但不会阻止 live ID 互异的新 consumer。随后逐 role、逐级调用 `OpenHierarchy` 打开 SectionGroup 和 `.one` Section：先用绝对 working path 与空 relative ID，必要时回退到文件名与精确 parent ID；不能把绝对 path 与非空 parent ID 混用，也不能把“Notebook shell 已打开”或 COM 仅返回 object ID 误当成内容层级已加载。每次都必须回读 actual parent；若全局 hierarchy snapshot 暂时不可见，还必须对同一返回 ID 做 exact-self 回读，严格证明类型、名称、非回收站状态和 parent，随后仍执行完整 live Recipe validation。Working Notebook/Section/Page ID 允许由 OneNote 重建，但必须按 role 内唯一的 Notebook-relative 类型化结构地址形成 old→live ID evidence，之后所有 validation/mutation 只使用 live ID。Programmatic miss 先构建并 live-validate 完整 fresh bundle，精确 close-all，生成逐 role per-file SHA-256 inventory 并原子发布，再从发布物 materialize 完整 working bundle；旧 receipt/hash 不能代替全部 role 的 live validation。多 Notebook 名称在 scenario 后增加 `source`/`destination` role。任一 working-copy open/activation 失败都保留整个 working bundle、逐 role lease 与 `materialized-hierarchy-open[-<role>].json`，lease 必须绑定已实际打开的 live working Notebook ID；这类 run-local 失败不污染已验证的 immutable template。active lease 冲突必须报告精确旧 run ID 和 working paths。ID rebind 或 live validator 失败仍会 quarantine exact entry。`--keep-worksite` 只保留该 run 的 working bundle 及 active lease，不写回 template，也不接管其他 run。
+`--use-cache` 只改变 fixture 来源：validated hit 把关闭的 immutable template opaque-copy 到本次 run 的 role-specific working 路径。lifecycle 为每个 role 使用独立的 run-local lease（`source` 保持 `lifecycle-lease.json`，其他 role 使用 `lifecycle-lease-<role>.json`），先证明实际打开路径是 working path、不是任一 template path，并立即记录实际 working Notebook ID/name/path。Cache 不保存 working lease，也不与 run 维持所有权或生命周期关系；短时全局 open lock 串行化跨 run 的 lease 扫描、打开与 live identity 绑定。多个 run 可以从同一 immutable entry materialize 各自唯一的 working paths；只有实际 live Notebook ID/path 集相交、role 内重复或身份尚未可靠重绑定时才拒绝。Run-local active lease 不阻止物理独立 entry 的 invalidation/cleanup；cache cleanup 只在 template 自身的实际路径仍被 OneNote 打开时拒绝。随后逐 role、逐级调用 `OpenHierarchy` 打开 SectionGroup 和 `.one` Section：先用绝对 working path 与空 relative ID，必要时回退到文件名与精确 parent ID；不能把绝对 path 与非空 parent ID 混用，也不能把“Notebook shell 已打开”或 COM 仅返回 object ID 误当成内容层级已加载。每次都必须回读 actual parent；若全局 hierarchy snapshot 暂时不可见，还必须对同一返回 ID 做 exact-self 回读，严格证明类型、名称、非回收站状态和 parent，随后仍执行完整 live Recipe validation。Working Notebook/Section/Page ID 允许由 OneNote 重建，但必须按 role 内唯一的 Notebook-relative 类型化结构地址形成 old→live ID evidence，之后所有 validation/mutation 只使用 live ID。Programmatic miss 先构建并 live-validate 完整 fresh bundle，精确 close-all，生成逐 role per-file SHA-256 inventory 并原子发布，再从发布物 materialize 完整 working bundle；旧 receipt/hash 不能代替全部 role 的 live validation。多 Notebook 名称在 scenario 后增加 `source`/`destination` role。任一 working-copy open/activation 失败都保留整个 working bundle、逐 role lease 与 `materialized-hierarchy-open[-<role>].json`，lease 必须绑定已实际打开的 live working Notebook ID；这类 run-local 失败不污染已验证的 immutable template。active lease 冲突必须报告精确旧 run ID 和 working paths。ID rebind 或 live validator 失败仍会 quarantine exact entry。`--keep-worksite` 只保留该 run 的 working bundle 及 active lease，不写回 template，也不接管其他 run。
 
 每个命令在 dispatch 时只读取一次主机本地时区，并冻结 run identity。Notebook、默认 run 目录以及 Copy/Move 目标名称共享 Windows-safe 的本地显示时间，例如 `2026-08-11-11-05-49`。完整本地 ISO 时间、UTC offset 和时区名称仍保存在 `run_identity`；JSON 中的 `created_at`、`failed_at`、`closed_at` 等事件字段仍使用 UTC ISO-8601。immutable template 继续使用内部 `template-notebook` 目录名，不作为 OneNote Notebook 打开。
 
-Cache 固定为未纳入版本控制的 `.local-validation/fixture-cache/`。只有带 managed marker 的该根目录可被 cache runtime 操作；失效清理只允许精确 `(fingerprint, template_instance_id)` entry，并要求 root containment、ownership、无 reparse point、source 已关闭且没有 active working lease。`.one` 和 `.onetoc2` 只作为 opaque bytes 复制/散列，绝不解析、编辑或回写。模板从不由 OneNote 打开。
+Cache 固定为未纳入版本控制的 `.local-validation/fixture-cache/`。只有带 managed marker 的该根目录可被 cache runtime 操作；失效清理只允许精确 `(fingerprint, template_instance_id)` entry，并要求 root containment、ownership、无 reparse point且 template 实际路径未被 OneNote 打开。Run-local working Notebook 是物理独立副本，不参与 cache cleanup 门禁。`.one` 和 `.onetoc2` 只作为 opaque bytes 复制/散列，绝不解析、编辑或回写。模板从不由 OneNote 打开。
 
-Cache lookup 会区分真正不存在的实例与目录仍被保留的 `invalid` entry。历史上仅因 working-copy `materialized-open` 阶段被误隔离的 entry，可在原始 validation 与 byte inventory 重新通过时恢复；其余 `invalid` entry 必须先在 fingerprint lock 内通过上述安全门限执行精确清理，再以 `decision=invalidated_rebuild` 重建。该检查在首次 lookup 与 programmatic publish 前都会执行，避免并发隔离再次退化为发布冲突。`cleanup_failed`、缺失 ownership metadata、未知状态、active lease 或 source 仍打开都会阻止重建；publish 始终拒绝覆盖任何现有实例。
+Cache lookup 会区分真正不存在的实例与目录仍被保留的 `invalid` entry。历史上仅因 working-copy `materialized-open` 阶段被误隔离的 entry，可在原始 validation 与 byte inventory 重新通过时恢复；其余 `invalid` entry 必须先在 fingerprint lock 内通过上述安全门限执行精确清理，再以 `decision=invalidated_rebuild` 重建。该检查在首次 lookup 与 programmatic publish 前都会执行，避免并发隔离再次退化为发布冲突。`cleanup_failed`、缺失 ownership metadata、未知状态或 template 实际路径仍打开都会阻止重建；publish 始终拒绝覆盖任何现有实例。
 
 2026-08-11 用户真实验证：layered Copy recipe version 2 将 fixture/live validator 与 Copy plan 统一到 live Page XML capability projection 后，`run-2026-08-11-13-31-57`、`run-2026-08-11-13-33-47`、`run-2026-08-11-13-37-37` 和 `run-2026-08-11-13-39-13` 使用同一旧版单 role `copy-page` fingerprint，依次覆盖 `decision=cold_build`、带 `--keep-worksite` 的 `decision=validated_hit`、执行默认 cleanup/restore 的 `decision=validated_hit`，以及带 `--keep-notebook` 的 `decision=fresh`。四次的 root-only case 都以 `strict_canonical` 验证单页 RichText/Table/Image，full-subtree case 精确映射父子两页，并分别以 `strict_canonical`、`semantic_list_tag` 验证父页和 List/Tag 子页；全部 Copy report 均为 `verified=true`、`lossless=true`，没有 issue 或 skipped content。cached run 证明 `opened_template=false`、template inventory 不变；默认 hit 与 fresh 都精确清理三个 Copy 目标并 `restored=true`，前者关闭 working Notebook，后者仅按 `--keep-notebook` 保留已恢复的 fresh 源 Notebook，且未生成 cache runtime artifact。四次都只启动一个 MCP process；总耗时/bridge calls 分别为 90.271 秒/279、66.802 秒/210、86.440 秒/274 和 84.381 秒/237。该矩阵闭合了 TODO 014 的单 role A 验收，但单机观测不能推广为固定性能提升比例。
 
@@ -157,9 +179,9 @@ UI Shape 使用一个小矩形作为固定 fixture；不要在 bootstrap 中改�
 
 在 Canvas 中只用 `Draw → Shapes` 添加一个小矩形，不画 freehand ink、不添加正文或其他对象。Bootstrap 必须报告 `observed={InkDrawing: 1}`、`shape_info_count=1`、`representation_status=requested_composite_observed` 后才可发布 cache。Copy 阶段肉眼比较矩形的形状、边框、位置和大小，再输入 run-bound `ACCEPT ... UIShape COPY` 或 `REJECT ... UIShape COPY`。
 
-固定 `cache-invalidation --use-cache` 只绑定自己的 programmatic Recipe fingerprint/instance，不接受任何 path、ID 或 fingerprint 参数。若已有 entry，它会在 materialize/open 之前精确失效；若是 cold miss，则先发布受验证 entry、立即对该精确 entry 执行同一清理门，再重新发布并 materialize。cleanup tombstone 必须证明 cache-root containment、ownership、无 reparse point、无 open source/working lease；任何清理失败都会停止且不覆盖。
+固定 `cache-invalidation --use-cache` 只绑定自己的 programmatic Recipe fingerprint/instance，不接受任何 path、ID 或 fingerprint 参数。若已有 entry，它会在 materialize/open 之前精确失效；若是 cold miss，则先发布受验证 entry、立即对该精确 entry 执行同一清理门，再重新发布并 materialize。cleanup tombstone 必须证明 cache-root containment、ownership、无 reparse point且 template 实际路径未打开；run-local working lease 不参与 cache cleanup 判断。任何清理失败都会停止且不覆盖。
 
-`user-authored-fixture-consumer --use-cache --template-instance-id authored-<24 hex>` 与 bootstrap 共享同一 contract fingerprint，但拥有独立 Scenario/Recipe instance。Consumer 不枚举或猜测实例；缺失、格式错误、未知实例以及 `evidence_only` 都在 working Notebook 打开前 fail closed。省略 `--use-cache` 的 dry-run 只报告 `preflight-cache-required`，真实执行也会在 lifecycle/MCP/cache 访问之前拒绝；只有显式选择的 `ready` 实例会 materialize，并再次通过 reserved marker、authoring-zone 和 live content validation。
+`user-authored-fixture-consumer --use-cache --template-instance-id authored-<24 hex>` 与 bootstrap 共享同一 contract fingerprint，但拥有独立 Scenario/Recipe instance。Consumer 不枚举或猜测实例；缺失、格式错误、未知实例以及 `evidence_only` 都在 working Notebook 打开前 fail closed。省略 `--use-cache` 的 dry-run 只报告 `preflight-cache-required`，真实执行也会在 lifecycle/MCP/cache 访问之前拒绝；只有显式选择的 `ready` 实例会 materialize，并再次通过 reserved marker、authoring-zone 和 live content validation。该能力当前定位为足够开发取证使用的临时脚手架；完整 authoring-zone、多实例和状态真实矩阵已作为低优先级 [TODO 020](../../docs/todo/020_user_authored_fixture_development_scaffold.md) 单独维护，不再阻塞 TODO 014 或生产 Copy/Move。
 
 `interactive-copy-inserted-file` 是 cache-only、HUMAN-GATED 的 Copy 验证 Scenario，与 `bootstrap-inserted-file-fixture` 共用同一个 fingerprint 和固定 instance。它不重新创建 fixture，也不进入 `all`；命中后 materialize 全新的 working copy，显式加载层级、重绑定 live ID、重跑 `InsertedFile` detector/projection，然后执行一次同 Section root-only `copy_page`。机器门要求 source/target 都精确观察到一个公开 `kind=InsertedFile`、稳定对象签名一致、可见文本/内容对象/strict canonical read-back 通过且没有 omitted content；当前公开 XML 没有内联 `Data`，因此普通 binary SHA-256 项只记录其 absence，用户还必须实际打开目标附件并确认其合成文件内容一致，再输入 run-bound `ACCEPT ... InsertedFile COPY`。Copy plan 优先使用仍存在的 `pathSource`，否则回退到可读 `pathCache/path`；全部不可读时在创建目标前 fail closed，普通 evidence 不保存实际路径。场景没有 Delete 权限，不会删除源。缺少可命中的 `ready` entry 时会在 Notebook/MCP 启动前返回 `interactive_bootstrap_required` 并提示运行已有 bootstrap，而不是隐式重建：
 
@@ -172,7 +194,7 @@ UI Shape 使用一个小矩形作为固定 fixture；不要在 bootstrap 中改�
 
 2026-08-12 用户执行的 `run-2026-08-12-12-34-58` 复用同一 ready cache，完成同 Section root-only Copy；source/target detector 均精确观察到 `InsertedFile=1`，strict canonical 的 canonical XML、可见文本、内容对象和 binary 项全部通过，无 omitted content，机器 comparator passed。用户实际打开目标附件确认合成内容一致并提交 run-bound ACCEPT，working Notebook 随后正常关闭。该证据已用于把 `InsertedFile` 加入生产 validated Copy 集合；它仍不代表程序化创建能力，也不改变 FileAttachment 的独立未验证状态。
 
-失败 run 的 working Notebook 被用户手动关闭后，下一次 cache consumer 会用只读 COM ID/path probe 把遗留 active lease 标记为 `stale_closed_observed`；它不会接管或关闭仍然打开的旧 working Notebook。
+失败 run 的 working Notebook 被用户手动关闭后，下一次 cache consumer 会在短时 open lock 内用只读 COM ID/path probe 忽略已关闭的历史 active lifecycle lease；它不会修改该历史 lease，也不会接管或关闭仍然打开的旧 working Notebook。
 
 同一个 Scenario registry 还导出冻结的 `dry_run_cases`：每个公开场景自动拥有 `default` 与 `keep-worksite` case，Rename 和 Page Reorder 在自身类中声明有限参数变体，另有 runner 级 `all.default`。pytest 使用正式 parser、无 I/O pure plan builder 和 side-effect sentinel 运行 catalog；`included_in_all=False` 不影响 dry-run 收集。Case 不得携带 `--dry-run`、`--json`、`--run-dir` 或授权参数，这些值只能由 harness 强制注入。
 
@@ -207,6 +229,8 @@ Delete-Sandbox
 ```
 
 场景保存 `before.json/create-results.json/after.json`，要求两次 COM allocated/read-back ID 完全一致、互异、均为 fresh Page 且属于 `Duplicate-Title-Target`，两份不同正文可独立回读。默认按两个精确 Page ID 非永久删除并以 `restored.json` 证明恢复；`--keep-worksite` 跳过该清理、保持 Notebook 打开并记录精确 IDs。
+
+Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前后各捕获一次当前 Notebook ID/实际目录 snapshot；全部历史 run-local lease 只与 snapshot 做内存比较，历史 run 数量不得放大 COM 调用次数。Snapshot 获取失败按 MCP/lifecycle failure fail closed，并保留本次 working 现场。
 
 ## 安全审查与执行
 
@@ -416,7 +440,7 @@ Delete-Sandbox
 - 默认仅在当前 scenario 和报告成功后，按 lifecycle lease 的精确 ID/name/path 并经即时回读后关闭源 Notebook。
 - `--keep-notebook` 保持源 Notebook 打开，供用户人工检查。
 - `--keep-worksite` 适用于全部公开具名场景，并同时保持源 Notebook 打开。可恢复的 `rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 不执行反向恢复；Page/Section/SectionGroup Copy 不执行回收站 cleanup；Notebook Copy 不关闭副本；其余 action 记录本来就会留下的 fixture、回收站或 Move 状态。`worksite.json` 和 `result.json` 记录精确目标 ID、当前位置/名称/路径以及 `manual_cleanup_required=true`；Page reparent 还记录新旧 ID 历史。未进入批处理的场景均设置 `included_in_all=False`，但仍注册 default/keep dry-run cases；特殊入口 `all` 不接受 `--keep-worksite`。
-- Runner 永不删除本地 Notebook 文件或目录；Notebook Copy 文件夹同样保留。
+- 普通 Scenario 永不删除 run-scoped 本地 Notebook 目录、Notebook Copy 目录、普通 artifact 或失败现场。只有上述用户显式确认的 `clear` maintenance action 可以按逐目标安全门删除受管 payload；该授权不覆盖用户 Notebook 或任意外部路径。
 - `delete` 自动使用本次 manifest 中的 `disposable_group`，不接受外部 target ID，并保持非永久删除。
 - `rename` 另支持 `--target group_a|group_b|content_section` 和 `--new-name`。
 - `reorder-page` 另支持 `--page-level <n>`。

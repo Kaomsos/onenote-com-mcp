@@ -19,11 +19,13 @@
 | 011 | [Scenario 自管理 Fixture Recipe 与拆分集中式 Fixtures](011_scenario_owned_fixture_recipes.md) | 已完成 | P1 | 14 个 Scenario 已各自拥有唯一 recipe；中央 1439 行 fixture switch 已由增量 recorder、无分支 runtime、场景 validator 和共享 typed primitive 取代。 |
 | 012 | [跨 Notebook Section 与 SectionGroup 重建式 Move](012_reconstructive_section_and_section_group_move.md) | 已完成 | P2 | typed 工具、独立门控与严格单次根删除已交付；用户确认 Section/SectionGroup 两个跨 Notebook 真实场景均通过。 |
 | 013 | [Reparent 默认落点与 Agent 可见顺序合同](013_reparent_default_placement_contract.md) | 待办 | P2 | 先验证并固化 Page/Section 的默认末位合同，通过 tool 描述和结构化响应告知 Agent；自定义位置继续显式调用独立 Reorder。 |
-| 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 进行中 | P2 | A–C 及 InsertedFile bootstrap/cache/Copy 有真实证据；D 的 InkDrawing/UIShape/MediaFile/InsertedFile Copy 与静态 allowlist 已闭合，UserAuthored 和 E–F 剩余真实证据仍待完成。 |
+| 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 已完成 | P2 | 不可变 cache、单/多 role working bundle、失效恢复和四类 Interactive Copy 已闭合；用户确认最终全量真实回归全部通过。UserAuthored 完整化由 TODO 020 独立跟踪。 |
 | 015 | [Mutation 目标精确定位收尾与重名 Page 回归](015_mutation_target_identity_hardening_and_duplicate_page_regression.md) | 已完成 | P1 | allocated-ID-first 与精确身份合同已交付；Create、v4 Page Copy、Move 及增强后的三个容器 Copy 均有用户真实成功证据，cleanup/close 与 cache immutability 门通过。 |
 | 016 | [Page Copy 人工验证只读取证降本](016_copy_page_manual_validation_read_evidence_efficiency.md) | 待办 | P3 | 复用单次 Page XML 生成 hash、能力与对象证据，优先消除 75 次重复 `get_page_objects`/COM 读取；不得削弱六 case、plan/tree 稳定、保护对象或 cleanup/restore 门。 |
 | 017 | [Page Move 可选子树与跨 Notebook 双范围验收](017_page_move_selectable_subtree_and_cross_notebook_validation.md) | 已完成 | P1 | 默认 root-only 与显式 subtree 已交付；用户确认修复后的跨 Notebook 双 case、保留后代和非永久删除均通过。 |
 | 018 | [在线视频表示与 Copy 保真验证](018_online_video_copy_fidelity_validation.md) | 已取消 | P2 | 不再建立独立 OnlineVideo 类型或有损 Copy 合同；仅保留局限性 Lesson。 |
+| 019 | [Manual Validation 受控 Clear Actions](019_manual_validation_clear_actions.md) | 已完成 | P2 | `clear runs/cache/all`、交互确认、实际路径快照、逐目标 receipt/summary、成功审计收敛和空 cache scaffold 清理已交付；用户真实 clear 共删除 112 个目标且无拒绝/失败。 |
+| 020 | [UserAuthored Fixture 开发脚手架完整化](020_user_authored_fixture_development_scaffold.md) | 待办 | P3 | 当前骨架已够开发取证使用；完整 authoring-zone、多实例、ready/evidence-only 和失效真实矩阵延期，且不阻塞 TODO 014 或生产 Copy/Move。 |
 
 ## 文件命名
 
