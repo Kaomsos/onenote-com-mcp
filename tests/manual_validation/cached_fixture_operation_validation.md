@@ -158,7 +158,7 @@ fixture live validation passed
 - 应跳过的 restore/cleanup 由 Scenario 明确记录；
 - `worksite.json` 给出精确 IDs 和人工清理说明；
 - cache template 不会被 working mutation 更新；
-- 对应 cache entry 存在 active lease 时不能 invalidation/cleanup。
+- Cache 不维护 run working lease；独立 working run 不阻止 invalidation/cleanup，只有 template 自身的实际路径仍被 OneNote 打开时才拒绝。
 
 查看完后，在 OneNote 中关闭 `worksite.json` 指定的精确 disposable Notebook。不要删除 run directory 或 Notebook 文件夹，也不要让名称相似的另一个 Notebook代替目标。
 

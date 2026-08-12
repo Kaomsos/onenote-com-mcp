@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import msvcrt
 from pathlib import Path
 import stat
 import time
-from typing import Any
+from typing import Any, Iterator, Mapping
 from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 
-from local_onenote_mcp.bridge import OneNoteBridge
+from local_onenote_mcp.bridge import OneNoteBridge, OneNoteBridgeError
 from local_onenote_mcp.constants import CREATE_FILE_TYPES, HIERARCHY_SCOPES, XML_SCHEMA_2013
 from local_onenote_mcp.hierarchy import display_name
 from local_onenote_mcp.services.hierarchy import HierarchyService
 
-from .runtime import RestoreFailure, RunnerFailure
+from .runtime import EXIT_MCP, RestoreFailure, RunnerFailure
 from .test_utils import read_json, stable_item, utc_now, write_json
 
 
@@ -140,6 +142,99 @@ class NotebookLifecycleWrapper:
         if path.suffix.casefold() == ".onetoc2":
             path = path.parent
         return path
+
+    @contextmanager
+    def working_notebook_open_lock(
+        self,
+        *,
+        timeout_seconds: int = 30,
+    ) -> Iterator[None]:
+        """Serialize run-local identity checks with materialized Notebook opens."""
+
+        lock_path = self.run_dir.parent / "working-notebook-open.lock"
+        started = time.monotonic()
+        with lock_path.open("a+b") as stream:
+            stream.seek(0, 2)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+            while True:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() - started >= timeout_seconds:
+                        raise RunnerFailure(
+                            "Another run is opening a materialized working Notebook."
+                        )
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+
+    def assert_no_active_working_conflict(
+        self,
+        *,
+        notebook_ids: Mapping[str, str] | None,
+        working_paths: Mapping[str, Path],
+        open_notebooks: Mapping[str, Path],
+    ) -> None:
+        """Reject live collisions using one caller-owned OneNote snapshot."""
+
+        notebook_ids = notebook_ids or {}
+        requested_id_values = [str(value) for value in notebook_ids.values() if value]
+        requested_ids = set(requested_id_values)
+        requested_paths = {path.resolve() for path in working_paths.values()}
+        if notebook_ids and len(requested_id_values) != len(notebook_ids):
+            raise RunnerFailure("Working identity check requires every role Notebook ID.")
+        if notebook_ids and len(requested_ids) != len(notebook_ids):
+            raise RunnerFailure("Two working Notebook roles resolved to the same Notebook ID.")
+        validation_root = self.run_dir.parent.resolve()
+        for candidate_run in validation_root.iterdir():
+            if (
+                not candidate_run.is_dir()
+                or candidate_run.resolve() == self.run_dir
+                or candidate_run.parent.resolve() != validation_root
+            ):
+                continue
+            for lease_path in candidate_run.glob("lifecycle-lease*.json"):
+                try:
+                    lease = read_json(lease_path)
+                except Exception as exc:
+                    raise RunnerFailure(
+                        f"Run-local lifecycle lease is unreadable: {lease_path}"
+                    ) from exc
+                claimed_path_value = str(
+                    lease.get("actual_local_path")
+                    or lease.get("expected_local_path")
+                    or ""
+                )
+                if lease.get("state") == "active" and not claimed_path_value:
+                    raise RunnerFailure(
+                        "Active run-local lifecycle lease is missing its exact working path: "
+                        f"{lease_path}"
+                    )
+                claimed_path = (
+                    Path(claimed_path_value).resolve() if claimed_path_value else None
+                )
+                active_ids = {
+                    notebook_id
+                    for notebook_id, actual_path in open_notebooks.items()
+                    if actual_path == claimed_path
+                }
+                if lease.get("state") != "active" or not active_ids:
+                    continue
+                if active_ids & requested_ids or claimed_path in requested_paths:
+                    raise RunnerFailure(
+                        "Active working Notebook conflict: "
+                        f"run_id={candidate_run.name}; "
+                        f"notebook_ids={','.join(sorted(active_ids))}; "
+                        f"working_path={claimed_path_value}. "
+                        "Close that exact working Notebook in OneNote, then retry."
+                    )
 
     def open_working_notebook(
         self,
@@ -482,60 +577,67 @@ class NotebookLifecycleWrapper:
             raise RestoreFailure("Lifecycle lease Notebook ID no longer reports its exact local path.")
         return current
 
-    def any_cache_source_open(self, entry: dict[str, Any]) -> bool:
-        """Read-only guard used before exact invalid-entry cleanup."""
+    def any_cache_template_open(self, entry: dict[str, Any]) -> bool:
+        """Fail closed when an exact cache template path may be open in OneNote."""
 
-        open_ids = {
-            str(item.get("id", ""))
-            for item in self._hierarchy.list_notebooks(include_recycle_bin=True)["notebooks"]
-            if item.get("is_open") is not False
-        }
-        return any(
-            str(value.get("source_notebook", {}).get("id", "")) in open_ids
+        template_paths = {
+            Path(str(value.get("template_path", ""))).resolve()
             for value in entry.get("role_entries", {}).values()
-        )
-
-    def cache_working_lease_is_open(self, lease: dict[str, Any]) -> bool:
-        """Reconcile a cache lease against exact active Notebook IDs and local paths."""
-
-        claimed_ids = {str(value) for value in lease.get("notebook_ids", {}).values()}
-        observed_ids: set[str] = set()
-        run_id = str(lease.get("run_id", ""))
-        candidate_run = (self.run_dir.parent / run_id).resolve()
-        if run_id and candidate_run.parent == self.run_dir.parent and candidate_run.is_dir():
-            evidence_paths = tuple(candidate_run.glob("lifecycle-lease*.json")) + tuple(
-                candidate_run.glob("materialized-hierarchy-open*.json")
-            )
-            for evidence_path in evidence_paths:
-                if not evidence_path.exists():
-                    continue
-                try:
-                    evidence = read_json(evidence_path)
-                except Exception:
-                    continue
-                observed_id = str(evidence.get("notebook_id", ""))
-                if observed_id:
-                    observed_ids.add(observed_id)
-        claimed_ids.update(observed_ids)
-        working_paths = {
-            Path(str(value)).resolve() for value in lease.get("working_paths", {}).values()
+            if value.get("template_path")
         }
-        if not claimed_ids or not working_paths:
+        if not template_paths:
             return True
         notebooks = self._hierarchy.list_notebooks(include_recycle_bin=True)["notebooks"]
         for notebook in notebooks:
             if notebook.get("is_open") is False:
                 continue
             notebook_id = str(notebook.get("id", ""))
-            if notebook_id in claimed_ids:
+            if not notebook_id:
                 return True
             try:
-                if self._reported_notebook_directory(notebook_id) in working_paths:
+                if self._reported_notebook_directory(notebook_id) in template_paths:
                     return True
             except RestoreFailure:
-                if not observed_ids:
-                    return True
+                return True
         return False
+
+    def snapshot_open_notebooks(self) -> dict[str, Path]:
+        """Capture current open Notebook IDs and actual directories exactly once."""
+
+        try:
+            notebooks = self._hierarchy.list_notebooks(include_recycle_bin=True)[
+                "notebooks"
+            ]
+            snapshot: dict[str, Path] = {}
+            observed_paths: dict[Path, str] = {}
+            for notebook in notebooks:
+                if notebook.get("is_open") is False:
+                    continue
+                notebook_id = str(notebook.get("id", ""))
+                if not notebook_id:
+                    raise RestoreFailure(
+                        "Open Notebook snapshot contains an item without an ID."
+                    )
+                actual_path = self._reported_notebook_directory(notebook_id)
+                previous = snapshot.get(notebook_id)
+                if previous is not None and previous != actual_path:
+                    raise RestoreFailure(
+                        "One live Notebook ID reports multiple local directories."
+                    )
+                previous_id = observed_paths.get(actual_path)
+                if previous_id is not None and previous_id != notebook_id:
+                    raise RestoreFailure(
+                        "One live Notebook directory reports multiple Notebook IDs."
+                    )
+                snapshot[notebook_id] = actual_path
+                observed_paths[actual_path] = notebook_id
+            return snapshot
+        except (OneNoteBridgeError, RestoreFailure) as exc:
+            raise RunnerFailure(
+                "Could not capture the current OneNote Notebook ID/path snapshot; "
+                "working open is blocked.",
+                EXIT_MCP,
+            ) from exc
 
     def close_exact_notebook(self) -> dict[str, Any]:
         lease = self._read_lease()

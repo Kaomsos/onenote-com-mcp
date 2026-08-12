@@ -139,7 +139,6 @@ class BundleCacheStore:
     def __init__(self, cache_root: Path) -> None:
         self.cache_root = cache_root.resolve()
         self.marker_path = self.cache_root / MANAGED_MARKER
-        self.lease_root = self.cache_root / "working-leases"
         self.tombstone_path = self.cache_root / "cleanup-tombstones.jsonl"
         self.quarantine_path = self.cache_root / "quarantine-evidence.jsonl"
         self.recovery_path = self.cache_root / "recovery-evidence.jsonl"
@@ -555,124 +554,6 @@ class BundleCacheStore:
             if staging.exists():
                 shutil.rmtree(staging)
 
-    def claim_working_bundle(
-        self,
-        materialized: MaterializedBundle,
-        *,
-        run_id: str,
-        notebook_ids: Mapping[str, str],
-        open_state_probe: Callable[[Mapping[str, Any]], bool] | None = None,
-    ) -> Path:
-        if set(notebook_ids) != set(materialized.working_paths):
-            raise RunnerFailure("Working lease requires every materialized role ID.")
-        self.lease_root.mkdir(parents=True, exist_ok=True)
-        if open_state_probe is not None:
-            self.reconcile_stale_working_leases(open_state_probe)
-        for lease_path in self.lease_root.glob("*.json"):
-            lease = _read_json(lease_path)
-            if lease.get("state") != "active":
-                continue
-            claimed = set(str(value) for value in lease.get("notebook_ids", {}).values())
-            collision = claimed & set(notebook_ids.values())
-            if collision:
-                working_paths = ", ".join(
-                    f"{role}={path}"
-                    for role, path in sorted(lease.get("working_paths", {}).items())
-                )
-                raise RunnerFailure(
-                    "Active fixture working lease conflict: "
-                    f"run_id={lease.get('run_id')}; {working_paths}. "
-                    "Close that exact working Notebook in OneNote, then retry."
-                )
-        if len(set(notebook_ids.values())) != len(notebook_ids):
-            raise RunnerFailure("Two Notebook roles resolved to the same Notebook ID.")
-        lease_path = self.lease_root / f"{run_id}.json"
-        if lease_path.exists():
-            raise RunnerFailure("This run already owns a fixture cache working lease.")
-        _atomic_json(
-            lease_path,
-            {
-                "schema_version": CACHE_SCHEMA_VERSION,
-                "state": "active",
-                "run_id": run_id,
-                "fingerprint": materialized.fingerprint,
-                "template_instance_id": materialized.template_instance_id,
-                "notebook_ids": dict(notebook_ids),
-                "working_paths": {
-                    role: str(path) for role, path in materialized.working_paths.items()
-                },
-                "working_names": {
-                    role: path.name for role, path in materialized.working_paths.items()
-                },
-                "created_at": utc_now(),
-            },
-        )
-        return lease_path
-
-    def reconcile_stale_working_leases(
-        self,
-        open_state_probe: Callable[[Mapping[str, Any]], bool],
-    ) -> list[dict[str, Any]]:
-        """Mark only leases whose exact IDs and working paths are no longer open."""
-
-        reconciled: list[dict[str, Any]] = []
-        if not self.lease_root.exists():
-            return reconciled
-        for lease_path in self.lease_root.glob("*.json"):
-            lease = _read_json(lease_path)
-            if lease.get("state") != "active" or open_state_probe(lease):
-                continue
-            lease.update(
-                state="stale_closed_observed",
-                reconciled_at=utc_now(),
-                reconciliation="no active Notebook ID or working path",
-            )
-            _atomic_json(lease_path, lease)
-            reconciled.append(
-                {
-                    "run_id": lease.get("run_id"),
-                    "fingerprint": lease.get("fingerprint"),
-                    "template_instance_id": lease.get("template_instance_id"),
-                    "state": lease["state"],
-                }
-            )
-        return reconciled
-
-    def bind_working_bundle_notebook_ids(
-        self,
-        lease_path: Path,
-        *,
-        notebook_ids: Mapping[str, str],
-        open_state_probe: Callable[[Mapping[str, Any]], bool] | None = None,
-    ) -> None:
-        lease_path = lease_path.resolve(strict=True)
-        if lease_path.parent != self.lease_root.resolve(strict=True):
-            raise RunnerFailure("Working lease ID binding escaped the managed lease root.")
-        lease = _read_json(lease_path)
-        if lease.get("state") != "active":
-            raise RunnerFailure("Working lease is not active during Notebook ID binding.")
-        if set(notebook_ids) != set(lease.get("working_paths", {})):
-            raise RunnerFailure("Working lease ID binding must cover every materialized role.")
-        if len(set(notebook_ids.values())) != len(notebook_ids):
-            raise RunnerFailure("Materialized roles resolved to the same live Notebook ID.")
-        if open_state_probe is not None:
-            self.reconcile_stale_working_leases(open_state_probe)
-        for other_path in self.lease_root.glob("*.json"):
-            if other_path.resolve() == lease_path:
-                continue
-            other = _read_json(other_path)
-            if other.get("state") != "active":
-                continue
-            collision = set(str(value) for value in other.get("notebook_ids", {}).values()) & set(
-                notebook_ids.values()
-            )
-            if collision:
-                raise RunnerFailure("A live materialized Notebook ID has another active lease.")
-        lease["template_notebook_ids"] = dict(lease.get("notebook_ids", {}))
-        lease["notebook_ids"] = dict(notebook_ids)
-        lease["live_ids_bound_at"] = utc_now()
-        _atomic_json(lease_path, lease)
-
     def record_opened_working_role(
         self,
         materialized: MaterializedBundle,
@@ -726,14 +607,6 @@ class BundleCacheStore:
         }
         _atomic_json(materialized.evidence_path.parent / "cache-template-immutability.json", result)
         return result
-
-    def release_working_bundle(self, lease_path: Path) -> None:
-        lease_path = lease_path.resolve(strict=True)
-        if lease_path.parent != self.lease_root.resolve(strict=True):
-            raise RunnerFailure("Working lease release escaped the managed lease root.")
-        lease = _read_json(lease_path)
-        lease.update(state="closed", closed_at=utc_now())
-        _atomic_json(lease_path, lease)
 
     def quarantine_exact(
         self,
@@ -797,19 +670,8 @@ class BundleCacheStore:
             "template_instance_id"
         ) != instance_id:
             raise RunnerFailure("Cache cleanup ownership metadata does not match its typed path.")
-        active_leases = []
-        if self.lease_root.exists():
-            active_leases = [
-                lease
-                for lease in self.lease_root.glob("*.json")
-                if _read_json(lease).get("state") == "active"
-                and _read_json(lease).get("fingerprint") == recipe.cache_fingerprint
-                and _read_json(lease).get("template_instance_id") == instance_id
-            ]
-        if active_leases:
-            raise RunnerFailure("Cannot clean a cache instance with an active working lease.")
         if open_state_probe is not None and open_state_probe(entry):
-            raise RunnerFailure("Cannot clean a cache instance while a source Notebook is open.")
+            raise RunnerFailure("Cannot clean a cache instance while its template is open.")
         entry.update(state="invalid", invalid_reason=reason, invalidated_at=utc_now())
         _atomic_json(entry_path, entry)
         cleanup = {
@@ -821,7 +683,8 @@ class BundleCacheStore:
             "root_containment": True,
             "ownership_verified": True,
             "reparse_point_free": True,
-            "no_active_lease": True,
+            "template_not_open": True,
+            "run_lease_checked": False,
             "deleted": False,
             "created_at": utc_now(),
         }

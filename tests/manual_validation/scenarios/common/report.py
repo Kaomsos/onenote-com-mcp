@@ -264,7 +264,7 @@ def render_report(run_dir: Path) -> Path:
         [
             "## Safety boundary",
             "",
-            "Each named scenario is a complete isolated run: the narrow lifecycle wrapper creates and lease-binds a fresh source Notebook, then exactly one scenario-scoped least-privilege MCP process creates the minimal fixture and performs mutation/evidence/restore work. The wrapper closes only the exact leased source after success unless keep-notebook or keep-worksite was selected. keep-worksite preserves the named action's verified post-mutation state and records exact IDs plus manual cleanup guidance; the special all batch command never forwards it. Permanent OneNote delete and raw XML remain disabled. Local Notebook directories are never deleted.",
+            "Each named scenario is a complete isolated run: the narrow lifecycle wrapper creates and lease-binds a fresh source Notebook, then exactly one scenario-scoped least-privilege MCP process creates the minimal fixture and performs mutation/evidence/restore work. The wrapper closes only the exact leased source after success unless keep-notebook or keep-worksite was selected. keep-worksite preserves the named action's verified post-mutation state and records exact IDs plus manual cleanup guidance; the special all batch command never forwards it. Permanent OneNote delete and raw XML remain disabled. Scenarios never delete local Notebook directories; only a separate user-confirmed clear maintenance action may remove exact managed validation payloads.",
             "",
         ]
     )

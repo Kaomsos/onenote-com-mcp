@@ -265,14 +265,13 @@ def _resolve_exact_cache_entry(
     return hit, None, False
 
 
-def _bind_failed_materialized_open(
+def _record_failed_materialized_open(
     cache_store: BundleCacheStore,
-    cache_lease_path: Path,
     wrapper: NotebookLifecycleWrapper,
     materialized: MaterializedBundle,
     options: RuntimeOptions,
 ) -> None:
-    """Persist the exact live Notebook ID even when child hierarchy activation fails."""
+    """Record the run-local live identity when child hierarchy activation fails."""
 
     if not wrapper.lease_path.exists():
         return
@@ -289,11 +288,6 @@ def _bind_failed_materialized_open(
         "bound_at": utc_now(),
     }
     try:
-        cache_store.bind_working_bundle_notebook_ids(
-            cache_lease_path,
-            notebook_ids={"source": notebook_id},
-            open_state_probe=wrapper.cache_working_lease_is_open,
-        )
         cache_store.record_opened_working_role(
             materialized,
             role="source",
@@ -476,7 +470,6 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     cache_store: BundleCacheStore | None = None
     cache_hit: CacheHit | None = None
     materialized: MaterializedBundle | None = None
-    cache_lease_path: Path | None = None
     cache_decision = "fresh"
     invalidation_performed = False
     interactive_bootstrap = (
@@ -501,7 +494,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 recipe,
                 instance_id,
                 run_id=options.run_dir.name,
-                open_state_probe=wrapper.any_cache_source_open,
+                open_state_probe=wrapper.any_cache_template_open,
                 allow_open_failure_recovery=True,
             )
             if resolution is not None:
@@ -514,7 +507,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     recipe,
                     instance_id,
                     reason="fixed cache-invalidation Scenario probe",
-                    open_state_probe=wrapper.any_cache_source_open,
+                    open_state_probe=wrapper.any_cache_template_open,
                 )
                 cache_hit = None
                 cache_decision = "invalidated_rebuild"
@@ -537,31 +530,17 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 f"interactive_bootstrap_required: run the named scenario {bootstrap!r}."
             )
     if cache_hit is not None and materialized is not None and cache_store is not None:
-        expected_ids = {
-            role: str(
-                cache_hit.entry["role_entries"][role]["source_notebook"].get("id", "")
-            )
-            for role in roles
-        }
-        cache_lease_path = cache_store.claim_working_bundle(
-            materialized,
-            run_id=options.run_dir.name,
-            notebook_ids=expected_ids,
-            open_state_probe=wrapper.cache_working_lease_is_open,
-        )
         try:
             notebooks, leases = _open_materialized_bundle(
                 cache_store,
                 materialized,
                 wrappers,
                 roles,
-                cache_lease_path,
             )
         except Exception as exc:
             if roles == ("source",):
-                _bind_failed_materialized_open(
+                _record_failed_materialized_open(
                     cache_store,
-                    cache_lease_path,
                     wrapper,
                     materialized,
                     options,
@@ -677,7 +656,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                                 recipe,
                                 instance_id,
                                 run_id=options.run_dir.name,
-                                open_state_probe=wrapper.any_cache_source_open,
+                                open_state_probe=wrapper.any_cache_template_open,
                                 allow_open_failure_recovery=True,
                             )
                         )
@@ -701,7 +680,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                                 recipe,
                                 instance_id,
                                 reason="fixed cache-invalidation Scenario cold-entry probe",
-                                open_state_probe=wrapper.any_cache_source_open,
+                                open_state_probe=wrapper.any_cache_template_open,
                             )
                             invalidation_performed = True
                             cache_decision = "invalidated_rebuild"
@@ -719,25 +698,17 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                             options.run_dir,
                             working_names=_cached_working_names(args, scenario),
                         )
-                    cache_lease_path = cache_store.claim_working_bundle(
-                        materialized,
-                        run_id=options.run_dir.name,
-                        notebook_ids={role: str(notebooks[role]["id"]) for role in roles},
-                        open_state_probe=wrapper.cache_working_lease_is_open,
-                    )
                     try:
                         notebooks, leases = _open_materialized_bundle(
                             cache_store,
                             materialized,
                             wrappers,
                             roles,
-                            cache_lease_path,
                         )
                     except Exception as exc:
                         if roles == ("source",):
-                            _bind_failed_materialized_open(
+                            _record_failed_materialized_open(
                                 cache_store,
-                                cache_lease_path,
                                 wrapper,
                                 materialized,
                                 options,
@@ -820,25 +791,13 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     final_manifest = read_json(options.run_dir / "manifest.json")
                     final_snapshot = read_json(options.run_dir / "fixture-snapshot.json")
                     with cache_store.lock(recipe.cache_fingerprint, run_id=options.run_dir.name):
-                        reconciled = cache_store.reconcile_stale_working_leases(
-                            wrapper.cache_working_lease_is_open
-                        )
-                        if reconciled:
-                            write_json(
-                                options.run_dir / "cache-stale-lease-reconciliation.json",
-                                {
-                                    "schema_version": 1,
-                                    "reconciled": reconciled,
-                                    "observed_at": utc_now(),
-                                },
-                            )
                         existing, _resolution, _resolved_invalidation = (
                             _resolve_exact_cache_entry(
                                 cache_store,
                                 recipe,
                                 instance_id,
                                 run_id=options.run_dir.name,
-                                open_state_probe=wrapper.any_cache_source_open,
+                                open_state_probe=wrapper.any_cache_template_open,
                                 allow_open_failure_recovery=True,
                             )
                         )
@@ -847,7 +806,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                                 recipe,
                                 instance_id,
                                 reason="explicit named interactive re-bootstrap",
-                                open_state_probe=wrapper.any_cache_source_open,
+                                open_state_probe=wrapper.any_cache_template_open,
                             )
                         cache_hit = cache_store.publish(
                             recipe,
@@ -870,25 +829,17 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                             options.run_dir,
                             working_names=_cached_working_names(args, scenario),
                         )
-                    cache_lease_path = cache_store.claim_working_bundle(
-                        materialized,
-                        run_id=options.run_dir.name,
-                        notebook_ids={"source": str(notebook["id"])},
-                        open_state_probe=wrapper.cache_working_lease_is_open,
-                    )
                     try:
                         notebooks, leases = _open_materialized_bundle(
                             cache_store,
                             materialized,
                             wrappers,
                             roles,
-                            cache_lease_path,
                         )
                     except Exception as exc:
                         if roles == ("source",):
-                            _bind_failed_materialized_open(
+                            _record_failed_materialized_open(
                                 cache_store,
-                                cache_lease_path,
                                 wrapper,
                                 materialized,
                                 options,
@@ -972,12 +923,6 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
         wrappers=wrappers,
         roles=roles,
     )
-    if (
-        cache_store is not None
-        and cache_lease_path is not None
-        and lifecycle.get("closed") is True
-    ):
-        cache_store.release_working_bundle(cache_lease_path)
     metrics["phases_seconds"]["lifecycle_finalize"] = round(
         time.perf_counter() - phase_started, 6
     )
@@ -1242,11 +1187,16 @@ def _open_materialized_bundle(
     materialized: MaterializedBundle,
     wrappers: Mapping[str, NotebookLifecycleWrapper],
     roles: tuple[str, ...],
-    cache_lease_path: Path,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     notebooks: dict[str, dict[str, Any]] = {}
     leases: dict[str, dict[str, Any]] = {}
-    try:
+    with wrappers["source"].working_notebook_open_lock():
+        before_open = wrappers["source"].snapshot_open_notebooks()
+        wrappers["source"].assert_no_active_working_conflict(
+            notebook_ids=None,
+            working_paths=materialized.working_paths,
+            open_notebooks=before_open,
+        )
         for role in roles:
             kwargs = {} if role == "source" else {"role": role}
             notebooks[role], leases[role] = wrappers[role].open_working_notebook(
@@ -1255,10 +1205,12 @@ def _open_materialized_bundle(
                 template_paths=tuple(materialized.template_paths.values()),
                 **kwargs,
             )
-        cache_store.bind_working_bundle_notebook_ids(
-            cache_lease_path,
-            notebook_ids={role: str(notebooks[role]["id"]) for role in roles},
-            open_state_probe=wrappers["source"].cache_working_lease_is_open,
+        live_ids = {role: str(notebooks[role]["id"]) for role in roles}
+        after_open = wrappers["source"].snapshot_open_notebooks()
+        wrappers["source"].assert_no_active_working_conflict(
+            notebook_ids=live_ids,
+            working_paths=materialized.working_paths,
+            open_notebooks=after_open,
         )
         for role in roles:
             cache_store.record_opened_working_role(
@@ -1267,27 +1219,7 @@ def _open_materialized_bundle(
                 notebook_id=str(notebooks[role]["id"]),
                 actual_path=Path(str(leases[role]["actual_local_path"])),
             )
-        return notebooks, leases
-    except Exception:
-        bound_ids = {
-            role: str(
-                notebooks.get(role, {}).get(
-                    "id",
-                    read_json(cache_lease_path).get("notebook_ids", {}).get(role, ""),
-                )
-            )
-            for role in roles
-        }
-        if all(bound_ids.values()) and len(set(bound_ids.values())) == len(bound_ids):
-            try:
-                cache_store.bind_working_bundle_notebook_ids(
-                    cache_lease_path,
-                    notebook_ids=bound_ids,
-                    open_state_probe=wrappers["source"].cache_working_lease_is_open,
-                )
-            except Exception:
-                pass
-        raise
+    return notebooks, leases
 
 
 def _close_bundle(

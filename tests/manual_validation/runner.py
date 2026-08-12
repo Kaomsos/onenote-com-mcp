@@ -62,10 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         )
 
     from .all_scenarios import register_all_parser
+    from .maintenance import register_maintenance_parsers
     from .scenarios.common.registry import SCENARIO_REGISTRY
 
     SCENARIO_REGISTRY.register_parsers(subparsers, runtime_flags)
     register_all_parser(subparsers)
+    register_maintenance_parsers(subparsers)
     return parser
 
 
@@ -90,6 +92,20 @@ async def dispatch(args: argparse.Namespace) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    from .maintenance import MAINTENANCE_COMMAND
+
+    if args.command == MAINTENANCE_COMMAND:
+        from .maintenance import run_maintenance
+
+        try:
+            result, exit_code = run_maintenance(args)
+        except RunnerFailure as exc:
+            error = {"ok": False, "error": str(exc), "exit_code": exc.exit_code}
+            print_result(error, json_output=bool(args.json_output))
+            return exc.exit_code
+        print_result(result, json_output=bool(args.json_output))
+        return exit_code
 
     if args.command == "all":
         from .all_scenarios import run_all

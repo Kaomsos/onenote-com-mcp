@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.manual_validation.lifecycle import NotebookLifecycleWrapper
-from tests.manual_validation.runtime import RestoreFailure, RunnerFailure
+from tests.manual_validation.runtime import EXIT_MCP, RestoreFailure, RunnerFailure
 from tests.manual_validation.test_utils import read_json, write_json
 
 
@@ -313,27 +313,222 @@ def test_materialized_schema_two_lease_closes_by_exact_id_and_path(tmp_path) -> 
     assert read_json(wrapper.lease_path)["state"] == "closed"
 
 
-def test_stale_probe_uses_failed_open_evidence_actual_id(tmp_path, monkeypatch) -> None:
-    wrapper, _bridge, hierarchy = _wrapper(tmp_path)
+def test_run_local_active_lease_rejects_same_live_notebook_id(tmp_path) -> None:
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
+    old_run = tmp_path / "old-run"
+    old_run.mkdir()
+    old_path = old_run / "notebooks" / "working"
+    write_json(
+        old_run / "lifecycle-lease.json",
+        {
+            "state": "active",
+            "notebook_id": "notebook-id",
+            "actual_local_path": str(old_path),
+        },
+    )
     hierarchy.created = True
+    bridge.reported_path = str(old_path.resolve())
+
+    with pytest.raises(RunnerFailure, match="run_id=old-run"):
+        wrapper.assert_no_active_working_conflict(
+            notebook_ids={"source": "notebook-id"},
+            working_paths={"source": tmp_path / "run" / "notebooks" / "new"},
+            open_notebooks={"notebook-id": old_path.resolve()},
+        )
+
+
+def test_reused_notebook_id_at_a_new_path_does_not_revive_stale_lease(tmp_path) -> None:
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
     old_run = tmp_path / "old-run"
     old_run.mkdir()
     write_json(
-        old_run / "materialized-hierarchy-open.json",
-        {"notebook_id": "actual-working-id"},
+        old_run / "lifecycle-lease.json",
+        {
+            "state": "active",
+            "notebook_id": "notebook-id",
+            "actual_local_path": str(old_run / "notebooks" / "old-working"),
+        },
     )
-    lease = {
-        "run_id": "old-run",
-        "notebook_ids": {"source": "template-id"},
-        "working_paths": {"source": str(tmp_path / "old-run" / "working")},
+    new_path = tmp_path / "run" / "notebooks" / "new-working"
+    bridge.reported_path = str(new_path.resolve())
+    hierarchy.created = True
+
+    wrapper.assert_no_active_working_conflict(
+        notebook_ids={"source": "notebook-id"},
+        working_paths={"source": new_path},
+        open_notebooks={"notebook-id": new_path.resolve()},
+    )
+
+
+def test_closed_run_local_notebook_does_not_block_reused_id(tmp_path) -> None:
+    wrapper, _bridge, _hierarchy = _wrapper(tmp_path)
+    old_run = tmp_path / "old-run"
+    old_run.mkdir()
+    write_json(
+        old_run / "lifecycle-lease.json",
+        {
+            "state": "active",
+            "notebook_id": "notebook-id",
+            "actual_local_path": str(old_run / "notebooks" / "working"),
+        },
+    )
+
+    wrapper.assert_no_active_working_conflict(
+        notebook_ids={"source": "notebook-id"},
+        working_paths={"source": tmp_path / "run" / "notebooks" / "new"},
+        open_notebooks={},
+    )
+
+
+def test_active_run_local_lease_without_exact_path_fails_closed(tmp_path) -> None:
+    wrapper, _bridge, _hierarchy = _wrapper(tmp_path)
+    old_run = tmp_path / "old-run"
+    old_run.mkdir()
+    write_json(
+        old_run / "lifecycle-lease.json",
+        {"state": "active", "notebook_id": "notebook-id"},
+    )
+
+    with pytest.raises(RunnerFailure, match="missing its exact working path"):
+        wrapper.assert_no_active_working_conflict(
+            notebook_ids={"source": "new-id"},
+            working_paths={"source": tmp_path / "run" / "notebooks" / "new"},
+            open_notebooks={},
+        )
+
+
+def test_many_historical_active_leases_use_only_the_supplied_snapshot(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    for index in range(100):
+        old_run = tmp_path / f"old-run-{index:03d}"
+        old_run.mkdir()
+        write_json(
+            old_run / "lifecycle-lease.json",
+            {
+                "state": "active",
+                "notebook_id": f"old-id-{index}",
+                "actual_local_path": str(old_run / "notebooks" / "working"),
+            },
+        )
+    calls_before = list(bridge.calls)
+
+    wrapper.assert_no_active_working_conflict(
+        notebook_ids={"source": "new-id"},
+        working_paths={"source": tmp_path / "run" / "notebooks" / "new"},
+        open_notebooks={},
+    )
+
+    assert bridge.calls == calls_before
+
+
+def test_open_notebook_snapshot_reads_each_open_path_once(tmp_path, monkeypatch) -> None:
+    wrapper, _bridge, hierarchy = _wrapper(tmp_path)
+    hierarchy.created = True
+    reported: list[str] = []
+    expected = tmp_path / "working"
+
+    def report(notebook_id: str) -> Path:
+        reported.append(notebook_id)
+        return expected.resolve()
+
+    monkeypatch.setattr(wrapper, "_reported_notebook_directory", report)
+
+    assert wrapper.snapshot_open_notebooks() == {"notebook-id": expected.resolve()}
+    assert reported == ["notebook-id"]
+
+
+def test_open_notebook_snapshot_rejects_two_ids_for_one_path(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    wrapper, _bridge, hierarchy = _wrapper(tmp_path)
+    hierarchy.created = True
+    hierarchy.list_notebooks = lambda **_kwargs: {
+        "notebooks": [
+            {"id": "notebook-one", "is_open": True},
+            {"id": "notebook-two", "is_open": True},
+        ]
     }
+    expected = (tmp_path / "working").resolve()
+    monkeypatch.setattr(
+        wrapper,
+        "_reported_notebook_directory",
+        lambda _notebook_id: expected,
+    )
 
-    def unreadable_unrelated_path(_notebook_id: str):
-        raise RestoreFailure("unrelated path unavailable")
+    with pytest.raises(RunnerFailure, match="snapshot") as exc_info:
+        wrapper.snapshot_open_notebooks()
 
-    monkeypatch.setattr(wrapper, "_reported_notebook_directory", unreadable_unrelated_path)
+    assert exc_info.value.exit_code == EXIT_MCP
 
-    assert wrapper.cache_working_lease_is_open(lease) is False
+
+def test_open_notebook_snapshot_normalizes_bridge_failure(tmp_path, monkeypatch) -> None:
+    wrapper, _bridge, _hierarchy = _wrapper(tmp_path)
+    monkeypatch.setattr(
+        wrapper._hierarchy,
+        "list_notebooks",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RestoreFailure("injected hierarchy failure")
+        ),
+    )
+
+    with pytest.raises(RunnerFailure, match="snapshot") as exc_info:
+        wrapper.snapshot_open_notebooks()
+
+    assert exc_info.value.exit_code == EXIT_MCP
+
+
+def test_working_open_lock_releases_after_scope(tmp_path) -> None:
+    wrapper, _bridge, _hierarchy = _wrapper(tmp_path)
+    lock_path = tmp_path / "working-notebook-open.lock"
+
+    with wrapper.working_notebook_open_lock():
+        assert lock_path.exists()
+
+    with wrapper.working_notebook_open_lock(timeout_seconds=0):
+        assert lock_path.exists()
+
+
+def test_cache_template_open_probe_matches_actual_template_path(tmp_path) -> None:
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
+    template = tmp_path / "cache" / "template-notebook"
+    template.mkdir(parents=True)
+    bridge.reported_path = str(template.resolve())
+    hierarchy.created = True
+    entry = {"role_entries": {"source": {"template_path": str(template)}}}
+
+    assert wrapper.any_cache_template_open(entry) is True
+
+
+def test_cache_template_open_probe_ignores_independent_working_path(tmp_path) -> None:
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
+    template = tmp_path / "cache" / "template-notebook"
+    working = tmp_path / "run" / "notebooks" / "working"
+    template.mkdir(parents=True)
+    working.mkdir(parents=True)
+    bridge.reported_path = str(working.resolve())
+    hierarchy.created = True
+    entry = {"role_entries": {"source": {"template_path": str(template)}}}
+
+    assert wrapper.any_cache_template_open(entry) is False
+
+
+def test_cache_template_open_probe_fails_closed_when_actual_path_is_unreadable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    wrapper, _bridge, hierarchy = _wrapper(tmp_path)
+    template = tmp_path / "cache" / "template-notebook"
+    template.mkdir(parents=True)
+    hierarchy.created = True
+    entry = {"role_entries": {"source": {"template_path": str(template)}}}
+    monkeypatch.setattr(
+        wrapper,
+        "_reported_notebook_directory",
+        lambda _notebook_id: (_ for _ in ()).throw(RestoreFailure("unreadable")),
+    )
+
+    assert wrapper.any_cache_template_open(entry) is True
 
 
 def test_create_writes_exact_id_name_path_lease(tmp_path) -> None:
@@ -403,12 +598,14 @@ def test_wrapper_exposes_only_bounded_lifecycle_operations() -> None:
         if callable(value) and not name.startswith("_")
     }
     assert operations == {
+        "assert_no_active_working_conflict",
         "create_fresh_notebook",
         "get_exact_notebook",
         "close_exact_notebook",
         "open_working_notebook",
-        "any_cache_source_open",
-        "cache_working_lease_is_open",
+        "any_cache_template_open",
+        "snapshot_open_notebooks",
+        "working_notebook_open_lock",
     }
 
 

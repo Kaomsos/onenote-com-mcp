@@ -168,117 +168,23 @@ def test_lookup_detects_template_mutation(tmp_path) -> None:
         store.lookup(recipe, recipe.default_template_instance_id)
 
 
-def test_active_working_lease_blocks_exact_cleanup(tmp_path) -> None:
+def test_materialized_working_copy_does_not_block_exact_cache_cleanup(tmp_path) -> None:
     recipe, store, _source_path, hit = _publish(tmp_path)
     materialized = store.materialize(hit, tmp_path / "run")
-    lease = store.claim_working_bundle(
-        materialized,
-        run_id="run-one",
-        notebook_ids={"source": "template-id"},
-    )
-
-    with pytest.raises(RunnerFailure, match="active working lease"):
-        store.invalidate_exact(
-            recipe,
-            recipe.default_template_instance_id,
-            reason="test invalidation",
-        )
-
-    store.release_working_bundle(lease)
     evidence = store.invalidate_exact(
         recipe,
         recipe.default_template_instance_id,
         reason="test invalidation",
     )
     assert evidence["deleted"] is True
+    assert evidence["template_not_open"] is True
+    assert evidence["run_lease_checked"] is False
     assert not hit.entry_path.exists()
+    assert materialized.working_paths["source"].exists()
     assert store.cache_root.exists()
 
 
-def test_invalid_entry_active_lease_blocks_orchestration_before_lifecycle_or_mcp(
-    monkeypatch,
-    tmp_path,
-) -> None:
-    recipe, store, _source_path, hit = _publish(tmp_path)
-    store.quarantine_exact(
-        recipe,
-        recipe.default_template_instance_id,
-        reason="materialized-live-validation failed: injected mismatch",
-        run_id="run-invalid",
-    )
-    materialized = store.materialize(
-        CacheHit(
-            hit.fingerprint,
-            hit.template_instance_id,
-            hit.entry_path,
-            {**hit.entry, "state": "ready"},
-        ),
-        tmp_path / "leased-working",
-    )
-    lease = store.claim_working_bundle(
-        materialized,
-        run_id="run-active",
-        notebook_ids={"source": "active-working-id"},
-    )
-    lifecycle_calls: list[str] = []
-    mcp_starts: list[str] = []
-
-    class ProbeOnlyLifecycle:
-        def __init__(self, run_dir: Path, *, timeout_seconds: int) -> None:
-            self.run_dir = run_dir
-            self.timeout_seconds = timeout_seconds
-
-        def any_cache_source_open(self, _entry) -> bool:
-            lifecycle_calls.append("open-probe")
-            return False
-
-        def __getattr__(self, name):
-            raise AssertionError(f"unexpected lifecycle operation: {name}")
-
-    class ForbiddenMCP:
-        def __init__(self, **_kwargs) -> None:
-            mcp_starts.append("constructed")
-            raise AssertionError("MCP must not start before invalid cache cleanup")
-
-    monkeypatch.setattr(validation, "NotebookLifecycleWrapper", ProbeOnlyLifecycle)
-    monkeypatch.setattr(validation, "MCPStdioClient", ForbiddenMCP)
-    run_dir = tmp_path / "blocked-run"
-    args = argparse.Namespace(
-        command="copy-notebook",
-        scenario="copy-notebook",
-        notebook_name="Disposable",
-        run_dir=run_dir,
-        timeout=180,
-        dry_run=False,
-        json_output=False,
-        keep_notebook=False,
-        keep_worksite=False,
-    )
-
-    with pytest.raises(RunnerFailure, match="active working lease"):
-        asyncio.run(
-            run_validate(
-                args,
-                RuntimeOptions(
-                    run_dir,
-                    180,
-                    False,
-                    False,
-                    use_cache=True,
-                    cache_root=store.cache_root,
-                ),
-            )
-        )
-
-    assert lifecycle_calls == []
-    assert mcp_starts == []
-    assert read_json(lease)["state"] == "active"
-    assert store.exact_entry_state(recipe, recipe.default_template_instance_id) == "invalid"
-    assert hit.entry_path.exists()
-    assert not store.tombstone_path.exists()
-
-
-def test_invalid_entry_open_source_blocks_cleanup_and_rebuild(tmp_path) -> None:
+def test_invalid_entry_open_template_blocks_cleanup_and_rebuild(tmp_path) -> None:
     recipe, store, _source_path, hit = _publish(tmp_path)
     store.quarantine_exact(
         recipe,
@@ -287,7 +193,7 @@ def test_invalid_entry_open_source_blocks_cleanup_and_rebuild(tmp_path) -> None:
         run_id="run-invalid",
     )
 
-    with pytest.raises(RunnerFailure, match="source Notebook is open"):
+    with pytest.raises(RunnerFailure, match="template is open"):
         validation._resolve_exact_cache_entry(
             store,
             recipe,
@@ -311,74 +217,10 @@ def test_cache_rejects_arbitrary_identity_selectors(tmp_path) -> None:
         store.instance_path("0" * 64, "../outside")
 
 
-def test_second_working_claim_rejects_same_internal_notebook_id(tmp_path) -> None:
-    recipe, store, _source_path, hit = _publish(tmp_path)
-    first = store.materialize(hit, tmp_path / "run-one")
-    store.claim_working_bundle(
-        first,
-        run_id="run-one",
-        notebook_ids={"source": "same-id"},
-    )
-    second = store.materialize(hit, tmp_path / "run-two")
-    with pytest.raises(RunnerFailure, match="run_id=run-one") as exc_info:
-        store.claim_working_bundle(
-            second,
-            run_id="run-two",
-            notebook_ids={"source": "same-id"},
-        )
-    assert str(first.working_paths["source"]) in str(exc_info.value)
-
-
-def test_closed_working_notebook_reconciles_stale_lease_before_new_claim(tmp_path) -> None:
-    _recipe, store, _source_path, hit = _publish(tmp_path)
-    first = store.materialize(hit, tmp_path / "run-one")
-    first_lease = store.claim_working_bundle(
-        first,
-        run_id="run-one",
-        notebook_ids={"source": "same-id"},
-    )
-    second = store.materialize(hit, tmp_path / "run-two")
-
-    second_lease = store.claim_working_bundle(
-        second,
-        run_id="run-two",
-        notebook_ids={"source": "same-id"},
-        open_state_probe=lambda _lease: False,
-    )
-
-    assert read_json(first_lease)["state"] == "stale_closed_observed"
-    assert read_json(second_lease)["state"] == "active"
-
-
-def test_working_lease_binds_live_remapped_notebook_id(tmp_path) -> None:
-    _recipe, store, _source_path, hit = _publish(tmp_path)
-    materialized = store.materialize(hit, tmp_path / "run")
-    lease = store.claim_working_bundle(
-        materialized,
-        run_id="run",
-        notebook_ids={"source": "template-id"},
-    )
-
-    store.bind_working_bundle_notebook_ids(
-        lease,
-        notebook_ids={"source": "working-id"},
-    )
-
-    bound = read_json(lease)
-    assert bound["template_notebook_ids"] == {"source": "template-id"}
-    assert bound["notebook_ids"] == {"source": "working-id"}
-    assert bound["working_names"] == {"source": "source-working-copy"}
-
-
-def test_failed_materialized_open_binds_live_working_notebook_id(tmp_path) -> None:
+def test_failed_materialized_open_records_run_local_live_working_notebook_id(tmp_path) -> None:
     _recipe, store, _source_path, hit = _publish(tmp_path)
     run_dir = tmp_path / "run"
     materialized = store.materialize(hit, run_dir)
-    cache_lease = store.claim_working_bundle(
-        materialized,
-        run_id="run",
-        notebook_ids={"source": "template-id"},
-    )
     lifecycle_lease = run_dir / "lifecycle-lease.json"
     write_json(
         lifecycle_lease,
@@ -394,21 +236,13 @@ def test_failed_materialized_open_binds_live_working_notebook_id(tmp_path) -> No
     class FailedOpenWrapper:
         lease_path = lifecycle_lease
 
-        @staticmethod
-        def cache_working_lease_is_open(_lease) -> bool:
-            return True
-
-    validation._bind_failed_materialized_open(
+    validation._record_failed_materialized_open(
         store,
-        cache_lease,
         FailedOpenWrapper(),
         materialized,
         RuntimeOptions(run_dir, 180, False, False, use_cache=True),
     )
 
-    bound = read_json(cache_lease)
-    assert bound["template_notebook_ids"] == {"source": "template-id"}
-    assert bound["notebook_ids"] == {"source": "live-working-id"}
     evidence = read_json(run_dir / "cache-failed-open-live-id.json")
     assert evidence["bound"] is True
     assert evidence["notebook_id"] == "live-working-id"
@@ -911,11 +745,19 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
             assert self.current_notebook is not None
             return {"closed": True, "close_before": dict(self.current_notebook)}
 
-        def any_cache_source_open(self, _entry) -> bool:
+        def any_cache_template_open(self, _entry) -> bool:
             return False
 
-        def cache_working_lease_is_open(self, _lease) -> bool:
-            return True
+        def working_notebook_open_lock(self):
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        def snapshot_open_notebooks(self):
+            return {}
+
+        def assert_no_active_working_conflict(self, **_kwargs) -> None:
+            return None
 
     class FakeMCP:
         def __init__(self, **_kwargs) -> None:
@@ -1082,7 +924,7 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
         assert Path(tombstones[-1]["target"]) == seed_hit.entry_path
 
 
-def test_multi_role_bundle_uses_the_same_publish_materialize_and_lease_runtime(tmp_path) -> None:
+def test_multi_role_bundle_uses_the_same_publish_and_materialize_runtime(tmp_path) -> None:
     profile = SCENARIO_REGISTRY.get("copy-page").fixture_profile
 
     class MultiRoleRecipe(RecipeBase):
@@ -1117,11 +959,6 @@ def test_multi_role_bundle_uses_the_same_publish_materialize_and_lease_runtime(t
         validation={"passed": True},
     )
     materialized = store.materialize(hit, tmp_path / "run")
-    lease = store.claim_working_bundle(
-        materialized,
-        run_id="multi-role-run",
-        notebook_ids={"destination": "destination-id", "source": "source-id"},
-    )
     for role in ("destination", "source"):
         store.record_opened_working_role(
             materialized,
@@ -1130,4 +967,3 @@ def test_multi_role_bundle_uses_the_same_publish_materialize_and_lease_runtime(t
             actual_path=materialized.working_paths[role],
         )
     assert store.verify_templates_unchanged(materialized)["all_templates_unchanged"] is True
-    store.release_working_bundle(lease)
