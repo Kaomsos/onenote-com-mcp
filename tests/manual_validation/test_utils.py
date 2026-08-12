@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 from typing import Any
+import uuid
 import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.page import (
@@ -24,6 +25,7 @@ from local_onenote_mcp.page.parser import html_fragment_to_text, local_name, par
 from local_onenote_mcp.services.pages import stable_page_content_digest
 
 from .mcp_stdio_client import COPY_BUDGET_ENV, MCPStdioClient, ScenarioPolicy
+from .local_filesystem import atomic_replace_with_retry
 from .run_identity import new_run_identity
 from .runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
 
@@ -47,12 +49,12 @@ def installed_runner_version() -> str:
 
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    temporary.replace(path)
+    atomic_replace_with_retry(temporary, path)
 
 
 _BINARY_DATA_PATTERN = re.compile(
@@ -93,9 +95,9 @@ def write_sensitive_page_xml(path: Path, xml: str) -> dict[str, Any]:
 
     redacted_xml = _BINARY_DATA_PATTERN.sub(redact, xml)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(redacted_xml, encoding="utf-8")
-    temporary.replace(path)
+    atomic_replace_with_retry(temporary, path)
     return {
         "path": str(path.resolve()),
         "source_xml_chars": len(xml),

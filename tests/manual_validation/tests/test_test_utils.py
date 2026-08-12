@@ -14,7 +14,39 @@ from tests.manual_validation.test_utils import (
     is_descendant_of,
     page_content_hash,
     page_reparent_content_hash,
+    write_json,
+    write_sensitive_page_xml,
 )
+
+
+def test_json_and_sensitive_xml_use_unique_atomic_temporary_files(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    original = test_utils.atomic_replace_with_retry
+    temporary_names: list[str] = []
+
+    def recording_replace(source, destination, **kwargs) -> None:
+        temporary_names.append(source.name)
+        original(source, destination, **kwargs)
+
+    monkeypatch.setattr(test_utils, "atomic_replace_with_retry", recording_replace)
+    json_path = tmp_path / "evidence.json"
+    xml_path = tmp_path / "page.xml"
+
+    write_json(json_path, {"version": 1})
+    write_json(json_path, {"version": 2})
+    report = write_sensitive_page_xml(
+        xml_path,
+        "<one:Page><one:Data>YQ==</one:Data></one:Page>",
+    )
+
+    assert json_path.read_text(encoding="utf-8").find('"version": 2') >= 0
+    assert "YQ==" not in xml_path.read_text(encoding="utf-8")
+    assert report["binary_payload_count"] == 1
+    assert len(temporary_names) == len(set(temporary_names)) == 3
+    assert all(name.startswith(".") and name.endswith(".tmp") for name in temporary_names)
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 def test_snapshot_comparison_ignores_capture_time_and_item_order() -> None:

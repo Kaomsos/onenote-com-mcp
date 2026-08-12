@@ -26,6 +26,7 @@ import xml.etree.ElementTree as ET
 from local_onenote_mcp.bridge import OneNoteBridge
 from local_onenote_mcp.constants import HIERARCHY_SCOPES, XML_SCHEMA_2013
 
+from ..local_filesystem import atomic_replace_with_retry
 from ..runtime import EXIT_INVARIANT, RunnerFailure
 from ..test_utils import utc_now
 from ..scenarios.common.fixture_cache import (
@@ -70,7 +71,7 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    os.replace(temporary, path)
+    atomic_replace_with_retry(temporary, path)
     if path.name == VALIDATION_MARKER and not existed:
         try:
             from ctypes import WinDLL

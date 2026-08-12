@@ -65,6 +65,25 @@ def _source(tmp_path: Path) -> Path:
     return source
 
 
+def test_cleanup_metadata_uses_guarded_atomic_replace(tmp_path, monkeypatch) -> None:
+    original = cleanup.atomic_replace_with_retry
+    calls: list[tuple[Path, Path]] = []
+
+    def recording_replace(source: Path, destination: Path, **kwargs) -> None:
+        calls.append((source, destination))
+        original(source, destination, **kwargs)
+
+    monkeypatch.setattr(cleanup, "atomic_replace_with_retry", recording_replace)
+    destination = tmp_path / "cleanup-receipt-test.json"
+
+    cleanup._atomic_json(destination, {"state": "pending"})
+
+    assert destination.is_file()
+    assert calls == [(calls[0][0], destination)]
+    assert calls[0][0].name.startswith(f".{destination.name}.")
+    assert calls[0][0].name.endswith(".tmp")
+
+
 def _cache(validation: Path, tmp_path: Path):
     recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     store = BundleCacheStore(validation / "fixture-cache")

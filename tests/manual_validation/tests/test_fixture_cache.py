@@ -6,10 +6,12 @@ import argparse
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from tests.manual_validation import local_filesystem
 from tests.manual_validation.runtime import InvariantFailure, RunnerFailure, RuntimeOptions
 from tests.manual_validation.run_identity import (
     new_run_identity,
@@ -21,6 +23,7 @@ from tests.manual_validation.scenarios.common.fixture_cache import (
     MaterializedBundle,
     inventory_directory,
 )
+from tests.manual_validation.scenarios.common import fixture_cache as fixture_cache_module
 from tests.manual_validation.scenarios.common.fixture_runtime import (
     _rebind_materialized_structure,
     prepare_materialized_fixture,
@@ -59,6 +62,12 @@ def _publish(tmp_path: Path):
     return recipe, store, source, hit
 
 
+def _windows_error(code: int) -> OSError:
+    error = PermissionError(f"injected WinError {code}")
+    error.winerror = code
+    return error
+
+
 def test_publish_and_materialize_preserve_opaque_byte_inventory(tmp_path) -> None:
     recipe, store, source, hit = _publish(tmp_path)
 
@@ -82,6 +91,104 @@ def test_publish_and_materialize_preserve_opaque_byte_inventory(tmp_path) -> Non
     )
     immutability = store.verify_templates_unchanged(materialized)
     assert immutability["all_templates_unchanged"] is True
+
+
+def test_cache_publish_retries_transient_windows_directory_lock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    original_replace = os.replace
+    directory_attempts = 0
+    delays: list[float] = []
+
+    def flaky_replace(source, destination) -> None:
+        nonlocal directory_attempts
+        source_path = Path(source)
+        if source_path.name.startswith(".staging-") and source_path.is_dir():
+            directory_attempts += 1
+            if directory_attempts == 1:
+                raise _windows_error(5)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(local_filesystem, "_IS_WINDOWS", True)
+    monkeypatch.setattr(local_filesystem.os, "replace", flaky_replace)
+    monkeypatch.setattr(local_filesystem.time, "sleep", delays.append)
+
+    recipe, store, _source_path, hit = _publish(tmp_path)
+
+    assert directory_attempts == 2
+    assert delays == [0.05]
+    assert hit.entry_path.is_dir()
+    assert store.lookup(recipe, recipe.default_template_instance_id) is not None
+
+
+def test_materialize_retries_transient_windows_directory_lock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    recipe, store, _source_path, hit = _publish(tmp_path)
+    original_replace = os.replace
+    directory_attempts = 0
+    delays: list[float] = []
+
+    def flaky_replace(source, destination) -> None:
+        nonlocal directory_attempts
+        source_path = Path(source)
+        if source_path.parent.name.startswith(".materializing-"):
+            directory_attempts += 1
+            if directory_attempts == 1:
+                raise _windows_error(32)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(local_filesystem, "_IS_WINDOWS", True)
+    monkeypatch.setattr(local_filesystem.os, "replace", flaky_replace)
+    monkeypatch.setattr(local_filesystem.time, "sleep", delays.append)
+
+    materialized = store.materialize(hit, tmp_path / "run")
+
+    assert directory_attempts == 2
+    assert delays == [0.05]
+    assert materialized.evidence_path.is_file()
+    assert inventory_directory(source := materialized.template_paths["source"]) == (
+        inventory_directory(materialized.working_paths["source"])
+    )
+    assert source != materialized.working_paths["source"]
+    assert not list((tmp_path / "run").glob(".materializing-*"))
+
+
+def test_cache_publish_retry_exhaustion_leaves_no_matchable_entry(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
+    store = BundleCacheStore(tmp_path / "cache")
+    store.initialize()
+    source = _source(tmp_path)
+    original_replace = os.replace
+
+    def locked_publish(source_path, destination_path) -> None:
+        candidate = Path(source_path)
+        if candidate.name.startswith(".staging-") and candidate.is_dir():
+            raise _windows_error(32)
+        original_replace(source_path, destination_path)
+
+    monkeypatch.setattr(local_filesystem, "_IS_WINDOWS", True)
+    monkeypatch.setattr(local_filesystem.os, "replace", locked_publish)
+    monkeypatch.setattr(local_filesystem.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(OSError) as captured:
+        store.publish(
+            recipe,
+            recipe.default_template_instance_id,
+            source_paths={"source": source},
+            source_notebooks={"source": {"id": "template-id", "name": "Disposable"}},
+            closed_roles={"source"},
+            validation={"passed": True},
+        )
+
+    assert captured.value.winerror == 32
+    assert store.exact_entry_state(recipe, recipe.default_template_instance_id) is None
+    assert not list(store.cache_root.glob(".staging-*"))
 
 
 def test_publish_requires_every_declared_role_to_be_closed(tmp_path) -> None:
@@ -967,3 +1074,76 @@ def test_multi_role_bundle_uses_the_same_publish_and_materialize_runtime(tmp_pat
             actual_path=materialized.working_paths[role],
         )
     assert store.verify_templates_unchanged(materialized)["all_templates_unchanged"] is True
+
+
+def test_multi_role_materialize_preserves_competing_destination(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    profile = SCENARIO_REGISTRY.get("copy-page").fixture_profile
+
+    class MultiRoleRecipe(RecipeBase):
+        async def build(self, context):  # pragma: no cover - cache contract only
+            raise AssertionError("cache test does not build live OneNote fixtures")
+
+        def validate(self, context, build):
+            return ("recording validator",)
+
+    recipe = MultiRoleRecipe(
+        "copy-page",
+        notebook_roles=(
+            NotebookRoleSpec("destination", profile, {"manifest_keys": ["destination"]}),
+            NotebookRoleSpec("source", profile, {"manifest_keys": ["source"]}),
+        ),
+    )
+    store = BundleCacheStore(tmp_path / "cache")
+    store.initialize()
+    hit = store.publish(
+        recipe,
+        recipe.default_template_instance_id,
+        source_paths={
+            "destination": _source(tmp_path, "destination"),
+            "source": _source(tmp_path, "source"),
+        },
+        source_notebooks={
+            "destination": {"id": "destination-id", "name": "Destination"},
+            "source": {"id": "source-id", "name": "Source"},
+        },
+        closed_roles={"destination", "source"},
+        validation={"passed": True},
+    )
+    original = fixture_cache_module.atomic_replace_with_retry
+    directory_publications = 0
+
+    def competing_replace(source, destination, **kwargs) -> None:
+        nonlocal directory_publications
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if source_path.parent.name.startswith(".materializing-"):
+            directory_publications += 1
+            if directory_publications == 2:
+                destination_path.mkdir()
+                (destination_path / "competitor.txt").write_text(
+                    "not-owned-by-materialize",
+                    encoding="utf-8",
+                )
+                raise InvariantFailure("injected competing destination")
+        original(source_path, destination_path, **kwargs)
+
+    monkeypatch.setattr(
+        fixture_cache_module,
+        "atomic_replace_with_retry",
+        competing_replace,
+    )
+    run_dir = tmp_path / "run"
+
+    with pytest.raises(InvariantFailure, match="competing destination"):
+        store.materialize(hit, run_dir)
+
+    first_owned = run_dir / "notebooks" / "destination-working-copy"
+    competitor = run_dir / "notebooks" / "source-working-copy"
+    assert not first_owned.exists()
+    assert (competitor / "competitor.txt").read_text(encoding="utf-8") == (
+        "not-owned-by-materialize"
+    )
+    assert not list(run_dir.glob(".materializing-*"))

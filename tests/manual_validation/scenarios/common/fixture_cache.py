@@ -20,6 +20,7 @@ import time
 import uuid
 from typing import Any, Callable, Iterator, Mapping
 
+from ...local_filesystem import atomic_replace_with_retry
 from ...runtime import InvariantFailure, RunnerFailure
 from ...test_utils import utc_now
 from ..fixture_recipes.recipe_base import RecipeBase
@@ -120,7 +121,7 @@ def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    os.replace(temporary, path)
+    atomic_replace_with_retry(temporary, path)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -443,12 +444,21 @@ class BundleCacheStore:
                 "opened_template": False,
             }
             _atomic_json(staging / "bundle-entry.json", entry)
-            os.replace(staging, final)
+            atomic_replace_with_retry(
+                staging,
+                final,
+                destination_must_be_absent=True,
+            )
             self._update_index(recipe.cache_fingerprint, instance_id, state)
             return CacheHit(recipe.cache_fingerprint, instance_id, final, entry)
-        except Exception:
+        except Exception as publish_error:
             if staging.exists():
-                shutil.rmtree(staging)
+                try:
+                    shutil.rmtree(staging)
+                except OSError as cleanup_error:
+                    raise RunnerFailure(
+                        "Cache publish failed and its owned staging directory could not be removed."
+                    ) from publish_error
             raise
 
     def _update_index(self, fingerprint: str, instance_id: str, state: str) -> None:
@@ -481,6 +491,7 @@ class BundleCacheStore:
         staging.mkdir()
         template_paths: dict[str, Path] = {}
         working_paths: dict[str, Path] = {}
+        published_working_paths: list[Path] = []
         evidence_roles: dict[str, Any] = {}
         try:
             roles = tuple(str(role) for role in hit.entry["roles"])
@@ -525,7 +536,12 @@ class BundleCacheStore:
                     "opened_template": False,
                 }
             for role in hit.entry["roles"]:
-                os.replace(staging / role, working_paths[role])
+                atomic_replace_with_retry(
+                    staging / role,
+                    working_paths[role],
+                    destination_must_be_absent=True,
+                )
+                published_working_paths.append(working_paths[role])
             evidence = {
                 "schema_version": CACHE_SCHEMA_VERSION,
                 "fingerprint": hit.fingerprint,
@@ -538,6 +554,8 @@ class BundleCacheStore:
             }
             evidence_path = run_dir / "cache-materialization.json"
             _atomic_json(evidence_path, evidence)
+            if staging.exists():
+                shutil.rmtree(staging)
             return MaterializedBundle(
                 hit.fingerprint,
                 hit.template_instance_id,
@@ -545,14 +563,26 @@ class BundleCacheStore:
                 working_paths,
                 evidence_path,
             )
-        except Exception:
-            for working in working_paths.values():
+        except Exception as materialize_error:
+            cleanup_failures: list[Path] = []
+            for working in reversed(published_working_paths):
                 if working.exists():
-                    shutil.rmtree(working)
-            raise
-        finally:
+                    try:
+                        shutil.rmtree(working)
+                    except OSError:
+                        cleanup_failures.append(working)
             if staging.exists():
-                shutil.rmtree(staging)
+                try:
+                    shutil.rmtree(staging)
+                except OSError:
+                    cleanup_failures.append(staging)
+            if cleanup_failures:
+                retained = ", ".join(str(path) for path in cleanup_failures)
+                raise RunnerFailure(
+                    "Cache materialization failed and exact owned paths could not be "
+                    f"removed; retained: {retained}"
+                ) from materialize_error
+            raise
 
     def record_opened_working_role(
         self,

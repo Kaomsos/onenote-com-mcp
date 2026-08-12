@@ -26,6 +26,7 @@
 | 018 | [在线视频表示与 Copy 保真验证](018_online_video_copy_fidelity_validation.md) | 已取消 | P2 | 不再建立独立 OnlineVideo 类型或有损 Copy 合同；仅保留局限性 Lesson。 |
 | 019 | [Manual Validation 受控 Clear Actions](019_manual_validation_clear_actions.md) | 已完成 | P2 | `clear runs/cache/all`、交互确认、实际路径快照、逐目标 receipt/summary、成功审计收敛和空 cache scaffold 清理已交付；用户真实 clear 共删除 112 个目标且无拒绝/失败。 |
 | 020 | [UserAuthored Fixture 开发脚手架完整化](020_user_authored_fixture_development_scaffold.md) | 待办 | P3 | 当前骨架已够开发取证使用；完整 authoring-zone、多实例、ready/evidence-only 和失效真实矩阵延期，且不阻塞 TODO 014 或生产 Copy/Move。 |
+| 021 | [Windows Fixture Cache 路径长度预算](021_windows_fixture_cache_path_budget.md) | 待办 | P3 | 评估 cache/run/staging 最坏路径长度、短路径命名合同与工作区外 pytest basetemp；不阻塞当前原子发布重试修复。 |
 
 ## 文件命名
 
