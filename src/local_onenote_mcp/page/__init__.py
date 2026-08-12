@@ -20,6 +20,9 @@ from .copying import (
     page_content_capability_projection,
     page_equivalence,
     copy_verification_tier,
+    semantic_display_equation_comparison,
+    semantic_mathml_comparison,
+    semantic_mathml_projection,
     transform_page_for_copy,
 )
 
@@ -39,6 +42,9 @@ __all__ = [
     "proportional_dimensions",
     "page_equivalence",
     "copy_verification_tier",
+    "semantic_display_equation_comparison",
+    "semantic_mathml_comparison",
+    "semantic_mathml_projection",
     "text_from_page_xml",
     "title_from_page_xml",
     "transform_page_for_copy",

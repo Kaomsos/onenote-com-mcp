@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
@@ -80,9 +81,12 @@ def test_page_content_capability_projection_is_content_free_and_kind_counted():
     projection = page_content_capability_projection(source)
 
     assert projection == {
-        "schema_version": 1,
+        "schema_version": 4,
         "capabilities": ["InsertedFile", "Outline"],
         "object_kind_counts": {"InsertedFile": 1, "OE": 1, "Outline": 1},
+        "structural_marker_counts": {},
+        "embedded_markup_tag_counts": {},
+        "embedded_markup_attribute_name_counts": {},
         "unknown_nodes": [],
         "unsupported_page_roots": [],
         "complete": True,
@@ -103,6 +107,372 @@ def test_page_content_capability_projection_fails_closed_on_unknown_nested_node(
     assert projection["unknown_nodes"] == [
         "{http://schemas.microsoft.com/office/onenote/2013/onenote}FutureThing"
     ]
+
+
+def test_video_preview_markup_remains_plain_image_and_rich_text():
+    secret = "https://video.example.invalid/private-token"
+    source = page_xml("source", "Preview").replace(
+        "</one:Page>",
+        (
+            '<one:Outline><one:OEChildren><one:OE><one:Image format="png">'
+            "<one:Data>c3ludGhldGlj</one:Data><one:OCRData>"
+            "<one:OCRText>private title</one:OCRText>"
+            '<one:OCRToken x="1" y="2" width="3" height="4" />'
+            "</one:OCRData></one:Image></one:OE><one:OE><one:T><![CDATA["
+            f'<a href="{secret}" v="video"><span style="x">Preview</span></a>'
+            "]]></one:T></one:OE></one:OEChildren></one:Outline></one:Page>"
+        ),
+    )
+
+    projection = page_content_capability_projection(source)
+    transformed = transform_page_for_copy(source, "target", {"source": "target"})
+
+    assert projection["schema_version"] == 4
+    assert projection["capabilities"] == ["Image", "Outline", "RichText"]
+    assert projection["embedded_markup_tag_counts"] == {"a": 1, "span": 1}
+    assert projection["embedded_markup_attribute_name_counts"] == {
+        "a@href": 1,
+        "a@v": 1,
+        "span@style": 1,
+    }
+    assert projection["unknown_nodes"] == []
+    assert projection["complete"] is True
+    assert secret not in str(projection)
+    assert "private title" not in str(projection)
+    assert not any(
+        issue["code"] == "unsupported_nested_page_node"
+        for issue in transformed["issues"]
+    )
+    assert transformed["issues"] == []
+    assert f'href="{secret}"' in transformed["xml"]
+    assert 'v="video"' in transformed["xml"]
+    assert transformed["lossless_candidate"] is True
+
+    ordinary_link = source.replace(' v="video"', "")
+    ordinary_projection = page_content_capability_projection(ordinary_link)
+    assert ordinary_projection["capabilities"] == ["Image", "Outline", "RichText"]
+    tier = copy_verification_tier(transformed["content_types"])
+    strict_equivalence = page_equivalence(
+        source,
+        ordinary_link,
+        verification_tier=tier,
+    )
+    changed_external_link = page_equivalence(
+        source,
+        ordinary_link.replace("private-token", "changed-token"),
+        verification_tier=tier,
+    )
+    assert tier == "strict_canonical"
+    assert strict_equivalence["equivalent"] is False
+    assert strict_equivalence["checks"]["canonical_xml"] is False
+    assert changed_external_link["equivalent"] is False
+
+    misplaced = page_xml("source", "Preview").replace(
+        "</one:Page>", "<one:OCRData><one:OCRText /></one:OCRData></one:Page>"
+    )
+    misplaced_projection = page_content_capability_projection(misplaced)
+    assert misplaced_projection["complete"] is False
+    assert set(misplaced_projection["unknown_nodes"]) == {
+        "{http://schemas.microsoft.com/office/onenote/2013/onenote}OCRData",
+        "{http://schemas.microsoft.com/office/onenote/2013/onenote}OCRText",
+    }
+
+
+@pytest.mark.parametrize(
+    "shape_xml,expected_markers",
+    [
+        ("<one:ShapeInfo/>", {"ShapeInfo": 1}),
+        (
+            "<one:ShapeInfo><one:AnchorPoint/><one:AnchorPoint/></one:ShapeInfo>",
+            {"AnchorPoint": 2, "ShapeInfo": 1},
+        ),
+    ],
+)
+def test_page_content_capability_projection_classifies_ui_shape_by_shape_info(
+    shape_xml: str,
+    expected_markers: dict[str, int],
+) -> None:
+    source = page_xml("page", "Shape").replace(
+        "</one:Page>",
+        (
+            '<one:InkDrawing objectID="shape"><one:Position x="1" y="2"/>'
+            f"{shape_xml}<one:Ink>synthetic</one:Ink></one:InkDrawing></one:Page>"
+        ),
+    )
+
+    projection = page_content_capability_projection(source)
+
+    assert projection["capabilities"] == ["UIShape"]
+    assert projection["object_kind_counts"] == {"InkDrawing": 1}
+    assert projection["structural_marker_counts"] == expected_markers
+    assert projection["unknown_nodes"] == []
+    assert projection["complete"] is True
+
+
+def test_transform_preserves_validated_ui_shape_structure() -> None:
+    source = page_xml("source", "Shape").replace(
+        "</one:Page>",
+        (
+            '<one:InkDrawing objectID="shape"><one:Position x="1" y="2"/>'
+            '<one:ShapeInfo><one:AnchorPoint/></one:ShapeInfo>'
+            "<one:Ink>synthetic</one:Ink></one:InkDrawing></one:Page>"
+        ),
+    )
+
+    result = transform_page_for_copy(source, "target", {"source": "target"})
+
+    assert "ShapeInfo" in result["xml"]
+    assert "AnchorPoint" in result["xml"]
+    assert not any(
+        issue["code"] == "unsupported_nested_page_node"
+        for issue in result["issues"]
+    )
+    assert result["lossless_candidate"] is True
+    assert not any(
+        issue["code"] == "content_type_unverified" for issue in result["issues"]
+    )
+
+
+def test_shape_structural_nodes_outside_inkdrawing_remain_unknown_and_omitted() -> None:
+    source = page_xml("source", "Title", "Body").replace(
+        "</one:OEChildren></one:Outline>",
+        "<one:ShapeInfo/><one:AnchorPoint/></one:OEChildren></one:Outline>",
+    )
+
+    projection = page_content_capability_projection(source)
+    result = transform_page_for_copy(source, "target", {"source": "target"})
+
+    assert projection["complete"] is False
+    assert projection["structural_marker_counts"] == {}
+    assert projection["unknown_nodes"] == [
+        "{http://schemas.microsoft.com/office/onenote/2013/onenote}AnchorPoint",
+        "{http://schemas.microsoft.com/office/onenote/2013/onenote}ShapeInfo",
+    ]
+    assert "ShapeInfo" not in result["xml"]
+    assert "AnchorPoint" not in result["xml"]
+    assert any(
+        issue["code"] == "unsupported_nested_page_node"
+        for issue in result["issues"]
+    )
+
+
+def test_recorded_media_playlist_projection_and_transform_are_context_bounded() -> None:
+    source = page_xml("source", "Recording", "Synthetic").replace(
+        "<one:T><![CDATA[Synthetic]]></one:T>",
+        (
+            "<one:MediaIndex><one:MediaReference/></one:MediaIndex>"
+            "<one:MediaFile><one:MediaReference/></one:MediaFile>"
+            "<one:MediaIndex><one:MediaReference/></one:MediaIndex>"
+            "<one:T><![CDATA[Synthetic]]></one:T>"
+        ),
+    ).replace(
+        "</one:Page>",
+        (
+            "<one:MediaPlaylist><one:MediaReference/>"
+            "</one:MediaPlaylist></one:Page>"
+        ),
+    )
+
+    projection = page_content_capability_projection(source)
+    result = transform_page_for_copy(source, "target", {"source": "target"})
+
+    assert projection["capabilities"] == ["MediaFile", "Outline"]
+    assert projection["object_kind_counts"] == {
+        "MediaFile": 1,
+        "OE": 1,
+        "Outline": 1,
+    }
+    assert projection["unknown_nodes"] == []
+    assert projection["unsupported_page_roots"] == []
+    assert projection["complete"] is True
+    assert "MediaPlaylist" in result["xml"]
+    assert "MediaIndex" in result["xml"]
+    assert "MediaReference" in result["xml"]
+    assert not any(
+        issue["code"] in {"unsupported_page_root", "unsupported_nested_page_node"}
+        for issue in result["issues"]
+    )
+    assert result["lossless_candidate"] is True
+    assert not any(
+        issue["code"] == "content_type_unverified" for issue in result["issues"]
+    )
+
+
+def test_media_transform_uses_existing_cache_when_original_source_is_missing(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "recording.wma"
+    cache.write_bytes(b"synthetic-media")
+    missing_source = tmp_path / "missing" / "recording.wma"
+    source = _recorded_media_with_timeline_html("timeline").replace(
+        "<one:MediaFile>",
+        (
+            f'<one:MediaFile pathCache="{cache}" '
+            f'pathSource="{missing_source}" preferredName="recording.wma">'
+        ),
+    )
+
+    result = transform_page_for_copy(source, "target", {"source": "target"})
+    root = ET.fromstring(result["xml"])
+    media = next(node for node in root.iter() if node.tag.endswith("}MediaFile"))
+
+    assert media.attrib["pathSource"] == str(cache)
+    assert "pathCache" not in media.attrib
+
+
+def test_inserted_file_transform_preserves_existing_source_path(
+    tmp_path: Path,
+) -> None:
+    original = tmp_path / "synthetic.md"
+    original.write_text("synthetic attachment", encoding="utf-8")
+    cache = tmp_path / "OneNote-cache.bin"
+    cache.write_bytes(b"cached attachment")
+    source = page_xml("source", "Title", "placeholder").replace(
+        "<one:T><![CDATA[placeholder]]></one:T>",
+        (
+            f'<one:InsertedFile pathCache="{cache}" pathSource="{original}" '
+            'preferredName="synthetic.md"/>'
+        ),
+    )
+
+    result = transform_page_for_copy(source, "target", {"source": "target"})
+    root = ET.fromstring(result["xml"])
+    inserted = next(node for node in root.iter() if node.tag.endswith("}InsertedFile"))
+
+    assert inserted.attrib == {
+        "pathSource": str(original),
+        "preferredName": "synthetic.md",
+    }
+    assert list(inserted) == []
+    assert result["content_types"] == ["InsertedFile", "Outline"]
+    assert result["lossless_candidate"] is True
+    assert not any(
+        issue["code"] == "content_type_unverified" for issue in result["issues"]
+    )
+
+
+def test_inserted_file_transform_uses_existing_cache_when_source_is_missing(
+    tmp_path: Path,
+) -> None:
+    cache = tmp_path / "OneNote-cache.bin"
+    cache.write_bytes(b"cached attachment")
+    missing_source = tmp_path / "missing" / "synthetic.md"
+    source = page_xml("source", "Title", "placeholder").replace(
+        "<one:T><![CDATA[placeholder]]></one:T>",
+        (
+            f'<one:InsertedFile pathCache="{cache}" pathSource="{missing_source}" '
+            'preferredName="synthetic.md"/>'
+        ),
+    )
+
+    result = transform_page_for_copy(source, "target", {"source": "target"})
+    root = ET.fromstring(result["xml"])
+    inserted = next(node for node in root.iter() if node.tag.endswith("}InsertedFile"))
+
+    assert inserted.attrib["pathSource"] == str(cache)
+    assert inserted.attrib["preferredName"] == "synthetic.md"
+    assert "pathCache" not in inserted.attrib
+
+
+def test_inserted_file_transform_fails_closed_without_readable_source(
+    tmp_path: Path,
+) -> None:
+    missing_source = tmp_path / "missing" / "synthetic.md"
+    missing_cache = tmp_path / "missing" / "OneNote-cache.bin"
+    source = page_xml("source", "Title", "placeholder").replace(
+        "<one:T><![CDATA[placeholder]]></one:T>",
+        (
+            f'<one:InsertedFile pathCache="{missing_cache}" '
+            f'pathSource="{missing_source}" preferredName="synthetic.md"/>'
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"InsertedFile Copy requires a readable local pathSource, pathCache, or path",
+    ) as captured:
+        transform_page_for_copy(source, "target", {"source": "target"})
+
+    assert str(missing_source) not in str(captured.value)
+    assert str(missing_cache) not in str(captured.value)
+
+
+def test_media_local_source_paths_do_not_affect_content_digests() -> None:
+    first = _recorded_media_with_timeline_html("timeline").replace(
+        "<one:MediaFile>",
+        '<one:MediaFile pathCache="C:/cache/one.wma" pathSource="C:/source/one.wma">',
+    )
+    second = first.replace("C:/cache/one.wma", "D:/cache/two.wma").replace(
+        "C:/source/one.wma", "D:/source/two.wma"
+    )
+
+    assert stable_page_content_digest(first) == stable_page_content_digest(second)
+    assert canonical_page_digest(first) == canonical_page_digest(second)
+
+
+def test_media_index_and_reference_outside_media_context_remain_unknown() -> None:
+    source = page_xml("source", "Title", "Body").replace(
+        "</one:OEChildren></one:Outline>",
+        "<one:MediaIndex/><one:MediaReference/></one:OEChildren></one:Outline>",
+    )
+
+    projection = page_content_capability_projection(source)
+    result = transform_page_for_copy(source, "target", {"source": "target"})
+
+    assert projection["complete"] is False
+    assert projection["unknown_nodes"] == [
+        "{http://schemas.microsoft.com/office/onenote/2013/onenote}MediaIndex",
+        "{http://schemas.microsoft.com/office/onenote/2013/onenote}MediaReference",
+    ]
+    assert "MediaIndex" not in result["xml"]
+    assert "MediaReference" not in result["xml"]
+
+
+def _recorded_media_with_timeline_html(html: str, *, extra_timeline_child: str = "") -> str:
+    return (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
+        'ID="source"><one:Title><one:OE><one:T>Recording</one:T></one:OE></one:Title>'
+        '<one:Outline objectID="outline"><one:OEChildren>'
+        '<one:OE objectID="media"><one:MediaIndex><one:MediaReference/></one:MediaIndex>'
+        '<one:MediaFile><one:MediaReference/></one:MediaFile></one:OE>'
+        '<one:OE objectID="timeline"><one:MediaIndex><one:MediaReference/></one:MediaIndex>'
+        f"{extra_timeline_child}<one:T><![CDATA[{html}]]></one:T></one:OE>"
+        "</one:OEChildren></one:Outline>"
+        "<one:MediaPlaylist><one:MediaReference/></one:MediaPlaylist></one:Page>"
+    )
+
+
+def test_materialized_media_timeline_span_is_supporting_not_user_rich_text() -> None:
+    source = _recorded_media_with_timeline_html(
+        '<span style="font-family:Calibri">synthetic timeline</span>'
+    )
+
+    projection = page_content_capability_projection(source)
+
+    assert projection["capabilities"] == ["MediaFile", "Outline"]
+    assert projection["complete"] is True
+    assert projection["unknown_nodes"] == []
+
+
+@pytest.mark.parametrize(
+    "html,extra_child",
+    [
+        ("<b>user formatting</b>", ""),
+        ('<span style="font-weight:bold">user formatting</span>', "<one:Tag/>"),
+    ],
+)
+def test_media_timeline_does_not_hide_general_rich_text_or_extra_structure(
+    html: str,
+    extra_child: str,
+) -> None:
+    source = _recorded_media_with_timeline_html(
+        html,
+        extra_timeline_child=extra_child,
+    )
+
+    projection = page_content_capability_projection(source)
+
+    assert "RichText" in projection["capabilities"]
 
 
 def hierarchy_items(modified: str = "m1") -> list[dict]:
@@ -681,6 +1051,53 @@ def test_semantic_list_tag_equivalence_rejects_changed_completion():
 def test_strict_copy_verification_remains_default_for_validated_content():
     assert copy_verification_tier(["Outline", "RichText", "Table", "Image"]) == "strict_canonical"
     assert copy_verification_tier(["Outline", "List", "Tag", "Table"]) == "strict_canonical"
+    assert copy_verification_tier(["Outline", "MediaFile"]) == "strict_canonical"
+
+
+@pytest.mark.parametrize(
+    ("capability", "shape_info", "delta", "expected_tier", "equivalent"),
+    [
+        ("InkDrawing", "", "0.00005", "semantic_ink_drawing", True),
+        ("InkDrawing", "", "0.00011", "semantic_ink_drawing", False),
+        ("UIShape", "<one:ShapeInfo/>", "0.016", "semantic_ui_shape", True),
+        ("UIShape", "<one:ShapeInfo/>", "0.021", "semantic_ui_shape", False),
+    ],
+)
+def test_validated_ink_copy_tiers_use_bounded_geometry_semantics(
+    capability: str,
+    shape_info: str,
+    delta: str,
+    expected_tier: str,
+    equivalent: bool,
+) -> None:
+    source = page_xml("source", "Ink").replace(
+        "</one:Page>",
+        (
+            '<one:InkDrawing objectID="source-ink"><one:Position x="1" y="2"/>'
+            '<one:Size width="10" height="20"/>'
+            f"{shape_info}<one:Ink>synthetic-data</one:Ink>"
+            "</one:InkDrawing></one:Page>"
+        ),
+    )
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        'objectID="source-ink"', 'objectID="target-ink"'
+    ).replace('x="1"', f'x="{Decimal("1") + Decimal(delta)}"')
+    tier = copy_verification_tier(["Outline", capability])
+    transformed = transform_page_for_copy(source, "target", {"source": "target"})
+
+    result = page_equivalence(source, target, verification_tier=tier)
+
+    assert tier == expected_tier
+    assert transformed["lossless_candidate"] is True
+    assert not any(
+        issue["code"] == "content_type_unverified"
+        for issue in transformed["issues"]
+    )
+    assert result["checks"]["canonical_xml"] is False
+    assert result["equivalent"] is equivalent
+    comparison = result["ink_projection_comparison"]
+    assert comparison["geometry_within_tolerance"] is equivalent
+    assert comparison["structure_and_data_equal"] is True
 
 
 def test_transform_reports_validated_rich_text_table_list_and_tag_capabilities():
@@ -738,6 +1155,79 @@ def test_plan_copy_defaults_to_only_the_selected_page(monkeypatch):
     assert first["estimated"]["pages"] == 1
     assert first["execute_tool"] == "copy_page"
     assert first["copyability"]["lossless_candidate"] is True
+
+
+def test_plan_copy_ignores_volatile_raw_page_xml_but_exposes_its_digest(monkeypatch):
+    state = install_plan_fakes(monkeypatch)
+    reads = {"count": 0}
+
+    def volatile_xml(page_id, page_info="basic"):
+        reads["count"] += 1
+        return page_xml(page_id, "Parent", state["body"]).replace(
+            "<one:Outline",
+            f'<one:Outline pathCache="cache-{reads["count"]}"',
+        )
+
+    monkeypatch.setattr(server.services.pages, "xml", volatile_xml)
+
+    first = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    second = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+
+    assert first["plan_digest"] == second["plan_digest"]
+    assert first["source_snapshot_digest"] == second["source_snapshot_digest"]
+    assert (
+        first["snapshots"]["source"]["page_hashes"]
+        == second["snapshots"]["source"]["page_hashes"]
+    )
+    assert (
+        first["snapshots"]["source"]["page_xml_hashes"]
+        != second["snapshots"]["source"]["page_xml_hashes"]
+    )
+
+
+def test_plan_copy_rejects_inserted_file_without_readable_path_before_mutation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    install_plan_fakes(monkeypatch)
+    missing_source = tmp_path / "missing" / "synthetic.md"
+    missing_cache = tmp_path / "missing" / "OneNote-cache.bin"
+
+    def inserted_file_xml(page_id: str, page_info: str = "basic") -> str:
+        del page_info
+        return page_xml(page_id, "Parent", "placeholder").replace(
+            "<one:T><![CDATA[placeholder]]></one:T>",
+            (
+                f'<one:InsertedFile pathCache="{missing_cache}" '
+                f'pathSource="{missing_source}" preferredName="synthetic.md"/>'
+            ),
+        )
+
+    monkeypatch.setattr(server.services.pages, "xml", inserted_file_xml)
+
+    result = asyncio.run(
+        plan_copy("parent", "destination-section", "Copied Parent")
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "validation_error"
+    assert result["complete"] is False
+    assert result["error"] == (
+        "InsertedFile Copy requires a readable local pathSource, pathCache, or path."
+    )
+    assert str(missing_source) not in result["error"]
+    assert str(missing_cache) not in result["error"]
+
+
+def test_plan_copy_still_changes_digest_when_authored_content_changes(monkeypatch):
+    state = install_plan_fakes(monkeypatch)
+
+    first = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    state["body"] = "Changed body"
+    second = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+
+    assert first["plan_digest"] != second["plan_digest"]
+    assert first["source_snapshot_digest"] != second["source_snapshot_digest"]
 
 
 def test_plan_copy_explicitly_includes_complete_page_subtree_and_changes_digest(monkeypatch):
@@ -1246,6 +1736,8 @@ def test_recursive_section_group_copy_executes_depth_first_and_verifies(monkeypa
     ]
     assert result["copy_report"]["verified"] is True
     assert result["copy_report"]["lossless"] is True
+    assert result["copy_report"]["fidelity"] == "lossless"
+    assert result["copy_report"]["copy_contract_satisfied"] is True
     assert result["copy_report"]["copied_counts"] == {"resources": 4, "pages": 1}
 
 
@@ -1496,6 +1988,101 @@ def test_page_copy_scope_creates_only_selected_ids_and_verifies(monkeypatch, inc
         assert "#child" in xml_store["new-1"]
 
 
+@pytest.mark.write_contract
+def test_video_preview_player_marker_loss_fails_strict_copy_readback(monkeypatch):
+    state = [
+        item
+        for item in hierarchy_items()
+        if item.get("id") != "child"
+    ]
+    source_xml = page_xml("parent", "Preview").replace(
+        "</one:Page>",
+        (
+            '<one:Outline><one:OEChildren><one:OE><one:Image format="png">'
+            "<one:Data>c3ludGhldGlj</one:Data></one:Image></one:OE>"
+            "<one:OE><one:T><![CDATA["
+            '<a href="https://video.example.invalid/watch/synthetic" v="video">Link</a>'
+            "]]></one:T></one:OE></one:OEChildren></one:Outline></one:Page>"
+        ),
+    )
+    xml_store = {"parent": source_xml}
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: state,
+    )
+    monkeypatch.setattr(
+        server.services.pages,
+        "xml",
+        lambda page_id, page_info="basic": xml_store[page_id],
+    )
+    plan = server.services.copying._build_plan(
+        "parent",
+        "destination-section",
+        "Copied Preview",
+        include_descendants=False,
+    )
+
+    def create_page(section_id, title, *args, **kwargs):
+        item = {
+            "resource_type": "page",
+            "id": "new-preview-page",
+            "title": title,
+            "path": f"Notebook/Destination/{title}",
+            "parent_id": section_id,
+            "notebook_id": "n",
+            "section_id": section_id,
+            "parent_page_id": None,
+            "page_level": 1,
+            "order": 0,
+            "modified": "new",
+        }
+        state.append(item)
+        xml_store[item["id"]] = page_xml(item["id"], title)
+        return {"page": item, "allocated_id": item["id"]}
+
+    def fake_call(operation, **params):
+        root = ET.fromstring(params["xml"])
+        if operation == "update_page_content":
+            xml_store[root.attrib["ID"]] = params["xml"].replace(
+                ' v="video"', ""
+            )
+            return {"updated": True}
+        if operation == "update_hierarchy":
+            pages = [
+                node
+                for node in root.iter()
+                if node.tag.rsplit("}", 1)[-1] == "Page"
+            ]
+            for order, node in enumerate(pages):
+                item = next(value for value in state if value["id"] == node.attrib["ID"])
+                item["order"] = order
+                item["page_level"] = int(node.attrib["pageLevel"])
+            return {"updated": True}
+        raise AssertionError(operation)
+
+    monkeypatch.setattr(server.services.mutations, "create_page", create_page)
+    monkeypatch.setattr(server.services.copying, "call", fake_call)
+
+    with pytest.raises(PartialFailure) as raised:
+        server.services.copying._execute_copy(plan)
+
+    report = raised.value.details["copy_report"]
+    assert report["verified"] is False
+    assert report["lossless"] is False
+    assert report["fidelity"] == "unverified"
+    assert report["copy_contract_satisfied"] is False
+    assert report["issues"] == []
+    assert report["page_results"][0]["content_types"] == [
+        "Image",
+        "Outline",
+        "RichText",
+    ]
+    assert report["page_results"][0]["equivalence"]["verification_tier"] == (
+        "strict_canonical"
+    )
+
+
 def test_move_page_scope_defaults_to_root_and_binds_preserved_descendants(monkeypatch):
     install_plan_fakes(monkeypatch, body="")
 
@@ -1593,6 +2180,7 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
             "copy_report": {
                 "lossless": True,
                 "verified": True,
+                "copy_contract_satisfied": True,
                 "id_map": {"parent": "new-parent"},
             },
             "warnings": [],
@@ -1663,6 +2251,7 @@ def test_root_only_move_blocks_delete_when_descendant_promotion_fails(monkeypatc
             "copy_report": {
                 "lossless": True,
                 "verified": True,
+                "copy_contract_satisfied": True,
                 "id_map": {"parent": "new-parent"},
             },
             "warnings": [],
@@ -1714,7 +2303,12 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
         lambda value: {
             "item": {"id": "new-parent", "resource_type": "page"},
             "created_ids": ["new-parent"],
-            "copy_report": {"lossless": False, "verified": True, "id_map": {"parent": "new-parent"}},
+            "copy_report": {
+                "lossless": False,
+                "verified": True,
+                "copy_contract_satisfied": False,
+                "id_map": {"parent": "new-parent"},
+            },
             "warnings": ["unverified"],
         },
     )
@@ -1732,6 +2326,57 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
 
     assert caught.value.details["outcome"] == "copy_only"
     assert caught.value.details["source_deleted"] is False
+
+
+@pytest.mark.write_contract
+def test_move_page_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
+    state = install_plan_fakes(monkeypatch, body="")
+    state["items"] = [item for item in state["items"] if item["id"] != "child"]
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    plan = server.services.copying.plan_move_page(
+        "parent", "destination-section", "Moved Parent"
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_execute_copy",
+        lambda value: {
+            "item": {"id": "new-parent", "resource_type": "page"},
+            "created_ids": ["new-parent"],
+            "copy_report": {
+                "lossless": False,
+                "verified": True,
+                "fidelity": "unverified",
+                "copy_contract_satisfied": True,
+                "id_map": {"parent": "new-parent"},
+            },
+            "warnings": [],
+        },
+    )
+    deleted = []
+
+    def delete_page(page_id, *args, **kwargs):
+        deleted.append(page_id)
+        state["items"] = [item for item in state["items"] if item["id"] != page_id]
+        return {"deleted": True, "final_state": None}
+
+    monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
+
+    result = server.services.copying.move_page(
+        "parent",
+        "destination-section",
+        "Parent",
+        "source-section",
+        plan["plan_digest"],
+        destination_title="Moved Parent",
+    )
+
+    assert deleted == ["parent"]
+    assert result["outcome"] == "moved"
+    assert result["copy_report"]["copy_contract_satisfied"] is True
 
 
 @pytest.mark.write_contract
@@ -1876,6 +2521,7 @@ def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch)
             "copy_report": {
                 "lossless": True,
                 "verified": True,
+                "copy_contract_satisfied": True,
                 "id_map": {"parent": "new-parent"},
             },
             "warnings": [],
@@ -1934,6 +2580,7 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
             "copy_report": {
                 "lossless": True,
                 "verified": True,
+                "copy_contract_satisfied": True,
                 "id_map": {"parent": "new-parent", "child": "new-child"},
             },
             "warnings": [],
@@ -1982,6 +2629,7 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
             "copy_report": {
                 "lossless": True,
                 "verified": True,
+                "copy_contract_satisfied": True,
                 "id_map": {"parent": "new-parent", "child": "new-child"},
             },
             "warnings": [],
@@ -2034,6 +2682,7 @@ def test_move_page_reports_verified_and_remaining_ids_on_delete_failure(monkeypa
             "copy_report": {
                 "lossless": True,
                 "verified": True,
+                "copy_contract_satisfied": True,
                 "id_map": {"parent": "new-parent", "child": "new-child"},
             },
             "warnings": [],
@@ -2088,6 +2737,7 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
             "copy_report": {
                 "lossless": True,
                 "verified": True,
+                "copy_contract_satisfied": True,
                 "id_map": {"parent": "new-parent"},
             },
             "warnings": [],
@@ -2274,6 +2924,7 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
         "id_map": {source_id: target_root, child_id: target_child},
         "lossless": True,
         "verified": True,
+        "copy_contract_satisfied": True,
         "skipped_content": [],
     }
     copied = {
@@ -2350,26 +3001,25 @@ def test_container_move_uses_one_nonpermanent_root_delete(monkeypatch, resource_
 
 
 @pytest.mark.write_contract
-def test_container_move_blocks_root_delete_when_copy_gate_is_not_lossless(monkeypatch):
+def test_container_move_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
     source_id, _child_id, copied, delete_calls = install_container_move_execution_fakes(
         monkeypatch, "section"
     )
     copied["copy_report"]["lossless"] = False
+    copied["copy_report"]["fidelity"] = "unverified"
 
-    with pytest.raises(PartialFailure) as raised:
-        server.services.copying.move_section(
-            source_id,
-            "destination-notebook",
-            "Source",
-            "source-notebook",
-            "move-digest",
-            "m1",
-            "Moved",
-        )
+    result = server.services.copying.move_section(
+        source_id,
+        "destination-notebook",
+        "Source",
+        "source-notebook",
+        "move-digest",
+        "m1",
+        "Moved",
+    )
 
-    assert raised.value.details["outcome"] == "copy_only"
-    assert raised.value.details["source_deleted"] is False
-    assert delete_calls == []
+    assert result["outcome"] == "moved"
+    assert len(delete_calls) == 1
 
 
 @pytest.mark.write_contract

@@ -81,6 +81,18 @@ HEADING_STYLES = {
     "h6": "font-size:10.0pt;font-weight:bold",
 }
 
+MATHML_NAMESPACE = "http://www.w3.org/1998/Math/MathML"
+MATHML_TAGS = {
+    "math",
+    "mfrac",
+    "mi",
+    "mn",
+    "mo",
+    "mrow",
+    "msqrt",
+    "msup",
+}
+
 
 class InlineHTMLSanitizer(HTMLParser):
     """Convert arbitrary HTML-ish input to a OneNote-friendly inline fragment."""
@@ -89,14 +101,45 @@ class InlineHTMLSanitizer(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self._drop_stack: list[str] = []
+        self._math_stack: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if self._math_stack:
+            if tag not in MATHML_TAGS or tag == "math" or attrs:
+                raise ValueError("MathML contains an unsupported element or attribute.")
+            self.parts.append(f"<{tag}>")
+            self._math_stack.append(tag)
+            return
         if tag in {"script", "style"}:
             self._drop_stack.append(tag)
             return
         if self._drop_stack:
             return
+        if tag == "math":
+            attribute_names = [name.casefold() for name, _value in attrs]
+            if len(attribute_names) != len(set(attribute_names)):
+                raise ValueError("MathML math contains a duplicate attribute.")
+            if set(attribute_names) - {"xmlns", "display"}:
+                raise ValueError("MathML math contains an unsupported attribute.")
+            values = {
+                name.casefold(): value for name, value in attrs if value is not None
+            }
+            if values.get("xmlns") != MATHML_NAMESPACE:
+                raise ValueError(
+                    "MathML math must declare the canonical MathML namespace."
+                )
+            display = values.get("display")
+            if display not in {None, "block"}:
+                raise ValueError("MathML display must be omitted or 'block'.")
+            display_attr = ' display="block"' if display == "block" else ""
+            self.parts.append(
+                f'<math xmlns="{MATHML_NAMESPACE}"{display_attr}>'
+            )
+            self._math_stack.append(tag)
+            return
+        if tag in MATHML_TAGS:
+            raise ValueError("MathML elements must be contained by a math root.")
         if tag in HEADING_STYLES:
             self._append_break()
             self.parts.append(f'<span style="{HEADING_STYLES[tag]}">')
@@ -128,10 +171,18 @@ class InlineHTMLSanitizer(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if self._math_stack:
+            if tag != self._math_stack[-1]:
+                raise ValueError("MathML elements must be properly nested.")
+            self.parts.append(f"</{tag}>")
+            self._math_stack.pop()
+            return
         if self._drop_stack:
             if tag == self._drop_stack[-1]:
                 self._drop_stack.pop()
             return
+        if tag in MATHML_TAGS:
+            raise ValueError("MathML closing element has no matching root.")
         if tag in HEADING_STYLES:
             self.parts.append("</span>")
             self._append_break()
@@ -150,6 +201,8 @@ class InlineHTMLSanitizer(HTMLParser):
             self.parts.append(html.escape(data, quote=False))
 
     def get_html(self) -> str:
+        if self._math_stack:
+            raise ValueError("MathML is missing a closing element.")
         text = "".join(self.parts)
         text = re.sub(r"(?:<br/>){3,}", "<br/><br/>", text)
         text = re.sub(r"^(?:<br/>)+|(?:<br/>)+$", "", text)
@@ -167,6 +220,8 @@ class OneNoteHTMLBlockParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.blocks: list[ContentBlock] = []
         self._text = InlineHTMLSanitizer()
+        self._display_math: InlineHTMLSanitizer | None = None
+        self._display_math_depth = 0
         self._table_depth = 0
         self._rows: list[list[TableCell]] = []
         self._current_row: list[TableCell] | None = None
@@ -180,6 +235,10 @@ class OneNoteHTMLBlockParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
+        if self._display_math is not None:
+            self._display_math.handle_starttag(tag, attrs)
+            self._display_math_depth += 1
+            return
         if tag in {"ol", "ul"} and not self._table_depth:
             if self._list_tag is not None:
                 raise ValueError("Nested HTML lists are not supported.")
@@ -201,10 +260,26 @@ class OneNoteHTMLBlockParser(HTMLParser):
         if self._table_depth:
             self._handle_table_starttag(tag, attrs)
             return
+        values = {
+            name.casefold(): value for name, value in attrs if value is not None
+        }
+        if tag == "math" and values.get("display") == "block":
+            self._flush_text()
+            self._display_math = InlineHTMLSanitizer()
+            self._display_math.handle_starttag(tag, attrs)
+            self._display_math_depth = 1
+            return
         self._text.handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
+        if self._display_math is not None:
+            self._display_math.handle_endtag(tag)
+            self._display_math_depth -= 1
+            if self._display_math_depth == 0:
+                self.blocks.append(TextBlock(html=self._display_math.get_html()))
+                self._display_math = None
+            return
         if tag in {"ol", "ul"} and self._list_tag == tag:
             self._close_list_item()
             if self._list_items:
@@ -232,6 +307,9 @@ class OneNoteHTMLBlockParser(HTMLParser):
         self._text.handle_endtag(tag)
 
     def handle_data(self, data: str) -> None:
+        if self._display_math is not None:
+            self._display_math.handle_data(data)
+            return
         if self._list_tag is not None:
             if self._current_list_item is not None:
                 self._current_list_item.handle_data(data)
@@ -243,6 +321,8 @@ class OneNoteHTMLBlockParser(HTMLParser):
         self._text.handle_data(data)
 
     def get_blocks(self) -> list[ContentBlock]:
+        if self._display_math is not None:
+            raise ValueError("Display MathML is missing its closing tag.")
         if self._list_tag is not None:
             raise ValueError("HTML list is missing its closing tag.")
         self._flush_text()

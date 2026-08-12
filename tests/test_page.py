@@ -1,5 +1,7 @@
 import xml.etree.ElementTree as ET
 
+import pytest
+
 from local_onenote_mcp.page import formatting
 from local_onenote_mcp.page import (
     build_image_page_update_xml,
@@ -30,12 +32,93 @@ def test_html_sanitizer_maps_daily_inline_styles():
     assert "background:#FFF2CC" in html
 
 
+def test_html_sanitizer_preserves_bounded_inline_and_display_mathml():
+    namespace = "http://www.w3.org/1998/Math/MathML"
+    content = (
+        f'<p>before <math xmlns="{namespace}"><mrow><mi>E</mi><mo>=</mo>'
+        "<mi>m</mi><msup><mi>c</mi><mn>2</mn></msup></mrow></math> after</p>"
+        f'<math xmlns="{namespace}" display="block"><mfrac><mi>x</mi>'
+        "<mi>y</mi></mfrac></math>"
+    )
+
+    rendered = normalize_content(content, "html")
+
+    assert rendered.count(f'<math xmlns="{namespace}"') == 2
+    assert rendered.count('display="block"') == 1
+    assert "before <math" in rendered
+    assert "</math> after" in rendered
+    assert "<mfrac><mi>x</mi><mi>y</mi></mfrac>" in rendered
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<math><mi>x</mi></math>",
+        '<math xmlns="http://www.w3.org/1998/Math/MathML" display="inline"><mi>x</mi></math>',
+        '<math xmlns="http://www.w3.org/1998/Math/MathML" onclick><mi>x</mi></math>',
+        '<math xmlns="http://www.w3.org/1998/Math/MathML"><mstyle mathcolor="red"><mi>x</mi></mstyle></math>',
+    ],
+)
+def test_html_sanitizer_rejects_unbounded_mathml(content):
+    with pytest.raises(ValueError, match="MathML"):
+        normalize_content(content, "html")
+
+
+def test_html_sanitizer_drops_mathml_inside_script_content():
+    content = (
+        '<script><math xmlns="http://www.w3.org/1998/Math/MathML">'
+        "<mi>secret</mi></math></script><p>visible</p>"
+    )
+
+    assert normalize_content(content, "html") == "visible"
+
+
 def test_build_page_update_xml_uses_cdata():
     xml = build_page_update_xml("page-id", title="Title", content="Hello\nWorld")
     assert 'ID="page-id"' in xml
     assert "<one:Title>" in xml
     assert "<![CDATA[Hello]]>" in xml
     assert "<![CDATA[World]]>" in xml
+
+
+def test_display_mathml_is_emitted_as_a_dedicated_nonempty_oe() -> None:
+    namespace = "http://www.w3.org/1998/Math/MathML"
+    xml = build_page_update_xml(
+        "page-id",
+        content=(
+            "<p>Inline fixture</p><span>Display equation fixture:</span>"
+            f'<math xmlns="{namespace}" display="block">'
+            "<mrow><mi>x</mi><mo>=</mo><mn>1</mn></mrow></math>"
+            "<p>After fixture</p>"
+        ),
+        content_format="html",
+    )
+    root = ET.fromstring(xml)
+    parents = {id(child): parent for parent in root.iter() for child in list(parent)}
+    display_text = next(
+        node
+        for node in root.iter()
+        if node.tag.rsplit("}", 1)[-1] == "T"
+        and 'display="block"' in (node.text or "")
+    )
+    display_oe = parents[id(display_text)]
+    oe_children_node = parents[id(display_oe)]
+    siblings = list(oe_children_node)
+    display_index = siblings.index(display_oe)
+    predecessor_text = next(
+        node.text or ""
+        for node in siblings[display_index - 1].iter()
+        if node.tag.rsplit("}", 1)[-1] == "T"
+    )
+
+    assert [child.tag.rsplit("}", 1)[-1] for child in display_oe] == ["T"]
+    assert (display_text.text or "").startswith(f'<math xmlns="{namespace}"')
+    assert predecessor_text == "<span>Display equation fixture:</span>"
+    assert all(
+        (node.text or "").strip()
+        for node in root.iter()
+        if node.tag.rsplit("}", 1)[-1] == "T"
+    )
 
 
 def test_html_table_becomes_native_onenote_table():

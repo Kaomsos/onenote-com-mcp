@@ -36,6 +36,7 @@ VOLATILE_PAGE_ATTRIBUTES = {
     "path",
     "pathCache",
     "sourcePath",
+    "pathSource",
     "localFilePath",
 }
 ROOT_HIERARCHY_ATTRIBUTES = {"ID", "name", "pageLevel"}

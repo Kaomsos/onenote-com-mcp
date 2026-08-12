@@ -156,6 +156,7 @@ class CopyService(BaseService):
 
         page_xml: dict[str, str] = {}
         page_hashes: dict[str, str] = {}
+        page_xml_hashes: dict[str, str] = {}
         total_xml_bytes = 0
         content_objects = 0
         capabilities: set[str] = set()
@@ -187,7 +188,13 @@ class CopyService(BaseService):
                     f"{budget.max_content_objects}."
                 )
             page_xml[page["id"]] = xml
-            page_hashes[page["id"]] = sha256(xml.encode("utf-8")).hexdigest()
+            # Bind plans to stable in-place content rather than the raw COM XML.
+            # OneNote can change view/cache metadata between consecutive read-only
+            # MediaFile snapshots even when the Page hierarchy clock and authored
+            # content are unchanged.  Keep the raw digest as diagnostic evidence,
+            # but do not let those OneNote-owned fields make every plan stale.
+            page_hashes[page["id"]] = stable_page_content_digest(xml)
+            page_xml_hashes[page["id"]] = sha256(xml.encode("utf-8")).hexdigest()
             preview = transform_page_for_copy(xml, placeholder_map[page["id"]], placeholder_map)
             capabilities.update(preview["content_types"])
             preview_issues.extend({"source_page_id": page["id"], **issue} for issue in preview["issues"])
@@ -196,13 +203,18 @@ class CopyService(BaseService):
         source_snapshot = {
             "resources": resource_snapshot,
             "page_hashes": page_hashes,
+            "page_xml_hashes": page_xml_hashes,
+        }
+        source_digest_snapshot = {
+            "resources": resource_snapshot,
+            "page_hashes": page_hashes,
         }
         return {
             "source": source,
             "resources": resources,
             "page_xml": page_xml,
             "source_snapshot": source_snapshot,
-            "source_digest": self._digest(source_snapshot),
+            "source_digest": self._digest(source_digest_snapshot),
             "estimated": {
                 "resources": len(resources),
                 "pages": len(pages),
@@ -373,10 +385,13 @@ class CopyService(BaseService):
         if time.monotonic() - started > budget.max_plan_seconds:
             raise ValueError(f"Copy planning exceeded {budget.max_plan_seconds} seconds.")
         digest_payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "operation": operation,
             "options": {"include_descendants": effective_include_descendants},
-            "source_snapshot": bundle["source_snapshot"],
+            "source_snapshot": {
+                "resources": bundle["source_snapshot"]["resources"],
+                "page_hashes": bundle["source_snapshot"]["page_hashes"],
+            },
             "destination": destination,
             "copyability": {
                 "content_capabilities": bundle["content_capabilities"],
@@ -384,9 +399,10 @@ class CopyService(BaseService):
             },
         }
         if move_source_bundle is not None:
-            digest_payload["move_source_snapshot"] = move_source_bundle[
-                "source_snapshot"
-            ]
+            digest_payload["move_source_snapshot"] = {
+                "resources": move_source_bundle["source_snapshot"]["resources"],
+                "page_hashes": move_source_bundle["source_snapshot"]["page_hashes"],
+            }
         if move_notebooks is not None:
             digest_payload["move_notebooks"] = move_notebooks
         plan_digest = self._digest(digest_payload)
@@ -754,7 +770,10 @@ class CopyService(BaseService):
                 equivalence = page_equivalence(
                     transformed["xml"],
                     actual_xml,
-                    verification_tier=copy_verification_tier(transformed["content_types"]),
+                    verification_tier=copy_verification_tier(
+                        transformed["content_types"],
+                        page_xml=transformed["xml"],
+                    ),
                 )
                 page_results.append(
                     {
@@ -762,6 +781,7 @@ class CopyService(BaseService):
                         "target_page_id": target["id"],
                         "lossless": transformed["lossless_candidate"] and equivalence["equivalent"],
                         "content_types": transformed["content_types"],
+                        "normalizations": transformed["normalizations"],
                         "equivalence": equivalence,
                     }
                 )
@@ -860,6 +880,18 @@ class CopyService(BaseService):
                         break
             pages_verified = all(result["equivalence"]["equivalent"] for result in page_results)
             lossless = topology_verified and all(result["lossless"] for result in page_results)
+            blocking_copy_issues = [
+                issue
+                for issue in issues
+                if issue.get("action") == "omitted"
+                or issue.get("code") == "content_type_unverified"
+            ]
+            copy_contract_satisfied = (
+                topology_verified
+                and pages_verified
+                and not blocking_copy_issues
+            )
+            fidelity = "lossless" if lossless else "unverified"
             target_root = refreshed_by_id.get(id_map[source["id"]], created_items[source["id"]])
             warnings = sorted({issue["reason"] for issue in issues})
             copy_report = {
@@ -874,6 +906,8 @@ class CopyService(BaseService):
                 "issues": issues,
                 "lossless": lossless,
                 "verified": topology_verified and pages_verified,
+                "fidelity": fidelity,
+                "copy_contract_satisfied": copy_contract_satisfied,
                 "page_results": page_results,
             }
             if source["resource_type"] == "notebook":
@@ -1211,10 +1245,10 @@ class CopyService(BaseService):
             details.setdefault("source_deleted", False)
             raise PartialFailure(str(exc), **details) from exc
         report = copied["copy_report"]
-        if not report["lossless"] or not report["verified"]:
+        if report.get("copy_contract_satisfied") is not True:
             raise PartialFailure(
                 "The selected Page scope was copied, but source deletion was blocked because "
-                "fidelity was not verified.",
+                "the shared Copy contract was not satisfied.",
                 partial=True,
                 outcome="copy_only",
                 source_deleted=False,
@@ -1446,9 +1480,7 @@ class CopyService(BaseService):
         id_map = report.get("id_map")
         mapped_target_ids = list(id_map.values()) if isinstance(id_map, dict) else []
         copy_gate_passed = (
-            report.get("lossless") is True
-            and report.get("verified") is True
-            and not report.get("skipped_content")
+            report.get("copy_contract_satisfied") is True
             and isinstance(id_map, dict)
             and list(id_map) == planned_source_ids
             and len(mapped_target_ids) == len(set(mapped_target_ids))
@@ -1464,7 +1496,6 @@ class CopyService(BaseService):
                 copy_report=report,
                 created_ids=copied["created_ids"],
             )
-
         try:
             check_move_deadline()
             current_source = self._capture_source(
