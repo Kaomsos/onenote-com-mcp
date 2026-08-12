@@ -13,3 +13,7 @@ tmp/
 .claude/settings.local.json
 .codex-tmp/
 .local-validation/
+
+.tmp/
+.t/
+.pytest-tmp-*/
