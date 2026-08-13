@@ -9,5 +9,4 @@
 | [`hierarchy_parser.md`](hierarchy_parser.md) | OneNote hierarchy XML 解析边界 | 当前契约 |
 | [`tool_contracts.md`](tool_contracts.md) | MCP tool 参数、返回结构、policy 与错误语义 | 当前契约 |
 | [`advanced_operations.md`](advanced_operations.md) | 高级/实验操作与启用边界 | 当前契约 |
-| [`windows_fixture_cache_path_budget.md`](windows_fixture_cache_path_budget.md) | Windows fixture cache、staging、materialization 与 working copy 路径配额 | 目标设计，实施由 TODO 021 跟踪 |
-
+| [`windows_fixture_cache_path_budget.md`](windows_fixture_cache_path_budget.md) | Windows fixture cache、staging、materialization 与 working copy 路径配额 | 当前实现合同；验证证据由 TODO 021 跟踪 |

@@ -27,11 +27,14 @@
 - 每个公开 Scenario 必须显式拥有一个 fixture recipe，并自动提供至少一个稳定 ID 的注册 dry-run case。Recipe 由 Scenario 模块显式 import；不得新增 fixture registry、dry-run scenario 列表或 filesystem discovery。
 - `all` 将已注册 scenario 作为相互独立的子命令串行启动。Scenario 之间不得共享 run directory、Notebook、MCP process、policy、fixture、evidence 或 lifecycle。
 - `clear` 不是 Scenario，也不进入 registry 或 `all`。它只允许 `runs`、`cache`、`all` 三个子 action；不得增加任意 path、glob、fingerprint、instance、run ID、`--force` 或忽略打开状态的参数。
+- Cache/run schema 切换后，runtime 与 maintenance 只识别 32-hex fingerprint、typed `p`/`a` instance、短 staging 和新 run metadata。不得增加 legacy lookup、payload/index-entry 迁移、fallback 或删除能力；旧 payload 必须由用户在升级前版本中通过 human-gated `clear all` 清理。唯一过渡例外是首次新 cache 初始化可在 durable `clear-all` 成功 summary、空 v1 index、零旧 payload/run 与精确 ownership 全部证明后，仅把旧命令留下的空 marker/index 壳原子 stamp 为新 schema；summary 后创建且由 schema/ownership flags/`started_at`/mtime 共同证明的 v2 run 可共存，证明不完整时仍须 fail closed。
 
 ## 隔离、权限和生命周期
 
 - 每个真实 scenario 都获得全新的 run-scoped disposable working Notebook bundle 和全新或空的 evidence directory：默认 fresh 路径直接创建；显式 `--use-cache` 只能从已关闭 immutable template opaque-copy 后打开新的 working paths。Notebook 名称冲突或非空 run directory 必须被拒绝。
 - Cache template 与 run working bundle 不维持 lease、所有权或生命周期关系。多个 scenario 可以从同一 immutable entry materialize 各自唯一的 run-scoped working bundle；短时全局 open lock 内打开前后各捕获一次当前 Notebook ID/path snapshot，全部历史 `lifecycle-lease*.json` 只与 snapshot 做内存比较，不得逐 lease 重复访问 COM。只有实际 live Notebook ID 集相交、working path 相交、role 内重复或身份尚未可靠重绑定时才拒绝。Run-local active lease 不得阻止物理独立 cache entry 的 invalidation/cleanup；cache cleanup 只按实际 template path 判断 template 本身是否打开。
+- 所有受管 cache/staging/working/evidence 路径使用普通绝对 Windows 路径并受 240 UTF-16 units preflight 约束；不得使用 `\\?\`、依赖系统 long-path 开关、截断 opaque Notebook 名称或以重试 `WinError 3` 绕过预算。
+- OneNote 返回的 Notebook、SectionGroup、Section、Page 与对象 ID 只属于逻辑身份；不得把完整 ID 插入任何受管文件名、目录名、working name 或临时名。物理名称只能使用固定语义 token、有界 ordinal 或既有 typed short key，完整 ID 必须保存在 JSON evidence/metadata 内；运行时 name guard 与源码合同测试必须同时覆盖该边界。
 - 一个 scenario 最多启动一个 MCP child process。其静态 spec 只能包含该 scenario 的 fixture、mutation、evidence read 和 restore/cleanup 所必需的完整最小权限闭包。
 - Fixture 创建前，通过一次 `health_check` 核对精确的 policy、tool allowlist、timeout 和适用的 Copy budget。绝不能合并不同 scenario 的权限，也不能在启动后扩权。
 - Working Notebook 的 create/open/get/close 只属于窄 lifecycle wrapper，并受精确 ID/name/path/role lease 约束；cache path 必须额外证明 `actual_path == working_path`、`actual_path != template_path`。Fixture 创建必须留在 scenario MCP process 内。

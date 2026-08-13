@@ -43,9 +43,11 @@ Dry-run 只读受管 metadata，并获取一次当前 OneNote 已打开 Notebook
 
 三个命令分别提示输入 `CLEAR-RUNS`、`CLEAR-CACHE`、`CLEAR-ALL`。提示写入 stderr，最终 `--json` 结果仍只写 stdout；stdin 不是交互式终端、输入不匹配或 EOF 时，在创建 marker/receipt 或删除任何目标前拒绝。
 
-`runs` 逐个评估直接 `run-*` 子目录，`cache` 逐个评估 index/磁盘相互证明的 exact `(fingerprint, template_instance_id)` entry 以及受管 staging/legacy lease metadata，`all` 在同一次 open-path snapshot 下组合两者。任一目标只有在固定 root、ownership、无 reparse point、实际未打开和 pending receipt 全部通过后才删除；开放中或无法证明的目标单独 `refused`，其他安全目标仍可处理，整体以非零 partial result 返回。
+`runs` 逐个评估直接 `run-*` 子目录，`cache` 逐个评估新 schema 的 index/磁盘相互证明的 exact `(fingerprint, template_instance_id)` entry 与 `.s-<16 hex>` staging，`all` 在同一次 open-path snapshot 下组合两者。新 maintenance 不解析、迁移或删除 legacy lease、64-hex fingerprint/full-instance 目录和旧 run metadata；发现它们时逐项 `refused`，并要求回到升级前版本完成 human-gated `clear all`。任一新 schema 目标只有在固定 root、ownership、无 reparse point、实际未打开和 pending receipt 全部通过后才删除；开放中或无法证明的目标单独 `refused`，其他安全目标仍可处理，整体以非零 partial result 返回。
 
-清理结束后会自动收敛 maintenance 自身的残留：成功 target 的完整逐项证据先嵌入 durable summary，再删除对应 `deleted` receipt；pending、failed、无 summary 绑定或内容不匹配的 receipt 原样保留。`clear cache/all` 还会从 index 移除已无 payload 的 tombstone，并用逐层 `rmdir` 清理可证明为空、名称为 canonical fingerprint 的 `instances`/fingerprint scaffold；非空、含 lock、未知形状或 reparse point 的目录不碰。Dry-run 的 `finalization_plan` 会列出可收敛数量。`.local-validation/` 根、managed marker、summary，以及 cache marker/quarantine/recovery history 始终保留。
+升级前版本的成功 `clear all` 会保留 cache marker、空 index 和 history。新 runtime 不把它们当作 legacy payload：只有 durable v1 `clear-all` summary 同时证明交互确认、完整只读 open-path snapshot、零 refused/failed、精确 managed roots，且 cache 只剩允许的 ownership/history 文件、index 为空、validation root 没有旧 run 时，首次 `--use-cache` 初始化才会先原子 stamp 空 v2 index、再 stamp v2 marker。Summary 之后创建的 run 只有在 state 为 v2、ownership flags 完整且 `started_at`/mtime 均不早于 summary 时才允许共存。这个可续作步骤不读取或迁移旧 entry，也不删除任何路径；任一旧目录、非空 index、未知文件、旧/不确定 run 或证据不完整都会在创建 run evidence 或启动 OneNote mutation 前 fail closed。
+
+清理结束后会自动收敛 maintenance 自身的残留：成功 target 的完整逐项证据先嵌入 durable summary，再删除对应 `deleted` receipt；pending、failed、无 summary 绑定或内容不匹配的 receipt 原样保留。`clear cache/all` 还会从 index 移除已无 payload 的 tombstone，并只对 32-hex fingerprint 下可证明为空的 `a`、`instances` 和 fingerprint scaffold 逐层 `rmdir`；非空、含 lock、未知形状或 reparse point 的目录不碰。Dry-run 的 `finalization_plan` 会列出可收敛数量。`.local-validation/` 根、managed marker、summary，以及 cache marker/quarantine/recovery history 始终保留。
 
 每个具名 action 都可显式保留已验证的操作现场，供 OneNote UI 人工验收：
 
@@ -100,7 +102,11 @@ Dry-run 只读受管 metadata，并获取一次当前 OneNote 已打开 Notebook
 
 每个命令在 dispatch 时只读取一次主机本地时区，并冻结 run identity。Notebook、默认 run 目录以及 Copy/Move 目标名称共享 Windows-safe 的本地显示时间，例如 `2026-08-11-11-05-49`。完整本地 ISO 时间、UTC offset 和时区名称仍保存在 `run_identity`；JSON 中的 `created_at`、`failed_at`、`closed_at` 等事件字段仍使用 UTC ISO-8601。immutable template 继续使用内部 `template-notebook` 目录名，不作为 OneNote Notebook 打开。
 
-Cache 固定为未纳入版本控制的 `.local-validation/fixture-cache/`。只有带 managed marker 的该根目录可被 cache runtime 操作；失效清理只允许精确 `(fingerprint, template_instance_id)` entry，并要求 root containment、ownership、无 reparse point且 template 实际路径未被 OneNote 打开。Run-local working Notebook 是物理独立副本，不参与 cache cleanup 门禁。`.one` 和 `.onetoc2` 只作为 opaque bytes 复制/散列，绝不解析、编辑或回写。模板从不由 OneNote 打开。
+Cache 固定为未纳入版本控制的 `.local-validation/fixture-cache/`。除上述 proof-backed 空壳激活外，只有带新 schema managed marker 的该根目录可被 cache runtime 操作；完整 64-hex fingerprint 与 logical instance identity 保存在 index/entry/lock/evidence，磁盘只使用 `<fp32>/instances/p` 或 `<fp32>/instances/a/<1..24 hex>`。失效清理只允许精确 typed entry，并要求 root containment、ownership、无 reparse point且 template 实际路径未被 OneNote 打开。Run-local working Notebook 是物理独立副本，不参与 cache cleanup 门禁。`.one` 和 `.onetoc2` 只作为 opaque bytes 复制/散列，绝不解析、编辑或回写。模板从不由 OneNote 打开。
+
+所有 cache、`.s-<16 hex>` publish staging、`.m-<16 hex>` materialize staging、working copy、inventory/artifact 和 JSON/XML 原子临时路径都使用普通绝对 Windows 路径，并在 copy、atomic publish 或 OneNote open 前完成 240 UTF-16 code units preflight。Role 最多 12 字符，working leaf 最多 64 UTF-16 units，run evidence leaf 最多 64 units，opaque relative path 最多 96 units/8 层；项目不依赖 `LongPathsEnabled`，不使用 `\\?\`。Opaque tree 每层先预算子路径再 `stat`/进入/读取，避免无界扫描先触发裸 `WinError 3`；authored working bundle 的 live projection 同时核对完整 64-hex digest 和 24-hex instance key。Maintenance 也在创建 open lock 或取得只读 COM snapshot 前预算当前树与将生成的 receipt/summary/index 临时路径。预算失败以非零 `path_budget_exceeded` 返回 phase、target、limit/actual/over-by、触发路径、零/已发生副作用、`failure_evidence_written` 和 typed remediation；`WinError 3` 不进入仅面向 `WinError 5/32` 的状态守卫重试。
+
+OneNote COM 返回的 Notebook、SectionGroup、Section、Page 和内容对象 ID 永不进入受管物理名称。Scenario artifact 使用固定语义名与有界 ordinal（例如 `cleanup-created-page-02-result.json`）；完整 ID 继续保存在 response、manifest、lease 和其他 JSON evidence 内。JSON/XML evidence 与 working name 在运行时拒绝 canonical OneNote ID，纯测试还会扫描 manual-validation 源码，阻止 `*_id` 或 `["id"]` 再被插值到路径型 f-string。
 
 Manual-validation 的本地原子发布（cache entry、working directory、JSON/XML evidence 及 maintenance receipt/summary）在 Windows `WinError 5/32` 下使用状态守卫的短时退避：首次失败后最多等待 `50/100/200/400/800ms`，总预算约 1.55 秒。每次重试前必须证明 source 和 destination 与首次尝试时完全一致；任何出现、消失或身份变化都会 fail closed。该机制只处理本地 `os.replace` 的扫描/共享冲突，不重试文件删除、OneNote COM、MCP tool 或任何 mutation，也不放宽既有权限和人工门限。
 

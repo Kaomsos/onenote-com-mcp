@@ -143,13 +143,13 @@ AND human verdict accepted（当该场景要求人工判断时）
 | 用户 `REJECT`、EOF 或超时 | 未取得正向 UI 证据 | 保留机器 evidence 和现场，记录 rejected/incomplete。 |
 | Restore/cleanup/close 失败 | 验收闭环未完成 | 顶层非零失败，保持现场；不得删除 working Notebook 或普通 artifacts。 |
 
-## Windows 下 pytest 临时路径的路径预算
+## Windows 路径预算与 pytest 临时根
 
-pytest 默认把 `tmp_path` 放在 `%TEMP%\pytest-of-<user>\pytest-<n>\...` 下。Fixture-cache 测试还会继续叠加测试名、64 位 fingerprint、instance ID、role、Notebook 目录和 artifact 文件名；在未启用 Windows extended-length path 的环境中，最终路径可能超过传统 `MAX_PATH` 限制。
+Fixture cache、publish/materialize staging、working copy、inventory/artifact、最长 64 UTF-16 units 的 run evidence leaf 和原子临时文件统一在副作用前执行 240 UTF-16 code units preflight。磁盘使用 32-hex fingerprint key、typed `p`/`a/<hex>` instance 与 16-hex staging nonce；完整 identity 保存在 metadata/evidence。Opaque tree 逐层先预算再进入，避免在检查前暴露裸 `WinError 3`；authored materialization 会以 live projection 重新核对完整 64-hex digest。Runtime 使用普通绝对 Windows 路径，不依赖 `LongPathsEnabled`，也不使用 `\\?\` extended-length path。
 
-当前已观察到的表现是：同一组测试使用默认临时根时，在 `shutil.copytree` 等普通文件操作中报告 `WinError 3`，而使用唯一的短 `--basetemp` 后通过。一次失败现场中的源路径为 263 个字符。这里的“找不到指定的路径”不一定表示 cache 或 fixture 丢失，也可能是 Win32 无法解析过长路径。它与临时文件扫描或共享冲突产生的 `WinError 5/32` 不同；不得用面向锁竞争的发布重试掩盖 `WinError 3`。
+深层 cache/maintenance 纯测试通过 `tmp_path_factory.mktemp("fc")` 自动取得进程内唯一的短根，并在需要 canonical 形状时使用 `<short-root>/w/.local-validation/fixture-cache`。默认基线不需要手工指定 `--basetemp`；`Open Notebook.onetoc2`、`Section.one` 等 payload 名称仍保持真实形状。
 
-排查时保留默认基线命令的原始结果，然后用相同测试集合和一个本次运行独占的短路径复验，例如：
+若排查 pytest 自身临时根或与本功能无关的 Windows 文件系统异常，可保留默认基线命令的原始结果，再用相同测试集合和一个本次运行独占的短路径诊断复验：
 
 ```powershell
 .venv\Scripts\python.exe -m pytest -q --basetemp C:\t\onmcp-pytest-<unique-run-id>
@@ -159,10 +159,10 @@ pytest 默认把 `tmp_path` 放在 `%TEMP%\pytest-of-<user>\pytest-<n>\...` 下�
 
 - 使用本次运行独占、可丢弃且足够短的精确目录；pytest 可能在启动时清空该目录，因此绝不能指向仓库根、用户 Notebook、fixture cache、validation workspace、evidence 或其他已有数据；
 - 不要让并发或后续 pytest 进程复用同一个 basetemp；
-- 只有当失败堆栈位于深层 cache 路径、相同测试在短路径下通过且没有其他行为差异时，才可将其归因为路径预算；汇报时同时记录默认命令失败和短路径复验通过，不能声称默认基线已经通过；
+- 只有当失败堆栈位于 pytest 自身临时根、相同测试在短路径下通过且没有其他行为差异时，才可把短 `--basetemp` 结果作为诊断证据；它不能替代默认基线；
 - 短 basetemp 只是诊断和本地复验手段，不是生产配置，也不改变 containment、ownership、reparse-point 或 lifecycle 安全门限。
 
-确定性的路径预算合同、目录缩短或 extended-length path 兼容仍是未完成工作，见 [TODO 021：Windows Fixture Cache 路径长度预算](../todo/021_windows_fixture_cache_path_budget.md)。在该 TODO 完成前，项目不假设开发机器已经启用 Windows long paths。
+确定性的路径预算合同见 [Windows Fixture Cache 路径配额](../design/windows_fixture_cache_path_budget.md)。项目明确不采用 extended-length path；若未来改变该决策，必须另行审查 identity、containment、COM 交互和错误报告。
 
 ## 如何接入一个新操作
 
