@@ -8,7 +8,7 @@
 
 ## 决策摘要
 
-Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫的有界原子发布重试，但 cache fingerprint、template instance、staging、run 和 role-specific working 名称叠加后仍可能形成很深的物理路径。测试中已观察到较长 pytest 临时根会触发 `WinError 3`；短路径 basetemp 下同一测试集合通过。这是独立于 `WinError 5/32` 锁竞争的路径预算问题，当前优先级较低，不属于原子发布修复范围。
+Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫的有界原子发布重试，但 cache fingerprint、template instance、staging、run 和 role-specific working 名称叠加后仍可能形成很深的物理路径。测试中已观察到较长 pytest 临时根会触发 `WinError 3`。这是独立于 `WinError 5/32` 锁竞争的路径预算问题，当前优先级较低，不属于原子发布修复范围。
 
 目标方案已经落地，权威当前合同见 [Windows Fixture Cache 路径配额设计](../design/windows_fixture_cache_path_budget.md)：所有受管绝对路径限制为 `240` 个 UTF-16 code units；完整 identity 保留在 metadata/evidence，磁盘使用 32-hex fingerprint key、programmatic `p`、authored `a/<1..24 hex>`、16-hex staging nonce、最长 12 字符 role 和最长 64 UTF-16 units working name。方案采用一次性 schema 切换，不提供旧 cache/run payload 兼容；用户已通过升级前版本的 human-gated `clear all` 清理旧 cache 与历史 runs。旧命令留下的空 v1 marker/index 已在 durable 成功 summary 与零旧 payload/run 共同证明后由新 runtime 原子 stamp 为 v2；空壳未用于 legacy lookup、entry 迁移或删除。实现、纯测试、默认全量基线和一次性 schema 切换均已完成。
 
@@ -41,7 +41,7 @@ Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫�
 - 项目工作目录：`E:\code\MCP\local-onenote-mcp`；
 - Python/pytest：项目 `.venv` 中为 Python `3.13.12`、pytest `9.1.1`；
 - 进程临时目录：`TEMP` 与 `TMP` 均为 `D:\Users\wt\AppData\Local\Temp`；
-- pytest 未配置固定 `--basetemp`，默认根形如 `D:\Users\wt\AppData\Local\Temp\pytest-of-wt\pytest-<n>`；深层 cache/maintenance 测试在该根下使用进程内唯一的短 `fc*` child，而不是手工固定 basetemp；
+- pytest 默认根形如 `D:\Users\wt\AppData\Local\Temp\pytest-of-wt\pytest-<n>`；深层 cache/maintenance 测试在该根下使用进程内唯一的短 `fc*` child；
 - 当前默认全量与 warning 结果以“实现进度”中的最新命令证据为准；预算正确性由直接构造的 UTF-16 `239/240/241`、派生路径、逐层扫描、临时名和零副作用测试证明，不从某次临时目录恰好较短推断。
 
 ## 已定稿路径合同
@@ -102,7 +102,7 @@ Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫�
 1. 保留 `Open Notebook.onetoc2`、`Section.one` 等真实目录形状，不通过缩短 payload 名称掩盖风险；
 2. 深层 cache/maintenance 测试改用 `tmp_path_factory.mktemp("fc")` 分配唯一短根；需要 canonical maintenance 结构时使用 `<short-root>/w/.local-validation/fixture-cache`；
 3. 该 fixture 必须进程内唯一、并发隔离、可丢弃，且不得指向仓库、真实 validation workspace、用户 Notebook 或已有 evidence；
-4. 默认 pytest 不需要手工传 `--basetemp`；短 `--basetemp` 仅保留为诊断复验工具。
+4. 默认 pytest 直接使用上述自动分配且并发隔离的 fixture 根。
 
 ## 自动化验证清单
 
@@ -121,7 +121,7 @@ Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫�
 - 终端、JSON 与可写的 failure evidence 对同一错误保持字段一致；evidence 路径也超预算时仍返回结构化错误并证明 `failure_evidence_written=false`；
 - 所有预算失败均为非零退出，并证明 staging/cache entry/OneNote/mutation 等未发生副作用；
 - `WinError 3` 单次失败且零退避，`WinError 5/32` 继续遵守既有状态守卫；
-- 默认 `.venv\Scripts\python.exe -m pytest -q` 在不传 `--basetemp` 时通过。
+- 默认 `.venv\Scripts\python.exe -m pytest -q` 通过。
 
 ## 非目标
 
@@ -138,8 +138,8 @@ Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫�
 - [x] 用户已确认升级前 `clear all` 的旧 cache/run 清理结果；新 runtime 仅激活 summary 证明的空 ownership 壳，对任何旧 payload/run 残留 fail closed；
 - [x] publish、materialize、lookup、失效与新 schema maintenance 在 `239/240/241` 和碰撞边界上有纯测试；
 - [x] 预算失败在普通终端和 `--json` 两种模式下都有明确、稳定、自动化覆盖的错误；错误显示实际配额差值、未发生的副作用，并按失败类别给出可执行修复指导；
-- [x] 默认 pytest 使用自动分配、并发隔离的短 cache fixture root，无需手工 `--basetemp`，且不写入用户 Notebook 或任意外部未管理路径；
-- [x] `.venv\Scripts\python.exe -m pytest -q` 默认全量通过，且没有把短路径复验表述为默认基线通过；
+- [x] 默认 pytest 使用自动分配、并发隔离的短 cache fixture root，且不写入用户 Notebook 或任意外部未管理路径；
+- [x] `.venv\Scripts\python.exe -m pytest -q` 默认全量通过；
 - [x] 文档明确项目不采用 extended-length path；若未来改变该决策，必须另行审查身份、containment、COM 交互和错误报告语义。
 
 ## 关联

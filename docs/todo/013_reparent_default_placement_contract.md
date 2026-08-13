@@ -348,7 +348,7 @@ OneNote 可能重映射 Page/内容对象 ID，完整子树又扩大了目标集
 
 代码、公开契约和纯验证已经交付：十个执行工具返回统一 `destination_position`，Move 在源删除后重新投影；`reparent_page` 已加入默认 `false` 的 `include_descendants`，并实现 root-only 后代提升与完整子树路线；自动化合同覆盖目标根位置、Notebook 不适用、fresh ID、分叉 Page 范围、同父级 Page Move 的删除后索引，以及 promotion/Reparent 各阶段的结构化 partial outcome。十个既有 manual-validation runtime 已接入独立 after-snapshot projector；所有 hierarchy-child destination fixture 均准备至少两个可区分的同类型 anchors；新的 `reparent-page-scope` 已注册 Scenario-owned recipe、最小静态权限和正式 dry-run case。
 
-纯验证记录：完整 pytest 在唯一短临时根下为 `845 passed`；manual-validation 纯合同曾整套 `533 passed`，本轮 anchor/recipe 增强后的目标相关 manual 集合为 `278 passed`，完整短路径 pytest 同样覆盖这些变更并通过；`reparent-page-scope --dry-run --json` 返回 `ok=true`、`server_started=false`。一次 manual 全套复跑出现与本 TODO 无关的 Windows 原子目录替换重试计数瞬态差异（预期 2、观察 3），该单测随后在新短临时根 `1 passed`。默认 `.venv\Scripts\python.exe -m pytest -q` 仍因当前机器共享 `Temp\pytest-of-wenta` 拒绝访问产生 setup errors，不是断言失败；按仓库 Windows 临时路径规则使用唯一短 `--basetemp` 复验通过。Agent 未运行任何真实 mutation。
+纯验证记录：完整 pytest 为 `845 passed`；manual-validation 纯合同曾整套 `533 passed`，本轮 anchor/recipe 增强后的目标相关 manual 集合为 `278 passed`，完整 pytest 同样覆盖这些变更并通过；`reparent-page-scope --dry-run --json` 返回 `ok=true`、`server_started=false`。一次 manual 全套复跑出现与本 TODO 无关的 Windows 原子目录替换重试计数瞬态差异（预期 2、观察 3），该单测随后复跑为 `1 passed`。Agent 未运行任何真实 mutation。
 
 本 TODO 当前为“阻塞”：代码、文档、纯测试和 dry-run 已无可继续推进的缺口，但完成定义要求的真实 OneNote mutation 证据只能由用户本人显式启动并审查；仓库安全门限禁止 Agent 代为运行。Agent 未运行任何真实 scenario。解除阻塞至少需要用户执行并审查：
 

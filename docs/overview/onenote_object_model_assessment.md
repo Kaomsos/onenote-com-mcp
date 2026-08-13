@@ -54,7 +54,7 @@
 | 用户确认的真实证据 | 指定 OneNote/Office 环境中的真实 COM 副作用或 UI 结果 | TODO 中记录的 run、manual-validation evidence、Lesson |
 | 尚未确认           | 只有实现、Mock、dry-run 或工程推断                    | 进行中/待办 TODO 和未进入保真 allowlist 的类型        |
 
-截至 2026-08-13，当前工作树在唯一短 pytest 临时根下的完整纯自动化结果为 `845 passed`。该结果证明离线合同通过，不证明真实 OneNote mutation 已普遍通过。复审过程没有由 Agent 运行真实 `tests/manual_validation/run.py <scenario>` 或 `run.py all`；仅执行了无副作用 dry-run。Section/SectionGroup Reorder、三类 Reparent、四层 Copy、更新后的 Page Move 与 Section/SectionGroup Move 的真实结果都来自用户本人显式启动的隔离场景；用户已确认其中受支持能力在当前环境完成验收，SectionGroup Reorder 则以固定名称升序的负能力证据结束评估。
+截至 2026-08-13，当前工作树的完整纯自动化结果为 `845 passed`。该结果证明离线合同通过，不证明真实 OneNote mutation 已普遍通过。复审过程没有由 Agent 运行真实 `tests/manual_validation/run.py <scenario>` 或 `run.py all`；仅执行了无副作用 dry-run。Section/SectionGroup Reorder、三类 Reparent、四层 Copy、更新后的 Page Move 与 Section/SectionGroup Move 的真实结果都来自用户本人显式启动的隔离场景；用户已确认其中受支持能力在当前环境完成验收，SectionGroup Reorder 则以固定名称升序的负能力证据结束评估。
 
 ### 2.2 历史基线问题的完成度
 

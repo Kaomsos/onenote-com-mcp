@@ -251,7 +251,7 @@ def cache_tmp_path(tmp_path_factory):
 <cache_tmp_path>/w/.local-validation/fixture-cache
 ```
 
-该方案不共享并发目录、不指向仓库或用户 Notebook，也不要求开发者每次手工传入 `--basetemp`。`--basetemp` 只保留为诊断手段。
+该方案不共享并发目录，也不指向仓库或用户 Notebook。
 
 预算边界测试应直接测试 preflight 计算器的 `239/240/241`、UTF-16 surrogate pair、最长 authored instance、role、working name、opaque path 和原子临时文件；不得依赖实际创建超长路径才观察失败。
 

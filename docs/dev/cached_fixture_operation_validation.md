@@ -147,20 +147,7 @@ AND human verdict accepted（当该场景要求人工判断时）
 
 Fixture cache、publish/materialize staging、working copy、inventory/artifact、最长 64 UTF-16 units 的 run evidence leaf 和原子临时文件统一在副作用前执行 240 UTF-16 code units preflight。磁盘使用 32-hex fingerprint key、typed `p`/`a/<hex>` instance 与 16-hex staging nonce；完整 identity 保存在 metadata/evidence。Opaque tree 逐层先预算再进入，避免在检查前暴露裸 `WinError 3`；authored materialization 会以 live projection 重新核对完整 64-hex digest。Runtime 使用普通绝对 Windows 路径，不依赖 `LongPathsEnabled`，也不使用 `\\?\` extended-length path。
 
-深层 cache/maintenance 纯测试通过 `tmp_path_factory.mktemp("fc")` 自动取得进程内唯一的短根，并在需要 canonical 形状时使用 `<short-root>/w/.local-validation/fixture-cache`。默认基线不需要手工指定 `--basetemp`；`Open Notebook.onetoc2`、`Section.one` 等 payload 名称仍保持真实形状。
-
-若排查 pytest 自身临时根或与本功能无关的 Windows 文件系统异常，可保留默认基线命令的原始结果，再用相同测试集合和一个本次运行独占的短路径诊断复验：
-
-```powershell
-.venv\Scripts\python.exe -m pytest -q --basetemp C:\t\onmcp-pytest-<unique-run-id>
-```
-
-选择 `--basetemp` 时必须遵守以下边界：
-
-- 使用本次运行独占、可丢弃且足够短的精确目录；pytest 可能在启动时清空该目录，因此绝不能指向仓库根、用户 Notebook、fixture cache、validation workspace、evidence 或其他已有数据；
-- 不要让并发或后续 pytest 进程复用同一个 basetemp；
-- 只有当失败堆栈位于 pytest 自身临时根、相同测试在短路径下通过且没有其他行为差异时，才可把短 `--basetemp` 结果作为诊断证据；它不能替代默认基线；
-- 短 basetemp 只是诊断和本地复验手段，不是生产配置，也不改变 containment、ownership、reparse-point 或 lifecycle 安全门限。
+深层 cache/maintenance 纯测试通过 `tmp_path_factory.mktemp("fc")` 自动取得进程内唯一的短根，并在需要 canonical 形状时使用 `<short-root>/w/.local-validation/fixture-cache`。`Open Notebook.onetoc2`、`Section.one` 等 payload 名称仍保持真实形状。
 
 确定性的路径预算合同见 [Windows Fixture Cache 路径配额](../design/windows_fixture_cache_path_budget.md)。项目明确不采用 extended-length path；若未来改变该决策，必须另行审查 identity、containment、COM 交互和错误报告。
 
