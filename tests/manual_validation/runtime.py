@@ -14,6 +14,10 @@ EXIT_MCP = 3
 EXIT_RESTORE = 4
 EXIT_INVARIANT = 5
 
+# Private parent/child protocol used by ``all``. This is deliberately not a
+# public CLI response field or tool contract.
+ALL_CHILD_ISOLATION_PREFIX = "::manual-validation-failure-isolation-v1::"
+
 
 class RunnerFailure(RuntimeError):
     def __init__(self, message: str, exit_code: int = EXIT_ARGUMENT) -> None:
@@ -152,6 +156,7 @@ class RuntimeOptions:
 
 
 __all__ = [
+    "ALL_CHILD_ISOLATION_PREFIX",
     "EXIT_ARGUMENT",
     "EXIT_INVARIANT",
     "EXIT_MCP",

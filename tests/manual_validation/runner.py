@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 from .mcp_stdio_client import ClientFailure
@@ -16,7 +17,22 @@ from .progress import (
     print_compact_scenario_result,
     safe_error_text,
 )
-from .runtime import EXIT_ARGUMENT, EXIT_MCP, RunnerFailure
+from .runtime import ALL_CHILD_ISOLATION_PREFIX, EXIT_ARGUMENT, EXIT_MCP, RunnerFailure
+
+
+def _emit_all_child_isolation(args: argparse.Namespace, result: dict[str, Any]) -> None:
+    if not bool(getattr(args, "all_child", False)):
+        return
+    payload = {
+        "passed": result.get("isolation_passed") is True,
+        "status": str(result.get("status", "unknown")),
+    }
+    print(
+        ALL_CHILD_ISOLATION_PREFIX
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -107,6 +123,7 @@ def print_failure(
     run_dir: Path | None = None,
     verbosity: str = "normal",
     phase: str = "preflight",
+    failure_finalization: dict[str, Any] | None = None,
 ) -> None:
     if json_output:
         print(json.dumps(exc.as_error_dict(), ensure_ascii=False, sort_keys=True))
@@ -117,9 +134,24 @@ def print_failure(
     )
     print(diagnostic, flush=True)
     print(f"Phase: {phase}", flush=True)
+    if failure_finalization is not None:
+        status = str(failure_finalization.get("status", "unknown"))
+        if status == "closed":
+            lifecycle_message = (
+                "exact leased Notebook bundle closed; working files preserved"
+            )
+        elif status == "preserved_open":
+            lifecycle_message = "explicit keep mode preserved Notebook bundle open"
+        elif status == "not_started":
+            lifecycle_message = "Notebook lifecycle was not started"
+        else:
+            lifecycle_message = (
+                "exact close was not proven; do not continue another real scenario"
+            )
+        print(f"Failure lifecycle: {lifecycle_message}", flush=True)
     if run_dir is not None:
         resolved = run_dir.resolve()
-        print(f"Worksite preserved: {str(resolved.exists()).lower()}", flush=True)
+        print(f"Working files preserved: {str(resolved.exists()).lower()}", flush=True)
         print(f"Artifacts: {resolved}", flush=True)
         print(f"Failure evidence: {resolved / 'run-failure.json'}", flush=True)
 
@@ -163,7 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     except RunnerFailure as exc:
         from .scenarios.common.orchestrator import record_failure
 
-        record_failure(args, exc, exc.exit_code)
+        failure_finalization = record_failure(args, exc, exc.exit_code)
+        _emit_all_child_isolation(args, failure_finalization)
         progress = getattr(args, "progress", None)
         if isinstance(progress, RunProgressReporter):
             progress.failure(str(exc), run_dir=getattr(args, "run_dir", None))
@@ -177,12 +210,14 @@ def main(argv: list[str] | None = None) -> int:
                 if isinstance(progress, RunProgressReporter)
                 else "preflight"
             ),
+            failure_finalization=failure_finalization,
         )
         return exc.exit_code
     except ClientFailure as exc:
         from .scenarios.common.orchestrator import record_failure
 
-        record_failure(args, str(exc), EXIT_MCP)
+        failure_finalization = record_failure(args, str(exc), EXIT_MCP)
+        _emit_all_child_isolation(args, failure_finalization)
         progress = getattr(args, "progress", None)
         if isinstance(progress, RunProgressReporter):
             progress.failure(str(exc), run_dir=getattr(args, "run_dir", None))
@@ -200,6 +235,7 @@ def main(argv: list[str] | None = None) -> int:
                     if isinstance(progress, RunProgressReporter)
                     else "preflight"
                 ),
+                failure_finalization=failure_finalization,
             )
         return EXIT_MCP
     result = {"ok": True, **result}

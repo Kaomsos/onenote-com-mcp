@@ -175,6 +175,35 @@ def build_isolated_dry_run_plan(
             "allowed_operations": cache_operations,
             "target": "new run-scoped working Notebook path; never a template path",
         }
+    if recipe.requires_persistence_checkpoint:
+        steps[1:2] = [
+            _step(
+                "prepare-fixture",
+                spec.policy,
+                set(spec.tool_allowlist),
+                f"build or live-validate fixture profile {spec.fixture.name}",
+            ),
+            {
+                "step": "fixture-persistence-checkpoint",
+                "trust_boundary": "narrow lifecycle wrapper plus typed fixture validator",
+                "allowed_operations": [
+                    "close_exact_notebook(force=false)",
+                    "open_working_notebook(exact-path)",
+                    "typed ID rebind",
+                    "full live fixture validation",
+                ],
+                "target": (
+                    "fresh/cold-build disposable fixture only; validated cache hits "
+                    "already carry this recipe-version checkpoint"
+                ),
+            },
+            _step(
+                args.scenario,
+                spec.policy,
+                set(spec.tool_allowlist),
+                "selected mutation against the rebound persisted fixture IDs",
+            ),
+        ]
     if interactive_bootstrap:
         steps[1:2] = [
             _step(

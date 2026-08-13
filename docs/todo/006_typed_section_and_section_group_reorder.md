@@ -85,4 +85,6 @@ Reorder returned success, but the requested sibling order was not observed.
 
 仓库中保留的早期 SectionGroup 实验 tool、policy 开关和 manual scenario 资产只属于遗留原型、独立诊断与历史证据；manual scenario 不进入 `all`，并以机器可读状态报告 `limited/failed`。这些资产默认 fail closed，不改变本 TODO 的最终能力结论，也不能重新把 SectionGroup reorder 描述为待验证或可启用能力。
 
+2026-08-13 的后续 `all` 资格与 progress 增强由 [TODO 028](028_reorder_section_all_and_progress.md) 跟踪：只把已支持且有用户真实正向证据的 `reorder-section` 纳入批处理；本 TODO 对 `reorder-section-group` 的不支持结论及排除资格保持不变。
+
 [TODO 013](013_reparent_default_placement_contract.md) 后续允许 Reparent/Copy/Move 返回 SectionGroup 在后端固定名称排序中的观察索引。该索引不恢复本 TODO 已否定的 Reorder 能力，也不是可控落点保证。

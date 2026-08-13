@@ -6,10 +6,17 @@ import asyncio
 from types import SimpleNamespace
 
 from tests.manual_validation import test_utils
-from tests.manual_validation.mcp_stdio_client import REORDER_SECTION_GROUP_POLICY
+from tests.manual_validation.mcp_stdio_client import (
+    REORDER_SECTION_GROUP_POLICY,
+    REORDER_SECTION_POLICY,
+)
+from tests.manual_validation.progress import RunProgressReporter
 from tests.manual_validation.runtime import RuntimeOptions
 from tests.manual_validation.scenarios.common import container_reorder
-from tests.manual_validation.scenarios.common.config import REORDER_SECTION_GROUP_TOOLS
+from tests.manual_validation.scenarios.common.config import (
+    REORDER_SECTION_GROUP_TOOLS,
+    REORDER_SECTION_TOOLS,
+)
 
 
 def snapshots():
@@ -110,6 +117,137 @@ def manifest():
     }
 
 
+def section_snapshots():
+    notebook = {
+        "resource_type": "notebook",
+        "id": "n",
+        "name": "Notebook",
+        "parent_id": None,
+    }
+    group = {
+        "resource_type": "section_group",
+        "id": "parent",
+        "name": "Parent",
+        "parent_id": "n",
+    }
+
+    def build(root_order, group_order):
+        items = [notebook, group]
+        for prefix, parent_id, order in (
+            ("root", "n", root_order),
+            ("group", "parent", group_order),
+        ):
+            for letter in order:
+                section_id = f"{prefix}-{letter}"
+                page_id = f"{prefix}-page-{letter}"
+                items.extend(
+                    [
+                        {
+                            "resource_type": "section",
+                            "id": section_id,
+                            "name": f"{prefix.title()} Section {letter}",
+                            "parent_id": parent_id,
+                        },
+                        {
+                            "resource_type": "page",
+                            "id": page_id,
+                            "title": f"{prefix.title()} Page {letter}",
+                            "parent_id": section_id,
+                            "section_id": section_id,
+                            "order": 0,
+                            "page_level": 1,
+                            "parent_page_id": None,
+                        },
+                    ]
+                )
+        page_ids = [f"{prefix}-page-{letter}" for prefix in ("root", "group") for letter in "ABC"]
+        return {
+            "notebook_id": "n",
+            "items": items,
+            "page_hashes": {page_id: "same" for page_id in page_ids},
+            "page_objects": {page_id: [] for page_id in page_ids},
+        }
+
+    return (
+        build("ABC", "ABC"),
+        build("ACB", "ABC"),
+        build("ACB", "ACB"),
+        build("ACB", "ABC"),
+        build("ABC", "ABC"),
+    )
+
+
+def section_manifest():
+    return {
+        "schema_version": 1,
+        "notebook": {"id": "n", "name": "Notebook"},
+        "structure": {
+            "root_section_a": {"id": "root-A"},
+            "root_section_c": {"id": "root-C"},
+            "group_section_a": {"id": "group-A"},
+            "group_section_c": {"id": "group-C"},
+        },
+    }
+
+
+def test_section_reorder_reports_each_parent_case_and_restore_progress(
+    monkeypatch, tmp_path
+):
+    values = iter(section_snapshots())
+
+    async def capture(_client, _notebook_id):
+        return next(values)
+
+    lines: list[str] = []
+    reporter = RunProgressReporter("normal", writer=lines.append, clock=lambda: 10.0)
+    FakeClient.calls = []
+    monkeypatch.setattr(container_reorder, "MCPStdioClient", FakeClient)
+    monkeypatch.setattr(container_reorder, "capture_snapshot", capture)
+    monkeypatch.setattr(container_reorder, "render_report", lambda _run_dir: None)
+
+    result = asyncio.run(
+        container_reorder.execute_container_reorder(
+            args=SimpleNamespace(notebook_name=None, keep_worksite=False),
+            options=RuntimeOptions(
+                tmp_path,
+                10,
+                False,
+                False,
+                progress=reporter,
+            ),
+            manifest=section_manifest(),
+            scenario_name="reorder-section",
+            resource_type="section",
+            tool_name="reorder_section",
+            id_parameter="section_id",
+            after_parameter="after_section_id",
+            plans=(
+                ("notebook-parent", "root_section_c", "root_section_a"),
+                ("section-group-parent", "group_section_c", "group_section_a"),
+            ),
+            policy=REORDER_SECTION_POLICY,
+            allowed_tools=REORDER_SECTION_TOOLS,
+            client=None,
+        )
+    )
+
+    assert result["restored"] is True
+    assert lines == [
+        "  case [1/2] notebook-parent ...",
+        "  case [1/2] PASS notebook-parent (0.00s)",
+        "  case [2/2] section-group-parent ...",
+        "  case [2/2] PASS section-group-parent (0.00s)",
+        "  restore [1/2] section-group-parent ...",
+        "  restore [1/2] PASS section-group-parent (0.00s)",
+        "  restore [2/2] notebook-parent ...",
+        "  restore [2/2] PASS notebook-parent (0.00s)",
+    ]
+    rendered = "\n".join(lines)
+    assert "root-C" not in rendered
+    assert "group-C" not in rendered
+    assert "Section C" not in rendered
+
+
 def test_section_group_reorder_restores_exact_original_predecessor(monkeypatch, tmp_path):
     values = iter(snapshots())
 
@@ -132,8 +270,8 @@ def test_section_group_reorder_restores_exact_original_predecessor(monkeypatch, 
             id_parameter="section_group_id",
             after_parameter="after_section_group_id",
             plans=(
-                ("root_group_c", "root_group_a"),
-                ("nested_group_c", "nested_group_a"),
+                ("notebook-parent", "root_group_c", "root_group_a"),
+                ("section-group-parent", "nested_group_c", "nested_group_a"),
             ),
             policy=REORDER_SECTION_GROUP_POLICY,
             allowed_tools=REORDER_SECTION_GROUP_TOOLS,
@@ -174,8 +312,8 @@ def test_section_group_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path
             id_parameter="section_group_id",
             after_parameter="after_section_group_id",
             plans=(
-                ("root_group_c", "root_group_a"),
-                ("nested_group_c", "nested_group_a"),
+                ("notebook-parent", "root_group_c", "root_group_a"),
+                ("section-group-parent", "nested_group_c", "nested_group_a"),
             ),
             policy=REORDER_SECTION_GROUP_POLICY,
             allowed_tools=REORDER_SECTION_GROUP_TOOLS,

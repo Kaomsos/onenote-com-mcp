@@ -1,7 +1,7 @@
 # Fixture cache consumer 必须重新建立 live identity 并执行实时验收
 
 > 状态：当前有效的工程经验<br>
-> 观察日期：2026-08-11<br>
+> 观察日期：2026-08-11、2026-08-13<br>
 > 范围：Windows OneNote Desktop、本地 COM、隔离的 InsertedFile fixture cache consumer 与双 Notebook Copy cache consumer<br>
 > 当前架构：[`../design/architecture.md`](../design/architecture.md)<br>
 > 验证流程：[`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md)、[`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md)<br>
@@ -25,6 +25,10 @@
 6. 最终由用户执行的 cache-only consumer 命中既有 ready entry，只打开新 working copy，完成 live hierarchy 加载、ID 重绑定和实时 detector；机器投影精确观察到一个 `InsertedFile`，template 未打开，场景通过。用户显式选择保留现场，因此 working Notebook 和 active lease 按设计继续存在。
 7. 后续命名改动把固定长前缀、毫秒和 UTC offset 一并写入物理 Notebook 目录；两次新 working path 均在 Notebook folder 的首次 `OpenHierarchy` 返回 `0x80042006`，当时 working 目录路径长度为 184。将名称改为由双下划线包裹的 scenario、可选 `CACHED` 和本地秒级时间戳后，working 目录路径缩短为 143；用户连续执行的两次 consumer 均命中同一 ready entry、完成 hierarchy/live validation 并精确观察到 `InsertedFile=1`。第一次正常关闭 working Notebook，第二次由用户显式选择 `--keep-worksite` 并按契约保持打开。
 8. 后续双 Notebook Copy 复验推翻了“同 fingerprint/instance 的 active lease 必然阻止下一次 consumer”这一过度推断。`run-2026-08-11-19-07-17` 保留第一组 source/destination working bundle 后，`run-2026-08-11-19-10-38` 从相同 entry 再次命中并 materialize 第二组路径；OneNote 为第二组生成了与第一组全部互异的 live Notebook ID。第二组独立完成业务验证、恢复和关闭，第一组 lease 仍保持 active。另一次 activation failure 则保留了尚未完成独立 live identity 建立的 ID，后续 claim 因真实 ID 集相交而拒绝，并在用户关闭旧 Notebook 后恢复成功。这两个分支共同表明 lease 冲突的真相是实际 identity/path 冲突，而不是 fingerprint/instance 相同。
+9. 2026-08-13 两个用户运行的 cache consumer 在首个 materialized Section 上都得到 `OpenHierarchy` ID 和正确 parent，但初次全局 snapshot 尚不可见，之后 exact-self 连续返回未分类的 `0x80131501`；同批第三个独立 consumer 则完整激活并通过三项业务 mutation、取证和恢复。这组对照不证明该 HRESULT 普遍可重试，但证明“初次全局读取一次失败后只轮询 exact-self”会遗漏另一条可能随后收敛的严格证明路径。当前设计因而在同一有界窗口内重查全局与 exact-self，仍要求其中一条完整证明类型、身份、非回收站状态和精确 parent，不能降级接受裸返回 ID。
+10. 随后的 `run-2026-08-13-21-09-17` 与 `run-2026-08-13-21-12-37` 又推翻了“先请求 `SyncHierarchy` 足以消除落盘/激活窗口”的判断。fresh run 中同步请求成功后，完整 COM baseline 仍可见，但首次 Page `UpdateHierarchy` 失败，磁盘缺少 destination Section 文件；cache run 中同步请求同样成功，但首个 copied Section 仍无法通过 global/exact-self 激活证明。请求接受不能作为 source file 已提交或 working hierarchy 已就绪的证据。
+
+基于这些真实观察，当前工程决策是让受影响的 `reparent-page` recipe 使用版本化 close/reopen 持久化检查点：fresh/cold-build 在首次业务 mutation 或 template publish 前调用 `CloseNotebook(force=false)`，从同一 exact path 重开，重绑所有 typed structure/evidence ID，再运行完整 live validator。`CloseNotebook(false)` 的持久化语义来自平台接口合同。用户随后执行的 fresh 与 `--use-cache` cold-build 均通过 checkpoint、业务 mutation、read-back、恢复和关闭；cache run 还证明新 v3 template 未打开且 inventory 不变。这验证了当前环境中的两个失败分支，但不把 close/reopen 推广为所有 Recipe 或 OneNote 版本的普遍要求。
 
 上述成功只证明当前 OneNote/Office/Windows 环境中的这一个 InsertedFile Recipe consumer 链路。连续的失败/成功对照支持“较短物理名称解决了当前环境的打开回归”，但同时改变了路径长度和时间戳字符集，因而不能推导出 OneNote 的通用长度上限，也不能把 184 解释为所有版本的固定阈值。环境版本和附件表示范围记录在相关 [`kind`/附件表示 Lesson](onenote_page_object_kind_and_file_attachment_representation.md#观察环境) 中。pytest 和 `--dry-run` 只证明编排与状态机合同，不被当作真实 OneNote 行为证据。本文不记录 Page 正文、附件名称、Notebook 名称、对象 ID、用户路径或二进制内容。
 

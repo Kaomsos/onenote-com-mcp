@@ -168,12 +168,12 @@ fixture live validation passed
 | --- | --- |
 | `interactive_bootstrap_required` | 运行错误指定的 bootstrap；不要尝试从外部 Notebook 补 cache。 |
 | active/live ID 或 path 冲突 | 根据旧 run ID 和 working paths，关闭精确 working Notebook 后再重试。 |
-| hierarchy activation / ID rebind 失败 | 保留现场；不要修改 cache template，不要删除 working 目录。 |
+| hierarchy activation / ID rebind 失败 | 保留 working files/evidence，默认精确关闭本次 working Notebook；不要修改 cache template，不要删除 working 目录。 |
 | detector missing/unexpected | 检查是否编辑了错误 Canvas、数量不对或 OneNote 生成了不同公开 `kind`；保留 evidence。 |
 | machine comparison 失败 | 输入 REJECT（若仍提示）或让 run 非零退出；不要用肉眼判断覆盖差异。 |
 | operation partial failure | 查看 allocated/resolved/created IDs，按 `manual_recovery_required` 人工核对；不要自动重跑 mutation。 |
 | EOF/timeout/错误 verdict | 当前 run 没有正向人工结论；保留 evidence，重新运行会创建新的独立 run。 |
-| restore/cleanup/close 失败 | run 未闭环；保持 Notebook 和 artifacts，按 failure handoff 处理。 |
+| restore/cleanup/close 失败 | run 未闭环；保留 artifacts。若 exact close 证明失败，不得继续 `all` 或启动其他真实场景，按 failure handoff 处理。 |
 
 任何失败都不得通过删除 working Notebook、普通 artifact、失败现场或用户 Notebook 文件/目录来“重置”。Fixture cache runtime 的精确 entry 清理是独立、受 marker/ownership/containment/open-state/lease 门保护的具名流程，不是人工文件清理授权。
 

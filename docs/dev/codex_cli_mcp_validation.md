@@ -15,7 +15,7 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py rename
 ```
 
-每个扁平的 `run.py <scenario>` 都会通过窄 lifecycle wrapper 创建全新的本地 disposable Notebook，并在该 scenario 唯一的 MCP 子进程内准备最小 fixture、运行所选 mutation 和完成证据/恢复闭环。失败即停止并保留现场；默认在该 scenario 成功并生成报告后，由 wrapper 按 lifecycle lease 的精确 ID/name/path 关闭源 Notebook，但不删除任何本地 Notebook 文件夹。`--keep-notebook` 会跳过最终关闭。不存在 `validate` 分组、公开诊断 action 或聚合 `suite`；特殊 `run.py all` 仅由用户显式启动并串行调用测试注册表中的独立命令，不共享状态或权限，未注册的探索性验证 scenario 不会被自动调用。
+每个扁平的 `run.py <scenario>` 都会通过窄 lifecycle wrapper 创建全新的本地 disposable Notebook，并在该 scenario 唯一的 MCP 子进程内准备最小 fixture、运行所选 mutation 和完成证据/恢复闭环。失败即停止后续业务步骤并保留 working files/evidence；成功或失败默认都由 wrapper 按 lifecycle lease 的精确 ID/name/path 关闭本次全部 working Notebook，但不删除任何本地 Notebook 文件夹。只有显式 `--keep-notebook` 或 `--keep-worksite` 才保持打开。不存在 `validate` 分组、公开诊断 action 或聚合 `suite`；特殊 `run.py all` 仅由用户显式启动并串行调用测试注册表中的独立命令，不共享状态或权限，且只在失败 child 已证明 exact bundle 关闭时继续。未注册的探索性验证 scenario 不会被自动调用。
 
 禁止以下方式访问真实 OneNote mutation：
 

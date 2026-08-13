@@ -22,7 +22,7 @@ class ReparentPageScenario(Scenario):
         "EXPERIMENTAL: validate typed same-Notebook Page reparent with a Description "
         "Page, then restore or preserve."
     )
-    included_in_all = False
+    included_in_all = True
     worksite_dry_run_action = "preserve-reparented-page"
     capability_assessment = {
         "capability_status": "experimental",

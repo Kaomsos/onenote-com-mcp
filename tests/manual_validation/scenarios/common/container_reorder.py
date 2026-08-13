@@ -86,7 +86,7 @@ async def execute_container_reorder(
     tool_name: str,
     id_parameter: str,
     after_parameter: str,
-    plans: tuple[tuple[str, str], ...],
+    plans: tuple[tuple[str, str, str], ...],
     policy: ScenarioPolicy,
     allowed_tools: set[str],
     client: MCPStdioClient | None,
@@ -107,9 +107,9 @@ async def execute_container_reorder(
         before_orders: dict[str, list[str]] = {}
         expected_orders: dict[str, list[str]] = {}
         current = before
-        for index, (target_key, after_key) in enumerate(plans, start=1):
+        for index, (case_label, target_key, after_key) in enumerate(plans, start=1):
             case_started = time.monotonic()
-            options.progress.unit_started("case", f"reorder-{index}", index, len(plans))
+            options.progress.unit_started("case", case_label, index, len(plans))
             declared_target = resolve_manifest_item(manifest, target_key)
             declared_after = resolve_manifest_item(manifest, after_key)
             target = find_snapshot_item(current, str(declared_target["id"]))
@@ -128,6 +128,7 @@ async def execute_container_reorder(
             )
             original.append(
                 {
+                    "case": case_label,
                     "target_key": target_key,
                     "target_id": str(target["id"]),
                     "parent_id": str(target["parent_id"]),
@@ -151,7 +152,7 @@ async def execute_container_reorder(
             write_json(out / f"forward-{index}.json", current)
             options.progress.unit_completed(
                 "case",
-                f"reorder-{index}",
+                case_label,
                 index,
                 len(plans),
                 elapsed_seconds=time.monotonic() - case_started,
@@ -202,9 +203,14 @@ async def execute_container_reorder(
             return result
 
         try:
-            restore_started = time.monotonic()
-            options.progress.unit_started("restore", "container-order")
             for index, plan in enumerate(reversed(original), start=1):
+                restore_started = time.monotonic()
+                options.progress.unit_started(
+                    "restore",
+                    plan["case"],
+                    index,
+                    len(original),
+                )
                 target = find_snapshot_item(current, plan["target_id"])
                 if target is None:
                     raise RestoreFailure("Reorder target disappeared before restoration.")
@@ -220,6 +226,13 @@ async def execute_container_reorder(
                 )
                 current = await capture_snapshot(active_client, notebook_id)
                 write_json(out / f"restore-{index}.json", current)
+                options.progress.unit_completed(
+                    "restore",
+                    plan["case"],
+                    index,
+                    len(original),
+                    elapsed_seconds=time.monotonic() - restore_started,
+                )
             restored = current
             write_json(out / "restored.json", restored)
             assert_restored(before, restored)
@@ -229,11 +242,6 @@ async def execute_container_reorder(
             for parent_id, original_order in before_orders.items():
                 if direct_order(restored, parent_id, resource_type) != original_order:
                     raise RestoreFailure("Restored full sibling order does not match the before snapshot.")
-            options.progress.unit_completed(
-                "restore",
-                "container-order",
-                elapsed_seconds=time.monotonic() - restore_started,
-            )
         except (ClientFailure, RunnerFailure) as exc:
             if isinstance(exc, RestoreFailure):
                 raise
