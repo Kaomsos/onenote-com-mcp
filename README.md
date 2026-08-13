@@ -278,17 +278,28 @@ uv run python scripts\smoke_mcp.py
 # validation scenarios are excluded until registered; all owns no shared run-dir:
 .venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run --verbosity normal
 
-# The user may remove --dry-run to run every isolated scenario serially. Each
-# child creates its own Notebook/run-dir; move-page remains strict.
+# The user may remove --dry-run to run isolated scenarios serially. Each child
+# creates its own Notebook/run-dir; a failed child closes its exact leased
+# Notebook bundle, and all continues only after that isolation is proven.
 ```
 
 Named scenarios default to `--verbosity normal`; use `quiet` for phase-only output or
 `verbose` for content-free mutation timing, convergence scalars, batched read counts,
-policy/allowlist counts, and phase timings. Human-readable modes always end with a
+policy/allowlist counts, and phase timings. Non-JSON `all` streams each serial child's
+progress immediately with a scenario prefix; it no longer waits for a child to finish
+before displaying that child's phases. Human-readable modes always end with a
 compact result and artifact paths rather than the complete nested run result. `--json`
 overrides verbosity and remains the only mode that prints the complete payload (one JSON
 document for a named scenario, JSON Lines for `all`). Progress never prints tool
 arguments, OneNote IDs, Page content, XML, binary data, queries, or full responses.
+Named scenarios close every exact leased working Notebook after failure by default,
+including when run alone. `--keep-notebook` or `--keep-worksite` explicitly preserves it
+open; neither flag is accepted by `all`. A real `all` continues after a failed child only
+when durable failure-finalization evidence proves the complete child bundle closed; a
+missing proof or close failure stops the batch. Working files, evidence, and validated
+cache templates remain preserved. Dry-run still checks the complete registry. A pure
+cache activation `0x8004201D` gets one pre-mutation
+close/reopen of the same working copy; cache templates are neither rebuilt nor discarded.
 
 ---
 
