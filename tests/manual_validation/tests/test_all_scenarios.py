@@ -6,6 +6,7 @@ import argparse
 from dataclasses import replace
 import importlib
 import inspect
+from io import StringIO
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ import pytest
 from tests.manual_validation import all_scenarios
 from tests.manual_validation.all_scenarios import run_all
 from tests.manual_validation.runner import build_parser, main
+from tests.manual_validation.runtime import ALL_CHILD_ISOLATION_PREFIX
 from tests.manual_validation.scenarios.base import Scenario
 from tests.manual_validation.scenarios.common.registry import (
     SCENARIO_REGISTRY,
@@ -182,23 +184,23 @@ def test_failed_section_group_reorder_probe_is_public_but_excluded_from_all() ->
     }
 
 
-def test_typed_page_reparent_passed_but_remains_excluded_from_all() -> None:
+def test_typed_page_reparent_is_included_in_all_after_stability_review() -> None:
     name = "reparent-page"
     scenario = SCENARIO_REGISTRY.get(name)
 
-    assert scenario.included_in_all is False
+    assert scenario.included_in_all is True
     assert name in SCENARIO_REGISTRY.public_names
-    assert name not in get_all_scenario_names()
+    assert name in get_all_scenario_names()
     assert scenario.capability_assessment["capability_status"] == "experimental"
     assert scenario.capability_assessment["validation_status"] == "passed"
 
 
-def test_typed_section_group_reparent_passed_but_remains_excluded_from_all() -> None:
+def test_typed_section_group_reparent_is_included_in_all_after_stability_review() -> None:
     scenario = SCENARIO_REGISTRY.get("reparent-section-group")
 
-    assert scenario.included_in_all is False
+    assert scenario.included_in_all is True
     assert "reparent-section-group" in SCENARIO_REGISTRY.public_names
-    assert "reparent-section-group" not in get_all_scenario_names()
+    assert "reparent-section-group" in get_all_scenario_names()
     assert scenario.capability_assessment["capability_status"] == "experimental"
     assert scenario.capability_assessment["validation_status"] == "passed"
 
@@ -232,12 +234,92 @@ def test_all_runs_every_scenario_serially_and_is_quiet_by_default(capsys) -> Non
 
     assert [command[2] for command in commands] == list(registered)
     output = capsys.readouterr().out
-    assert "[1/12] create ..." in output
+    assert "[1/15] create ..." in output
     assert "PASS move-page" in output
     assert "PASS move-section" in output
     assert "PASS move-section-group" in output
-    assert "Completed 12 scenarios: 12 passed, 0 failed" in output
+    assert "Completed 15 scenarios: 15 passed, 0 failed" in output
     assert "result for" not in output
+
+
+def test_non_json_all_streams_child_stdout_before_pass_and_prefixes_scenario(
+    capsys,
+) -> None:
+    commands: list[list[str]] = []
+
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = StringIO(
+                "[run] create\n[1/5] notebook ...\n[2/5] fixture ...\n"
+            )
+            self.stderr = StringIO("hidden success diagnostic\n")
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_start(command, **kwargs):
+        commands.append(command)
+        assert kwargs == {
+            "stdout": all_scenarios.subprocess.PIPE,
+            "stderr": all_scenarios.subprocess.PIPE,
+            "text": True,
+            "bufsize": 1,
+        }
+        return FakeProcess()
+
+    assert run_all(
+        _args(verbosity="normal"),
+        scenarios=("create",),
+        start_child=fake_start,
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert commands[0][-2:] == ["--verbosity", "normal"]
+    assert "  create | [run] create" in output
+    assert "  create | [1/5] notebook ..." in output
+    assert "hidden success diagnostic" not in output
+    assert output.index("create | [2/5] fixture") < output.index("PASS create")
+
+
+def test_verbose_all_streams_child_stderr_without_replaying_it(capsys) -> None:
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = StringIO("live stdout\n")
+            self.stderr = StringIO("live stderr\n")
+
+        def wait(self) -> int:
+            return 0
+
+    assert run_all(
+        _args(verbosity="verbose"),
+        scenarios=("create",),
+        start_child=lambda _command, **_kwargs: FakeProcess(),
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert output.count("create | live stdout") == 1
+    assert output.count("create | live stderr") == 1
+    assert output.index("create | live stdout") < output.index("PASS create")
+
+
+def test_streaming_all_defers_bounded_stderr_until_failure(capsys) -> None:
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.stdout = StringIO("live progress\n")
+            self.stderr = StringIO("failure diagnostic\n")
+
+        def wait(self) -> int:
+            return 5
+
+    assert run_all(
+        _args(verbosity="normal"),
+        scenarios=("rename",),
+        start_child=lambda _command, **_kwargs: FakeProcess(),
+    ) == 5
+
+    output = capsys.readouterr().out
+    assert output.index("rename | live progress") < output.index("FAIL rename")
+    assert output.index("FAIL rename") < output.index("stderr: failure diagnostic")
 
 
 def test_all_includes_all_three_stable_move_scenarios() -> None:
@@ -248,6 +330,23 @@ def test_all_includes_all_three_stable_move_scenarios() -> None:
         SCENARIO_REGISTRY.get(name).included_in_all is True
         for name in ("move-page", "move-section", "move-section-group")
     )
+
+
+def test_all_includes_supported_section_reorder_but_not_section_group_probe() -> None:
+    included = set(get_all_scenario_names())
+
+    assert "reorder-section" in included
+    assert SCENARIO_REGISTRY.get("reorder-section").included_in_all is True
+    assert "reorder-section-group" not in included
+    assert SCENARIO_REGISTRY.get("reorder-section-group").included_in_all is False
+
+
+def test_all_includes_all_three_reviewed_reparent_scenarios() -> None:
+    included = set(get_all_scenario_names())
+    names = ("reparent-page", "reparent-section", "reparent-section-group")
+
+    assert set(names) <= included
+    assert all(SCENARIO_REGISTRY.get(name).included_in_all is True for name in names)
 
 
 def test_all_passes_dry_run_timeout_and_json_to_each_child(capsys) -> None:
@@ -309,7 +408,7 @@ def test_all_omits_timeout_to_preserve_per_scenario_defaults() -> None:
     assert commands[0][-2:] == ["--verbosity", "quiet"]
 
 
-def test_all_reports_failure_continues_and_returns_first_failure(capsys) -> None:
+def test_real_all_stops_when_failed_child_does_not_prove_isolation(capsys) -> None:
     attempted: list[str] = []
 
     def fake_run(command, **_kwargs):
@@ -325,13 +424,89 @@ def test_all_reports_failure_continues_and_returns_first_failure(capsys) -> None
         run_child=fake_run,
     ) == 5
 
-    assert attempted == ["create", "rename", "reparent-section"]
+    assert attempted == ["create", "rename"]
     output = capsys.readouterr().out
     assert "FAIL rename (exit 5" in output
     assert "stdout: invariant failed" in output
     assert "stderr: details" in output
     assert "hidden success" not in output
-    assert "2 passed, 1 failed" in output
+    assert "Stopped after 2/3 scenarios: 1 passed, 1 failed, 1 not started" in output
+    assert "validated cache templates remain reusable" in output
+
+
+def test_real_all_continues_after_proven_failure_isolation(capsys) -> None:
+    attempted: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        scenario = command[2]
+        attempted.append(scenario)
+        assert "--all-child" in command
+        if scenario == "rename":
+            marker = ALL_CHILD_ISOLATION_PREFIX + json.dumps(
+                {"passed": True, "status": "closed"}
+            )
+            return SimpleNamespace(
+                returncode=5,
+                stdout="invariant failed",
+                stderr=marker + "\n",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    assert run_all(
+        _args(),
+        scenarios=("create", "rename", "reparent-section"),
+        run_child=fake_run,
+    ) == 5
+
+    assert attempted == ["create", "rename", "reparent-section"]
+    output = capsys.readouterr().out
+    assert "isolated rename: exact run Notebook bundle closed; continuing" in output
+    assert "Completed 3 scenarios: 2 passed, 1 failed" in output
+    assert ALL_CHILD_ISOLATION_PREFIX not in output
+
+
+def test_real_all_stops_when_failure_isolation_reports_close_failure(capsys) -> None:
+    attempted: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        attempted.append(command[2])
+        marker = ALL_CHILD_ISOLATION_PREFIX + json.dumps(
+            {"passed": False, "status": "close_failed"}
+        )
+        return SimpleNamespace(returncode=4, stdout="", stderr=marker + "\n")
+
+    assert run_all(
+        _args(),
+        scenarios=("rename", "reparent-section"),
+        run_child=fake_run,
+    ) == 4
+
+    assert attempted == ["rename"]
+    output = capsys.readouterr().out
+    assert "exact failure isolation could not be proven" in output
+    assert "isolated rename" not in output
+
+
+def test_dry_run_all_still_checks_every_plan_after_a_failure(capsys) -> None:
+    attempted: list[str] = []
+
+    def fake_run(command, **_kwargs):
+        scenario = command[2]
+        attempted.append(scenario)
+        return SimpleNamespace(
+            returncode=5 if scenario == "rename" else 0,
+            stdout="",
+            stderr="",
+        )
+
+    assert run_all(
+        _args(dry_run=True),
+        scenarios=("create", "rename", "reparent-section"),
+        run_child=fake_run,
+    ) == 5
+
+    assert attempted == ["create", "rename", "reparent-section"]
+    assert "Completed 3 scenarios: 2 passed, 1 failed" in capsys.readouterr().out
 
 
 def test_normal_and_verbose_expand_success_output(capsys) -> None:

@@ -458,16 +458,17 @@ SCENARIO_SPECS = {
         "delete",
         _profile(
             "disposable-group",
-            ("Delete-Sandbox/Disposable-Group",),
-            ("delete_sandbox", "disposable_group"),
-            {"create_section_group"},
+            ("Delete-Sandbox/Disposable-Group/Disposable-Section",),
+            ("delete_sandbox", "disposable_group", "disposable_section"),
+            {"create_section_group", "create_section"},
             checks=(
                 "disposable_group is a descendant of delete_sandbox",
+                "disposable_group contains a persisted sentinel Section",
                 "delete target ID is manifest-allowlisted",
             ),
         ),
         DELETE_SCENARIO_POLICY,
-        frozenset(DELETE_TOOLS | {"create_section_group"}),
+        frozenset(DELETE_TOOLS | {"create_section_group", "create_section"}),
     ),
     "copy-page": ScenarioSpec(
         "copy-page",

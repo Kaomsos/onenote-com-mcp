@@ -10,7 +10,12 @@ import pytest
 from local_onenote_mcp.page import image_dimensions
 from tests.manual_validation import test_utils
 from tests.manual_validation.mcp_stdio_client import ClientFailure
-from tests.manual_validation.runtime import InvariantFailure, RunnerFailure, RuntimeOptions
+from tests.manual_validation.runtime import (
+    InvariantFailure,
+    RestoreFailure,
+    RunnerFailure,
+    RuntimeOptions,
+)
 from tests.manual_validation.scenarios.common import copy_runtime
 from tests.manual_validation.scenarios.common.copy_runtime import (
     call_with_result_evidence,
@@ -404,6 +409,65 @@ def test_notebook_copy_close_refreshes_modified_confirmation(tmp_path) -> None:
     assert test_utils.read_json(tmp_path / "close-confirmation.json")["modified"] == (
         "2026-08-11T13:12:02.000Z"
     )
+
+
+def test_failed_notebook_copy_closes_exact_created_target(tmp_path) -> None:
+    target_path = (tmp_path / "copies" / "Copy").resolve()
+    target = {
+        "resource_type": "notebook",
+        "id": "copied-notebook",
+        "name": "Copy",
+        "modified": "2026-08-11T13:12:01.000Z",
+    }
+
+    class FakeClient:
+        async def call_tool(self, name, arguments):
+            if name == "get_notebook":
+                assert arguments == {"notebook_id": "copied-notebook"}
+                return {"item": target}
+            if name == "close_notebook":
+                assert arguments["notebook_id"] == "copied-notebook"
+                return {"closed": True}
+            raise AssertionError(name)
+
+    evidence = asyncio.run(
+        copy_runtime._finalize_failed_copied_notebook(
+            FakeClient(),
+            {
+                "item": target,
+                "created_ids": ["copied-notebook"],
+                "destination_path": str(target_path),
+            },
+            {"destination": {"target_path": str(target_path)}},
+            tmp_path,
+            keep_open=False,
+        )
+    )
+
+    assert evidence["status"] == "closed"
+    assert evidence["isolation_passed"] is True
+    assert test_utils.read_json(
+        tmp_path / "copy-target-failure-finalization.json"
+    )["closed"] is True
+
+
+def test_failed_notebook_copy_without_exact_target_binding_blocks_isolation(tmp_path) -> None:
+    with pytest.raises(RestoreFailure, match="without enough exact binding"):
+        asyncio.run(
+            copy_runtime._finalize_failed_copied_notebook(
+                object(),
+                {"created_ids": ["copied-notebook"]},
+                {"destination": {"target_path": str(tmp_path / "Copy")}},
+                tmp_path,
+                keep_open=False,
+            )
+        )
+
+    evidence = test_utils.read_json(
+        tmp_path / "copy-target-failure-finalization.json"
+    )
+    assert evidence["status"] == "close_failed"
+    assert evidence["isolation_passed"] is False
 
 
 @pytest.mark.parametrize(

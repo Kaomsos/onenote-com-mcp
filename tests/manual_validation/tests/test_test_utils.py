@@ -173,6 +173,7 @@ class _SnapshotClient:
     def __init__(self, *, change_ids: bool = False) -> None:
         self.tree_calls = 0
         self.change_ids = change_ids
+        self.calls: list[str] = []
 
     @staticmethod
     def _tree(section_modified: str, page_id: str = "page") -> dict:
@@ -203,6 +204,7 @@ class _SnapshotClient:
         }
 
     async def call_tool(self, name, _arguments):
+        self.calls.append(name)
         if name == "get_tree":
             self.tree_calls += 1
             return {
@@ -219,8 +221,6 @@ class _SnapshotClient:
                     "</one:Outline></one:Page>"
                 )
             }
-        if name == "get_page_objects":
-            return {"objects": []}
         raise AssertionError(name)
 
 
@@ -246,7 +246,21 @@ def test_capture_snapshot_refreshes_hierarchy_after_page_evidence() -> None:
         "unsupported_page_roots": [],
         "complete": True,
     }
+    assert snapshot["page_objects"]["page"] == [
+        {
+            "kind": "Outline",
+            "id": "outline",
+            "callback_id": None,
+            "media_type": None,
+            "can_delete": True,
+            "delete_target_id": "outline",
+            "container_object_id": None,
+            "parent_object_id": "page",
+            "page_id": "page",
+        }
+    ]
     assert client.tree_calls == 2
+    assert client.calls == ["get_tree", "get_page_xml", "get_tree"]
 
 
 def test_capture_snapshot_rejects_hierarchy_id_changes_during_evidence() -> None:

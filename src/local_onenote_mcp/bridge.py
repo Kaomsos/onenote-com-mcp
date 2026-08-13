@@ -30,12 +30,21 @@ function New-Ok($data) {
 
 function New-Err($err) {
     $ex = $err.Exception
+    $leaf = $ex
+    $exceptionDepth = 0
+    while ($null -ne $leaf.InnerException -and $exceptionDepth -lt 8) {
+        $leaf = $leaf.InnerException
+        $exceptionDepth += 1
+    }
     return @{
         ok = $false
         data = $null
         error = @{
             message = $ex.Message
-            hresult = $ex.HResult
+            hresult = $leaf.HResult
+            wrapper_hresult = $ex.HResult
+            exception_depth = $exceptionDepth
+            leaf_exception_type = $leaf.GetType().FullName
             category = [string]$err.CategoryInfo.Category
         }
     }
@@ -64,6 +73,55 @@ try {
             $objectId = ""
             $onenote.OpenHierarchy([string]$p.path, [string]$p.relative_to_id, [ref]$objectId, [int]$p.create_file_type)
             $data = @{ object_id = $objectId }
+        }
+        "open_hierarchy_batch" {
+            $openedByKey = @{}
+            $items = @()
+            foreach ($entry in @($p.requests)) {
+                $key = [string]$entry.key
+                $relativeToId = [string]$entry.relative_to_id
+                $parentKey = [string]$entry.parent_key
+                try {
+                    if (-not [string]::IsNullOrWhiteSpace($parentKey)) {
+                        if (-not $openedByKey.ContainsKey($parentKey)) {
+                            throw "Batch hierarchy parent key was not opened: $parentKey"
+                        }
+                        $relativeToId = [string]$openedByKey[$parentKey]
+                    }
+                    $objectId = ""
+                    $onenote.OpenHierarchy(
+                        [string]$entry.path,
+                        $relativeToId,
+                        [ref]$objectId,
+                        [int]$entry.create_file_type
+                    )
+                    $openedByKey[$key] = $objectId
+                    $items += @{
+                        key = $key
+                        ok = $true
+                        object_id = $objectId
+                        relative_to_id = $relativeToId
+                        error = $null
+                    }
+                } catch {
+                    $failure = New-Err $_
+                    $items += @{
+                        key = $key
+                        ok = $false
+                        object_id = $null
+                        relative_to_id = $relativeToId
+                        error = $failure.error
+                    }
+                }
+            }
+            $xml = ""
+            $onenote.GetHierarchy(
+                [string]$p.notebook_id,
+                [int]$p.scope,
+                [ref]$xml,
+                [int]$p.schema
+            )
+            $data = @{ items = $items; xml = $xml }
         }
         "update_hierarchy" {
             $onenote.UpdateHierarchy([string]$p.xml, [int]$p.schema)
@@ -228,6 +286,9 @@ class OneNoteBridge:
                     operation=operation,
                     hresult=err.get("hresult"),
                     category=err.get("category"),
+                    wrapper_hresult=err.get("wrapper_hresult"),
+                    exception_depth=err.get("exception_depth"),
+                    leaf_exception_type=err.get("leaf_exception_type"),
                 )
             data = response.get("data")
             succeeded = True
@@ -281,6 +342,10 @@ class OneNoteBridge:
                         "error_code": failure.code,
                         "hresult": failure.hresult,
                         "hresult_signed": failure.hresult_signed,
+                        "wrapper_hresult": failure.wrapper_hresult,
+                        "wrapper_hresult_signed": failure.wrapper_hresult_signed,
+                        "exception_depth": failure.exception_depth,
+                        "leaf_exception_type": failure.leaf_exception_type,
                         "backend_category": failure.category,
                         "retryability": failure.retryability,
                     }

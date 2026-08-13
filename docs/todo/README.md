@@ -21,7 +21,7 @@
 | 013 | [Reparent Page 子树范围与 Mutation 目标位置回传合同](013_reparent_default_placement_contract.md) | 阻塞 | P2 | 实现、845 项全套纯测试、十场景独立 position projector/多 anchor fixture 与新范围场景 dry-run 已交付；受 HUMAN-GATED 门限阻塞，等待用户真实运行并审查 `reparent-page-scope` 及十个既有场景。 |
 | 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 已完成 | P2 | 不可变 cache、单/多 role working bundle、失效恢复和四类 Interactive Copy 已闭合；用户确认最终全量真实回归全部通过。UserAuthored 完整化由 TODO 020 独立跟踪。 |
 | 015 | [Mutation 目标精确定位收尾与重名 Page 回归](015_mutation_target_identity_hardening_and_duplicate_page_regression.md) | 已完成 | P1 | allocated-ID-first 与精确身份合同已交付；Create、v4 Page Copy、Move 及增强后的三个容器 Copy 均有用户真实成功证据，cleanup/close 与 cache immutability 门通过。 |
-| 016 | [Page Copy 人工验证只读取证降本](016_copy_page_manual_validation_read_evidence_efficiency.md) | 待办 | P3 | 复用单次 Page XML 生成 hash、能力与对象证据，优先消除 75 次重复 `get_page_objects`/COM 读取；不得削弱六 case、plan/tree 稳定、保护对象或 cleanup/restore 门。 |
+| 016 | [Page Copy 人工验证只读取证降本](016_copy_page_manual_validation_read_evidence_efficiency.md) | 已完成 | P3 | 单次 Page XML 复用和 cache 层级双稳定门已交付；用户真实 Copy Page 六 case 通过，重复 `get_page_objects`/Page XML 读取降为零并记录实际调用分类。 |
 | 017 | [Page Move 可选子树与跨 Notebook 双范围验收](017_page_move_selectable_subtree_and_cross_notebook_validation.md) | 已完成 | P1 | 默认 root-only 与显式 subtree 已交付；用户确认修复后的跨 Notebook 双 case、保留后代和非永久删除均通过。 |
 | 018 | [在线视频表示与 Copy 保真验证](018_online_video_copy_fidelity_validation.md) | 已取消 | P2 | 不再建立独立 OnlineVideo 类型或有损 Copy 合同；仅保留局限性 Lesson。 |
 | 019 | [Manual Validation 受控 Clear Actions](019_manual_validation_clear_actions.md) | 已完成 | P2 | `clear runs/cache/all`、交互确认、实际路径快照、逐目标 receipt/summary、成功审计收敛和空 cache scaffold 清理已交付；用户真实 clear 共删除 112 个目标且无拒绝/失败。 |
@@ -32,6 +32,10 @@
 | 024 | [Search 与 Typed Query 短时只读快照缓存](024_search_and_query_read_snapshot_cache.md) | 待办 | P2 | 规划进程内可配置 TTL（默认 15 秒）的 `GetHierarchy`/`FindPages` 缓存、mutation 前失效与 Agent 可见一致性合同；完成状态要求用户确认 `read-cache-coherence` 真实场景证据。 |
 | 025 | [OneNote COM 收敛、Mutation 对账与调用协调](025_onenote_com_convergence_and_mutation_coordination.md) | 已完成 | P1 | typed HRESULT、公共收敛/对账、进程内协调与关键路径迁移已落地；918 个纯测试、dry-run 及用户前台 convergence/create/reorder/delete/copy/move 回归均通过。 |
 | 026 | [Manual Validation 实时进度与 Verbosity](026_manual_validation_progress_verbosity.md) | 已完成 | P2 | 三级 content-free 实时进度与紧凑非 JSON summary 已落地；纯测试、完整基线和用户前台长/短场景展示均已确认。 |
+| 027 | [Reparent 三层级人工验证矩阵与 `all` 覆盖](027_reparent_manual_validation_all_coverage.md) | 已完成 | P2 | 用户真实 `all --use-cache` 中 Page、Section、SectionGroup 三个独立 child 全部通过、恢复并关闭，三层级矩阵与批处理资格闭合。 |
+| 028 | [Reorder Section `all` 资格与 Progress 埋点](028_reorder_section_all_and_progress.md) | 已完成 | P2 | 用户真实批处理中 Section Reorder 两个正向 case、逆序 restore、progress 与最终关闭通过；SectionGroup 诊断继续排除。 |
+| 029 | [MCP Tool Mutation Readiness 状态建模与 Page Reparent 加固](029_mcp_mutation_readiness_and_reconciliation_hardening.md) | 待办 | P1 | 以 Page Reparent 为纵向切片落实 execute-once 四态对账、reconciled success、恢复建议与生命周期负合同，并审计 MCP mutation tool 生态的 readiness/replay policy。 |
+| 030 | [Manual Validation Cache 层级激活批处理与证据复用](030_manual_validation_cache_hierarchy_activation_batching.md) | 进行中 | P2 | 路径预收集、单 COM parent-first batch 与同会话 hierarchy snapshot 已实现；等待真实 cache 复验，跨阶段 observation handoff 和持续缺失 Page 的精确 owning-Section escalation 尚待完成。 |
 
 ## 文件命名
 

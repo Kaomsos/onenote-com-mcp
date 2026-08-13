@@ -30,9 +30,12 @@ from tests.manual_validation.scenarios.common.fixture_cache import (
 )
 from tests.manual_validation.scenarios.common import fixture_cache as fixture_cache_module
 from tests.manual_validation.scenarios.common.fixture_runtime import (
+    _await_materialized_structure_convergence,
     _assert_authored_cache_identity,
+    _rebind_materialized_evidence,
     _rebind_materialized_structure,
     prepare_materialized_fixture,
+    prepare_reopened_fixture_bundle,
 )
 from tests.manual_validation.scenarios.common import orchestrator as validation
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
@@ -870,6 +873,511 @@ def test_materialized_structure_rebinds_changed_notebook_section_and_page_ids() 
     assert rebound["canvas_page"]["id"] == "working-page"
 
 
+def test_materialized_reparent_page_evidence_rebinds_only_owned_page_id_fields() -> None:
+    source_structure = {
+        "reparent_page": {"id": "source-page", "resource_type": "page"}
+    }
+    working_structure = {
+        "reparent_page": {"id": "working-page", "resource_type": "page"}
+    }
+    cached = {
+        "reparent_page_fixture": {
+            "page_id": "source-page",
+            "manual_content": ["literal source-page remains content"],
+            "list_tag": {
+                "page_id": "source-page",
+                "observed_capabilities": ["List", "Tag"],
+            },
+        }
+    }
+
+    rebound, report = _rebind_materialized_evidence(
+        source_structure,
+        working_structure,
+        cached,
+    )
+
+    assert report["passed"] is True
+    assert [mapping["field"] for mapping in report["mappings"]] == [
+        "reparent_page_fixture.page_id",
+        "reparent_page_fixture.list_tag.page_id",
+    ]
+    rich = rebound["reparent_page_fixture"]
+    assert rich["page_id"] == "working-page"
+    assert rich["list_tag"]["page_id"] == "working-page"
+    assert rich["manual_content"] == ["literal source-page remains content"]
+    assert cached["reparent_page_fixture"]["page_id"] == "source-page"
+    assert cached["reparent_page_fixture"]["list_tag"]["page_id"] == "source-page"
+
+
+@pytest.mark.parametrize(
+    "field_path",
+    ["page_id", "list_tag.page_id"],
+)
+def test_materialized_reparent_page_evidence_rejects_unbound_source_id(
+    field_path: str,
+) -> None:
+    cached = {
+        "reparent_page_fixture": {
+            "page_id": "source-page",
+            "list_tag": {"page_id": "source-page"},
+        }
+    }
+    if field_path == "page_id":
+        cached["reparent_page_fixture"]["page_id"] = "unexpected-page"
+    else:
+        cached["reparent_page_fixture"]["list_tag"]["page_id"] = "unexpected-page"
+
+    _rebound, report = _rebind_materialized_evidence(
+        {"reparent_page": {"id": "source-page"}},
+        {"reparent_page": {"id": "working-page"}},
+        cached,
+    )
+
+    assert report["passed"] is False
+    assert any(
+        failure["field"] == f"reparent_page_fixture.{field_path}"
+        and failure["reason"] == "source-id-mismatch"
+        for failure in report["failures"]
+    )
+
+
+def test_materialized_reparent_page_evidence_rejects_invalid_shape() -> None:
+    _rebound, report = _rebind_materialized_evidence(
+        {"reparent_page": {"id": "source-page"}},
+        {"reparent_page": {"id": "working-page"}},
+        {"reparent_page_fixture": None},
+    )
+
+    assert report["passed"] is False
+    assert report["failures"] == [
+        {
+            "field": "reparent_page_fixture",
+            "reason": "invalid-evidence-shape",
+        }
+    ]
+
+
+class _MaterializedHierarchyClient:
+    def __init__(self, trees: list[dict]) -> None:
+        self.trees = iter(trees)
+        self.calls: list[str] = []
+
+    async def call_tool(self, name, _arguments):
+        self.calls.append(name)
+        assert name == "get_tree"
+        return {"tree": next(self.trees)}
+
+
+def _materialized_tree(*, page_id: str | None, page_order: int = 0) -> dict:
+    page_children = []
+    if page_id is not None:
+        page_children.append(
+            {
+                "item": {
+                    "id": page_id,
+                    "resource_type": "page",
+                    "title": "01-Page",
+                    "path": "Working/01-Section/01-Page",
+                    "parent_id": "working-section",
+                    "section_id": "working-section",
+                    "order": page_order,
+                    "page_level": 1,
+                    "parent_page_id": None,
+                },
+                "children": [],
+            }
+        )
+    return {
+        "item": {
+            "id": "working-notebook",
+            "resource_type": "notebook",
+            "name": "Working",
+            "path": "Working",
+        },
+        "children": [
+            {
+                "item": {
+                    "id": "working-section",
+                    "resource_type": "section",
+                    "name": "01-Section",
+                    "path": "Working/01-Section",
+                    "parent_id": "working-notebook",
+                },
+                "children": page_children,
+            }
+        ],
+    }
+
+
+def test_materialized_structure_waits_for_pages_and_two_stable_observations() -> None:
+    client = _MaterializedHierarchyClient(
+        [
+            _materialized_tree(page_id=None),
+            _materialized_tree(page_id="working-page"),
+            _materialized_tree(page_id="working-page"),
+        ]
+    )
+    structure = {
+        "section": {
+            "id": "source-section",
+            "resource_type": "section",
+            "path": "Template/01-Section",
+        },
+        "page": {
+            "id": "source-page",
+            "resource_type": "page",
+            "path": "Template/01-Section/01-Page",
+            "order": 0,
+            "page_level": 1,
+        },
+    }
+
+    _snapshot, rebound, remap, report = asyncio.run(
+        _await_materialized_structure_convergence(
+            client,
+            role="source",
+            structure=structure,
+            source_notebook={"id": "source-notebook", "path": "Template"},
+            working_notebook={"id": "working-notebook", "path": "Working"},
+            max_observations=3,
+            stable_observations=2,
+            delay_seconds=0,
+        )
+    )
+
+    assert report["passed"] is True
+    assert report["attempts"] == 3
+    assert report["stable_observations"] == 2
+    assert rebound["page"]["id"] == "working-page"
+    assert remap["passed"] is True
+    assert client.calls == ["get_tree", "get_tree", "get_tree"]
+
+
+def test_materialized_structure_rejects_hierarchy_oscillation() -> None:
+    client = _MaterializedHierarchyClient(
+        [
+            _materialized_tree(page_id="page-a", page_order=0),
+            _materialized_tree(page_id="page-b", page_order=0),
+            _materialized_tree(page_id="page-a", page_order=0),
+        ]
+    )
+    structure = {
+        "section": {
+            "id": "source-section",
+            "resource_type": "section",
+            "path": "Template/01-Section",
+        },
+        "page": {
+            "id": "source-page",
+            "resource_type": "page",
+            "path": "Template/01-Section/01-Page",
+            "order": 0,
+            "page_level": 1,
+        },
+    }
+
+    _snapshot, _rebound, _remap, report = asyncio.run(
+        _await_materialized_structure_convergence(
+            client,
+            role="source",
+            structure=structure,
+            source_notebook={"id": "source-notebook", "path": "Template"},
+            working_notebook={"id": "working-notebook", "path": "Working"},
+            max_observations=3,
+            stable_observations=2,
+            delay_seconds=0,
+        )
+    )
+
+    assert report["passed"] is False
+    assert report["stable_observations"] == 1
+    assert "deadline exceeded" in report["error"]
+
+
+def test_reparent_page_materialization_persists_rebound_run_local_evidence(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    scenario = SCENARIO_REGISTRY.get("reparent-page")
+    artifact_root = tmp_path / "entry" / "notebooks" / "source"
+    source_notebook = {"id": "source-notebook", "name": "Original", "path": "Original"}
+    declarations = [
+        ("description_section", "section", "00-Description", 0),
+        ("description_page", "page", "00-Reparent-Page-Description", 0),
+        ("source_section", "section", "01-Source-Section", 0),
+        ("destination_section", "section", "02-Destination-Section", 0),
+        ("reparent_page", "page", "01-Reparent-Page", 0),
+        ("destination_anchor_page", "page", "02-Destination-Anchor", 0),
+        ("destination_anchor_page_b", "page", "03-Destination-Anchor", 1),
+    ]
+    source_structure: dict[str, dict] = {}
+    working_structure: dict[str, dict] = {}
+    section_paths = {
+        "description_page": "00-Description",
+        "reparent_page": "01-Source-Section",
+        "destination_anchor_page": "02-Destination-Section",
+        "destination_anchor_page_b": "02-Destination-Section",
+    }
+    for key, resource_type, name, order in declarations:
+        suffix = name if resource_type == "section" else f"{section_paths[key]}/{name}"
+        source_structure[key] = {
+            "id": f"source-{key}",
+            "resource_type": resource_type,
+            "path": f"Original/{suffix}",
+            **({"order": order, "page_level": 1} if resource_type == "page" else {}),
+        }
+        working_structure[key] = {
+            "id": f"working-{key}",
+            "resource_type": resource_type,
+            "path": f"working-copy/{suffix}",
+            "notebook_id": "working-notebook",
+            "is_in_recycle_bin": False,
+            **({"name": name, "parent_id": "working-notebook"} if resource_type == "section" else {"title": name, "order": order, "page_level": 1, "parent_page_id": None}),
+        }
+    description_id = working_structure["description_section"]["id"]
+    source_id = working_structure["source_section"]["id"]
+    destination_id = working_structure["destination_section"]["id"]
+    for key, section_id in {
+        "description_page": description_id,
+        "reparent_page": source_id,
+        "destination_anchor_page": destination_id,
+        "destination_anchor_page_b": destination_id,
+    }.items():
+        working_structure[key]["section_id"] = section_id
+        working_structure[key]["parent_id"] = section_id
+    rich = {
+        "page_id": "source-reparent_page",
+        "automated_content": ["rich_text", "table", "image", "list", "tag"],
+        "list_tag": {
+            "page_id": "source-reparent_page",
+            "observed_capabilities": ["List", "Tag"],
+            "observed_counts": {"List": 3, "Tag": 3},
+        },
+    }
+    source_manifest = {
+        "notebook": source_notebook,
+        "structure": source_structure,
+        "reparent_page_fixture": rich,
+        "disposable_targets": {"source_notebook_path": "source"},
+        "fixture_validation": {"status": "passed", "checks": []},
+    }
+    write_json(artifact_root / "template-manifest.json", source_manifest)
+    write_json(
+        artifact_root / "template-fixture-result.json",
+        {"notebook": source_notebook, "structure_ids": {}},
+    )
+    snapshot = {"items": list(working_structure.values()), "page_hashes": {}}
+
+    events: list[str] = []
+
+    async def fake_snapshot(_client, _notebook_id):
+        events.append("full-content")
+        return snapshot
+
+    async def fake_convergence(*_args, **_kwargs):
+        events.append("hierarchy-stable")
+        return (
+            {"items": list(working_structure.values())},
+            working_structure,
+            {"passed": True, "mappings": [], "failures": []},
+            {
+                "passed": True,
+                "phase": "hierarchy_convergence",
+                "full_content_validation_started": False,
+                "full_content_validation_completed": False,
+            },
+        )
+
+    monkeypatch.setattr(
+        "tests.manual_validation.scenarios.common.fixture_runtime.capture_snapshot",
+        fake_snapshot,
+    )
+    monkeypatch.setattr(
+        "tests.manual_validation.scenarios.common.fixture_runtime._await_materialized_structure_convergence",
+        fake_convergence,
+    )
+    hit = CacheHit(
+        scenario.fixture_recipe.cache_fingerprint,
+        scenario.fixture_recipe.default_template_instance_id,
+        tmp_path / "entry",
+        {"roles": ["source"]},
+    )
+    run_dir = tmp_path / "run"
+    working = run_dir / "notebooks" / "working-copy"
+    template = tmp_path / "cache" / "template"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    materialized = MaterializedBundle(
+        hit.fingerprint,
+        hit.template_instance_id,
+        {"source": template},
+        {"source": working},
+        run_dir / "cache-materialization.json",
+    )
+
+    manifest, _result = asyncio.run(
+        prepare_materialized_fixture(
+            scenario,
+            argparse.Namespace(),
+            RuntimeOptions(run_dir, 180, False, False, use_cache=True),
+            object(),
+            {"id": "working-notebook", "name": "working-copy", "path": "working-copy"},
+            str(working),
+            scenario.spec,
+            hit,
+            materialized,
+        )
+    )
+
+    assert manifest["reparent_page_fixture"]["page_id"] == "working-reparent_page"
+    assert (
+        manifest["reparent_page_fixture"]["list_tag"]["page_id"]
+        == "working-reparent_page"
+    )
+    remap = read_json(run_dir / "cache-structure-remap.json")
+    assert remap["passed"] is True
+    assert len(remap["evidence_rebinding"]["mappings"]) == 2
+    assert events == ["hierarchy-stable", "full-content"]
+    convergence = read_json(run_dir / "cache-hierarchy-convergence.json")
+    assert convergence["passed"] is True
+    assert convergence["roles"]["source"]["full_content_validation_completed"] is True
+    cached_after = read_json(artifact_root / "template-manifest.json")
+    assert cached_after["reparent_page_fixture"]["page_id"] == "source-reparent_page"
+    assert (
+        cached_after["reparent_page_fixture"]["list_tag"]["page_id"]
+        == "source-reparent_page"
+    )
+
+
+@pytest.mark.parametrize("validator_fails", [False, True])
+def test_reparent_page_persistence_checkpoint_rebinds_and_revalidates(
+    monkeypatch,
+    tmp_path,
+    validator_fails,
+) -> None:
+    scenario = SCENARIO_REGISTRY.get("reparent-page")
+    source_notebook = {
+        "id": "source-notebook",
+        "name": "Fresh",
+        "path": "Fresh",
+    }
+    source_structure = {
+        "source_section": {
+            "id": "source-section",
+            "resource_type": "section",
+            "path": "Fresh/01-Source-Section",
+        },
+        "reparent_page": {
+            "id": "source-page",
+            "resource_type": "page",
+            "path": "Fresh/01-Source-Section/01-Reparent-Page",
+            "order": 0,
+            "page_level": 1,
+        },
+    }
+    rich = {
+        "page_id": "source-page",
+        "list_tag": {"page_id": "source-page"},
+    }
+    prior_manifest = {
+        "notebook": source_notebook,
+        "notebooks": {"source": source_notebook},
+        "structure": source_structure,
+        "role_structures": {"source": source_structure},
+        "reparent_page_fixture": rich,
+        "disposable_targets": {},
+    }
+    prior_result = {
+        "notebook": source_notebook,
+        "roles": {"source": {"validation": {"passed": True}}},
+    }
+    snapshot = {
+        "items": [
+            {
+                "id": "working-section",
+                "resource_type": "section",
+                "path": "Fresh/01-Source-Section",
+                "parent_id": "working-notebook",
+            },
+            {
+                "id": "working-page",
+                "resource_type": "page",
+                "path": "Fresh/01-Source-Section/01-Reparent-Page",
+                "section_id": "working-section",
+                "parent_id": "working-section",
+                "order": 0,
+                "page_level": 1,
+            },
+        ],
+        "page_hashes": {"working-page": "hash"},
+    }
+
+    async def fake_snapshot(_client, notebook_id):
+        assert notebook_id == "working-notebook"
+        return snapshot
+
+    monkeypatch.setattr(
+        "tests.manual_validation.scenarios.common.fixture_runtime.capture_snapshot",
+        fake_snapshot,
+    )
+
+    def validate_live(_observation):
+        if validator_fails:
+            raise InvariantFailure("injected post-reopen mismatch")
+        return argparse.Namespace(
+            passed=True,
+            role_checks={"source": ("checkpoint live validation",)},
+            bundle_checks=("bundle identity",),
+        )
+
+    monkeypatch.setattr(scenario.fixture_recipe, "validate_live", validate_live)
+    working_path = tmp_path / "run" / "notebooks" / "Fresh"
+    working_path.mkdir(parents=True)
+
+    invocation = prepare_reopened_fixture_bundle(
+        scenario,
+        argparse.Namespace(),
+        RuntimeOptions(tmp_path / "run", 180, False, False),
+        object(),
+        {
+            "source": {
+                "id": "working-notebook",
+                "name": "Fresh",
+                "path": "Fresh",
+            }
+        },
+        {"source": str(working_path)},
+        prior_manifest,
+        prior_result,
+        {"source": {"closed": True, "source_notebook_id": "source-notebook"}},
+    )
+    if validator_fails:
+        with pytest.raises(InvariantFailure, match="post-reopen mismatch"):
+            asyncio.run(invocation)
+        failure = read_json(
+            tmp_path / "run" / "fixture-persistence-checkpoint-failure.json"
+        )
+        assert failure["phase"] == "post_reopen_live_validation"
+        assert failure["mutation_attempted"] is False
+        assert failure["bundle_preserved"] is True
+        return
+
+    manifest, result = asyncio.run(invocation)
+
+    assert manifest["structure"]["reparent_page"]["id"] == "working-page"
+    assert manifest["reparent_page_fixture"]["page_id"] == "working-page"
+    assert manifest["reparent_page_fixture"]["list_tag"]["page_id"] == "working-page"
+    assert manifest["fixture_persistence_checkpoint"]["status"] == "passed"
+    assert manifest["fixture_persistence_checkpoint"]["close_force"] is False
+    assert manifest["fixture_validation"]["post_close_reopen_revalidation"] is True
+    assert result["structure_ids"]["reparent_page"] == "working-page"
+    remap = read_json(tmp_path / "run" / "fixture-persistence-remap.json")
+    assert remap["passed"] is True
+    assert len(remap["roles"]["source"]["evidence_rebinding"]["mappings"]) == 2
+    assert prior_manifest["reparent_page_fixture"]["page_id"] == "source-page"
+
+
 def test_inserted_file_copy_live_validates_rebound_cached_structure(
     monkeypatch,
     tmp_path,
@@ -943,9 +1451,30 @@ def test_inserted_file_copy_live_validates_rebound_cached_structure(
     async def fake_snapshot(_client, _notebook_id):
         return snapshot
 
+    async def fake_convergence(*_args, **_kwargs):
+        rebound = {
+            "canvas_section": snapshot["items"][0],
+            "canvas_page": snapshot["items"][1],
+        }
+        return (
+            {"items": snapshot["items"]},
+            rebound,
+            {"passed": True, "mappings": [], "failures": []},
+            {
+                "passed": True,
+                "phase": "hierarchy_convergence",
+                "full_content_validation_started": False,
+                "full_content_validation_completed": False,
+            },
+        )
+
     monkeypatch.setattr(
         "tests.manual_validation.scenarios.common.fixture_runtime.capture_snapshot",
         fake_snapshot,
+    )
+    monkeypatch.setattr(
+        "tests.manual_validation.scenarios.common.fixture_runtime._await_materialized_structure_convergence",
+        fake_convergence,
     )
     hit = CacheHit(
         scenario.fixture_recipe.cache_fingerprint,

@@ -51,7 +51,7 @@
 2. 捕获 operation-specific before snapshot；
 3. 对支持 plan 的操作取得稳定 plan，并把 confirmation 与 snapshot 绑定；
 4. 在静态最小 policy/tool allowlist 下执行一次 mutation；
-5. mutation 不自动重试；响应不确定或部分失败立即停止并保留现场；
+5. mutation 不自动重试；响应不确定或部分失败立即停止并保留 working files/evidence，随后按默认 failure lifecycle 精确关闭 Notebook；
 6. 捕获 after snapshot、响应中的 allocated/resolved IDs 和所有部分失败字段。
 
 不同操作必须有自己的成功条件。例如：
@@ -114,6 +114,7 @@ AND human verdict accepted（当该场景要求人工判断时）
 <run-dir>/
 ├─ manifest.json / prepared.json
 ├─ cache-materialization.json
+├─ cache-hierarchy-convergence.json
 ├─ cache-structure-remap.json
 ├─ fixture-result.json
 ├─ before[-<case>].json
@@ -129,19 +130,27 @@ AND human verdict accepted（当该场景要求人工判断时）
 
 这里的 `operation-result` 是职责名称，不要求已有场景立即重命名其 `copy-result`、`move-result` 等稳定 artifact。新场景应优先保持“输入、执行、机器比较、人工结论”可单独审计。
 
+`cache-structure-remap.json` 同时保存 typed structure 的 source→working ID 映射，以及已声明 evidence 字段的 `evidence_rebinding`。例如 Reparent Page 只允许把 `reparent_page_fixture.page_id` 和 `reparent_page_fixture.list_tag.page_id` 从 manifest 绑定的 source Page 改写为同一结构键对应的 working Page；任一原值不等于 source ID、字段形状异常或 working 结构缺失都会在 mutation 前 fail closed，并使 exact cache entry 进入既有 quarantine 流程。正文、人工说明和其他任意字符串不会参与递归替换，immutable template 也不会被回写。
+
+`SyncHierarchy` 返回只能证明请求被 COM 接受，不能证明刚创建的 fixture 已提交到本地 Section 文件。对已真实观察到该落盘窗口的 `reparent-page`，recipe v3 在 fresh/cold-build 完整 live validation 后、首次业务 mutation 或 template publish 前执行一次 `CloseNotebook(force=false)`，随后从同一 exact working path 重开、逐级激活、按 typed address 重绑 structure/evidence ID，并再次运行完整 live validator。检查点证据写入 `fixture-persistence-remap.json` 和 manifest 的 `fixture_persistence_checkpoint`；任一步失败都在 mutation 前 fail closed 并保留现场。Recipe version 变化生成新 fingerprint，旧 v2 template 不会被继续命中；检查点仍不修改 `.one` bytes 或 cache template。
+
 默认 evidence 应 content-free：保存 typed IDs、计数、hash、投影和布尔检查，不保存正文或二进制。只有具名场景通过显式参数授权敏感证据时，才可在本次本地 run 目录保存经过约定 redaction 的内容；不得进入 cache template 或版本库。
+
+`cache-hierarchy-convergence.json` 记录 materialized working bundle 的轻量就绪门：每个 role 的全部 manifest-bound SectionGroup、Section 和 Page 必须先按 Notebook-relative typed address 唯一出现，并以相同 ID、parent、section、page level、parent Page 和 sibling order 连续稳定两次，runner 才开始 Page 内容读取。完整 snapshot 仍用读取前后的 hierarchy 证明取证窗口内 ID 集不变；每个 Page 的 hash、能力与 normalized object evidence 则从一次 `get_page_xml(page_info=all)` 通过生产 parser 派生，不再重复读取 `get_page_objects`。
+
+在该门之前，lifecycle 会先冻结 exact working tree 内全部容器请求，并通过非公开 batch 在单个 PowerShell/COM session 中按 parent-before-child 激活 SectionGroup/Section、随后读取一次 Notebook pages hierarchy。这个顺序避免 OneNote 导入 parent 后接管同级 `.one`，导致旧逐对象 loop 在下一次磁盘 `resolve` 时误判路径消失。Batch 最多两轮，只重试仍缺失容器；它不取代后续双稳定和完整内容验证，也不改变生产 MCP 公开 tool 契约。
 
 ## 失败归因与处置
 
 | 停止点 | 结论 | 处置 |
 | --- | --- | --- |
 | Cache miss，且 recipe 只能人工创建 | `interactive_bootstrap_required` | 提示固定 bootstrap Scenario；不得自动创作或猜测实例。 |
-| Materialization/open/ID rebind 失败 | fixture 尚不可用于操作 | mutation 前停止，保留 working bundle 和 lease；不得写回 template。 |
+| Materialization/open/ID rebind 失败 | fixture 尚不可用于操作 | mutation 前停止，保留 working bundle 和 lease，默认精确关闭 Notebook；不得写回 template。 |
 | Live Recipe validation 失败 | cached fixture 不满足当前合同 | exact entry quarantine/invalid；保留失败现场，不以人工观察放行。 |
 | Operation partial/uncertain failure | 操作结果未知或不完整 | 不重试 mutation；保存 created/allocated/resolved IDs 和人工接管说明。 |
 | Machine comparator 失败 | 自动合同未通过 | 不把用户 `ACCEPT` 作为成功；Move 不进入源删除，allowlist 不变。 |
 | 用户 `REJECT`、EOF 或超时 | 未取得正向 UI 证据 | 保留机器 evidence 和现场，记录 rejected/incomplete。 |
-| Restore/cleanup/close 失败 | 验收闭环未完成 | 顶层非零失败，保持现场；不得删除 working Notebook 或普通 artifacts。 |
+| Restore/cleanup/close 失败 | 验收闭环未完成 | 顶层非零失败并保留现场；若 exact close 未获证明则批处理必须停止。不得删除 working Notebook files 或普通 artifacts。 |
 
 ## Windows 路径预算与 pytest 临时根
 

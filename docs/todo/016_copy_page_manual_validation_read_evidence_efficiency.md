@@ -1,10 +1,25 @@
 # 016：Page Copy 人工验证只读取证降本
 
 > ID：016
-> 状态：待办
+> 状态：已完成
 > 优先级：P3
 > 类型：Manual Validation 性能 / 只读证据复用
-> 更新日期：2026-08-11
+> 更新日期：2026-08-14
+
+## 完成结论（2026-08-14）
+
+本轮已部分覆盖阶段一，并将实现限制在 manual-validation runner：
+
+- 通用 `capture_snapshot()` 对每个 Page 只调用一次 `get_page_xml(page_info=all)`；stable/canonical/reparent/raw hash、capability projection、MathML projection 与 normalized Page object evidence 均复用这份 XML。
+- normalized object evidence 直接复用生产 `collect_page_objects()` 和 `content_objects()`，不在 manual validation 中维护第二套 XML 对象语义；`get_page_objects` 不再造成第二次 `GetPageContent`。
+- cache materialization 在完整内容取证前新增 manifest-aware hierarchy convergence：全部声明的 SectionGroup、Section 和 Page 必须按 typed relative address 唯一出现，并以相同 ID、parent、section、page level、parent Page 和 sibling order连续稳定两次。该门同时避免在 descendant Page 尚未加载时过早进入 ID rebind/内容验证。
+- 纯测试已覆盖单 Page snapshot 不调用 `get_page_objects`、缺失 Page 必须等待、连续两次稳定要求和 hierarchy 震荡拒绝；完整 manual-validation 纯测试为 `641 passed`，完整仓库回归为 `1013 passed`。
+
+用户随后在 `all --use-cache` 中完成真实 `copy-page` 复验，证据为 `run-2026-08-14-00-20-12`：cache decision 为 `validated_hit`，两个 role 的声明层级均连续稳定两次后才进入完整内容验证；六个 case、9 个 fresh targets、cleanup/restore、双 Notebook 精确关闭和 template immutability 全部通过。
+
+真实调用分类确认重复 Page XML 读取已消除：`get_page_objects=0`，场景工具调用从基线 `223` 降至 `170`，场景 bridge 从 `544` 降至 `494`，其中 `get_page_content` 从 `186` 降至 `156`。实际高于建议的 `150`/`115` 上界，原因不是恢复了同一 Page 的双读，而是当前增强合同增加了必要读取：`93 get_page_xml` 覆盖增长式受保护 Page 集，`49 get_tree` 覆盖 cache 双稳定、plan/read-back bookend 与 restore；`plan_copy`/`copy_page` 内部还需读取源内容。场景耗时为 `519.51s`，高于旧基线 `215.11s`，说明 OneNote 当次时延与新增安全门抵消了 I/O 降幅，因此不把耗时下降作为完成依据。
+
+阶段一的目标和真实证据门已经满足。阶段二的 delta snapshot 会扩大“哪些历史 target 可以不再读取”的判断风险，本轮明确不实施；后续若仍需降本，应另开范围并保留当前全量保护合同。
 
 ## 背景
 

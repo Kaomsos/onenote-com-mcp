@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.bridge import OneNoteBridge, OneNoteBridgeError
 from local_onenote_mcp.constants import CREATE_FILE_TYPES, HIERARCHY_SCOPES, XML_SCHEMA_2013
-from local_onenote_mcp.hierarchy import display_name
+from local_onenote_mcp.hierarchy import display_name, parse_hierarchy
 from local_onenote_mcp.onenote_errors import transient_read_error
 from local_onenote_mcp.services.convergence import DEFAULT_CONVERGENCE, converge
 from local_onenote_mcp.services.hierarchy import HierarchyService
@@ -26,6 +26,7 @@ from .test_utils import read_json, stable_item, utc_now, write_json
 MAX_MATERIALIZED_HIERARCHY_ENTRIES = 256
 MATERIALIZED_HIERARCHY_RETRIES = 8
 MATERIALIZED_HIERARCHY_DELAY_SECONDS = 0.75
+MATERIALIZED_ACTIVATION_RETRY_HRESULT = "0x8004201D"
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -256,6 +257,8 @@ class NotebookLifecycleWrapper:
         *,
         template_paths: tuple[Path, ...],
         role: str = "source",
+        lease_archive_reason: str = "cold-build",
+        _allow_activation_retry: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Open one materialized working directory and prove no template was opened."""
 
@@ -270,14 +273,20 @@ class NotebookLifecycleWrapper:
         templates = tuple(path.resolve(strict=True) for path in template_paths)
         if working_path in templates:
             raise RunnerFailure("Lifecycle refuses to open a cache template path.")
+        if lease_archive_reason not in {
+            "activation-retry",
+            "cold-build",
+            "persistence-checkpoint",
+        }:
+            raise RunnerFailure("Lifecycle lease archive reason is not allowlisted.")
         if self.lease_path.exists():
             previous = self._read_lease()
             if previous.get("state") != "closed":
                 raise RunnerFailure("Lifecycle lease is active; refusing a second Notebook open.")
             archived = self.run_dir / (
-                "lifecycle-cold-build-lease.json"
+                f"lifecycle-{lease_archive_reason}-lease.json"
                 if self.role == "source"
-                else f"lifecycle-cold-build-lease-{self.role}.json"
+                else f"lifecycle-{lease_archive_reason}-lease-{self.role}.json"
             )
             if archived.exists():
                 raise RunnerFailure("Lifecycle cold-build lease archive already exists.")
@@ -323,10 +332,19 @@ class NotebookLifecycleWrapper:
         except Exception as exc:
             lease.update(
                 hierarchy_open_status="failed",
+                hierarchy_open_stage="hierarchy_activation",
                 hierarchy_open_error=f"{type(exc).__name__}: {exc}",
                 hierarchy_open_failed_at=utc_now(),
             )
             write_json(self.lease_path, lease)
+            if _allow_activation_retry and self._materialized_activation_is_retryable():
+                return self._retry_materialized_activation(
+                    name=name,
+                    working_path=working_path,
+                    templates=templates,
+                    role=role,
+                    first_error=exc,
+                )
             raise
         lease.update(
             opened_hierarchy=opened_hierarchy,
@@ -343,7 +361,320 @@ class NotebookLifecycleWrapper:
         )
         return notebook, lease
 
+    def _materialized_activation_is_retryable(self) -> bool:
+        """Accept only a pure, parent-bound OneNote synchronization lag."""
+
+        try:
+            evidence = read_json(self.materialized_evidence_path)
+        except Exception:
+            return False
+        attempts = evidence.get("attempts")
+        if evidence.get("status") != "failed" or not isinstance(attempts, list):
+            return False
+        pending = [
+            attempt
+            for attempt in attempts
+            if isinstance(attempt, dict) and attempt.get("activated") is not True
+        ]
+        return bool(pending) and all(
+            attempt.get("returned_object_id")
+            and attempt.get("observed_parent_id") == attempt.get("requested_parent_id")
+            and attempt.get("exact_object_probe_hresult")
+            == MATERIALIZED_ACTIVATION_RETRY_HRESULT
+            and not attempt.get("exact_object_probe_mismatch")
+            and not attempt.get("bridge_error_type")
+            for attempt in pending
+        )
+
+    def _retry_materialized_activation(
+        self,
+        *,
+        name: str,
+        working_path: Path,
+        templates: tuple[Path, ...],
+        role: str,
+        first_error: Exception,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Close and reopen the same working copy once; never replay a mutation."""
+
+        suffix = "" if self.role == "source" else f"-{self.role}"
+        initial_evidence_path = (
+            self.run_dir / f"materialized-hierarchy-open-initial{suffix}.json"
+        )
+        recovery_path = self.run_dir / f"materialized-activation-recovery{suffix}.json"
+        initial_evidence = read_json(self.materialized_evidence_path)
+        write_json(initial_evidence_path, initial_evidence)
+        recovery: dict[str, Any] = {
+            "schema_version": 1,
+            "status": "running",
+            "reason": "onenote_not_yet_synchronized",
+            "mutation_started": False,
+            "working_path": str(working_path),
+            "initial_evidence": str(initial_evidence_path),
+            "started_at": utc_now(),
+        }
+        write_json(recovery_path, recovery)
+        self.progress.unit_started(
+            "cache recovery",
+            f"{self.role} close/reopen working copy",
+            1,
+            1,
+        )
+        try:
+            close_result = self.close_exact_notebook()
+            notebook, lease = self.open_working_notebook(
+                name,
+                working_path,
+                template_paths=templates,
+                role=role,
+                lease_archive_reason="activation-retry",
+                _allow_activation_retry=False,
+            )
+        except Exception as retry_exc:
+            recovery.update(
+                status="failed",
+                failed_at=utc_now(),
+                first_error_type=type(first_error).__name__,
+                retry_error_type=type(retry_exc).__name__,
+                retry_error=str(retry_exc),
+            )
+            write_json(recovery_path, recovery)
+            raise RunnerFailure(
+                "Materialized hierarchy activation remained unavailable after one exact "
+                "working-copy close/reopen recovery; mutation was not started. "
+                "Close older preserved validation Notebooks in OneNote, then retry."
+            ) from retry_exc
+        recovery.update(
+            status="passed",
+            completed_at=utc_now(),
+            close_result=close_result,
+            reopened_notebook_id=str(notebook.get("id", "")),
+        )
+        write_json(recovery_path, recovery)
+        lease["activation_recovery"] = {
+            "attempted": True,
+            "passed": True,
+            "reason": recovery["reason"],
+            "evidence": str(recovery_path),
+        }
+        write_json(self.lease_path, lease)
+        self.progress.unit_completed(
+            "cache recovery",
+            f"{self.role} close/reopen working copy",
+            1,
+            1,
+        )
+        return notebook, lease
+
     def _open_materialized_hierarchy(
+        self,
+        working_path: Path,
+        notebook: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Batch-open bounded containers and observe the Notebook in the same COM session."""
+
+        if not getattr(
+            self._bridge,
+            "supports_hierarchy_batch",
+            isinstance(self._bridge, OneNoteBridge),
+        ):
+            return self._open_materialized_hierarchy_legacy(working_path, notebook)
+
+        requests: list[dict[str, Any]] = []
+        attempts: list[dict[str, Any]] = []
+        opened: list[dict[str, Any]] = []
+
+        def save(status: str, error: str | None = None) -> None:
+            evidence: dict[str, Any] = {
+                "schema_version": 2,
+                "status": status,
+                "working_path": str(working_path),
+                "notebook_id": str(notebook["id"]),
+                "batch_session_count": len(
+                    {attempt.get("batch") for attempt in attempts if attempt.get("batch")}
+                ),
+                "requests": requests,
+                "attempts": attempts,
+                "opened": opened,
+                "content_saved": False,
+                "recorded_at": utc_now(),
+            }
+            if error is not None:
+                evidence["error"] = error
+            write_json(self.materialized_evidence_path, evidence)
+
+        def collect(directory: Path, parent_key: str, parent_path: str) -> None:
+            children = sorted(directory.iterdir(), key=lambda value: value.name.casefold())
+            for child in children:
+                if not (child.is_dir() or child.suffix.casefold() == ".one"):
+                    continue
+                if len(requests) >= MAX_MATERIALIZED_HIERARCHY_ENTRIES:
+                    raise RunnerFailure(
+                        "Materialized Notebook hierarchy exceeds its bounded budget."
+                    )
+                resolved = child.resolve(strict=True)
+                if working_path not in resolved.parents or _is_reparse_point(child):
+                    raise RunnerFailure(
+                        "Materialized Notebook hierarchy escaped its exact plain working tree."
+                    )
+                key = child.relative_to(working_path).as_posix()
+                resource_type = "section_group" if child.is_dir() else "section"
+                expected_path = HierarchyService.friendly_child_path(parent_path, child.name)
+                requests.append(
+                    {
+                        "key": key,
+                        "parent_key": parent_key,
+                        "path": str(resolved) if not parent_key else child.name,
+                        "path_mode": "absolute" if not parent_key else "parent_relative",
+                        "relative_to_id": "",
+                        "resource_type": resource_type,
+                        "relative_path": key,
+                        "absolute_working_path": str(resolved),
+                        "expected_path": expected_path,
+                        "create_file_type": CREATE_FILE_TYPES["none"],
+                    }
+                )
+                if child.is_dir():
+                    collect(child, key, expected_path)
+
+        def observe_batch(
+            response: Mapping[str, Any],
+            pending: list[dict[str, Any]],
+            batch_index: int,
+        ) -> list[dict[str, Any]]:
+            try:
+                resources = parse_hierarchy(str(response["xml"]))
+            except (KeyError, ET.ParseError, ValueError) as exc:
+                raise RunnerFailure(
+                    "Materialized hierarchy batch returned invalid hierarchy XML."
+                ) from exc
+            by_id = {str(item.get("id")): item for item in resources if item.get("id")}
+            results = {
+                str(item.get("key")): item
+                for item in response.get("items", ())
+                if isinstance(item, Mapping)
+            }
+            opened_by_key = {
+                item["relative_path"]: item["object_id"] for item in opened
+            }
+            batch_object_ids = {
+                key: str(item.get("object_id") or "")
+                for key, item in results.items()
+                if item.get("object_id")
+            }
+            missing: list[dict[str, Any]] = []
+            for request in pending:
+                result = results.get(str(request["key"]), {})
+                parent_id = (
+                    str(notebook["id"])
+                    if not request["parent_key"]
+                    else opened_by_key.get(
+                        str(request["parent_key"]),
+                        batch_object_ids.get(str(request["parent_key"]), ""),
+                    )
+                )
+                attempt: dict[str, Any] = {
+                    "batch": batch_index,
+                    "relative_path": request["relative_path"],
+                    "resource_type": request["resource_type"],
+                    "path_mode": request["path_mode"],
+                    "requested_parent_id": parent_id,
+                    "activated": False,
+                }
+                object_id = str(result.get("object_id") or "")
+                if object_id:
+                    attempt["returned_object_id"] = object_id
+                error = result.get("error")
+                if isinstance(error, Mapping):
+                    attempt["bridge_error_type"] = str(
+                        error.get("leaf_exception_type") or "OneNoteBridgeError"
+                    )
+                    attempt["bridge_error_hresult"] = str(error.get("hresult") or "")
+                item = by_id.get(object_id)
+                if item is None:
+                    matches = [
+                        candidate
+                        for candidate in resources
+                        if candidate.get("resource_type") == request["resource_type"]
+                        and str(candidate.get("path", "")).casefold()
+                        == str(request["expected_path"]).casefold()
+                        and candidate.get("is_in_recycle_bin") is not True
+                    ]
+                    item = matches[0] if len(matches) == 1 else None
+                if item is not None and (
+                    item.get("resource_type") == request["resource_type"]
+                    and str(item.get("parent_id", "")) == parent_id
+                    and str(item.get("path", "")).casefold()
+                    == str(request["expected_path"]).casefold()
+                    and item.get("is_in_recycle_bin") is not True
+                ):
+                    attempt.update(
+                        activated=True,
+                        activation_proof="batch_notebook_snapshot",
+                        observed_parent_id=str(item.get("parent_id", "")),
+                    )
+                    opened.append(
+                        {
+                            "relative_path": request["relative_path"],
+                            "resource_type": request["resource_type"],
+                            "object_id": str(item["id"]),
+                        }
+                    )
+                    opened_by_key[str(request["key"])] = str(item["id"])
+                else:
+                    missing.append(request)
+                attempts.append(attempt)
+            return missing
+
+        try:
+            collect(working_path, "", str(notebook["path"]))
+            pending = list(requests)
+            for batch_index in range(1, 3):
+                if not pending:
+                    break
+                opened_by_key = {
+                    item["relative_path"]: item["object_id"] for item in opened
+                }
+                batch_requests: list[dict[str, Any]] = []
+                for request in pending:
+                    parent_key = str(request["parent_key"])
+                    parent_already_open = parent_key in opened_by_key
+                    batch_requests.append(
+                        {
+                            "key": request["key"],
+                            "parent_key": "" if parent_already_open else parent_key,
+                            "path": request["path"],
+                            "relative_to_id": (
+                                opened_by_key[parent_key]
+                                if parent_already_open
+                                else request["relative_to_id"]
+                            ),
+                            "create_file_type": request["create_file_type"],
+                        }
+                    )
+                response = self._bridge.call(
+                    "open_hierarchy_batch",
+                    notebook_id=str(notebook["id"]),
+                    requests=batch_requests,
+                    scope=HIERARCHY_SCOPES["pages"],
+                    schema=XML_SCHEMA_2013,
+                )
+                pending = observe_batch(response, pending, batch_index)
+                save("running")
+            if pending:
+                raise RunnerFailure(
+                    "Materialized hierarchy batch did not activate every exact container: "
+                    + ", ".join(str(item["relative_path"]) for item in pending)
+                )
+        except Exception as exc:
+            save("failed", f"{type(exc).__name__}: {exc}")
+            if isinstance(exc, RunnerFailure):
+                raise
+            raise RunnerFailure(f"Materialized hierarchy open failed: {exc}") from exc
+        save("passed")
+        return opened
+
+    def _open_materialized_hierarchy_legacy(
         self,
         working_path: Path,
         notebook: dict[str, Any],
@@ -375,7 +706,15 @@ class NotebookLifecycleWrapper:
                 child for child in children if child.is_dir() or child.suffix.casefold() == ".one"
             ]
             for child in hierarchy_children:
-                resolved = child.resolve(strict=True)
+                try:
+                    resolved = child.resolve(strict=True)
+                except FileNotFoundError as exc:
+                    message = (
+                        "Materialized hierarchy path changed during activation before its "
+                        f"exact child could be verified: {child.relative_to(working_path).as_posix()}"
+                    )
+                    save_evidence(status="failed", error=message)
+                    raise RunnerFailure(message) from exc
                 if working_path not in resolved.parents or _is_reparse_point(child):
                     raise RunnerFailure(
                         "Materialized Notebook hierarchy escaped its exact plain working tree."
@@ -389,10 +728,18 @@ class NotebookLifecycleWrapper:
                     child.name,
                 )
                 item: dict[str, Any] | None = None
-                for path_mode, open_path, relative_to_id in (
-                    ("absolute", str(resolved), ""),
-                    ("parent_relative", child.name, parent_id),
-                ):
+                if parent.get("resource_type") == "notebook":
+                    open_modes = (
+                        ("absolute", str(resolved), ""),
+                        ("parent_relative", child.name, parent_id),
+                    )
+                else:
+                    # A nested absolute Section open can bind to an unrelated live
+                    # parent before the exact SectionGroup is supplied.  That first
+                    # attachment may also consume/rewrite the disposable working
+                    # path, so nested children use only the already-proven parent.
+                    open_modes = (("parent_relative", child.name, parent_id),)
+                for path_mode, open_path, relative_to_id in open_modes:
                     attempt: dict[str, Any] = {
                         "relative_path": child.relative_to(working_path).as_posix(),
                         "absolute_working_path": str(resolved),
@@ -420,13 +767,24 @@ class NotebookLifecycleWrapper:
                         continue
                     object_id = str(result["object_id"])
                     attempt["returned_object_id"] = object_id
-                    item = self._hierarchy.wait_for_created(
-                        expected_path,
-                        resource_type,
-                        object_id,
-                        retries=1,
-                        delay_seconds=0,
-                    )
+                    try:
+                        item = self._hierarchy.wait_for_created(
+                            expected_path,
+                            resource_type,
+                            object_id,
+                            expected_parent_id=parent_id,
+                            validate_parent=True,
+                            retries=1,
+                            delay_seconds=0,
+                        )
+                    except Exception as snapshot_exc:
+                        attempt["global_snapshot_error"] = type(snapshot_exc).__name__
+                        if isinstance(snapshot_exc, OneNoteBridgeError):
+                            attempt["global_snapshot_hresult"] = snapshot_exc.hresult
+                            attempt["global_snapshot_retryability"] = (
+                                snapshot_exc.retryability
+                            )
+                        item = None
                     attempt["global_snapshot_visible"] = item is not None
                     observed_parent_id = (
                         None if item is None else str(item.get("parent_id", ""))
@@ -443,7 +801,7 @@ class NotebookLifecycleWrapper:
                             attempt["parent_probe_error"] = type(parent_exc).__name__
                         attempt["observed_parent_id"] = observed_parent_id
                         if observed_parent_id == parent_id:
-                            item, exact_probe = self._wait_for_exact_materialized_item(
+                            item, exact_probe = self._wait_for_materialized_item_activation(
                                 object_id=object_id,
                                 resource_type=resource_type,
                                 expected_name=expected_path.rsplit("/", 1)[-1],
@@ -461,7 +819,11 @@ class NotebookLifecycleWrapper:
                     attempt["activation_proof"] = (
                         "exact_object_and_parent"
                         if attempt.get("exact_object_probe") == "passed"
-                        else "global_snapshot"
+                        else (
+                            "global_snapshot_retry"
+                            if attempt.get("global_snapshot_retry_visible") is True
+                            else "global_snapshot"
+                        )
                     )
                     break
                 if item is None:
@@ -495,7 +857,7 @@ class NotebookLifecycleWrapper:
         save_evidence(status="passed")
         return opened
 
-    def _wait_for_exact_materialized_item(
+    def _wait_for_materialized_item_activation(
         self,
         *,
         object_id: str,
@@ -504,7 +866,7 @@ class NotebookLifecycleWrapper:
         expected_path: str,
         parent_id: str,
     ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-        """Prove an opened child by exact COM object/type/name when global XML lags."""
+        """Boundedly recheck global and exact-self activation without weakening proof."""
 
         expected_tag = {
             "section": "Section",
@@ -514,6 +876,8 @@ class NotebookLifecycleWrapper:
             "exact_object_probe": "failed",
             "exact_object_probe_attempts": 0,
             "expected_object_type": resource_type,
+            "global_snapshot_retry_attempts": 0,
+            "global_snapshot_retry_visible": False,
         }
         for attempt in range(MATERIALIZED_HIERARCHY_RETRIES):
             probe["exact_object_probe_attempts"] = attempt + 1
@@ -527,7 +891,24 @@ class NotebookLifecycleWrapper:
                 root = ET.fromstring(str(result["xml"]))
             except Exception as exc:
                 probe["exact_object_probe_error"] = type(exc).__name__
+                if isinstance(exc, OneNoteBridgeError):
+                    probe["exact_object_probe_hresult"] = exc.hresult
+                    probe["exact_object_probe_retryability"] = exc.retryability
             else:
+                object_node = next(
+                    (
+                        candidate
+                        for candidate in root.iter()
+                        if candidate.attrib.get("ID") == object_id
+                    ),
+                    None,
+                )
+                if (
+                    object_node is not None
+                    and object_node.tag.rsplit("}", 1)[-1] != expected_tag
+                ):
+                    probe["exact_object_probe_mismatch"] = "resource_type"
+                    return None, probe
                 node = next(
                     (
                         candidate
@@ -553,6 +934,8 @@ class NotebookLifecycleWrapper:
                 ):
                     probe["exact_object_probe"] = "passed"
                     probe.pop("exact_object_probe_error", None)
+                    probe.pop("exact_object_probe_hresult", None)
+                    probe.pop("exact_object_probe_retryability", None)
                     return (
                         {
                             "id": object_id,
@@ -565,6 +948,29 @@ class NotebookLifecycleWrapper:
                         },
                         probe,
                     )
+            probe["global_snapshot_retry_attempts"] = attempt + 1
+            try:
+                global_item = self._hierarchy.wait_for_created(
+                    expected_path,
+                    resource_type,
+                    object_id,
+                    expected_parent_id=parent_id,
+                    validate_parent=True,
+                    retries=1,
+                    delay_seconds=0,
+                )
+            except Exception as exc:
+                probe["global_snapshot_retry_error"] = type(exc).__name__
+                if isinstance(exc, OneNoteBridgeError):
+                    probe["global_snapshot_retry_hresult"] = exc.hresult
+                    probe["global_snapshot_retry_retryability"] = exc.retryability
+            else:
+                if global_item is not None:
+                    probe["global_snapshot_retry_visible"] = True
+                    probe.pop("global_snapshot_retry_error", None)
+                    probe.pop("global_snapshot_retry_hresult", None)
+                    probe.pop("global_snapshot_retry_retryability", None)
+                    return global_item, probe
             if attempt + 1 < MATERIALIZED_HIERARCHY_RETRIES:
                 time.sleep(MATERIALIZED_HIERARCHY_DELAY_SECONDS)
         return None, probe

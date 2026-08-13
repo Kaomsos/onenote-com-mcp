@@ -17,9 +17,11 @@ import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.page import (
     canonical_page_digest,
+    collect_page_objects,
     page_content_capability_projection,
     semantic_mathml_projection,
 )
+from local_onenote_mcp.domain import content_objects
 from local_onenote_mcp.page.copying import MATHML_FRAGMENT_PATTERN
 from local_onenote_mcp.page.parser import html_fragment_to_text, local_name, parse_xml
 from local_onenote_mcp.services.pages import stable_page_content_digest
@@ -574,10 +576,10 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
         page_xml_hashes[page_id] = hashlib.sha256(xml.encode("utf-8")).hexdigest()
         page_capability_projections[page_id] = page_content_capability_projection(xml)
         page_mathml_structure_projections[page_id] = mathml_structure_projection(xml)
-        objects_result = await client.call_tool("get_page_objects", {"page_id": page_id})
+        objects = content_objects(page_id, collect_page_objects(xml))
         page_objects[page_id] = [
             {field: obj.get(field) for field in OBJECT_FIELDS if field in obj}
-            for obj in objects_result.get("objects", [])
+            for obj in objects
             if isinstance(obj, dict)
         ]
     refreshed_tree_result = await client.call_tool(

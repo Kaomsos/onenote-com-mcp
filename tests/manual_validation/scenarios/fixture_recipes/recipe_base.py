@@ -151,6 +151,7 @@ class RecipeBase(ABC):
     accepts_evidence_only = False
     consumer_scenario = False
     supports_cache = True
+    requires_persistence_checkpoint = False
     bundle_invariants = ("all role Notebook IDs and resolved paths are unique",)
 
     def __init__(
