@@ -28,6 +28,7 @@
 | 020 | [UserAuthored Fixture 开发脚手架完整化](020_user_authored_fixture_development_scaffold.md) | 待办 | P3 | 当前骨架已够开发取证使用；完整 authoring-zone、多实例、ready/evidence-only 和失效真实矩阵延期，且不阻塞 TODO 014 或生产 Copy/Move。 |
 | 021 | [Windows Fixture Cache 路径长度预算](021_windows_fixture_cache_path_budget.md) | 待办 | P3 | 评估 cache/run/staging 最坏路径长度、短路径命名合同与工作区外 pytest basetemp；不阻塞当前原子发布重试修复。 |
 | 022 | [全局元数据查找 Tool 命名与 Agent 可见合同](022_global_metadata_find_tool_naming_and_description.md) | 待办 | P1 | 将技术化的 `query_hierarchy` 简化为 `global_query`，并通过描述、范围响应和 Search 分工明确其全局元数据语义。 |
+| 023 | [公开仓库发布准备与来源合规](023_public_repository_release_readiness.md) | 待办 | P0 | 公开前完成品牌与 Demo、双语文档和社区规范、Credit/relicense、线性历史、原作者通知及隐私/供应链/发布验证。 |
 
 ## 文件命名
 
