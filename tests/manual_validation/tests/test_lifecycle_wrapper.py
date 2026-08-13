@@ -310,6 +310,7 @@ def test_materialized_schema_two_lease_closes_by_exact_id_and_path(tmp_path) -> 
     result = wrapper.close_exact_notebook()
 
     assert result["closed"] is True
+    assert result["convergence"]["stable_observations"] == 2
     assert read_json(wrapper.lease_path)["state"] == "closed"
 
 
@@ -554,6 +555,7 @@ def test_close_is_bound_to_exact_lease_and_preserves_files(tmp_path) -> None:
     result = wrapper.close_exact_notebook()
 
     assert result["closed"] is True
+    assert result["convergence"]["stable_observations"] == 2
     assert result["source_notebook_id"] == "notebook-id"
     assert bridge.calls[-1] == (
         "close_notebook",

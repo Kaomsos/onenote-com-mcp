@@ -106,6 +106,40 @@ LAYERED_PAGE_FIXTURE_TOOLS = {
 
 
 SCENARIO_SPECS = {
+    "onenote-convergence": ScenarioSpec(
+        "onenote-convergence",
+        _profile(
+            "fresh-com-convergence",
+            (
+                "01-Convergence-Section/{01-Anchor,02-Anchor}",
+                "run-scoped 03-Convergence-Probe is created, updated, reordered, and deleted",
+            ),
+            (
+                "convergence_section",
+                "first_anchor_page",
+                "second_anchor_page",
+            ),
+            {"create_section", "create_page", "reorder_page"},
+            content=("plain_text", "page_order", "production_convergence_evidence"),
+            checks=(
+                "both anchor Pages resolve to fresh exact IDs in one Section",
+                "all mutation responses prove at least two stable live observations",
+                "the disposable probe is non-permanently deleted before lifecycle Close",
+            ),
+        ),
+        DELETE_SCENARIO_POLICY,
+        frozenset(
+            READ_TOOLS
+            | {
+                "create_section",
+                "create_page",
+                "append_to_page",
+                "reorder_page",
+                "delete_page",
+            }
+        ),
+        {"fresh_only": True, "included_in_all": False},
+    ),
     "create": ScenarioSpec(
         "create",
         _profile(

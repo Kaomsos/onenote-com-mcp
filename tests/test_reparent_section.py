@@ -695,7 +695,7 @@ def test_reparent_page_partial_reports_observed_root_when_subtree_is_incomplete(
             ),
         },
     }
-    captures = iter([before, *[candidate] * 8])
+    captures = iter([before, *[candidate] * 16])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
     monkeypatch.setattr(
@@ -779,7 +779,7 @@ def test_reparent_page_readback_unavailable_reports_stable_partial_reason(
             "modified",
         )
 
-    assert captures == 9
+    assert captures == 17
     assert caught.value.details["outcome"] == "reparent_subtree_incomplete"
     assert caught.value.details["active_source_ids"] == []
     assert caught.value.details["observed_destination_ids"] == []
@@ -894,6 +894,7 @@ def test_reparent_container_service_returns_observed_destination_position(
         [
             {"items": before_items, "page_xml": {}},
             {"items": after_items, "page_xml": {}},
+            {"items": after_items, "page_xml": {}},
         ]
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
@@ -972,7 +973,7 @@ def test_reparent_page_service_returns_only_normalized_root_position(monkeypatch
             ),
         },
     }
-    snapshots = iter([before, after])
+    snapshots = iter([before, after, after])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
     monkeypatch.setattr(
@@ -1047,7 +1048,7 @@ def test_reparent_page_without_descendants_skips_promotion_and_false_is_equivale
             ),
         },
     }
-    snapshots = iter([before, after])
+    snapshots = iter([before, after, after])
     calls: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")

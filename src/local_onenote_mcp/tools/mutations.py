@@ -6,10 +6,17 @@ and read-back verification belong to :mod:`local_onenote_mcp.services`.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from .context import get_services
-from .responses import invoke
+from .responses import invoke as _invoke
+
+
+def invoke(action: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Hold the mutation lease across confirmation, COM, and stable read-back."""
+
+    return _invoke(action, mutation=True)
 
 
 async def create_notebook(name_or_path: str, base_folder: str = "") -> dict[str, Any]:

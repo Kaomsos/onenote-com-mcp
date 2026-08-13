@@ -38,6 +38,7 @@ from .copy_display_equation import CopyDisplayEquationScenario
 from .move_page import MovePageScenario
 from .move_section import MoveSectionScenario
 from .move_section_group import MoveSectionGroupScenario
+from .onenote_convergence import OneNoteConvergenceScenario
 from .search_all_open_notebooks import SearchAllOpenNotebooksScenario
 from .bootstrap_inserted_file_fixture import BootstrapInsertedFileFixtureScenario
 from .bootstrap_ink_drawing_fixture import BootstrapInkDrawingFixtureScenario
@@ -193,6 +194,7 @@ __all__ = [
     "MovePageScenario",
     "MoveSectionScenario",
     "MoveSectionGroupScenario",
+    "OneNoteConvergenceScenario",
     "SearchAllOpenNotebooksScenario",
     "BootstrapInsertedFileFixtureScenario",
     "BootstrapInkDrawingFixtureScenario",

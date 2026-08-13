@@ -18,7 +18,9 @@ from ..hierarchy import (
     parse_hierarchy,
     resolve_resource,
 )
+from ..onenote_errors import transient_read_error
 from .base import BaseService
+from .convergence import ConvergenceConfig, ConvergenceResult, converge
 
 
 IDENTIFIER_RESOLUTION_ORDER = ["id", "exact_path", "unique_name"]
@@ -29,6 +31,30 @@ class HierarchyService(BaseService):
     def __init__(self, bridge: OneNoteBridge) -> None:
         super().__init__(bridge)
         ET.register_namespace("one", ONE_NS)
+        self._last_convergence: ConvergenceResult[Any] | None = None
+
+    def last_convergence_summary(self) -> dict[str, Any]:
+        if self._last_convergence is None:
+            return {
+                "converged": False,
+                "attempts": 0,
+                "elapsed_seconds": 0.0,
+                "stable_observations": 0,
+                "identity_remap": {},
+                "transient_errors": [],
+            }
+        return self._last_convergence.summary()
+
+    @staticmethod
+    def _wait_config(retries: int, delay_seconds: float) -> ConvergenceConfig:
+        bounded_retries = max(1, int(retries))
+        bounded_delay = max(0.0, float(delay_seconds))
+        return ConvergenceConfig(
+            deadline_seconds=max(0.001, bounded_delay * max(1, bounded_retries - 1) + 0.001),
+            interval_seconds=bounded_delay,
+            required_stable_observations=2 if bounded_retries >= 2 else 1,
+            max_observations=bounded_retries,
+        )
 
     def hierarchy_xml(self, start_id: str = "", scope: str = "pages") -> str:
         return self.call(
@@ -73,22 +99,29 @@ class HierarchyService(BaseService):
     def wait_for(
         self,
         object_id: str,
-        resource_type: str,
+        resource_type: str | None,
         *,
         predicate: Callable[[dict[str, Any]], bool] | None = None,
         retries: int = 8,
         delay_seconds: float = 0.5,
     ) -> dict[str, Any] | None:
-        for attempt in range(retries):
+        def observe() -> dict[str, Any] | None:
             try:
-                item = self.resource(object_id, resource_type)
+                return self.resource(object_id, resource_type)
             except ValueError:
-                item = None
-            if item is not None and (predicate is None or predicate(item)):
-                return item
-            if attempt + 1 < retries:
-                time.sleep(delay_seconds)
-        return None
+                return None
+
+        result = converge(
+            observe,
+            lambda item: item is not None and (predicate is None or predicate(item)),
+            lambda item: self._resource_identity(item),
+            config=self._wait_config(retries, delay_seconds),
+            clock=time.monotonic,
+            sleeper=time.sleep,
+            transient=transient_read_error,
+        )
+        self._last_convergence = result
+        return result.value if result.converged else None
 
     def wait_for_created(
         self,
@@ -110,13 +143,13 @@ class HierarchyService(BaseService):
         ``before_ids`` so that fallback also proves the candidate is newly observed.
         """
 
-        for attempt in range(retries):
+        def observe() -> dict[str, Any] | None:
             resources = self.resources(include_recycle_bin=True)
             allocated = find_resource_by_id(resources, allocated_id)
 
             def eligible(candidate: dict[str, Any]) -> bool:
                 return (
-                    candidate.get("resource_type") == resource_type
+                    (resource_type is None or candidate.get("resource_type") == resource_type)
                     and candidate.get("path", "").casefold() == expected_path.casefold()
                     and candidate.get("is_in_recycle_bin") is not True
                     and (
@@ -143,9 +176,47 @@ class HierarchyService(BaseService):
                 ]
                 if len(path_matches) == 1:
                     return path_matches[0]
-            if attempt + 1 < retries:
-                time.sleep(delay_seconds)
-        return None
+            return None
+
+        result = converge(
+            observe,
+            lambda item: item is not None,
+            lambda item: self._resource_identity(item),
+            config=self._wait_config(retries, delay_seconds),
+            clock=time.monotonic,
+            sleeper=time.sleep,
+            identity_remap={},
+            transient=transient_read_error,
+        )
+        if result.converged and result.value is not None and result.value.get("id") != allocated_id:
+            result = ConvergenceResult(
+                result.converged,
+                result.value,
+                result.attempts,
+                result.elapsed_seconds,
+                result.stable_observations,
+                result.observation_history,
+                result.transient_errors,
+                {allocated_id: str(result.value["id"])},
+            )
+        self._last_convergence = result
+        return result.value if result.converged else None
+
+    @staticmethod
+    def _resource_identity(item: dict[str, Any] | None) -> tuple[Any, ...] | None:
+        if item is None:
+            return None
+        return (
+            item.get("id"),
+            item.get("resource_type"),
+            item.get("parent_id"),
+            item.get("section_id"),
+            item.get("path"),
+            item.get("is_in_recycle_bin"),
+            item.get("order"),
+            item.get("page_level"),
+            display_name(item),
+        )
 
     @staticmethod
     def friendly_child_path(parent_path: str, child_name: str) -> str:

@@ -1,7 +1,7 @@
 # 025：OneNote COM 收敛、Mutation 对账与调用协调
 
 > ID：025
-> 状态：待办
+> 状态：已完成
 > 优先级：P1
 > 类型：生产可靠性 / OneNote COM 一致性 / Mutation 安全 / Manual Validation
 > 更新日期：2026-08-13
@@ -15,6 +15,32 @@
 本 TODO 将这些行为沉淀为生产层公共基础设施：保留 HRESULT 的 typed error、deadline-based convergence、operation-specific mutation reconciliation，以及覆盖完整“确认→COM mutation→稳定 read-back”的进程内读写协调。目标不是让所有错误自动重试，而是可靠地区分“未应用、已应用、部分应用、状态不确定”，只在证明仍是精确 pre-state 且操作允许时重试同一动作；否则继续 fail closed 并保留可执行恢复信息。
 
 Fixture cache clone 的 materialization/open readiness 由 fixture cache/lifecycle 工作单独治理；OneNote ID 进入 cleanup evidence 文件名的问题也不属于本 TODO。本 TODO 只负责可复用于生产 MCP tools 的 COM 时序语义，并允许 manual-validation 调用同一生产机制验证，而不是维护第二套独立等待协议。
+
+## 实施进度（2026-08-13）
+
+- 已新增 `onenote_errors.py`、`services/convergence.py`、`services/reconciliation.py` 与 `services/coordination.py`；bridge/service/response 保留 typed HRESULT、retryability、partial 和 reconciliation。官方 `0x8004201D/23/30` 与 object/file unavailable HRESULT 已映射为稳定类型；只有明确 typed transient read 才进入 convergence，modal/object/file unavailable 均不构成 mutation replay 依据。
+- 所有公开 Tool 通过进程级 reader/writer coordinator；mutation 从 confirmation 前进入独占区，generation invalidation hook 在任何 COM mutation 前执行，为 TODO 024 保留无旧读回填的接入点。首版仍明确不覆盖其他 MCP 进程或 Desktop 直接修改。
+- Create/open、Page title/content、Rename、Page/Section Reorder、Reparent、Copy Page fidelity/最终 topology、Delete、Move 源缺席与 Close 已迁移到公共连续稳定观察；`sync_notebook` 改为 `accepted=true/converged=false` 请求语义。
+- 已新增 fresh-only、`included_in_all=false` 的 `onenote-convergence` scenario 与独立最小 recipe；它直接验证生产 Create→Page update→Reorder→非永久 Delete timing，并由共享 lifecycle 记录 Close 证据。
+- README、当前架构、Tool contract 和 manual-validation 文档已同步。自动化、dry-run 与用户前台真实证据均已闭合。
+
+### 已闭合的真实后端证据
+
+2026-08-13，用户在交互式前台显式运行并确认以下 HUMAN-GATED 场景；Agent 只读取已保存的 content-free/结构化 evidence，没有启动、续跑或清理任何真实 scenario：
+
+- `run-2026-08-13-15-50-42` / `onenote-convergence`：passed；Create、Page update、Reorder、非永久 Delete 均为 `attempts=2/stable_observations=2`，fixture `restored=true`；共享 lifecycle Close 同样连续稳定两次并关闭 Notebook。
+- `run-2026-08-13-15-54-30` / `create`：passed；两个同标题 Page 均保留 fresh allocated/read-back ID，各自连续稳定两次，默认精确非永久 cleanup 后 `restored=true`，Notebook 已关闭。
+- `run-2026-08-13-15-56-46` / `reorder-page`：passed；正向与默认恢复均通过，`restored=true`，Notebook 已关闭。
+- `run-2026-08-13-15-58-04` / `delete`：passed；预期非永久删除终态通过，`restored=false` 为场景合同语义，Notebook 已关闭。
+- `run-2026-08-13-15-58-25` / `copy-page`：passed；同 Section、跨 Section、跨 Notebook的 root-only/subtree 共六个 case 全部 `verified=true/lossless=true/partial=false`，最终 topology 均连续稳定两次；反向 cleanup 后双侧 `restored=true`、双 Notebook 已关闭。
+- `run-2026-08-13-16-05-59` / `move-page`：passed；跨 Notebook root-only/subtree 两个 case 均 `outcome=moved`、Copy verified/lossless、`source_deleted_nonpermanently=true/partial=false`；源删除只在 Copy 门通过后发生，双 Notebook 已关闭。
+
+六次运行均 `observed_mcp_process_starts=1`、`agent_execution_prohibited=true`，没有 permanent delete、Raw XML、第二套 Copy target 或 source-delete 越权证据。正常后端下公共连续稳定门未出现不合理超时，completion definition 要求的真实 convergence 与受影响回归证据据此闭合。
+
+### 已闭合的自动化证据
+
+- `.venv\Scripts\python.exe -m pytest -q`：`918 passed`（2026-08-13，最终复验）；唯一 warning 是 sandbox 无权写 `.pytest_cache`，不影响测试结果。
+- `.venv\Scripts\python.exe tests\manual_validation\run.py onenote-convergence --dry-run --json`：通过；`agent_execution_prohibited=true`、`server_started=false`、fresh-only、单 MCP 计划、最小 policy/tool allowlist、`included_in_all=false`，未访问 cache、未创建目录、未执行真实 OneNote mutation。
 
 ## 当前风险基线
 

@@ -30,7 +30,7 @@
 | 022 | [四层 Typed Metadata Query、原生 Scope 与 List 工具退役](022_typed_metadata_query_tools_and_native_scopes.md) | 待办 | P1 | 四个 typed Query 先覆盖 List 的枚举、直属/递归和分页合同；真实验证完成并取得用户明确批准后，从项目整体移除五个 `list_*` 工具及其生产、测试、manual-validation 和文档依赖。 |
 | 023 | [公开仓库发布准备与来源合规](023_public_repository_release_readiness.md) | 待办 | P0 | 公开前完成品牌与 Demo、双语文档和社区规范、Credit/relicense、线性历史、原作者通知及隐私/供应链/发布验证。 |
 | 024 | [Search 与 Typed Query 短时只读快照缓存](024_search_and_query_read_snapshot_cache.md) | 待办 | P2 | 规划进程内可配置 TTL（默认 15 秒）的 `GetHierarchy`/`FindPages` 缓存、mutation 前失效与 Agent 可见一致性合同；完成状态要求用户确认 `read-cache-coherence` 真实场景证据。 |
-| 025 | [OneNote COM 收敛、Mutation 对账与调用协调](025_onenote_com_convergence_and_mutation_coordination.md) | 待办 | P1 | 统一 HRESULT typed error、deadline 收敛、mutation reconciliation 与进程内读写协调，消除生产 Tools 分散且不一致的 read-after-write 时序语义。 |
+| 025 | [OneNote COM 收敛、Mutation 对账与调用协调](025_onenote_com_convergence_and_mutation_coordination.md) | 已完成 | P1 | typed HRESULT、公共收敛/对账、进程内协调与关键路径迁移已落地；918 个纯测试、dry-run 及用户前台 convergence/create/reorder/delete/copy/move 回归均通过。 |
 
 ## 文件命名
 

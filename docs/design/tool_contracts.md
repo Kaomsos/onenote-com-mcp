@@ -1,7 +1,7 @@
 # MCP 工具参数与返回格式（P0/P1 + P2 实验实现）
 
 > 状态：默认工具 profile 的权威契约  
-> 更新日期：2026-08-11
+> 更新日期：2026-08-13
 > ID 参数均指 OneNote COM 对象 ID，除 `resolve_identifier` 和兼容只读 `list_hierarchy.start_identifier` 外不接受名称或路径。
 
 默认 profile 共 58 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。Section Reorder、三类 Reparent、P2 Copy、Page Move 与容器 Move 由默认关闭的独立策略保护；SectionGroup Reorder 不属于受支持能力，任何请求都必须 fail closed。只有下文列入 validated allowlist 的 Page 内容类型具有真实 OneNote 隔离证据，实验工具在对应真实场景完成前不升级稳定性承诺。
@@ -25,12 +25,21 @@
 {
   "ok": false,
   "complete": false,
-  "code": "validation_error | policy_disabled | backend_error | operation_failed | partial_failure",
-  "error": "safe message"
+  "code": "validation_error | policy_disabled | backend_error | partial_failure | onenote_*",
+  "error": "safe message",
+  "error_type": "stable typed error name",
+  "hresult": "0x80042030",
+  "retryability": "after_user_action | read_after_delay | reconcile_before_retry | unknown",
+  "partial": false,
+  "reconciliation": "not_applied | applied | partially_applied | indeterminate"
 }
 ```
 
-列表通常返回 `items/notebooks/sections/pages`、`count`；对象读取返回 `item`。`partial_failure` 还可返回 `partial=true`、`completed_steps`。底层 COM XML、本机路径或 HRESULT 不进入普通错误。
+列表通常返回 `items/notebooks/sections/pages`、`count`；对象读取返回 `item`。稳定 mutation 成功响应可含 `convergence={converged,attempts,elapsed_seconds,stable_observations,identity_remap,transient_errors}` 与 `reconciliation={state,execute_attempts,had_backend_error}`。默认要求至少两个连续一致的 live postcondition；这些摘要不含 Page XML、正文、binary、secret、完整路径或原始参数。
+
+Typed backend error 保留规范十六进制 `hresult`（并可含 `hresult_signed`）、operation 和 content-free backend category。分类依据 [Microsoft OneNote error codes](https://learn.microsoft.com/en-us/office/client-developer/onenote/error-codes-onenote)：`0x80042030` 固定为 `onenote_modal_ui_blocked/after_user_action`；`0x8004201D` 为 `onenote_not_yet_synchronized/read_after_delay`；`0x80042023` 为 `onenote_operation_timeout/reconcile_before_retry`；文档列出的 object/file does-not-exist HRESULT 归为 `onenote_object_unavailable` 或 `onenote_file_unavailable`，仅允许 read-after-delay。未知 HRESULT 保持 `onenote_backend_error/unknown`。只有 not-yet-synchronized/timeout 加精确 unchanged pre-state 才可能重放声明为幂等的 mutation；object/file unavailable 或 modal 不能作为 mutation replay 依据。`partial_failure` 明确 `partial/reconciliation/manual_recovery_required`；convergence timeout 也明确 `partial=true/reconciliation=indeterminate`，partial 或 indeterminate 禁止盲目重做 Copy/Move/Create 或删除 source。
+
+单 MCP 进程中，纯读 Tool 可共享执行；mutation Tool 从 confirmation 到 convergence/reconciliation 持有独占权，因此同进程 read 不会观察 mutation 中间窗口。该合同不覆盖另一个 MCP 进程或用户直接编辑。未来只读 cache 必须在 COM 前通过同一 coordinator generation 失效，confirmation/read-back 永远读取 live 状态。
 
 ## 2. 发现、List/Get、Query
 
@@ -91,6 +100,8 @@
 独立 `TextBlock/OE/T` 不消除 OneNote COM 自身的 DisplayEquation 写回限制。在当前实测环境中，任何通过 `UpdatePageContent` 初次生成的 standalone block MathML 都可能在公式前获得一个纯空白 `span + br`；若将该包装原样再次提交，break 会继续累积。这个边界适用于最终走相同 COM 写入的 `create_page`、`append_to_page`、`replace_page_body` 和 reconstruction Copy/Move，不是 Copy 专属问题。上述普通 Page 写工具不承诺 XML/CDATA 字节等同或公式前绝无 OneNote 生成的间距；Copy 另在发送前实施受限清理以阻止累积。行内公式不在该特例内。证据与版本边界见 [`lesson/display_equation_com_leading_whitespace_normalization.md`](../lesson/display_equation_com_leading_whitespace_normalization.md)。
 
 Create 的 COM 返回 ID 是第一身份来源。回读对象必须同时满足预期 type、friendly path、active state 与计划父级；Page 必须属于请求的 Section。只有 COM 返回 ID 在 hierarchy 中不可见、同一路径恰有一个新出现的 typed 对象时，才以 `identity_remapped=true` 接受一对一 remap。重复 path、既有对象 ID、错误 type/parent 或 recycle-bin 对象一律拒绝；失败响应保留 `allocated_ids`，不得按标题或 path 任选旧对象。合法的同 Section 重名 Page 因此返回互异的精确 Page IDs。
+
+Create、Page title/content mutation、Rename、Reorder、Reparent、Copy topology/fidelity、Delete 和 Close 的成功必须经过公共连续稳定门。COM error 后只有同一精确目标仍处于冻结 pre-state、没有 fresh allocated/created object、动作明确幂等且 typed error 允许时，才可在本次 Tool 内重放一次；未知或 modal error 不重放。
 
 ## 5. Rename、Reorder 与 Reparent
 
@@ -195,7 +206,7 @@ Move 对选定范围内的每个源 Page 调用 `DeleteHierarchy(permanently=fal
 | `navigate_to` | `object_id`, `page_content_object_id=""`, `new_window=false` | `item`, `navigated=true`。 |
 | `navigate_to_url` | `url`, `new_window=false` | `navigated=true`。 |
 | `get_hyperlink` | `object_id`, `page_content_object_id=""`, `web=false` | `item`, `hyperlink`。 |
-| `sync_notebook` | `notebook_id` | `item`, `synced=true`；不把未验证的子对象 Sync 暴露为稳定能力。 |
+| `sync_notebook` | `notebook_id` | `item`, `sync_requested=true`, `accepted=true`, `converged=false`；COM 只证明请求提交，不声称同步完成。 |
 | `close_notebook` | `notebook_id`, `expected_name`, `expected_modified=null` | 原 `item`, `final_state`, `closed=true`；要求写开关且不暴露 `force`。 |
 
 导出格式：`one/onepkg/mhtml/mht/pdf/xps/word/doc/docx/emf/html/one2007`。`publish_object` 会写本地文件，但不修改 OneNote 对象。
@@ -227,4 +238,4 @@ Move 对选定范围内的每个源 Page 调用 `DeleteHierarchy(permanently=fal
 | `LOCAL_ONENOTE_MAX_COPY_PLAN_SECONDS` | `300` | 只读计划阶段秒数上限。 |
 | `LOCAL_ONENOTE_MAX_COPY_EXECUTE_SECONDS` | `1800` | 执行阶段秒数上限；超限按部分失败报告。 |
 
-默认不注册 `update_page_xml/open_hierarchy/find_meta/merge_sections/set_filing_location`。`delete_hierarchy` 与 `update_hierarchy_xml` 已从所有生产 profile 移除，设置 Raw XML 开关也不会枚举或恢复；内部 bridge operation `delete_hierarchy/update_hierarchy` 仅供受约束 typed service 使用。开发 profile 中 `open_hierarchy` 的 existing-path 分支拒绝重复 exact path，`merge_sections` 与 `set_filing_location` 只接受 exact typed ID；剩余 raw mutation 仍需对应 policy。逐工具用途和安全边界见 [Advanced/低层操作](advanced_operations.md)。
+默认不注册 `update_page_xml/open_hierarchy/find_meta/merge_sections/set_filing_location`。`delete_hierarchy` 与 `update_hierarchy_xml` 已从所有生产 profile 移除，设置 Raw XML 开关也不会枚举或恢复；内部 bridge operation `delete_hierarchy/update_hierarchy` 仅供受约束 typed service 使用。开发 profile 中 `open_hierarchy` 的 existing-path 分支拒绝重复 exact path；`create_type=none` 在 COM 返回后仍必须连续回读精确 live type/path/parent/identity，不能只凭返回 ID 宣称 active，未收敛时返回 accepted-but-not-converged partial/indeterminate。`merge_sections` 与 `set_filing_location` 只接受 exact typed ID；剩余 raw mutation 仍需对应 policy。逐工具用途和安全边界见 [Advanced/低层操作](advanced_operations.md)。

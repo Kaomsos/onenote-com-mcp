@@ -11,6 +11,7 @@ from typing import Any
 from ..bridge import OneNoteBridge
 from ..constants import SPECIAL_LOCATIONS, XML_SCHEMA_2013
 from ..hierarchy import display_name
+from ..onenote_errors import transient_read_error
 from ..page import (
     collect_page_objects,
     copy_verification_tier,
@@ -19,6 +20,7 @@ from ..page import (
 )
 from ..policy import CopyBudget, MutationPolicy
 from .base import BaseService
+from .convergence import DEFAULT_CONVERGENCE, converge
 from .errors import PartialFailure
 from .hierarchy import HierarchyService
 from .mutations import MutationService
@@ -795,21 +797,48 @@ class CopyService(BaseService):
                     for issue in transformed["issues"]
                 ]
                 issues.extend(page_issues)
-                self.call(
-                    "update_page_content",
-                    xml=transformed["xml"],
-                    schema=XML_SCHEMA_2013,
-                    force=False,
-                )
-                actual_xml = self.pages.xml(target["id"], "all")
-                equivalence = page_equivalence(
-                    transformed["xml"],
-                    actual_xml,
-                    verification_tier=copy_verification_tier(
+                verification_tier = copy_verification_tier(
                         transformed["content_types"],
                         page_xml=transformed["xml"],
-                    ),
+                    )
+                before_target_digest = self.pages.digest(
+                    self.pages.xml(target["id"], "all")
                 )
+
+                def observe_page():
+                    actual_xml = self.pages.xml(target["id"], "all")
+                    return {
+                        "digest": self.pages.digest(actual_xml),
+                        "equivalence": page_equivalence(
+                            transformed["xml"],
+                            actual_xml,
+                            verification_tier=verification_tier,
+                        ),
+                    }
+
+                reconciliation = self.mutations._reconciled_idempotent_execute(
+                    operation="copy_page_content",
+                    execute=lambda: self.call(
+                        "update_page_content",
+                        xml=transformed["xml"],
+                        schema=XML_SCHEMA_2013,
+                        force=False,
+                    ),
+                    observe=observe_page,
+                    is_pre_state=lambda value: value["digest"] == before_target_digest,
+                    is_post_state=lambda value: value["equivalence"]["equivalent"],
+                )
+                stable_page = converge(
+                    observe_page,
+                    lambda value: value["equivalence"]["equivalent"],
+                    lambda value: value["digest"],
+                    config=DEFAULT_CONVERGENCE,
+                    clock=time.monotonic,
+                    sleeper=time.sleep,
+                    transient=transient_read_error,
+                )
+                assert stable_page.value is not None
+                equivalence = stable_page.value["equivalence"]
                 page_results.append(
                     {
                         "source_page_id": item["id"],
@@ -818,6 +847,8 @@ class CopyService(BaseService):
                         "content_types": transformed["content_types"],
                         "normalizations": transformed["normalizations"],
                         "equivalence": equivalence,
+                        "convergence": stable_page.summary(),
+                        "reconciliation": reconciliation.summary(),
                     }
                 )
                 completed_steps.append(
@@ -876,43 +907,81 @@ class CopyService(BaseService):
 
             failed_step = "verify_copy"
             check_deadline()
-            refreshed = self.hierarchy.resources(include_recycle_bin=False)
-            refreshed_by_id = {item["id"]: item for item in refreshed}
-            topology_verified = True
-            for item in resources:
-                target = refreshed_by_id.get(id_map[item["id"]])
-                if target is None or target["resource_type"] != item["resource_type"]:
-                    topology_verified = False
-                    break
-                expected_name = destination["name"] if item["id"] == source["id"] else display_name(item)
-                if display_name(target) != expected_name:
-                    topology_verified = False
-                    break
-                if item["resource_type"] == "page":
-                    expected_section = (
-                        destination["parent"]["id"]
-                        if source["resource_type"] == "page"
-                        else id_map[item["section_id"]]
-                    )
-                    if target.get("section_id") != expected_section:
+            def observe_topology():
+                refreshed = self.hierarchy.resources(include_recycle_bin=False)
+                refreshed_by_id = {item["id"]: item for item in refreshed}
+                topology_verified = True
+                for item in resources:
+                    target = refreshed_by_id.get(id_map[item["id"]])
+                    if target is None or target["resource_type"] != item["resource_type"]:
                         topology_verified = False
                         break
-                    expected_position = expected_page_positions.get(target["id"])
-                    if expected_position is None or any(
-                        target.get(field) != expected_position[field]
-                        for field in ("section_id", "order", "page_level")
-                    ):
-                        topology_verified = False
-                        break
-                elif item["resource_type"] in {"section", "section_group"}:
-                    expected_parent = (
-                        destination["parent"]["id"]
+                    expected_name = (
+                        destination["name"]
                         if item["id"] == source["id"]
-                        else id_map[item["parent_id"]]
+                        else display_name(item)
                     )
-                    if target.get("parent_id") != expected_parent:
+                    if display_name(target) != expected_name:
                         topology_verified = False
                         break
+                    if item["resource_type"] == "page":
+                        expected_section = (
+                            destination["parent"]["id"]
+                            if source["resource_type"] == "page"
+                            else id_map[item["section_id"]]
+                        )
+                        if target.get("section_id") != expected_section:
+                            topology_verified = False
+                            break
+                        expected_position = expected_page_positions.get(target["id"])
+                        if expected_position is None or any(
+                            target.get(field) != expected_position[field]
+                            for field in ("section_id", "order", "page_level")
+                        ):
+                            topology_verified = False
+                            break
+                    elif item["resource_type"] in {"section", "section_group"}:
+                        expected_parent = (
+                            destination["parent"]["id"]
+                            if item["id"] == source["id"]
+                            else id_map[item["parent_id"]]
+                        )
+                        if target.get("parent_id") != expected_parent:
+                            topology_verified = False
+                            break
+                identity = tuple(
+                    (
+                        target_id,
+                        refreshed_by_id.get(target_id, {}).get("parent_id"),
+                        refreshed_by_id.get(target_id, {}).get("section_id"),
+                        refreshed_by_id.get(target_id, {}).get("order"),
+                        refreshed_by_id.get(target_id, {}).get("page_level"),
+                    )
+                    for target_id in resolved_target_ids
+                )
+                return {
+                    "items": refreshed,
+                    "by_id": refreshed_by_id,
+                    "verified": topology_verified,
+                    "identity": identity,
+                }
+
+            topology_convergence = self.mutations._converge(
+                operation="copy_topology",
+                observe=observe_topology,
+                accept=lambda value: value["verified"],
+                project_identity=lambda value: value["identity"],
+                failure_message="Copy targets were created, but topology did not converge.",
+                identity_remap={
+                    allocated: resolved
+                    for allocated, resolved in zip(allocated_ids, resolved_target_ids)
+                    if allocated != resolved
+                },
+            )
+            assert topology_convergence.value is not None
+            refreshed = topology_convergence.value["items"]
+            refreshed_by_id = topology_convergence.value["by_id"]
+            topology_verified = topology_convergence.value["verified"]
             pages_verified = all(result["equivalence"]["equivalent"] for result in page_results)
             lossless = topology_verified and all(result["lossless"] for result in page_results)
             blocking_copy_issues = [
@@ -944,6 +1013,7 @@ class CopyService(BaseService):
                 "fidelity": fidelity,
                 "copy_contract_satisfied": copy_contract_satisfied,
                 "page_results": page_results,
+                "convergence": topology_convergence.summary(),
             }
             if source["resource_type"] == "notebook":
                 copy_report["destination_path"] = notebook_destination_path
@@ -1639,41 +1709,75 @@ class CopyService(BaseService):
         except Exception as exc:
             deletion_error = exc
 
-        remaining_source_ids = list(planned_source_ids)
-        for attempt in range(8):
+        def observe_remaining():
             check_move_deadline()
             active_items = self.hierarchy.resources(include_recycle_bin=False)
             active_ids = {str(item["id"]) for item in active_items}
-            remaining_source_ids = [
+            return [
                 value for value in planned_source_ids if value in active_ids
             ]
-            if not remaining_source_ids or attempt == 7:
-                break
-            time.sleep(0.5)
+
+        source_convergence = converge(
+            observe_remaining,
+            # Stabilize any exact source-ID state so that full, partial, and
+            # absent outcomes can be classified without conflating a stable
+            # partial mutation with an unreadable/indeterminate state.
+            lambda values: True,
+            lambda values: tuple(values),
+            config=DEFAULT_CONVERGENCE,
+            clock=time.monotonic,
+            sleeper=time.sleep,
+            transient=transient_read_error,
+        )
+        remaining_source_ids = (
+            list(source_convergence.value)
+            if source_convergence.value is not None
+            else list(planned_source_ids)
+        )
         inactive_source_ids = [
-            value for value in planned_source_ids if value not in active_ids
+            value for value in planned_source_ids if value not in remaining_source_ids
         ]
-        if deletion_error is not None or remaining_source_ids:
+        if deletion_error is not None or remaining_source_ids or not source_convergence.converged:
             root_inactive = source_id not in remaining_source_ids
             outcome = (
                 "source_partially_removed"
                 if inactive_source_ids
                 else "source_delete_failed"
             )
+            if not source_convergence.converged:
+                outcome = "source_delete_state_indeterminate"
             raise PartialFailure(
-                str(deletion_error or "Root deletion returned but part of the source subtree remains active."),
+                str(
+                    deletion_error
+                    or (
+                        "Source deletion state did not reach two stable live observations."
+                        if not source_convergence.converged
+                        else "Root deletion returned but part of the source subtree remains active."
+                    )
+                ),
                 partial=True,
                 outcome=outcome,
-                source_deleted=root_inactive and not remaining_source_ids,
-                source_deleted_nonpermanently=root_inactive,
+                source_deleted=(
+                    source_convergence.converged
+                    and root_inactive
+                    and not remaining_source_ids
+                ),
+                source_deleted_nonpermanently=(
+                    source_convergence.converged and root_inactive
+                ),
                 attempted_source_ids=[source_id],
-                deleted_source_ids=[source_id] if root_inactive else [],
+                deleted_source_ids=(
+                    [source_id]
+                    if source_convergence.converged and root_inactive
+                    else []
+                ),
                 inactive_source_ids=inactive_source_ids,
                 remaining_source_ids=remaining_source_ids,
                 destination=copied.get("item"),
                 destination_position=partial_position(
                     "destination_target_not_uniquely_observed"
                 ),
+                convergence=source_convergence.summary(),
                 copy_report=report,
                 created_ids=copied["created_ids"],
             ) from deletion_error

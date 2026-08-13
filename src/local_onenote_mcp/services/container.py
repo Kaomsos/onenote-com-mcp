@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from ..bridge import OneNoteBridge
 from .copying import CopyService
+from .coordination import ReadWriteCoordinator
 from .hierarchy import HierarchyService
 from .mutations import MutationService
 from .operations import OperationsService
@@ -15,6 +16,7 @@ from .search import SearchService
 
 @dataclass(frozen=True)
 class ServiceContainer:
+    coordinator: ReadWriteCoordinator
     hierarchy: HierarchyService
     pages: PageService
     search: SearchService
@@ -24,6 +26,7 @@ class ServiceContainer:
 
     @classmethod
     def build(cls, bridge: OneNoteBridge, *, max_text_chars: int) -> "ServiceContainer":
+        coordinator = ReadWriteCoordinator(default_timeout_seconds=bridge.timeout_seconds)
         hierarchy = HierarchyService(bridge)
         pages = PageService(bridge, hierarchy, max_text_chars)
         search = SearchService(bridge, hierarchy, pages)
@@ -31,6 +34,7 @@ class ServiceContainer:
         operations = OperationsService(bridge, hierarchy, mutations)
         copying = CopyService(bridge, hierarchy, pages, mutations)
         return cls(
+            coordinator=coordinator,
             hierarchy=hierarchy,
             pages=pages,
             search=search,

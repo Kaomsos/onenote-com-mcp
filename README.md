@@ -15,6 +15,8 @@ A local Microsoft OneNote MCP server for Windows. It controls the OneNote deskto
 - **Single Hierarchy Parser:** Complete hierarchy and Search fragments flow through one bridge-independent typed parser; legacy raw-attribute hierarchy models are removed.
 - **Safe-by-Default Mutations:** Writes, deletes, permanent deletes, experimental reorder/move/copy operations, and raw development tools are independently disabled by default.
 - **Index-only Search:** OneNote `FindPages` searches the root or one exact Notebook/SectionGroup/Section, with strict live-index pagination and candidate/snippet budgets.
+- **COM Convergence & Reconciliation:** Mutations wait for two stable live observations, preserve typed HRESULT/retryability, and classify applied/partial/indeterminate state before returning.
+- **Process-local Coordination:** Reads may share execution, while each mutation holds one exclusive lease from confirmation through COM execution and stable read-back; this does not claim a cross-process or Desktop-wide transaction.
 
 > **Design Note:** PowerShell is leveraged as a reliable COM bridge because certain Windows/Office environments expose the OneNote COM interfaces directly to PowerShell while leaving them unavailable or restricted to Python's traditional automation libraries.
 

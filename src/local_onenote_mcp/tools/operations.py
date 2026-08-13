@@ -47,7 +47,7 @@ async def navigate_to_url(url: str, new_window: bool = False) -> dict[str, Any]:
 async def sync_notebook(notebook_id: str) -> dict[str, Any]:
     """Request synchronization for a typed notebook."""
 
-    return invoke(lambda: get_services().operations.sync_notebook(notebook_id))
+    return invoke(lambda: get_services().operations.sync_notebook(notebook_id), mutation=True)
 
 
 async def close_notebook(
@@ -55,7 +55,10 @@ async def close_notebook(
 ) -> dict[str, Any]:
     """Close a confirmed notebook and verify the resulting state."""
 
-    return invoke(lambda: get_services().operations.close_notebook(notebook_id, expected_name, expected_modified))
+    return invoke(
+        lambda: get_services().operations.close_notebook(notebook_id, expected_name, expected_modified),
+        mutation=True,
+    )
 
 
 TOOLS = [

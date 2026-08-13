@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..bridge import OneNoteBridge, OneNoteBridgeError
+from ..bridge import OneNoteBridge
 
 
 class BaseService:
@@ -12,10 +12,7 @@ class BaseService:
         self.bridge = bridge
 
     def call(self, operation: str, **params: Any) -> dict[str, Any]:
-        try:
-            return self.bridge.call(operation, **params)
-        except OneNoteBridgeError as exc:
-            raise RuntimeError(str(exc)) from exc
+        return self.bridge.call(operation, **params)
 
     @staticmethod
     def enum(name: str, value: str, options: dict[str, int]) -> int:

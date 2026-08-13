@@ -14,6 +14,8 @@ import xml.etree.ElementTree as ET
 from local_onenote_mcp.bridge import OneNoteBridge, OneNoteBridgeError
 from local_onenote_mcp.constants import CREATE_FILE_TYPES, HIERARCHY_SCOPES, XML_SCHEMA_2013
 from local_onenote_mcp.hierarchy import display_name
+from local_onenote_mcp.onenote_errors import transient_read_error
+from local_onenote_mcp.services.convergence import DEFAULT_CONVERGENCE, converge
 from local_onenote_mcp.services.hierarchy import HierarchyService
 
 from .runtime import EXIT_MCP, RestoreFailure, RunnerFailure
@@ -647,32 +649,50 @@ class NotebookLifecycleWrapper:
         started = time.perf_counter()
         try:
             self._bridge.call("close_notebook", notebook_id=str(current["id"]), force=False)
-            final_state: dict[str, Any] | None = None
-            for attempt in range(8):
+            def observe_close():
                 try:
-                    final_state = self._hierarchy.resource(str(current["id"]), "notebook")
+                    return self._hierarchy.resource(str(current["id"]), "notebook")
                 except ValueError:
-                    final_state = None
-                if final_state is None or final_state.get("is_open") is False:
-                    elapsed = round(time.perf_counter() - started, 6)
-                    result = {
-                        "closed": True,
-                        "source_notebook_id": str(current["id"]),
-                        "close_before": stable_item(current),
-                        "final_state": stable_item(final_state) if final_state else None,
-                        "elapsed_seconds": elapsed,
-                        "filesystem_deleted": False,
-                    }
-                    lease.update(
-                        state="closed",
-                        closed_at=utc_now(),
-                        close_result=result,
-                    )
-                    write_json(self.lease_path, lease)
-                    return result
-                if attempt < 7:
-                    time.sleep(0.5)
-            raise RestoreFailure("Close returned success but the exact source Notebook remains open.")
+                    return None
+
+            convergence = converge(
+                observe_close,
+                lambda value: value is None or value.get("is_open") is False,
+                lambda value: None
+                if value is None
+                else (
+                    value.get("id"),
+                    value.get("resource_type"),
+                    value.get("path"),
+                    value.get("is_open"),
+                ),
+                config=DEFAULT_CONVERGENCE,
+                clock=time.monotonic,
+                sleeper=time.sleep,
+                transient=transient_read_error,
+            )
+            if not convergence.converged:
+                raise RestoreFailure(
+                    "Close returned success but the exact source Notebook did not converge closed."
+                )
+            final_state = convergence.value
+            elapsed = round(time.perf_counter() - started, 6)
+            result = {
+                "closed": True,
+                "source_notebook_id": str(current["id"]),
+                "close_before": stable_item(current),
+                "final_state": stable_item(final_state) if final_state else None,
+                "elapsed_seconds": elapsed,
+                "convergence": convergence.summary(),
+                "filesystem_deleted": False,
+            }
+            lease.update(
+                state="closed",
+                closed_at=utc_now(),
+                close_result=result,
+            )
+            write_json(self.lease_path, lease)
+            return result
         except Exception as exc:
             lease.update(state="close_failed", close_failed_at=utc_now(), close_error=str(exc))
             write_json(self.lease_path, lease)

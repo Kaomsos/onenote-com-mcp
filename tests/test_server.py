@@ -443,6 +443,46 @@ def test_open_hierarchy_resolves_existing_friendly_path_without_bridge(monkeypat
 
 
 @pytest.mark.write_contract
+def test_open_hierarchy_none_waits_for_two_live_identity_observations(monkeypatch):
+    opened = {
+        "resource_type": "section",
+        "id": "opened-id",
+        "path": "Notebook/Opened",
+        "name": "Opened",
+        "parent_id": None,
+        "is_in_recycle_bin": False,
+    }
+    observations = iter([[], [opened], [opened]])
+    calls = []
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setattr(server.services.hierarchy, "find_unique_path", lambda *_args: None)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resolve",
+        lambda *_args: (_ for _ in ()).throw(ValueError("No object found")),
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: next(observations),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda operation, **_kwargs: calls.append(operation) or {"object_id": "opened-id"},
+    )
+    monkeypatch.setattr("local_onenote_mcp.services.hierarchy.time.sleep", lambda _seconds: None)
+
+    result = asyncio.run(open_hierarchy("Notebook/Opened", create_type="none"))
+
+    assert result["ok"] is True
+    assert result["object_id"] == "opened-id"
+    assert result["converged"] is True
+    assert result["convergence"]["stable_observations"] == 2
+    assert calls == ["open_hierarchy"]
+
+
+@pytest.mark.write_contract
 def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path):
     captured = {}
     monkeypatch.chdir(tmp_path)
@@ -512,6 +552,37 @@ def test_created_page_readback_prefers_allocated_id_over_duplicate_title_path(
     assert result == allocated
 
 
+def test_created_page_readback_waits_for_allocated_id_to_stabilize(monkeypatch):
+    allocated = {
+        "resource_type": "page",
+        "id": "allocated-page-id",
+        "path": "Notebook/Section/New",
+        "parent_id": "section-id",
+        "is_in_recycle_bin": False,
+    }
+    snapshots = iter([[], [allocated], [allocated]])
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: next(snapshots),
+    )
+
+    result = server.services.hierarchy.wait_for_created(
+        allocated["path"],
+        "page",
+        allocated["id"],
+        expected_parent_id="section-id",
+        validate_parent=True,
+        before_ids=set(),
+        retries=3,
+        delay_seconds=0.01,
+    )
+
+    assert result == allocated
+    assert server.services.hierarchy.last_convergence_summary()["attempts"] == 3
+    assert server.services.hierarchy.last_convergence_summary()["stable_observations"] == 2
+
+
 def test_created_page_readback_rejects_ambiguous_path_without_allocated_id(
     monkeypatch,
 ):
@@ -560,11 +631,15 @@ def test_created_target_readback_accepts_only_one_fresh_path_remap(monkeypatch):
         expected_parent_id="section-id",
         validate_parent=True,
         before_ids={"old"},
-        retries=1,
-        delay_seconds=0,
+        retries=2,
+        delay_seconds=0.01,
     )
 
     assert result == remapped
+    assert server.services.hierarchy.last_convergence_summary()["identity_remap"] == {
+        "missing-allocated-id": "remapped"
+    }
+    assert server.services.hierarchy.last_convergence_summary()["stable_observations"] == 2
 
 
 @pytest.mark.parametrize(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import time
 from typing import Any
 
 from ..bridge import OneNoteBridge
@@ -17,6 +16,7 @@ from ..policy import MutationPolicy
 from .base import BaseService
 from .hierarchy import HierarchyService
 from .mutations import MutationService
+from .reconciliation import reconcile_mutation
 
 
 class OperationsService(BaseService):
@@ -85,7 +85,16 @@ class OperationsService(BaseService):
     def sync_notebook(self, notebook_id: str) -> dict[str, Any]:
         item = self.hierarchy.resource(notebook_id, "notebook")
         self.call("sync_hierarchy", object_id=notebook_id)
-        return {"item": item, "synced": True}
+        return {
+            "item": item,
+            "sync_requested": True,
+            "accepted": True,
+            "converged": False,
+            "convergence": {
+                "converged": False,
+                "reason": "OneNote COM exposes request acceptance but no supported completion proof.",
+            },
+        }
 
     def close_notebook(
         self,
@@ -101,18 +110,37 @@ class OperationsService(BaseService):
             expected_parent_id=None,
             expected_modified=expected_modified,
         )
-        self.call("close_notebook", notebook_id=notebook_id, force=False)
-        closed_state: dict[str, Any] | None = None
-        for attempt in range(8):
+        def observe():
             try:
-                closed_state = self.hierarchy.resource(notebook_id, "notebook")
+                return self.hierarchy.resource(notebook_id, "notebook")
             except ValueError:
-                closed_state = None
-            if closed_state is None or closed_state.get("is_open") is False:
-                return {"item": item, "closed": True, "final_state": closed_state}
-            if attempt < 7:
-                time.sleep(0.5)
-        raise RuntimeError("Close returned success, but the Notebook still appears open after read-back verification.")
+                return None
+
+        postcondition = lambda value: value is None or value.get("is_open") is False
+        reconciliation = reconcile_mutation(
+            execute=lambda: self.call(
+                "close_notebook", notebook_id=notebook_id, force=False
+            ),
+            observe=observe,
+            is_pre_state=lambda value: value is not None and value.get("is_open") is not False,
+            is_post_state=postcondition,
+            retry_if_unchanged=False,
+        )
+        self.mutations._raise_failed_reconciliation("close_notebook", reconciliation)
+        stable = self.mutations._converge(
+            operation="close_notebook",
+            observe=observe,
+            accept=postcondition,
+            project_identity=self.hierarchy._resource_identity,
+            failure_message="Close was accepted, but the Notebook open state did not converge.",
+        )
+        return {
+            "item": item,
+            "closed": True,
+            "final_state": stable.value,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
+        }
 
     def merge_sections(self, source_section_id: str, destination_section_id: str) -> dict[str, Any]:
         policy = MutationPolicy.current()

@@ -8,6 +8,10 @@ from .context import get_services
 from .responses import invoke
 
 
+def invoke_mutation(action):
+    return invoke(action, mutation=True)
+
+
 async def plan_copy(
     source_id: str,
     destination_parent_id: str = "",
@@ -40,7 +44,7 @@ async def copy_page(
 ) -> dict[str, Any]:
     """Copy a Page scope and report the root's observed final position, never a placement guarantee."""
 
-    return invoke(
+    return invoke_mutation(
         lambda: get_services().copying.copy_resource(
             page_id,
             "page",
@@ -67,7 +71,7 @@ async def copy_section(
 ) -> dict[str, Any]:
     """Copy a Section tree and report its observed final position, not a placement guarantee."""
 
-    return invoke(
+    return invoke_mutation(
         lambda: get_services().copying.copy_resource(
             section_id,
             "section",
@@ -93,7 +97,7 @@ async def copy_section_group(
 ) -> dict[str, Any]:
     """Copy a SectionGroup tree and report its backend name-sorted observed position."""
 
-    return invoke(
+    return invoke_mutation(
         lambda: get_services().copying.copy_resource(
             section_group_id,
             "section_group",
@@ -118,7 +122,7 @@ async def copy_notebook(
 ) -> dict[str, Any]:
     """Copy a Notebook; destination_position is explicitly not applicable."""
 
-    return invoke(
+    return invoke_mutation(
         lambda: get_services().copying.copy_resource(
             notebook_id,
             "notebook",
@@ -163,7 +167,7 @@ async def move_page(
 ) -> dict[str, Any]:
     """Move a Page scope and report only the root's observed final position."""
 
-    return invoke(
+    return invoke_mutation(
         lambda: get_services().copying.move_page(
             page_id,
             destination_section_id,
@@ -202,7 +206,7 @@ async def move_section(
 ) -> dict[str, Any]:
     """Move a Section and report its observed final position, not a placement guarantee."""
 
-    return invoke(
+    return invoke_mutation(
         lambda: get_services().copying.move_section(
             section_id,
             destination_parent_id,
@@ -240,7 +244,7 @@ async def move_section_group(
 ) -> dict[str, Any]:
     """Move a SectionGroup tree and report its backend name-sorted observed position."""
 
-    return invoke(
+    return invoke_mutation(
         lambda: get_services().copying.move_section_group(
             section_group_id,
             destination_parent_id,

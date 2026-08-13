@@ -19,13 +19,16 @@ async def open_hierarchy(
 ) -> dict[str, Any]:
     """Open an existing hierarchy path or create one when explicitly enabled."""
 
-    return invoke(lambda: get_services().mutations.open_hierarchy(path, relative_to_identifier, create_type))
+    return invoke(
+        lambda: get_services().mutations.open_hierarchy(path, relative_to_identifier, create_type),
+        mutation=True,
+    )
 
 
 async def update_page_xml(xml: str) -> dict[str, Any]:
     """Send raw page XML when raw XML and write policies are enabled."""
 
-    return invoke(lambda: get_services().mutations.update_page_xml(xml))
+    return invoke(lambda: get_services().mutations.update_page_xml(xml), mutation=True)
 
 
 async def merge_sections(
@@ -36,7 +39,8 @@ async def merge_sections(
     return invoke(
         lambda: get_services().operations.merge_sections(
             source_section_id, destination_section_id
-        )
+        ),
+        mutation=True,
     )
 
 
@@ -50,7 +54,8 @@ async def set_filing_location(
     return invoke(
         lambda: get_services().operations.set_filing_location(
             filing_location, filing_location_type, section_or_page_id
-        )
+        ),
+        mutation=True,
     )
 
 

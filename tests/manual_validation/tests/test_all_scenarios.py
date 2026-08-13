@@ -43,6 +43,7 @@ SCENARIO_MODULES = {
     "move_page": "MovePageScenario",
     "move_section": "MoveSectionScenario",
     "move_section_group": "MoveSectionGroupScenario",
+    "onenote_convergence": "OneNoteConvergenceScenario",
     "search_all_open_notebooks": "SearchAllOpenNotebooksScenario",
     "bootstrap_inserted_file_fixture": "BootstrapInsertedFileFixtureScenario",
     "bootstrap_ink_drawing_fixture": "BootstrapInkDrawingFixtureScenario",

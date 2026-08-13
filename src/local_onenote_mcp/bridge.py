@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .onenote_errors import OneNoteBridgeError, OneNoteError, bridge_error
+
 
 POWERSHELL_BRIDGE = r'''
 $ErrorActionPreference = "Stop"
@@ -34,7 +36,7 @@ function New-Err($err) {
         error = @{
             message = $ex.Message
             hresult = $ex.HResult
-            category = [string]$err.CategoryInfo
+            category = [string]$err.CategoryInfo.Category
         }
     }
 }
@@ -166,14 +168,6 @@ $response | ConvertTo-Json -Depth 100 -Compress | Set-Content -LiteralPath $env:
 '''
 
 
-class OneNoteBridgeError(RuntimeError):
-    """Raised when the local OneNote COM bridge fails."""
-
-    def __init__(self, message: str, *, hresult: int | None = None) -> None:
-        super().__init__(message)
-        self.hresult = hresult
-
-
 @dataclass(frozen=True)
 class OneNoteBridge:
     """Execute fixed OneNote COM operations through a local PowerShell bridge."""
@@ -191,10 +185,15 @@ class OneNoteBridge:
         effective_timeout = float(self.timeout_seconds)
         if _timeout_seconds is not None:
             if _timeout_seconds <= 0:
-                raise OneNoteBridgeError("OneNote COM operation timeout must be positive.")
+                raise OneNoteBridgeError(
+                    "OneNote COM operation timeout must be positive.",
+                    operation=operation,
+                    reconciliation="not_applied",
+                )
             effective_timeout = min(effective_timeout, float(_timeout_seconds))
         started = time.perf_counter()
         succeeded = False
+        failure: OneNoteError | None = None
         request = {"operation": operation, "params": params}
         req_path = self._write_temp_json(request)
         resp_path = self._reserve_temp_path()
@@ -213,23 +212,36 @@ class OneNoteBridge:
             if completed.returncode != 0:
                 stderr = completed.stderr.strip()
                 stdout = completed.stdout.strip()
-                raise OneNoteBridgeError(stderr or stdout or "PowerShell bridge failed.")
+                raise bridge_error(
+                    stderr or stdout or "PowerShell bridge failed.",
+                    operation=operation,
+                )
             if not resp_path.exists():
-                raise OneNoteBridgeError("PowerShell bridge did not write a response.")
+                raise bridge_error(
+                    "PowerShell bridge did not write a response.", operation=operation
+                )
             response = json.loads(resp_path.read_text(encoding="utf-8-sig"))
             if not response.get("ok"):
                 err = response.get("error") or {}
-                raise OneNoteBridgeError(
+                raise bridge_error(
                     err.get("message") or "OneNote COM operation failed.",
+                    operation=operation,
                     hresult=err.get("hresult"),
+                    category=err.get("category"),
                 )
             data = response.get("data")
             succeeded = True
             return data if isinstance(data, dict) else {"value": data}
+        except OneNoteError as exc:
+            failure = exc
+            raise
         except subprocess.TimeoutExpired as exc:
-            raise OneNoteBridgeError(
-                f"OneNote COM operation timed out after {effective_timeout:g} seconds."
-            ) from exc
+            failure = bridge_error(
+                f"OneNote COM operation timed out after {effective_timeout:g} seconds.",
+                operation=operation,
+                timed_out=True,
+            )
+            raise failure from exc
         finally:
             self._remove_quietly(req_path)
             self._remove_quietly(resp_path)
@@ -237,6 +249,7 @@ class OneNoteBridge:
                 operation,
                 succeeded=succeeded,
                 elapsed_seconds=round(time.perf_counter() - started, 6),
+                failure=failure,
             )
 
     def _append_audit(
@@ -245,6 +258,7 @@ class OneNoteBridge:
         *,
         succeeded: bool,
         elapsed_seconds: float,
+        failure: OneNoteError | None,
     ) -> None:
         """Append content-free bridge-call evidence when a run-scoped path is configured."""
 
@@ -260,6 +274,17 @@ class OneNoteBridge:
                 "ok": succeeded,
                 "operation": operation,
             }
+            if failure is not None:
+                record.update(
+                    {
+                        "error_type": type(failure).__name__,
+                        "error_code": failure.code,
+                        "hresult": failure.hresult,
+                        "hresult_signed": failure.hresult_signed,
+                        "backend_category": failure.category,
+                        "retryability": failure.retryability,
+                    }
+                )
             with path.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         except OSError:

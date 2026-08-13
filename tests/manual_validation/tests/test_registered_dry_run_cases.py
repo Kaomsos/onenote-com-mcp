@@ -74,6 +74,7 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "interactive-copy-ui-shape",
         "interactive-copy-inline-equation",
         "search-all-open-notebooks",
+        "onenote-convergence",
     }
     assert excluded <= covered
 

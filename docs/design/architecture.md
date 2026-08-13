@@ -1,7 +1,7 @@
 # Local OneNote MCP 当前设计架构
 
 > 状态：当前实现态
-> 更新日期：2026-08-11
+> 更新日期：2026-08-13
 > 相关契约：[对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md) · [Windows Fixture Cache 路径配额目标设计](windows_fixture_cache_path_budget.md)
 
 ## 1. 架构结论
@@ -51,6 +51,9 @@ src/local_onenote_mcp/
 ├─ services/
 │  ├─ base.py                BaseService
 │  ├─ container.py           ServiceContainer
+│  ├─ coordination.py        进程内读写协调与 cache generation hook
+│  ├─ convergence.py         deadline/连续稳定观察
+│  ├─ reconciliation.py      mutation 后置状态对账
 │  ├─ hierarchy.py           HierarchyService
 │  ├─ pages.py               PageService
 │  ├─ search.py              SearchService
@@ -75,6 +78,7 @@ src/local_onenote_mcp/
 │  ├─ models.py              Page 格式化内部块模型
 │  └─ __init__.py            Page 子系统 facade
 ├─ bridge.py                 PowerShell/COM infrastructure adapter
+├─ onenote_errors.py         typed HRESULT/backend errors
 ├─ policy.py                 MutationPolicy 与 SearchBudget
 ├─ settings.py               server 名称、超时和文本长度配置
 └─ constants.py              COM enum、namespace、schema
@@ -96,6 +100,7 @@ server → tools → services → hierarchy/page/policy → domain
 ```mermaid
 classDiagram
     class ServiceContainer {
+        +ReadWriteCoordinator coordinator
         +HierarchyService hierarchy
         +PageService pages
         +SearchService search
@@ -177,7 +182,10 @@ classDiagram
 | 类 | 所在模块 | 职责 |
 | --- | --- | --- |
 | `ServiceContainer` | `services.container` | 构造并持有共享 bridge 上的六个 service；表达显式依赖。 |
-| `BaseService` | `services.base` | 提供 bridge 错误归一化和 enum 校验。 |
+| `BaseService` | `services.base` | 透传 typed bridge error，并提供 enum 校验。 |
+| `ReadWriteCoordinator` | `services.coordination` | 允许纯读共享；mutation 从 confirmation 到稳定回读持有独占权。writer 等待有界，异常必释放；generation/invalidator 是 TODO 024 cache 的接入点。 |
+| `ConvergenceResult` | `services.convergence` | 用 monotonic deadline、可注入 clock/sleeper、连续稳定观察和 content-free history 表达 read-after-write 收敛。 |
+| `ReconciliationResult` | `services.reconciliation` | 将 live 后置状态分类为 `not_applied/applied/partially_applied/indeterminate`；仅精确 pre-state 且 typed retryability 允许时有界重放一次幂等动作。 |
 | `HierarchyService` | `services.hierarchy` | 获取 typed snapshot，完成 List/Get/Query/Path/Tree、ID/路径解析、层级更新 XML。 |
 | `PageService` | `services.pages` | 读取 Page XML/text/object/binary，确认 Page，计算内容摘要。 |
 | `SearchService` | `services.search` | 以 root 或一个精确 Notebook/SectionGroup/Section 为原生 COM 起点执行 index-only `FindPages`；一次调用共享 hierarchy catalog、候选预算、当前页 hydration 和总耗时预算。 |
@@ -189,11 +197,19 @@ classDiagram
 | `CopyBudget` | `policy` | 限制 Copy 的对象/Page 数、完整 XML 字节和计划/执行时间。 |
 | `OneNoteBridge` | `bridge` | 通过临时 JSON 与固定 PowerShell 脚本执行白名单 COM 操作。 |
 | `PartialFailure` | `services.errors` | 携带非原子多步 mutation 已完成步骤。 |
-| `OneNoteBridgeError` | `bridge` | 表达 PowerShell、COM、超时和响应错误。 |
+| `OneNoteError` | `onenote_errors` | 保留 operation、signed/unsigned HRESULT、content-free category、retryability、partial 和 reconciliation；按 Microsoft OneNote error table 分类 modal、not-yet-synchronized、timeout、object/file unavailable，未知值保持 fail-closed。 |
 
 `ServiceContainer.build()` 的创建顺序体现了依赖：先 `HierarchyService`，再 `PageService`，随后 `SearchService` 和 `MutationService`，最后创建依赖 mutation 的 `OperationsService` 与 `CopyService`。
 
-### 3.2 领域类
+### 3.2 COM 收敛与进程内协调
+
+所有公开 Tool 都在 `tools.responses.invoke` 进入同一个进程级协调器。纯读调用取得共享 lease；mutation 从 confirmation 开始，跨越 cache invalidation/generation、COM execute、reconciliation 和连续稳定 read-back，直到成功或 fail-closed 分类完成才释放独占 lease。首版不承诺跨 MCP 进程、用户在 Desktop 中的直接编辑或 OneNote 自身同步被事务化。
+
+默认 convergence 合同为 4 秒 monotonic deadline、0.5 秒观察间隔、最多 16 次观察，并至少要求两个连续、accepted 且 stable identity 相同的 live 观察。history 只记录 attempt/accepted/stable 和 typed transient category，不保存 Page XML、正文、binary、路径或请求参数。异常默认立即传播；只有调用点显式提供 transient predicate，且 typed HRESULT 属于 not-yet-synchronized、timeout 或 read-only object/file unavailable 时才延迟重读。Create 的 stable identity 包含 allocated→resolved ID；Page mutation 使用内容摘要；Reorder/Reparent/Copy 使用各自业务层定义的 topology/fidelity projection；Delete/Close 使用活动态或 open-state 后置条件。
+
+COM error 不等于 mutation 未发生。`reconciliation.py` 先读 live 状态：postcondition 已成立即按 `applied` 继续收敛；精确 pre-state 且操作声明为幂等、错误类型允许重试时最多重放同一目标一次；部分变化或不可读状态返回 partial/indeterminate。只有 `hrNotYetSynchronized (0x8004201D)` 与 `hrTimeOut (0x80042023)` 可进入幂等 mutation 重放判断；object/file unavailable 只属于 read-after-delay，不能证明 mutation 可重放。Modal UI (`0x80042030`) 只提示用户关闭阻塞对话框，绝不自动重放副作用 mutation。
+
+### 3.3 领域类
 
 ```mermaid
 classDiagram
@@ -264,7 +280,7 @@ classDiagram
 
 这些 dataclass 只在 mapper 内表达白名单字段，再通过 `as_dict()` 进入服务和 MCP 边界。Page 的公开名称是 `title`，其 `as_dict()` 不保留继承来的 `name` alias。`PageContentObject` 属于 Page 内容快照，不进入层级树。
 
-### 3.3 Page 内部类
+### 3.4 Page 内部类
 
 ```mermaid
 classDiagram

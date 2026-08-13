@@ -404,7 +404,10 @@ def test_reorder_section_fails_closed_on_readback_invariant_change(monkeypatch, 
     result = asyncio.run(reorder_section("sC", "C", "n", "sA", "modified-sC"))
 
     assert result["ok"] is False
-    assert result["code"] == "backend_error"
+    assert result["code"] == "onenote_convergence_timeout"
+    assert result["partial"] is True
+    assert result["reconciliation"] == "indeterminate"
+    assert result["manual_recovery_required"] is True
     assert state["calls"] == 1
 
 
@@ -429,7 +432,7 @@ def test_reorder_section_group_fails_on_descendant_or_content_change(monkeypatch
     )
 
     assert result["ok"] is False
-    assert result["code"] == "backend_error"
+    assert result["code"] == "onenote_convergence_timeout"
     assert state["calls"] == 1
 
 

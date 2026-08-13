@@ -11,6 +11,12 @@ from typing import Any
 from ..bridge import OneNoteBridge
 from ..constants import CREATE_FILE_TYPES, NEW_PAGE_STYLES, SPECIAL_LOCATIONS, XML_SCHEMA_2013
 from ..hierarchy import display_name
+from ..onenote_errors import (
+    OneNoteConvergenceTimeoutError,
+    OneNoteError,
+    idempotent_retry_allowed,
+    transient_read_error,
+)
 from ..page import (
     DELETABLE_PAGE_OBJECT_TYPES,
     build_image_page_update_xml,
@@ -21,10 +27,12 @@ from ..page import (
 )
 from ..policy import CopyBudget, MutationPolicy
 from .base import BaseService
+from .convergence import DEFAULT_CONVERGENCE, ConvergenceResult, converge
 from .errors import PartialFailure
 from .hierarchy import HierarchyService
 from .pages import PageService, stable_page_content_digest
 from .position import destination_position, unavailable_destination_position
+from .reconciliation import ReconciliationState, reconcile_mutation
 
 
 REPLACE_BODY_OBJECT_TYPES = {"Outline", "Image", "InkDrawing", "FileAttachment", "InsertedFile", "MediaFile"}
@@ -35,6 +43,88 @@ class MutationService(BaseService):
         super().__init__(bridge)
         self.hierarchy = hierarchy
         self.pages = pages
+
+    def _converge(
+        self,
+        *,
+        operation: str,
+        observe,
+        accept,
+        project_identity,
+        failure_message: str,
+        identity_remap: dict[str, str] | None = None,
+    ) -> ConvergenceResult[Any]:
+        result = converge(
+            observe,
+            accept,
+            project_identity,
+            config=DEFAULT_CONVERGENCE,
+            identity_remap=identity_remap,
+            transient=transient_read_error,
+            clock=time.monotonic,
+            sleeper=time.sleep,
+        )
+        if not result.converged:
+            raise OneNoteConvergenceTimeoutError(
+                failure_message,
+                operation=operation,
+                partial=True,
+                reconciliation="indeterminate",
+                details={
+                    "convergence": result.summary(),
+                    "manual_recovery_required": True,
+                },
+            )
+        return result
+
+    @staticmethod
+    def _raise_failed_reconciliation(
+        operation: str,
+        result,
+        *,
+        completed_steps: list[dict[str, Any]] | None = None,
+    ) -> None:
+        if (
+            result.error is None
+            or result.execution_succeeded
+            or result.state is ReconciliationState.APPLIED
+        ):
+            return
+        if result.state is ReconciliationState.NOT_APPLIED:
+            if isinstance(result.error, OneNoteError):
+                result.error.reconciliation = ReconciliationState.NOT_APPLIED.value
+            raise result.error
+        raise PartialFailure(
+            f"{operation} failed and live state could not be safely reconciled.",
+            partial=result.state is not ReconciliationState.NOT_APPLIED,
+            reconciliation=result.state.value,
+            retryability="manual_recovery_required",
+            completed_steps=list(completed_steps or []),
+            failed_step=operation,
+            manual_recovery_required=True,
+        ) from result.error
+
+    def _reconciled_idempotent_execute(
+        self,
+        *,
+        operation: str,
+        execute,
+        observe,
+        is_pre_state,
+        is_post_state,
+        is_partial_state=None,
+    ):
+        result = reconcile_mutation(
+            execute=execute,
+            observe=observe,
+            is_pre_state=is_pre_state,
+            is_post_state=is_post_state,
+            is_partial_state=is_partial_state,
+            retry_if_unchanged=True,
+            retry_allowed=idempotent_retry_allowed,
+        )
+        self._raise_failed_reconciliation(operation, result)
+        return result
 
     @staticmethod
     def safe_leaf_name(name: str) -> str:
@@ -91,11 +181,39 @@ class MutationService(BaseService):
         if normalized_create_type == "none":
             existing = self.hierarchy.find_unique_path(expected_path)
             if existing:
-                return {"object_id": existing["id"], "item": existing, "opened_existing": True}
+                return {
+                    "object_id": existing["id"],
+                    "item": existing,
+                    "opened_existing": True,
+                    "accepted": True,
+                    "converged": True,
+                    "convergence": {
+                        "converged": True,
+                        "attempts": 1,
+                        "elapsed_seconds": 0.0,
+                        "stable_observations": 1,
+                        "identity_remap": {},
+                        "transient_errors": [],
+                    },
+                }
             if not relative_to_identifier:
                 try:
                     existing = self.hierarchy.resolve(path)
-                    return {"object_id": existing["id"], "item": existing, "opened_existing": True}
+                    return {
+                        "object_id": existing["id"],
+                        "item": existing,
+                        "opened_existing": True,
+                        "accepted": True,
+                        "converged": True,
+                        "convergence": {
+                            "converged": True,
+                            "attempts": 1,
+                            "elapsed_seconds": 0.0,
+                            "stable_observations": 1,
+                            "identity_remap": {},
+                            "transient_errors": [],
+                        },
+                    }
                 except ValueError as exc:
                     if not str(exc).startswith("No "):
                         raise
@@ -124,6 +242,34 @@ class MutationService(BaseService):
             if resource_type
             else None
         )
+        if normalized_create_type == "none":
+            # OpenHierarchy may make a previously invisible object active or may
+            # return an ID that OneNote subsequently remaps. A COM-returned ID is
+            # therefore only an allocation hint, never completion evidence.
+            item = self.hierarchy.wait_for_created(
+                expected_path,
+                None,
+                result["object_id"],
+                expected_parent_id=expected_parent_id,
+                validate_parent=expected_parent_id is not None,
+                before_ids=None,
+            )
+            if item is None:
+                raise PartialFailure(
+                    "OpenHierarchy accepted the request, but live identity did not converge.",
+                    partial=True,
+                    accepted=True,
+                    converged=False,
+                    reconciliation="indeterminate",
+                    allocated_ids=[result["object_id"]],
+                    resolved_target_ids=[],
+                    created_ids=[],
+                    completed_steps=[
+                        {"operation": "open_hierarchy", "object_id": result["object_id"]}
+                    ],
+                    failed_step="verify_opened_hierarchy",
+                    convergence=self.hierarchy.last_convergence_summary(),
+                )
         if resource_type and item is None:
             raise PartialFailure(
                 "OpenHierarchy returned success, but the requested created target could not be uniquely verified.",
@@ -139,6 +285,14 @@ class MutationService(BaseService):
             "opened_existing": False,
             "allocated_id": result["object_id"],
             "identity_remapped": bool(item and item["id"] != result["object_id"]),
+            "accepted": True,
+            "converged": item is not None,
+            "convergence": self.hierarchy.last_convergence_summary(),
+            "reconciliation": {
+                "state": "applied",
+                "execute_attempts": 1,
+                "had_backend_error": False,
+            },
         }
         if item:
             data["item"] = item
@@ -184,6 +338,7 @@ class MutationService(BaseService):
                 created_ids=[result["object_id"]] if result["object_id"] not in before_ids else [],
                 completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
                 failed_step="verify_created_notebook",
+                convergence=self.hierarchy.last_convergence_summary(),
             )
         return {
             "path": str(notebook_path),
@@ -191,6 +346,12 @@ class MutationService(BaseService):
             "allocated_id": result["object_id"],
             "identity_remapped": notebook["id"] != result["object_id"],
             "item": notebook,
+            "convergence": self.hierarchy.last_convergence_summary(),
+            "reconciliation": {
+                "state": "applied",
+                "execute_attempts": 1,
+                "had_backend_error": False,
+            },
         }
 
     def create_section(self, parent_id: str, section_name: str) -> dict[str, Any]:
@@ -230,6 +391,7 @@ class MutationService(BaseService):
                 created_ids=[result["object_id"]] if result["object_id"] not in before_ids else [],
                 completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
                 failed_step="verify_created_section",
+                convergence=self.hierarchy.last_convergence_summary(),
             )
         return {
             "parent": parent,
@@ -239,6 +401,12 @@ class MutationService(BaseService):
             "identity_remapped": section["id"] != result["object_id"],
             "name": section_name,
             "path": expected_path,
+            "convergence": self.hierarchy.last_convergence_summary(),
+            "reconciliation": {
+                "state": "applied",
+                "execute_attempts": 1,
+                "had_backend_error": False,
+            },
         }
 
     def create_section_group(self, parent_id: str, group_name: str) -> dict[str, Any]:
@@ -275,6 +443,7 @@ class MutationService(BaseService):
                 created_ids=[result["object_id"]] if result["object_id"] not in before_ids else [],
                 completed_steps=[{"operation": "open_hierarchy", "object_id": result["object_id"]}],
                 failed_step="verify_created_section_group",
+                convergence=self.hierarchy.last_convergence_summary(),
             )
         return {
             "parent": parent,
@@ -284,6 +453,12 @@ class MutationService(BaseService):
             "identity_remapped": group["id"] != result["object_id"],
             "name": group_name,
             "path": expected_path,
+            "convergence": self.hierarchy.last_convergence_summary(),
+            "reconciliation": {
+                "state": "applied",
+                "execute_attempts": 1,
+                "had_backend_error": False,
+            },
         }
 
     def create_page(
@@ -347,6 +522,7 @@ class MutationService(BaseService):
                     if any(step["operation"] == "update_page_content" for step in completed_steps)
                     else "initialize_created_page"
                 ),
+                convergence=self.hierarchy.last_convergence_summary(),
             ) from exc
         return {
             "page_id": page["id"],
@@ -356,6 +532,12 @@ class MutationService(BaseService):
             "section": section,
             "title": title,
             "path": expected_path,
+            "convergence": self.hierarchy.last_convergence_summary(),
+            "reconciliation": {
+                "state": "applied",
+                "execute_attempts": 1,
+                "had_backend_error": False,
+            },
         }
 
     def update_page_title(
@@ -373,16 +555,36 @@ class MutationService(BaseService):
             expected_section_id=expected_section_id,
             expected_modified=expected_modified,
         )
-        self.call(
-            "update_page_content",
-            xml=build_page_update_xml(page_id, title=title),
-            schema=XML_SCHEMA_2013,
-            force=False,
+        def observe():
+            try:
+                return self.hierarchy.resource(page_id, "page")
+            except ValueError:
+                return None
+
+        reconciliation = self._reconciled_idempotent_execute(
+            operation="update_page_title",
+            execute=lambda: self.call(
+                "update_page_content",
+                xml=build_page_update_xml(page_id, title=title),
+                schema=XML_SCHEMA_2013,
+                force=False,
+            ),
+            observe=observe,
+            is_pre_state=lambda value: value is not None and value.get("title") == expected_title,
+            is_post_state=lambda value: value is not None and value.get("title") == title,
         )
-        item = self.hierarchy.wait_for(page_id, "page", predicate=lambda value: value["title"] == title)
-        if item is None:
-            raise RuntimeError("Update returned success, but the page title could not be verified.")
-        return {"item": item}
+        stable = self._converge(
+            operation="update_page_title",
+            observe=observe,
+            accept=lambda value: value is not None and value.get("title") == title,
+            project_identity=self.hierarchy._resource_identity,
+            failure_message="Update was accepted, but the Page title did not converge.",
+        )
+        return {
+            "item": stable.value,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
+        }
 
     def rename_resource(
         self,
@@ -402,19 +604,42 @@ class MutationService(BaseService):
             expected_modified=expected_modified,
         )
         normalized_name = self.safe_leaf_name(new_name)
-        self.call(
-            "update_hierarchy",
-            xml=self.hierarchy.update_xml(item, name=normalized_name),
-            schema=XML_SCHEMA_2013,
+        def observe():
+            try:
+                return self.hierarchy.resource(object_id, resource_type)
+            except ValueError:
+                return None
+
+        reconciliation = self._reconciled_idempotent_execute(
+            operation="rename_resource",
+            execute=lambda: self.call(
+                "update_hierarchy",
+                xml=self.hierarchy.update_xml(item, name=normalized_name),
+                schema=XML_SCHEMA_2013,
+            ),
+            observe=observe,
+            is_pre_state=lambda value: value is not None
+            and display_name(value) == expected_name
+            and value.get("parent_id") == expected_parent_id,
+            is_post_state=lambda value: value is not None
+            and display_name(value) == normalized_name
+            and value.get("parent_id") == expected_parent_id,
         )
-        refreshed = self.hierarchy.wait_for(
-            object_id,
-            resource_type,
-            predicate=lambda value: value["name"] == normalized_name and value["parent_id"] == expected_parent_id,
+        stable = self._converge(
+            operation="rename_resource",
+            observe=observe,
+            accept=lambda value: value is not None
+            and display_name(value) == normalized_name
+            and value.get("parent_id") == expected_parent_id,
+            project_identity=self.hierarchy._resource_identity,
+            failure_message="Rename was accepted, but the hierarchy identity did not converge.",
         )
-        if refreshed is None:
-            raise RuntimeError("Rename returned success, but the new name could not be verified by ID.")
-        return {"item": refreshed, "previous_name": expected_name}
+        return {
+            "item": stable.value,
+            "previous_name": expected_name,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
+        }
 
     def reorder_page(
         self,
@@ -439,6 +664,10 @@ class MutationService(BaseService):
             if item["resource_type"] == "page" and item["section_id"] == expected_section_id
         ]
         pages.sort(key=lambda item: item["order"])
+        before_signature = tuple(
+            (item["id"], int(item.get("order", 0)), int(item.get("page_level", 1)))
+            for item in pages
+        )
         pages = [item for item in pages if item["id"] != page_id]
         if after_page_id:
             if after_page_id == page_id:
@@ -457,17 +686,55 @@ class MutationService(BaseService):
         if insertion_index > 0 and target_level > pages[insertion_index - 1]["page_level"] + 1:
             raise ValueError("page_level cannot jump by more than one level from the preceding page.")
         pages.insert(insertion_index, {**page, "page_level": target_level})
-        self.call("update_hierarchy", xml=self.hierarchy.page_order_xml(section, pages), schema=XML_SCHEMA_2013)
-        refreshed_pages = [
-            item
-            for item in self.hierarchy.resources(include_recycle_bin=False)
-            if item["resource_type"] == "page" and item["section_id"] == expected_section_id
-        ]
-        refreshed_pages.sort(key=lambda item: item["order"])
-        refreshed = next((item for item in refreshed_pages if item["id"] == page_id), None)
-        if refreshed is None or refreshed["order"] != insertion_index or refreshed["page_level"] != target_level:
-            raise RuntimeError("Reorder returned success, but order/page_level read-back verification failed.")
-        return {"item": refreshed, "pages": refreshed_pages}
+        expected_signature = tuple(
+            (item["id"], order, int(item.get("page_level", 1)))
+            for order, item in enumerate(pages)
+        )
+
+        def observe():
+            refreshed_pages = [
+                item
+                for item in self.hierarchy.resources(include_recycle_bin=False)
+                if item["resource_type"] == "page"
+                and item["section_id"] == expected_section_id
+            ]
+            refreshed_pages.sort(key=lambda item: item["order"])
+            return refreshed_pages
+
+        def signature(values):
+            return tuple(
+                (item["id"], int(item.get("order", 0)), int(item.get("page_level", 1)))
+                for item in values
+            )
+
+        reconciliation = self._reconciled_idempotent_execute(
+            operation="reorder_page",
+            execute=lambda: self.call(
+                "update_hierarchy",
+                xml=self.hierarchy.page_order_xml(section, pages),
+                schema=XML_SCHEMA_2013,
+            ),
+            observe=observe,
+            is_pre_state=lambda values: signature(values) == before_signature,
+            is_post_state=lambda values: signature(values) == expected_signature,
+            is_partial_state=lambda values: {item["id"] for item in values}
+            != {item[0] for item in before_signature},
+        )
+        stable = self._converge(
+            operation="reorder_page",
+            observe=observe,
+            accept=lambda values: signature(values) == expected_signature,
+            project_identity=signature,
+            failure_message="Reorder was accepted, but Page order did not converge.",
+        )
+        refreshed_pages = stable.value or []
+        refreshed = next(item for item in refreshed_pages if item["id"] == page_id)
+        return {
+            "item": refreshed,
+            "pages": refreshed_pages,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
+        }
 
     @staticmethod
     def _container_subtree(
@@ -616,43 +883,82 @@ class MutationService(BaseService):
         before_direct_ids = {child["id"] for child in direct_children}
         expected_sibling_ids = [candidate["id"] for candidate in ordered_siblings]
 
-        self.call(
-            "update_hierarchy",
-            xml=self.hierarchy.container_order_xml(
-                parent,
-                ordered_children,
-                catalog=active_items,
-            ),
-            schema=XML_SCHEMA_2013,
+        update_xml = self.hierarchy.container_order_xml(
+            parent,
+            ordered_children,
+            catalog=active_items,
         )
 
-        refreshed_items = self.hierarchy.resources(include_recycle_bin=False)
-        refreshed_by_id = {candidate["id"]: candidate for candidate in refreshed_items}
-        refreshed = refreshed_by_id.get(object_id)
-        if refreshed is None or refreshed.get("resource_type") != resource_type:
-            raise RuntimeError("Reorder returned success, but the target ID could not be read back.")
-        if refreshed.get("parent_id") != expected_parent_id:
-            raise RuntimeError("Reorder returned success, but the target parent changed.")
-        refreshed_direct = [
-            candidate
-            for candidate in refreshed_items
-            if candidate.get("parent_id") == expected_parent_id
-            and candidate.get("resource_type") in {"section", "section_group"}
-        ]
-        if {candidate["id"] for candidate in refreshed_direct} != before_direct_ids:
-            raise RuntimeError("Reorder returned success, but the direct sibling ID set changed.")
-        refreshed_siblings = [
-            candidate for candidate in refreshed_direct if candidate["resource_type"] == resource_type
-        ]
-        if [candidate["id"] for candidate in refreshed_siblings] != expected_sibling_ids:
-            raise RuntimeError("Reorder returned success, but the requested sibling order was not observed.")
+        def direct_signature(values):
+            direct = [
+                candidate
+                for candidate in values
+                if candidate.get("parent_id") == expected_parent_id
+                and candidate.get("resource_type") in {"section", "section_group"}
+            ]
+            typed = [candidate["id"] for candidate in direct if candidate["resource_type"] == resource_type]
+            return tuple(typed), frozenset(candidate["id"] for candidate in direct)
 
-        refreshed_subtree = self._container_subtree(refreshed_items, object_id)
-        if self._container_subtree_signature(refreshed_subtree) != before_signature:
-            raise RuntimeError("Reorder returned success, but target descendant IDs or relationships changed.")
-        refreshed_pages = [node for node in refreshed_subtree if node["resource_type"] == "page"]
-        if self._page_digests(refreshed_pages) != before_page_digests:
-            raise RuntimeError("Reorder returned success, but Page content changed.")
+        before_direct_signature = direct_signature(active_items)
+        expected_direct_signature = (tuple(expected_sibling_ids), frozenset(before_direct_ids))
+        reconciliation = self._reconciled_idempotent_execute(
+            operation=f"reorder_{resource_type}",
+            execute=lambda: self.call(
+                "update_hierarchy", xml=update_xml, schema=XML_SCHEMA_2013
+            ),
+            observe=lambda: self.hierarchy.resources(include_recycle_bin=False),
+            is_pre_state=lambda values: direct_signature(values) == before_direct_signature,
+            is_post_state=lambda values: direct_signature(values) == expected_direct_signature,
+            is_partial_state=lambda values: direct_signature(values)[1]
+            != before_direct_signature[1],
+        )
+
+        def validated_snapshot():
+            refreshed_items = self.hierarchy.resources(include_recycle_bin=False)
+            refreshed_by_id = {candidate["id"]: candidate for candidate in refreshed_items}
+            refreshed = refreshed_by_id.get(object_id)
+            if refreshed is None or refreshed.get("resource_type") != resource_type:
+                return None
+            if refreshed.get("parent_id") != expected_parent_id:
+                return None
+            refreshed_direct = [
+                candidate
+                for candidate in refreshed_items
+                if candidate.get("parent_id") == expected_parent_id
+                and candidate.get("resource_type") in {"section", "section_group"}
+            ]
+            if {candidate["id"] for candidate in refreshed_direct} != before_direct_ids:
+                return None
+            refreshed_siblings = [
+                candidate
+                for candidate in refreshed_direct
+                if candidate["resource_type"] == resource_type
+            ]
+            if [candidate["id"] for candidate in refreshed_siblings] != expected_sibling_ids:
+                return None
+            refreshed_subtree = self._container_subtree(refreshed_items, object_id)
+            if self._container_subtree_signature(refreshed_subtree) != before_signature:
+                return None
+            refreshed_pages = [
+                node for node in refreshed_subtree if node["resource_type"] == "page"
+            ]
+            if self._page_digests(refreshed_pages) != before_page_digests:
+                return None
+            return {"item": refreshed, "siblings": refreshed_siblings}
+
+        stable = self._converge(
+            operation=f"reorder_{resource_type}",
+            observe=validated_snapshot,
+            accept=lambda value: value is not None,
+            project_identity=lambda value: (
+                value["item"]["id"],
+                tuple(item["id"] for item in value["siblings"]),
+            ),
+            failure_message="Reorder was accepted, but container topology did not converge.",
+        )
+        assert stable.value is not None
+        refreshed = stable.value["item"]
+        refreshed_siblings = stable.value["siblings"]
         return {
             "item": refreshed,
             "siblings": refreshed_siblings,
@@ -663,6 +969,8 @@ class MutationService(BaseService):
                 "descendants_unchanged": True,
                 "page_content_unchanged": True,
             },
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
         }
 
     def reorder_section(
@@ -1378,10 +1686,11 @@ class MutationService(BaseService):
                 ) from exc
             raise
 
-        after: dict[str, Any] | None = None
         last_candidate: dict[str, Any] | None = None
         last_error: RuntimeError | None = None
-        for attempt in range(8):
+
+        def observe_reparent():
+            nonlocal last_candidate, last_error
             try:
                 candidate = self._capture_reparent_snapshot(notebook_id)
                 last_candidate = candidate
@@ -1401,13 +1710,37 @@ class MutationService(BaseService):
                         destination_parent_id=destination_parent_id,
                         resource_type=resource_type,
                     )
-                after = candidate
-                break
+                return {
+                    "after": candidate,
+                    "current": current,
+                    "id_map": id_map,
+                    "verified": verified,
+                }
+            except OneNoteError:
+                raise
             except RuntimeError as exc:
                 last_error = exc
-                if attempt < 7:
-                    time.sleep(0.5)
-        if after is None:
+                return None
+
+        stable = converge(
+            observe_reparent,
+            lambda value: value is not None,
+            lambda value: (
+                value["current"]["id"],
+                tuple(sorted(value["id_map"].items())),
+                tuple(
+                    sorted(
+                        (item["id"], item.get("parent_id"), item.get("section_id"))
+                        for item in value["after"]["items"]
+                    )
+                ),
+            ),
+            config=DEFAULT_CONVERGENCE,
+            clock=time.monotonic,
+            sleeper=time.sleep,
+            transient=transient_read_error,
+        )
+        if not stable.converged or stable.value is None:
             if resource_type == "page":
                 partial_position, active_source_ids, observed_destination_ids = (
                     self._partial_reparent_page_position(
@@ -1432,6 +1765,10 @@ class MutationService(BaseService):
             raise RuntimeError(
                 f"Reparent returned success, but read-back verification failed: {last_error}"
             )
+        after = stable.value["after"]
+        current = stable.value["current"]
+        id_map = stable.value["id_map"]
+        verified = stable.value["verified"]
         return {
             "item": current,
             "destination_position": destination_position(
@@ -1442,6 +1779,7 @@ class MutationService(BaseService):
             "destination_parent_id": destination_parent_id,
             "id_map": id_map,
             "verified": verified,
+            "convergence": stable.summary(),
             **(
                 {
                     "include_descendants": bool(include_descendants),
@@ -1536,10 +1874,42 @@ class MutationService(BaseService):
             y=y,
             existing_tag_definitions=tag_definitions_from_page_xml(before_xml),
         )
-        self.call("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        if self.pages.digest(self.pages.xml(page_id, "all")) == before_hash:
-            raise RuntimeError("Append returned success, but Page content did not change during read-back verification.")
-        return {"item": self.hierarchy.wait_for(page_id, "page"), "before_modified": before.get("modified"), "appended": True}
+        observe = lambda: self.pages.digest(self.pages.xml(page_id, "all"))
+        reconciliation = self._reconciled_idempotent_execute(
+            operation="append_to_page",
+            execute=lambda: self.call(
+                "update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False
+            ),
+            observe=observe,
+            is_pre_state=lambda digest: digest == before_hash,
+            is_post_state=lambda digest: digest != before_hash,
+        )
+        stable = self._converge(
+            operation="append_to_page",
+            observe=observe,
+            accept=lambda digest: digest != before_hash,
+            project_identity=lambda digest: digest,
+            failure_message="Append was accepted, but Page content did not converge.",
+        )
+        item = self.hierarchy.wait_for(page_id, "page")
+        if item is None:
+            raise OneNoteConvergenceTimeoutError(
+                "Append content converged, but Page hierarchy identity did not stabilize.",
+                operation="append_to_page",
+                partial=True,
+                reconciliation="indeterminate",
+                details={
+                    "convergence": self.hierarchy.last_convergence_summary(),
+                    "manual_recovery_required": True,
+                },
+            )
+        return {
+            "item": item,
+            "before_modified": before.get("modified"),
+            "appended": True,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
+        }
 
     def add_image_to_page(
         self,
@@ -1578,14 +1948,42 @@ class MutationService(BaseService):
             width=resolved_width,
             height=resolved_height,
         )
-        self.call("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
-        if self.pages.digest(self.pages.xml(page_id, "all")) == before_hash:
-            raise RuntimeError("Image update returned success, but Page content did not change during read-back verification.")
+        observe = lambda: self.pages.digest(self.pages.xml(page_id, "all"))
+        reconciliation = self._reconciled_idempotent_execute(
+            operation="add_image_to_page",
+            execute=lambda: self.call(
+                "update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False
+            ),
+            observe=observe,
+            is_pre_state=lambda digest: digest == before_hash,
+            is_post_state=lambda digest: digest != before_hash,
+        )
+        stable = self._converge(
+            operation="add_image_to_page",
+            observe=observe,
+            accept=lambda digest: digest != before_hash,
+            project_identity=lambda digest: digest,
+            failure_message="Image update was accepted, but Page content did not converge.",
+        )
+        item = self.hierarchy.wait_for(page_id, "page")
+        if item is None:
+            raise OneNoteConvergenceTimeoutError(
+                "Image content converged, but Page hierarchy identity did not stabilize.",
+                operation="add_image_to_page",
+                partial=True,
+                reconciliation="indeterminate",
+                details={
+                    "convergence": self.hierarchy.last_convergence_summary(),
+                    "manual_recovery_required": True,
+                },
+            )
         return {
-            "item": self.hierarchy.wait_for(page_id, "page"),
+            "item": item,
             "image_path": str(path),
             "width": resolved_width,
             "height": resolved_height,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
         }
 
     def replace_page_body(
@@ -1619,33 +2017,61 @@ class MutationService(BaseService):
                     continue
                 self.call("delete_page_content", page_id=page_id, object_id=object_id, force=False)
                 deleted.append(object_id)
-            self.call(
-                "update_page_content",
-                xml=build_page_update_xml(
+            update_xml = build_page_update_xml(
                     page_id,
                     title=title,
                     content=content,
                     content_format=content_format,
                     existing_tag_definitions=tag_definitions_from_page_xml(page_xml),
+                )
+            observe = lambda: self.pages.digest(self.pages.xml(page_id, "all"))
+            reconciliation = self._reconciled_idempotent_execute(
+                operation="replace_page_body",
+                execute=lambda: self.call(
+                    "update_page_content",
+                    xml=update_xml,
+                    schema=XML_SCHEMA_2013,
+                    force=False,
                 ),
-                schema=XML_SCHEMA_2013,
-                force=False,
+                observe=observe,
+                is_pre_state=lambda digest: digest == before_hash and not deleted,
+                is_post_state=lambda digest: digest != before_hash,
+                is_partial_state=lambda digest: bool(deleted) and digest == before_hash,
             )
-            if self.pages.digest(self.pages.xml(page_id, "all")) == before_hash:
-                raise RuntimeError("Rebuild returned success, but Page content did not change during read-back verification.")
+            stable = self._converge(
+                operation="replace_page_body",
+                observe=observe,
+                accept=lambda digest: digest != before_hash,
+                project_identity=lambda digest: digest,
+                failure_message="Page rebuild was accepted, but content did not converge.",
+            )
         except Exception as exc:
             if deleted:
                 raise PartialFailure(
                     str(exc),
                     partial=True,
                     completed_steps=[{"operation": "delete_page_content", "object_id": value} for value in deleted],
+                    reconciliation="partially_applied",
+                    manual_recovery_required=True,
                 ) from exc
             raise
+        item = self.hierarchy.wait_for(page_id, "page")
+        if item is None:
+            raise PartialFailure(
+                "Page body content converged, but hierarchy identity did not stabilize.",
+                partial=True,
+                reconciliation="indeterminate",
+                manual_recovery_required=True,
+                completed_steps=[{"operation": "delete_page_content", "object_id": value} for value in deleted],
+                convergence=self.hierarchy.last_convergence_summary(),
+            )
         return {
-            "item": self.hierarchy.wait_for(page_id, "page"),
+            "item": item,
             "deleted_objects": deleted,
             "replaced": True,
             "partial": False,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
         }
 
     def delete_page_content(
@@ -1679,11 +2105,34 @@ class MutationService(BaseService):
             )
         if matched is None or not matched.get("delete_supported"):
             raise ValueError("object_id is not a currently verified deletable page content object.")
-        self.call("delete_page_content", page_id=page_id, object_id=object_id, force=False)
-        remaining = collect_page_objects(self.pages.xml(page_id, "all"))
-        if any(item.get("object_id") == object_id for item in remaining):
-            raise RuntimeError("Delete returned success, but the page content object still exists.")
-        return {"page_id": page_id, "object_id": object_id, "deleted": True}
+        def observe():
+            return collect_page_objects(self.pages.xml(page_id, "all"))
+
+        reconciliation = self._reconciled_idempotent_execute(
+            operation="delete_page_content",
+            execute=lambda: self.call(
+                "delete_page_content", page_id=page_id, object_id=object_id, force=False
+            ),
+            observe=observe,
+            is_pre_state=lambda values: any(item.get("object_id") == object_id for item in values),
+            is_post_state=lambda values: not any(item.get("object_id") == object_id for item in values),
+        )
+        stable = self._converge(
+            operation="delete_page_content",
+            observe=observe,
+            accept=lambda values: not any(item.get("object_id") == object_id for item in values),
+            project_identity=lambda values: tuple(
+                sorted(str(item.get("object_id")) for item in values if item.get("object_id"))
+            ),
+            failure_message="Delete was accepted, but the Page content object remained visible.",
+        )
+        return {
+            "page_id": page_id,
+            "object_id": object_id,
+            "deleted": True,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
+        }
 
     def delete_resource(
         self,
@@ -1702,24 +2151,45 @@ class MutationService(BaseService):
             expected_parent_id=expected_parent_id,
             expected_modified=expected_modified,
         )
-        self.call("delete_hierarchy", object_id=object_id, permanently=permanently)
-        final_state: dict[str, Any] | None = None
-        for attempt in range(8):
+        def observe():
             try:
-                final_state = self.hierarchy.resource(object_id, resource_type)
+                return self.hierarchy.resource(object_id, resource_type)
             except ValueError:
-                final_state = None
-            if final_state is None or (not permanently and final_state["is_in_recycle_bin"]):
-                return {
-                    "item": item,
-                    "object_id": object_id,
-                    "permanently": permanently,
-                    "deleted": True,
-                    "final_state": final_state,
-                }
-            if attempt < 7:
-                time.sleep(0.5)
-        raise RuntimeError("Delete returned success, but the object remained active after read-back verification.")
+                return None
+
+        postcondition = lambda value: value is None or (
+            not permanently and value.get("is_in_recycle_bin") is True
+        )
+        reconciliation = reconcile_mutation(
+            execute=lambda: self.call(
+                "delete_hierarchy", object_id=object_id, permanently=permanently
+            ),
+            observe=observe,
+            is_pre_state=lambda value: value is not None
+            and value.get("is_in_recycle_bin") is not True,
+            is_post_state=postcondition,
+            is_partial_state=lambda value: value is not None
+            and value.get("is_in_recycle_bin") is True
+            and permanently,
+            retry_if_unchanged=False,
+        )
+        self._raise_failed_reconciliation("delete_hierarchy", reconciliation)
+        stable = self._converge(
+            operation="delete_hierarchy",
+            observe=observe,
+            accept=postcondition,
+            project_identity=lambda value: self.hierarchy._resource_identity(value),
+            failure_message="Delete was accepted, but the object state did not converge.",
+        )
+        return {
+            "item": item,
+            "object_id": object_id,
+            "permanently": permanently,
+            "deleted": True,
+            "final_state": stable.value,
+            "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
+        }
 
     def delete_page(
         self,
