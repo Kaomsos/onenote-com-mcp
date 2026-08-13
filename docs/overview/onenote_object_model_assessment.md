@@ -8,6 +8,7 @@
 > 合同同步：2026-08-10 后续工作树已实现全部已打开 Notebook 搜索与默认单页 Page Copy；Page Copy 已获用户真实证据，全局搜索仍待独立验收。
 > 取证范围同步：2026-08-11 后续 Copy 内容取证聚焦 InkDrawing、UI Shape、MediaFile；FileAttachment、MeetingInfo 与 Embedded Spreadsheet（内嵌电子表格）排除。
 > Move 同步：2026-08-11 用户确认更新后的 Page root-only/subtree 以及跨 Notebook Section/SectionGroup 三个 Move 场景全部通过；证据分别来自 `run-2026-08-11-20-29-19`、`run-2026-08-11-20-31-28`、`run-2026-08-11-20-33-29`。
+> Query 规划同步：2026-08-13 决定不再把 `query_hierarchy` 简单重命名为单一 `global_query`；TODO 022 改为按对象类型交付 `query_notebook`、`query_section_group`、`query_section`、`query_page`，并利用 `GetHierarchy` 的 root/单一起点与最浅必要 scope。四工具完成真实验证并取得用户明确批准后，将从项目整体移除五个 `list_*` 工具；批准前当前默认工具面不变。
 
 ## 核心阅读入口
 
@@ -32,7 +33,7 @@
 
 原审计列出的主要产品边界也大多已经落实：
 
-- 四层 Create/List/Get、Metadata Query、Path、Tree 和 Page 缩进树已形成 typed 契约；
+- 四层 Create/List/Get、Path、Tree 和 Page 缩进树已形成 typed 契约；当前通用 `query_hierarchy` 已提供元数据过滤，但按对象类型拆分、原生起点 scope 和 open-only 边界仍由 TODO 022 跟踪；
 - Page 元数据、XML、文本、内容对象和二进制已拆分读取；
 - SectionGroup/Section Rename、Page Reorder 和三类 typed Delete 已实现；Section 同父级 Reorder 已有用户确认的真实 UI 证据；SectionGroup Reorder 因后端只支持按名称固定升序而明确拒绝；
 - Search 要求显式 root/start-node scope，固定调用 OneNote index，并具有分页前候选 Page、当前页单页字符、总字符和总耗时硬预算；
@@ -53,7 +54,7 @@
 | 用户确认的真实证据 | 指定 OneNote/Office 环境中的真实 COM 副作用或 UI 结果 | TODO 中记录的 run、manual-validation evidence、Lesson |
 | 尚未确认           | 只有实现、Mock、dry-run 或工程推断                    | 进行中/待办 TODO 和未进入保真 allowlist 的类型        |
 
-当前记录的完整纯自动化测试结果为 `584 passed`。该结果证明离线合同通过，不证明真实 OneNote mutation 已普遍通过。复审过程没有由 Agent 运行真实 `tests/manual_validation/run.py <scenario>` 或 `run.py all`；仅执行了无副作用 dry-run。Section/SectionGroup Reorder、三类 Reparent、四层 Copy、更新后的 Page Move 与 Section/SectionGroup Move 的真实结果都来自用户本人显式启动的隔离场景；用户已确认其中受支持能力在当前环境完成验收，SectionGroup Reorder 则以固定名称升序的负能力证据结束评估。
+截至 2026-08-13，当前工作树在唯一短 pytest 临时根下的完整纯自动化结果为 `845 passed`。该结果证明离线合同通过，不证明真实 OneNote mutation 已普遍通过。复审过程没有由 Agent 运行真实 `tests/manual_validation/run.py <scenario>` 或 `run.py all`；仅执行了无副作用 dry-run。Section/SectionGroup Reorder、三类 Reparent、四层 Copy、更新后的 Page Move 与 Section/SectionGroup Move 的真实结果都来自用户本人显式启动的隔离场景；用户已确认其中受支持能力在当前环境完成验收，SectionGroup Reorder 则以固定名称升序的负能力证据结束评估。
 
 ### 2.2 历史基线问题的完成度
 
@@ -67,7 +68,7 @@
 | Search 只限制返回命中数，不限制候选与 hydration 成本                        | 已增加严格 scope、分页前候选数、当前页单页字符、总字符和时间预算                                                                                                                                  | 已解决；仍不是字节预算                        |
 | raw Page/Hierarchy XML 默认暴露                                | raw Page XML 只在 6-tool advanced profile 显式启用；raw hierarchy MCP 工具已从所有生产 profile 移除，内部 bridge operation 仅供受约束 service 使用                                      | 已解决                                        |
 | `replace_page_body` 容易被理解为原子 Replace                 | 当前合同明确为非原子，失败返回`partial_failure/completed_steps`                                                                                                                     | 已解决；尚无独立执行计划                      |
-| SectionGroup 缺 typed List/Get，四层缺 Query/Get Tree          | 对称 List/Get、Query、Path、Tree 已实现                                                                                                                                               | 已解决                                        |
+| SectionGroup 缺 typed List/Get，四层缺 Query/Get Tree          | 对称 List/Get、Path、Tree 已实现；通用 `query_hierarchy` 已存在，但四层 typed query、原生 scope、open-only 边界与 Agent 可发现合同尚待 TODO 022 实施                                      | 部分解决；Query 工具面待收敛                  |
 | Rename、Reorder、Reparent、Move 和 Copy 缺稳定能力边界         | Rename 已 typed；Page/Section Reorder 有明确契约，SectionGroup Reorder 因后端固定名称升序而拒绝；三类同 Notebook Reparent 已 typed、独立门控并由用户确认当前环境真实通过；四层 Copy、Page Move 和跨 Notebook 容器 Move 已实验实现且取得当前环境真实证据 | 能力与证据边界已明确 |
 
 ## 3. 当前架构与对象模型
@@ -158,9 +159,9 @@ Section → Page → PageContentObject
 | 类别  | 操作               | 工具英文名                                                                           | Notebook                   | SectionGroup            | Section              | Page                             | 备注                                                                                              |
 | ----- | ------------------ | ------------------------------------------------------------------------------------ | -------------------------- | ----------------------- | -------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `C` | 创建               | `create_*`                                                                         | `T`                      | `T`                   | `T`                | `T`                            | —                                                                                                |
-| `R` | 列出               | `list_*`                                                                           | `T`                      | `T`                   | `T`                | `T`                            | —                                                                                                |
+| `R` | 列出               | 当前：`list_*`；目标：由无过滤 `query_*` 分页取代                                  | `T`：当前注册           | `T`：当前注册        | `T`：当前注册     | `T`：当前注册                 | TODO 022 的 Query 验证完成并经用户明确批准后，五个 List 将从项目整体移除；当前仍是实现事实。       |
 | `R` | 获取元数据         | `get_*`                                                                            | `T`                      | `T`                   | `T`                | `T`                            | —                                                                                                |
-| `R` | 查询元数据         | `query_hierarchy`                                                                  | `T`                      | `T`                   | `T`                | `T`                            | —                                                                                                |
+| `R` | 查询元数据         | 当前：`query_hierarchy`；目标：`query_notebook` / `query_section_group` / `query_section` / `query_page` | `T`：当前通用入口        | `T`：当前通用入口     | `T`：当前通用入口 | `T`：当前通用入口              | 四工具拆分与原生 root/start-node scope 是 TODO 022 的待办目标，不能视为已注册能力。                 |
 | `R` | 搜索正文           | `search_pages`                                                                     | `T`：typed 或全部已打开 scope | `T`：typed scope       | `T`：typed scope    | `T`：返回对象                  | 全局 scope 使用一次 hierarchy 快照和调用级预算。                                                  |
 | `R` | 获取父级           | `get_parent`                                                                       | `T`：返回空父级          | `T`                   | `T`                | `T`                            | Page 的容器父级是 Section。                                                                       |
 | `R` | 获取路径           | `get_path`                                                                         | `T`                      | `T`                   | `T`                | `T`                            | —                                                                                                |
@@ -213,7 +214,29 @@ Advanced profile 用于开发、诊断和受控能力探测，不属于默认 ty
 
 ### 6.3 Query 与 Search
 
-Metadata Query 与 Page 正文 Search 已分离。Search 具有以下当前边界：
+Metadata Query 与 Page 正文 Search 已分离，但当前 Query 工具面仍未完成 typed 收敛。
+
+当前实现事实：
+
+- 默认 profile 仍只注册通用 `query_hierarchy(resource_type, ...)`；
+- 每次调用固定执行一次 `GetHierarchy("", hsPages)`，取得 root 下展开到 Page 的完整 XML，再由 Python 过滤；
+- 它不是逐 Notebook 调用 COM，也没有利用 `FindMeta` 执行复合查询；
+- 即使只查询 Notebook 或 Section，也会获取到 Page 层级；
+- 当前没有调用方可选起点，且尚未显式排除 `is_open=false` Notebook 及其后代；
+- `limit` 只截断过滤后的响应，不减少 COM 快照或 Python 扫描工作量。
+
+[TODO 022](../todo/022_typed_metadata_query_tools_and_native_scopes.md) 已改为以下目标，尚未实施：
+
+| 目标工具 | 公开 scope | 原生 COM 映射 | 固定返回类型 |
+| --- | --- | --- | --- |
+| `query_notebook` | 固定全部已打开 Notebook | `GetHierarchy("", hsNotebooks)` | Notebook |
+| `query_section_group` | 显式 root，或一个 Notebook/SectionGroup ID | `GetHierarchy(start_id, hsSections)` | SectionGroup |
+| `query_section` | 显式 root，或一个 Notebook/SectionGroup ID | `GetHierarchy(start_id, hsSections)` | Section |
+| `query_page` | 显式 root，或一个 Notebook/SectionGroup/Section ID | `GetHierarchy(start_id, hsPages)` | Page |
+
+四个目标工具不接受 `resource_type`，不合并多个离散起点，不逐 Notebook 扫描，并使用最浅必要 `HierarchyScope`。Notebook/SectionGroup/Section 使用 `name_equals/name_contains`，Page 使用与 domain 字段一致的 `title_equals/title_contains`，并把直属容器 `section_id` 与派生缩进关系 `parent_page_id` 分开；四工具使用与 `search_pages` 一致的 `offset=0/page_size=200` 参数约束和 `count/total_matches/offset/page_size/has_more/next_offset` envelope，Query 的一致性标记为 `live_hierarchy`。`query_hierarchy` 将被移除，此前提出的单一 `global_query` 不再实施。Query 覆盖现有 List 后先由用户审查和批准，随后才整体删除 `list_hierarchy/list_notebooks/list_section_groups/list_sections/list_pages`；`list_hierarchy(include_xml=true)` 和混合类型单响应不提供替代入口。
+
+Search 具有以下当前边界：
 
 - 必须显式指定 root，或一个精确 Notebook、SectionGroup、Section ID 作为 scope；
 - 公开路径固定为 OneNote index，每次调用只执行一次 `FindPages`，没有 `local_scan` 选择或 fallback；
@@ -251,7 +274,8 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 
 | 能力或结论                                                              | 自动化合同                                                                                                                                  | 用户确认的真实证据                                                                                              | 当前判断                          |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| 五层 typed model、List/Get/Query/Path/Tree                              | 已覆盖                                                                                                                                      | 不要求 mutation 证据                                                                                            | 当前实现契约                      |
+| 五层 typed model、List/Get/Path/Tree                                    | 已覆盖                                                                                                                                      | 不要求 mutation 证据                                                                                            | 当前实现契约                      |
+| 通用 Metadata Query                                                     | `query_hierarchy` 的现有过滤行为有基础覆盖；四层拆分、原生 scope、open-only 和严格 schema 尚待 TODO 022                                  | 计划新增 `query-metadata-scopes` human-gated 场景，当前无新合同真实证据                                         | 当前能力可用，目标合同尚未实施    |
 | policy、confirmation、partial failure、预算                             | 已覆盖                                                                                                                                      | 真实 mutation 仍按 scenario 分项确认                                                                            | fail-closed 合同成立              |
 | `rename` 与 `create` 隔离 Runner 闭环                               | 已覆盖                                                                                                                                      | 2026-08-06 用户运行通过                                                                                         | 已取得指定环境证据                |
 | Scenario 独立最小 fixture、单 MCP、lease 与失败保留                     | 已覆盖                                                                                                                                      | 用户完成低风险与严格`copy_only` 运行；单样本 MCP starts 从 2 降为 1                                           | TODO 003 已完成，不外推普遍性能   |
@@ -288,19 +312,21 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | [010：Manual Validation Dry-run 自动测试用例注册](../todo/010_registered_dry_run_test_cases.md)              | 已完成 | registry case、正式 parser 与零副作用 sentinel 合同已交付           |
 | [011：Scenario 自管理 Fixture Recipe](../todo/011_scenario_owned_fixture_recipes.md)                         | 已完成 | Scenario-owned recipe、增量 recorder 和共享 typed primitive 已交付  |
 | [012：跨 Notebook 容器重建式 Move](../todo/012_reconstructive_section_and_section_group_move.md)            | 已完成 | 四个 typed 工具、独立门控与双 Notebook 场景已交付；用户确认 Section/SectionGroup 真实 Move 均通过 |
-| [013：Reparent Page 子树范围与 Mutation 目标位置回传合同](../todo/013_reparent_default_placement_contract.md) | 进行中 | 实现与 dry-run 已交付；等待新范围场景及十个既有位置场景的用户真实证据 |
+| [013：Reparent Page 子树范围与 Mutation 目标位置回传合同](../todo/013_reparent_default_placement_contract.md) | 阻塞 | 实现与 dry-run 已交付；受 HUMAN-GATED 门限阻塞，等待新范围场景及十个既有位置场景的用户真实证据 |
 | [018：在线视频表示与 Copy 保真验证](../todo/018_online_video_copy_fidelity_validation.md)                  | 已取消 | 不建立独立对象类型或有损 Copy 合同；局限性证据保留在 Lesson |
+| [022：四层 Typed Metadata Query、原生 Scope 与 List 工具退役](../todo/022_typed_metadata_query_tools_and_native_scopes.md) | 待办 | 四 Query 先覆盖 List 枚举与分页；真实验证后经用户明确批准，再整体移除五个 `list_*` 工具及项目内依赖。 |
 
 ### 8.2 优先事项
 
-1. 完成 TODO 008 的双 Notebook 只读真实验收，核对两种 backend 的归属与错误行为，不把空 `start_id` 未经证据地等同于 Desktop `Ctrl+E`。
-2. 由用户运行 TODO 013 的 `reparent-page-scope` 与十个既有位置场景，核对保存证据后完成状态收敛。
-3. 保持 TODO 004 已完成的静态边界：InkDrawing、UIShape、MediaFile、InsertedFile 的 Copy comparator、用户 UI verdict 和 allowlist 评审已经完成，运行时输入不得动态扩展生产 allowlist，Move 不另建逐类别门禁。
-4. 继续保持统一 Reparent、Copy、Page Move 和容器 Move 的独立实验开关；SectionGroup Reorder 的遗留开关保持关闭。若 Page body replacement 的审查需求提高，再为 Replace 设计独立 plan/execute。只有在收集正式基准后才评估长驻单线程 COM broker。
+1. 实施 TODO 022 的四层 typed metadata query，移除通用 `resource_type` 入口，验证 root/单一起点、open-only 和最浅 `HierarchyScope` 合同。
+2. 完成 TODO 008 的双 Notebook index-only 真实验收，核对归属、scope、预算与 index readiness，不把空 `start_id` 未经证据地等同于 Desktop `Ctrl+E`。
+3. 由用户运行 TODO 013 的 `reparent-page-scope` 与十个既有位置场景，核对保存证据后完成状态收敛。
+4. 保持 TODO 004 已完成的静态边界：InkDrawing、UIShape、MediaFile、InsertedFile 的 Copy comparator、用户 UI verdict 和 allowlist 评审已经完成，运行时输入不得动态扩展生产 allowlist，Move 不另建逐类别门禁。
+5. 继续保持统一 Reparent、Copy、Page Move 和容器 Move 的独立实验开关；SectionGroup Reorder 的遗留开关保持关闭。若 Page body replacement 的审查需求提高，再为 Replace 设计独立 plan/execute。只有在收集正式基准后才评估长驻单线程 COM broker。
 
 ## 9. 最终判断
 
-原审计的架构取舍已经实施：项目现在是 local-only、COM-first、typed-object-first 的 MCP，而不是把 COM 方法和 raw XML 直接当成产品模型。P0/P1 的主要对象、查询、安全和 mutation 边界已有代码与自动化合同，README 中模糊的“Full CRUD”也已被具体能力目录取代。
+原审计的架构取舍已经实施：项目现在是 local-only、COM-first、typed-object-first 的 MCP，而不是把 COM 方法和 raw XML 直接当成产品模型。P0/P1 的主要对象、安全和 mutation 边界已有代码与自动化合同，README 中模糊的“Full CRUD”也已被具体能力目录取代。Metadata Query 当前仍由通用 `query_hierarchy` 承担；按对象类型拆分、原生起点、open-only 和 Agent 可发现合同已经形成 TODO 022 的明确目标，但尚未成为当前实现事实。
 
 下一阶段不需要再次设计一套对象模型。四层 Copy、默认单页/完整子树 Page Copy、更新后的 Page Move 和两个跨 Notebook 容器 Move 都已由用户确认完成当前环境真实闭环；全局搜索仍需独立真实验收。Reparent/Copy/Move 的目标根位置回传和新的 Reparent Page 范围实现已交付，但仍等待用户运行真实场景确认后端证据。墨迹、UI 形状和录像 MediaFile 的可审查保真比较及静态 allowlist 已完成，Move 统一复用 Copy 类别门禁。FileAttachment、MeetingInfo 与 Embedded Spreadsheet 的排除原因见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。
 

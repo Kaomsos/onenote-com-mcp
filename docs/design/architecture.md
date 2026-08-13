@@ -2,7 +2,7 @@
 
 > 状态：当前实现态
 > 更新日期：2026-08-11
-> 相关契约：[对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md)
+> 相关契约：[对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md) · [Windows Fixture Cache 路径配额目标设计](windows_fixture_cache_path_budget.md)
 
 ## 1. 架构结论
 
@@ -385,6 +385,8 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 本会话与默认自动验证仅运行 `pytest -m "not write_contract"`。真实 COM mutation 以及 `write_contract` 流程只能按 [隔离 mutation 验证](../dev/isolated_mutation_validation.md) 人工触发。
 
 Manual-validation fixture 架构位于生产 MCP 之外，但同样遵守 local-only 与 fail-closed 边界。每个公开 Scenario 唯一拥有一个 `RecipeBase`；Recipe 用有序 Notebook role 集合、完整 profile/manifest/validator 声明构建稳定 cache identity。公共 cache runtime 独占 index、锁、opaque copy、byte inventory、publish、materialize 和精确失效清理；working identity 只由各 run 的 lifecycle lease 管理，Recipe 本身不得执行文件系统或 lifecycle 操作。
+
+Windows 普通路径的确定性配额、短磁盘键、staging/working 命名和 pytest dummy fixture 隔离方案已在 [Windows Fixture Cache 路径配额设计](windows_fixture_cache_path_budget.md) 中定稿，但尚未实现；实施与验证由 [TODO 021](../todo/021_windows_fixture_cache_path_budget.md) 跟踪。当前 runtime 仍使用完整 64-hex fingerprint 目录、宽 instance ID 和 32-hex staging nonce，不能把目标设计表述为当前行为。
 
 该基础设施的本地文件/目录原子发布共享一个仅限 Windows `WinError 5/32` 的状态守卫重试：首次失败后按 `50/100/200/400/800ms` 有界退避，总预算约 1.55 秒；每次重试前 source 与 destination 的 `lstat` 身份必须保持不变。Cache entry 和 working directory 额外要求 destination 首次及重试期间始终不存在；多 role materialization 失败时只回收本次已成功发布的 owned paths。该重试不适用于 `copytree`、删除、COM、MCP 调用或任何 mutation，因此不构成 mutation 重试或权限放宽。
 

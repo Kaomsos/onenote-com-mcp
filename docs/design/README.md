@@ -1,0 +1,13 @@
+# 设计文档索引
+
+本目录保存当前架构、公开契约以及已经定稿但仍由 TODO 跟踪实施的目标设计。尚未实现的设计必须在文档开头显式标注，不能表述为当前行为。
+
+| 文档 | 职责 | 状态 |
+| --- | --- | --- |
+| [`architecture.md`](architecture.md) | 生产 MCP、manual-validation fixture cache 与生命周期总体架构 | 当前实现态 |
+| [`object_model.md`](object_model.md) | Notebook、SectionGroup、Section、Page 与内容对象模型 | 当前契约 |
+| [`hierarchy_parser.md`](hierarchy_parser.md) | OneNote hierarchy XML 解析边界 | 当前契约 |
+| [`tool_contracts.md`](tool_contracts.md) | MCP tool 参数、返回结构、policy 与错误语义 | 当前契约 |
+| [`advanced_operations.md`](advanced_operations.md) | 高级/实验操作与启用边界 | 当前契约 |
+| [`windows_fixture_cache_path_budget.md`](windows_fixture_cache_path_budget.md) | Windows fixture cache、staging、materialization 与 working copy 路径配额 | 目标设计，实施由 TODO 021 跟踪 |
+
