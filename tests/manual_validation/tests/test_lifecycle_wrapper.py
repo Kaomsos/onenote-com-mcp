@@ -144,6 +144,55 @@ class BatchFakeBridge(FakeBridge):
         }
 
 
+class LaggingBatchFakeBridge(BatchFakeBridge):
+    def call(self, name: str, **kwargs):
+        result = super().call(name, **kwargs)
+        if name == "open_hierarchy_batch":
+            result["xml"] = (
+                '<one:Notebook xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
+                'ID="notebook-id" name="__ISOLATED__" />'
+            )
+        return result
+
+
+class ReadFailingBatchFakeBridge(BatchFakeBridge):
+    def call(self, name: str, **kwargs):
+        result = super().call(name, **kwargs)
+        if name == "open_hierarchy_batch":
+            result["xml"] = None
+            result["hierarchy_error"] = {
+                "hresult": -2147023174,
+                "leaf_exception_type": "System.Runtime.InteropServices.COMException",
+            }
+        return result
+
+
+class RetryingItemBatchFakeBridge(BatchFakeBridge):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batch_call_count = 0
+
+    def call(self, name: str, **kwargs):
+        result = super().call(name, **kwargs)
+        if name != "open_hierarchy_batch":
+            return result
+        self.batch_call_count += 1
+        if self.batch_call_count == 1:
+            root = next(item for item in result["items"] if item["key"] == "Root.one")
+            root.update(
+                ok=False,
+                object_id=None,
+                error={
+                    "hresult": -2147023174,
+                    "leaf_exception_type": "System.Runtime.InteropServices.COMException",
+                },
+            )
+            result["xml"] = result["xml"].replace(
+                '<one:Section ID="root-section-id" name="Root" />', ""
+            )
+        return result
+
+
 class FakeHierarchy:
     def __init__(self, name: str = "__ISOLATED__") -> None:
         self.name = name
@@ -343,6 +392,82 @@ def test_materialized_batch_freezes_paths_before_one_parent_first_com_session(
     assert evidence["schema_version"] == 2
     assert evidence["batch_session_count"] == 1
     assert all(attempt["activated"] is True for attempt in evidence["attempts"])
+
+
+@pytest.mark.parametrize(
+    "bridge_type,xml_available",
+    ((LaggingBatchFakeBridge, True), (ReadFailingBatchFakeBridge, False)),
+)
+def test_materialized_batch_defers_snapshot_lag_to_fixture_convergence(
+    tmp_path, bridge_type, xml_available
+) -> None:
+    bridge = bridge_type()
+    hierarchy = FakeHierarchy()
+    bridge.hierarchy = hierarchy
+    bridge.reported_path = ""
+    wrapper = NotebookLifecycleWrapper(
+        tmp_path / "run", timeout_seconds=10, bridge=bridge
+    )
+    wrapper._hierarchy = hierarchy
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    (working / "Group").mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Group" / "A.one").write_bytes(b"a")
+    (working / "Group" / "B.one").write_bytes(b"b")
+    (working / "Root.one").write_bytes(b"root")
+    bridge.reported_path = str(working.resolve())
+
+    _notebook, lease = wrapper.open_working_notebook(
+        "__ISOLATED__", working, template_paths=(template,)
+    )
+
+    assert len([call for call in bridge.calls if call[0] == "open_hierarchy_batch"]) == 1
+    assert len(lease["opened_hierarchy"]) == 4
+    assert all(item["snapshot_visible"] is False for item in lease["opened_hierarchy"])
+    evidence = read_json(wrapper.materialized_evidence_path)
+    assert evidence["status"] == "passed"
+    assert evidence["batch_session_count"] == 1
+    assert evidence["batch_observations"][0]["hierarchy_xml_available"] is xml_available
+    assert all(
+        attempt["activation_proof"]
+        == "open_hierarchy_returned_id_pending_fixture_convergence"
+        for attempt in evidence["attempts"]
+    )
+
+
+def test_materialized_batch_retries_only_the_item_that_failed_to_open(tmp_path) -> None:
+    bridge = RetryingItemBatchFakeBridge()
+    hierarchy = FakeHierarchy()
+    bridge.hierarchy = hierarchy
+    bridge.reported_path = ""
+    wrapper = NotebookLifecycleWrapper(
+        tmp_path / "run", timeout_seconds=10, bridge=bridge
+    )
+    wrapper._hierarchy = hierarchy
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    (working / "Group").mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Group" / "A.one").write_bytes(b"a")
+    (working / "Group" / "B.one").write_bytes(b"b")
+    (working / "Root.one").write_bytes(b"root")
+    bridge.reported_path = str(working.resolve())
+
+    wrapper.open_working_notebook(
+        "__ISOLATED__", working, template_paths=(template,)
+    )
+
+    batch_calls = [kwargs for name, kwargs in bridge.calls if name == "open_hierarchy_batch"]
+    assert len(batch_calls) == 2
+    assert [request["key"] for request in batch_calls[1]["requests"]] == ["Root.one"]
+    evidence = read_json(wrapper.materialized_evidence_path)
+    assert evidence["status"] == "passed"
+    assert evidence["batch_session_count"] == 2
+    root_attempts = [
+        attempt for attempt in evidence["attempts"] if attempt["relative_path"] == "Root.one"
+    ]
+    assert [attempt["activated"] for attempt in root_attempts] == [False, True]
 
 
 def test_nested_working_copy_child_never_uses_parentless_absolute_open(tmp_path) -> None:

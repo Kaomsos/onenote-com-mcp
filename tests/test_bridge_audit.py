@@ -29,6 +29,8 @@ def test_internal_hierarchy_batch_uses_one_com_session_and_one_snapshot() -> Non
     assert "Batch hierarchy parent key was not opened" in branch
     assert branch.count("$onenote.GetHierarchy(") == 1
     assert "New-Object -ComObject OneNote.Application" not in branch
+    assert "$hierarchyError = $failure.error" in branch
+    assert "hierarchy_error = $hierarchyError" in branch
 
 
 def test_bridge_audit_records_operation_without_params_or_result(monkeypatch, tmp_path) -> None:

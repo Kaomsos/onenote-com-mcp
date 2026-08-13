@@ -114,14 +114,26 @@ try {
                     }
                 }
             }
-            $xml = ""
-            $onenote.GetHierarchy(
-                [string]$p.notebook_id,
-                [int]$p.scope,
-                [ref]$xml,
-                [int]$p.schema
-            )
-            $data = @{ items = $items; xml = $xml }
+            $xml = $null
+            $hierarchyError = $null
+            try {
+                $observedXml = ""
+                $onenote.GetHierarchy(
+                    [string]$p.notebook_id,
+                    [int]$p.scope,
+                    [ref]$observedXml,
+                    [int]$p.schema
+                )
+                $xml = $observedXml
+            } catch {
+                $failure = New-Err $_
+                $hierarchyError = $failure.error
+            }
+            $data = @{
+                items = $items
+                xml = $xml
+                hierarchy_error = $hierarchyError
+            }
         }
         "update_hierarchy" {
             $onenote.UpdateHierarchy([string]$p.xml, [int]$p.schema)

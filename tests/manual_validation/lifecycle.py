@@ -483,6 +483,7 @@ class NotebookLifecycleWrapper:
         requests: list[dict[str, Any]] = []
         attempts: list[dict[str, Any]] = []
         opened: list[dict[str, Any]] = []
+        batch_observations: list[dict[str, Any]] = []
 
         def save(status: str, error: str | None = None) -> None:
             evidence: dict[str, Any] = {
@@ -490,12 +491,11 @@ class NotebookLifecycleWrapper:
                 "status": status,
                 "working_path": str(working_path),
                 "notebook_id": str(notebook["id"]),
-                "batch_session_count": len(
-                    {attempt.get("batch") for attempt in attempts if attempt.get("batch")}
-                ),
+                "batch_session_count": len(batch_observations),
                 "requests": requests,
                 "attempts": attempts,
                 "opened": opened,
+                "batch_observations": batch_observations,
                 "content_saved": False,
                 "recorded_at": utc_now(),
             }
@@ -542,12 +542,21 @@ class NotebookLifecycleWrapper:
             pending: list[dict[str, Any]],
             batch_index: int,
         ) -> list[dict[str, Any]]:
-            try:
-                resources = parse_hierarchy(str(response["xml"]))
-            except (KeyError, ET.ParseError, ValueError) as exc:
+            hierarchy_error = response.get("hierarchy_error")
+            xml = response.get("xml")
+            if isinstance(xml, str) and xml.strip():
+                try:
+                    resources = parse_hierarchy(xml)
+                except (ET.ParseError, ValueError) as exc:
+                    raise RunnerFailure(
+                        "Materialized hierarchy batch returned invalid hierarchy XML."
+                    ) from exc
+            elif isinstance(hierarchy_error, Mapping):
+                resources = []
+            else:
                 raise RunnerFailure(
-                    "Materialized hierarchy batch returned invalid hierarchy XML."
-                ) from exc
+                    "Materialized hierarchy batch returned neither hierarchy XML nor a typed read error."
+                )
             by_id = {str(item.get("id")): item for item in resources if item.get("id")}
             results = {
                 str(item.get("key")): item
@@ -591,6 +600,17 @@ class NotebookLifecycleWrapper:
                     )
                     attempt["bridge_error_hresult"] = str(error.get("hresult") or "")
                 item = by_id.get(object_id)
+                if item is not None and not (
+                    item.get("resource_type") == request["resource_type"]
+                    and str(item.get("parent_id", "")) == parent_id
+                    and str(item.get("path", "")).casefold()
+                    == str(request["expected_path"]).casefold()
+                    and item.get("is_in_recycle_bin") is not True
+                ):
+                    raise RunnerFailure(
+                        "Materialized hierarchy batch observed a deterministic type, parent, "
+                        f"path, or recycle-bin conflict for {request['relative_path']}."
+                    )
                 if item is None:
                     matches = [
                         candidate
@@ -600,6 +620,11 @@ class NotebookLifecycleWrapper:
                         == str(request["expected_path"]).casefold()
                         and candidate.get("is_in_recycle_bin") is not True
                     ]
+                    if len(matches) > 1:
+                        raise RunnerFailure(
+                            "Materialized hierarchy batch observed an ambiguous typed path for "
+                            f"{request['relative_path']}."
+                        )
                     item = matches[0] if len(matches) == 1 else None
                 if item is not None and (
                     item.get("resource_type") == request["resource_type"]
@@ -621,6 +646,21 @@ class NotebookLifecycleWrapper:
                         }
                     )
                     opened_by_key[str(request["key"])] = str(item["id"])
+                elif object_id and not isinstance(error, Mapping):
+                    attempt.update(
+                        activated=True,
+                        activation_proof="open_hierarchy_returned_id_pending_fixture_convergence",
+                        snapshot_visible=False,
+                    )
+                    opened.append(
+                        {
+                            "relative_path": request["relative_path"],
+                            "resource_type": request["resource_type"],
+                            "object_id": object_id,
+                            "snapshot_visible": False,
+                        }
+                    )
+                    opened_by_key[str(request["key"])] = object_id
                 else:
                     missing.append(request)
                 attempts.append(attempt)
@@ -652,13 +692,42 @@ class NotebookLifecycleWrapper:
                             "create_file_type": request["create_file_type"],
                         }
                     )
-                response = self._bridge.call(
-                    "open_hierarchy_batch",
-                    notebook_id=str(notebook["id"]),
-                    requests=batch_requests,
-                    scope=HIERARCHY_SCOPES["pages"],
-                    schema=XML_SCHEMA_2013,
-                )
+                try:
+                    response = self._bridge.call(
+                        "open_hierarchy_batch",
+                        notebook_id=str(notebook["id"]),
+                        requests=batch_requests,
+                        scope=HIERARCHY_SCOPES["pages"],
+                        schema=XML_SCHEMA_2013,
+                    )
+                except OneNoteBridgeError as exc:
+                    batch_observations.append(
+                        {
+                            "batch": batch_index,
+                            "response_received": False,
+                            "error_type": type(exc).__name__,
+                            "hresult": str(exc.hresult or ""),
+                        }
+                    )
+                    save("running")
+                    if batch_index == 1:
+                        continue
+                    raise
+                hierarchy_error = response.get("hierarchy_error")
+                observation: dict[str, Any] = {
+                    "batch": batch_index,
+                    "response_received": True,
+                    "hierarchy_xml_available": bool(response.get("xml")),
+                }
+                if isinstance(hierarchy_error, Mapping):
+                    observation.update(
+                        hierarchy_error_type=str(
+                            hierarchy_error.get("leaf_exception_type")
+                            or "OneNoteBridgeError"
+                        ),
+                        hierarchy_error_hresult=str(hierarchy_error.get("hresult") or ""),
+                    )
+                batch_observations.append(observation)
                 pending = observe_batch(response, pending, batch_index)
                 save("running")
             if pending:
