@@ -3156,9 +3156,9 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
     }
     captures = iter(
         [
-            {"source_digest": "source-digest"},
-            {"source_digest": "target-digest"},
-            {"source_digest": "target-digest"},
+            {"source_digest": "source-digest", "protected_digest": "source-protected"},
+            {"source_digest": "target-digest", "protected_digest": "target-protected"},
+            {"source_digest": "target-digest", "protected_digest": "target-protected"},
         ]
     )
     delete_calls = []
@@ -3253,6 +3253,76 @@ def test_container_move_uses_shared_copy_contract_without_lossless_gate(monkeypa
 
     assert result["outcome"] == "moved"
     assert len(delete_calls) == 1
+
+
+@pytest.mark.write_contract
+def test_container_move_accepts_destination_modified_clock_drift(monkeypatch):
+    source_id, _child_id, _copied, delete_calls, _final_items = (
+        install_container_move_execution_fakes(monkeypatch, "section_group")
+    )
+    captures = iter(
+        [
+            {"source_digest": "source-digest", "protected_digest": "source-protected"},
+            {"source_digest": "target-before", "protected_digest": "target-protected"},
+            {"source_digest": "target-after", "protected_digest": "target-protected"},
+        ]
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_capture_source",
+        lambda *args, **kwargs: next(captures),
+    )
+
+    result = server.services.copying.move_section_group(
+        source_id,
+        "destination-notebook",
+        "Source",
+        "source-notebook",
+        "move-digest",
+        "m1",
+        "Moved",
+    )
+
+    assert result["outcome"] == "moved"
+    assert len(delete_calls) == 1
+    assert any("modified timestamps" in warning for warning in result["warnings"])
+
+
+@pytest.mark.write_contract
+def test_container_move_reports_destination_semantic_drift_after_source_delete(monkeypatch):
+    source_id, _child_id, _copied, delete_calls, _final_items = (
+        install_container_move_execution_fakes(monkeypatch, "section_group")
+    )
+    captures = iter(
+        [
+            {"source_digest": "source-digest", "protected_digest": "source-protected"},
+            {"source_digest": "target-before", "protected_digest": "target-protected-before"},
+            {"source_digest": "target-after", "protected_digest": "target-protected-after"},
+        ]
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_capture_source",
+        lambda *args, **kwargs: next(captures),
+    )
+
+    with pytest.raises(PartialFailure) as raised:
+        server.services.copying.move_section_group(
+            source_id,
+            "destination-notebook",
+            "Source",
+            "source-notebook",
+            "move-digest",
+            "m1",
+            "Moved",
+        )
+
+    assert len(delete_calls) == 1
+    assert raised.value.details["outcome"] == "source_removed_destination_revalidation_failed"
+    assert raised.value.details["source_deleted"] is True
+    assert "protected topology or content changed" in raised.value.details[
+        "destination_revalidation_error"
+    ]
 
 
 @pytest.mark.write_contract

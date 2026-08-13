@@ -110,6 +110,30 @@ class CopyService(BaseService):
         return {field: item.get(field) for field in fields if field in item}
 
     @staticmethod
+    def _protected_resource(item: dict[str, Any]) -> dict[str, Any]:
+        """Keep the destination facts that a completed Move must preserve.
+
+        OneNote may advance ``modified`` while it finishes persisting a newly
+        copied subtree.  That clock remains part of the strict source plan
+        digest, but it is not authored content or topology and must not turn a
+        successfully completed Move into a false partial failure.
+        """
+
+        fields = (
+            "resource_type",
+            "id",
+            "name",
+            "title",
+            "parent_id",
+            "notebook_id",
+            "section_id",
+            "page_level",
+            "order",
+            "parent_page_id",
+        )
+        return {field: item.get(field) for field in fields if field in item}
+
+    @staticmethod
     def _digest(value: Any) -> str:
         payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return sha256(payload.encode("utf-8")).hexdigest()
@@ -246,12 +270,17 @@ class CopyService(BaseService):
             "resources": resource_snapshot,
             "page_hashes": page_hashes,
         }
+        protected_digest_snapshot = {
+            "resources": [self._protected_resource(item) for item in resources],
+            "page_hashes": page_hashes,
+        }
         return {
             "source": source,
             "resources": resources,
             "page_xml": page_xml,
             "source_snapshot": source_snapshot,
             "source_digest": self._digest(source_digest_snapshot),
+            "protected_digest": self._digest(protected_digest_snapshot),
             "estimated": {
                 "resources": len(resources),
                 "pages": len(pages),
@@ -1790,8 +1819,14 @@ class CopyService(BaseService):
                 time.monotonic(),
                 True,
             )
-            if target_after_delete["source_digest"] != target_before_delete["source_digest"]:
-                raise RuntimeError("The verified destination subtree changed during source deletion.")
+            if target_after_delete["protected_digest"] != target_before_delete["protected_digest"]:
+                raise RuntimeError(
+                    "The verified destination subtree's protected topology or content changed "
+                    "during source deletion."
+                )
+            destination_clock_drifted = (
+                target_after_delete["source_digest"] != target_before_delete["source_digest"]
+            )
         except Exception as exc:
             raise PartialFailure(
                 "The source container subtree is inactive, but the destination could not be revalidated.",
@@ -1833,6 +1868,14 @@ class CopyService(BaseService):
                 "move_notebooks": plan["move_notebooks"],
                 "warnings": [
                     *copied.get("warnings", []),
+                    *(
+                        [
+                            "OneNote advanced destination modified timestamps while persisting the "
+                            "copied subtree; protected topology and Page content remained stable."
+                        ]
+                        if destination_clock_drifted
+                        else []
+                    ),
                     "Move created new IDs; inbound links outside the copied subtree were not scanned.",
                     *(
                         [
