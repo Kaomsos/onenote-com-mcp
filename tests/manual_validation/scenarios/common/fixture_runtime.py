@@ -6,6 +6,7 @@ import argparse
 import asyncio
 from copy import deepcopy
 from pathlib import Path
+import time
 from typing import Any, Mapping
 import uuid
 
@@ -683,7 +684,9 @@ async def prepare_materialized_fixture(
         if key in manifest
     }
     source_structure = structure
+    validation_started = time.monotonic()
     options.progress.unit_started("cache hierarchy", "source")
+    hierarchy_started = time.monotonic()
     (
         converged_snapshot,
         converged_structure,
@@ -696,6 +699,9 @@ async def prepare_materialized_fixture(
         source_notebook=manifest.get("notebook", {}),
         working_notebook=notebook,
     )
+    convergence["hierarchy_elapsed_seconds"] = round(
+        time.monotonic() - hierarchy_started, 6
+    )
     convergence_path = options.run_dir / "cache-hierarchy-convergence.json"
 
     def persist_convergence() -> None:
@@ -706,6 +712,7 @@ async def prepare_materialized_fixture(
                 "passed": convergence.get("passed") is True
                 and convergence.get("full_content_validation_completed") is True,
                 "roles": {"source": convergence},
+                "elapsed_seconds": round(time.monotonic() - validation_started, 6),
             },
         )
 
@@ -717,6 +724,7 @@ async def prepare_materialized_fixture(
         )
     options.progress.unit_completed("cache hierarchy", "source")
     options.progress.unit_started("cache content", "source")
+    content_started = time.monotonic()
     convergence["full_content_validation_started"] = True
     persist_convergence()
     try:
@@ -726,6 +734,7 @@ async def prepare_materialized_fixture(
             passed=False,
             phase="full_content_validation",
             full_content_validation_completed=False,
+            content_elapsed_seconds=round(time.monotonic() - content_started, 6),
             error_type=type(exc).__name__,
             error=str(exc),
         )
@@ -750,6 +759,7 @@ async def prepare_materialized_fixture(
             passed=False,
             phase="full_content_validation",
             full_content_validation_completed=True,
+            content_elapsed_seconds=round(time.monotonic() - content_started, 6),
             error=(
                 "declared hierarchy changed after convergence"
                 if hierarchy_changed
@@ -770,6 +780,7 @@ async def prepare_materialized_fixture(
         passed=True,
         phase="full_content_validation",
         full_content_validation_completed=True,
+        content_elapsed_seconds=round(time.monotonic() - content_started, 6),
     )
     persist_convergence()
     options.progress.unit_completed("cache content", "source")
@@ -1070,6 +1081,7 @@ async def prepare_materialized_fixture_bundle(
                     for value in convergence_reports.values()
                 ),
                 "roles": convergence_reports,
+                "elapsed_seconds": round(time.monotonic() - validation_started, 6),
             },
         )
 
@@ -1083,6 +1095,7 @@ async def prepare_materialized_fixture_bundle(
         if not isinstance(structure, dict):
             raise InvariantFailure(f"Cached fixture role {role} has no typed structure.")
         options.progress.unit_started("cache hierarchy", role, role_index, len(roles))
+        hierarchy_started = time.monotonic()
         (
             converged_snapshot,
             converged_rebound,
@@ -1096,6 +1109,9 @@ async def prepare_materialized_fixture_bundle(
             working_notebook=notebooks[role],
         )
         convergence_reports[role] = convergence
+        convergence["hierarchy_elapsed_seconds"] = round(
+            time.monotonic() - hierarchy_started, 6
+        )
         persist_convergence()
         if convergence.get("passed") is not True or converged_snapshot is None:
             raise InvariantFailure(
@@ -1106,6 +1122,7 @@ async def prepare_materialized_fixture_bundle(
             "cache hierarchy", role, role_index, len(roles)
         )
         options.progress.unit_started("cache content", role, role_index, len(roles))
+        content_started = time.monotonic()
         convergence["full_content_validation_started"] = True
         persist_convergence()
         try:
@@ -1115,6 +1132,9 @@ async def prepare_materialized_fixture_bundle(
                 passed=False,
                 phase="full_content_validation",
                 full_content_validation_completed=False,
+                content_elapsed_seconds=round(
+                    time.monotonic() - content_started, 6
+                ),
                 error_type=type(exc).__name__,
                 error=str(exc),
             )
@@ -1140,6 +1160,9 @@ async def prepare_materialized_fixture_bundle(
                 passed=False,
                 phase="full_content_validation",
                 full_content_validation_completed=True,
+                content_elapsed_seconds=round(
+                    time.monotonic() - content_started, 6
+                ),
                 error=(
                     "declared hierarchy changed after convergence"
                     if hierarchy_changed
@@ -1163,6 +1186,7 @@ async def prepare_materialized_fixture_bundle(
             passed=True,
             phase="full_content_validation",
             full_content_validation_completed=True,
+            content_elapsed_seconds=round(time.monotonic() - content_started, 6),
         )
         persist_convergence()
         options.progress.unit_completed("cache content", role, role_index, len(roles))

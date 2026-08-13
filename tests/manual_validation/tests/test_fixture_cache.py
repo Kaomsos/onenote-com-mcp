@@ -199,6 +199,13 @@ def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
     assert checkpoint["roles"]["source"]["mutation_hierarchy_source"] == (
         "post_reopen_fixture_convergence"
     )
+    assert set(checkpoint["phases_seconds"]) == {
+        "import_open",
+        "import_close",
+        "mutation_identity_reopen",
+        "total",
+    }
+    assert all(value >= 0 for value in checkpoint["phases_seconds"].values())
 
 
 def _publish(tmp_path: Path):
@@ -519,7 +526,11 @@ def test_publish_and_materialize_preserve_opaque_byte_inventory(tmp_path) -> Non
 
     lookup = store.lookup(recipe, recipe.default_template_instance_id)
     assert lookup is not None
-    materialized = store.materialize(lookup, tmp_path / "run")
+    materialized = store.materialize(
+        lookup,
+        tmp_path / "run",
+        cache_origin="cold_build",
+    )
 
     assert inventory_directory(source) == inventory_directory(
         materialized.template_paths["source"]
@@ -529,6 +540,16 @@ def test_publish_and_materialize_preserve_opaque_byte_inventory(tmp_path) -> Non
     )
     assert materialized.template_paths["source"] != materialized.working_paths["source"]
     assert hit.entry["opened_template"] is False
+    evidence = read_json(tmp_path / "run" / "cache-materialization.json")
+    assert evidence["decision"] == "validated_hit"
+    assert evidence["cache_origin"] == "cold_build"
+    assert set(evidence["phases_seconds"]) == {
+        "preflight",
+        "copy_and_verify",
+        "publish_working_paths",
+        "total",
+    }
+    assert all(value >= 0 for value in evidence["phases_seconds"].values())
     store.record_opened_working_role(
         materialized,
         role="source",
@@ -1380,6 +1401,9 @@ def test_reparent_page_materialization_persists_rebound_run_local_evidence(
     assert events == ["hierarchy-stable", "full-content"]
     convergence = read_json(run_dir / "cache-hierarchy-convergence.json")
     assert convergence["passed"] is True
+    assert convergence["elapsed_seconds"] >= 0
+    assert convergence["roles"]["source"]["hierarchy_elapsed_seconds"] >= 0
+    assert convergence["roles"]["source"]["content_elapsed_seconds"] >= 0
     assert convergence["roles"]["source"]["full_content_validation_completed"] is True
     cached_after = read_json(artifact_root / "template-manifest.json")
     assert cached_after["reparent_page_fixture"]["page_id"] == "source-reparent_page"

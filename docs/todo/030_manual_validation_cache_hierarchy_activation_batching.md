@@ -27,9 +27,15 @@ TODO 016 已在完整 Page 内容取证前增加 manifest-aware 双稳定门，�
 
 当前又将所有 materialized working role 统一为两阶段 lifecycle：第一次 import identity 完成 exact-parent batch 后必须 `CloseNotebook(force=false)` 并证明 exact ID/path 已关闭；随后从同一个 working path 只重开 Notebook shell，第二次 identity 才进入完整 hierarchy 枚举、typed relative-address ID 重绑、连续两次稳定与每 Page 单次内容验证。该实现覆盖 validated hit、programmatic cold-build publish 后 materialize、interactive cache consumer 以及单/多 role bundle；不提升 cache schema/fingerprint，因为 template bytes/identity 未改变，只改变每个 run 的 working lifecycle。真实复验尚未完成，因此 TODO 保持“进行中”。
 
+用户随后完成的新一轮 `all --use-cache` 已从上一轮的 2/15 提升到 12/15；统一 import/close/reopen checkpoint、异常隔离和继续执行合同均按预期工作。剩余三项形成了更窄且彼此独立的失败：Create cold-build 的旧 full preset 在 checkpoint 后只丢失 `Disposable-Page`；Copy SectionGroup cold-build 在发布 inventory 中缺少原本为空的 `99-Group-Anchor-B`；Move SectionGroup 已完成 verified/lossless Copy 和一次非永久源根删除，却因目标 `modified` 后台推进被完整 digest 误判为目标变化。它们不再支持“cache 全面不可用”的判断。
+
+针对该证据，Create recipe 已升到 v3，只保留业务真正需要的 `Duplicate-Title-Target` Section并声明 publish 前 persistence checkpoint；Copy SectionGroup recipe 升到 v5，四个空 anchor Group 各增加一个无 Page 的 typed sentinel Section并声明同一 checkpoint；旧 fingerprint 自动 miss。生产 Move 的源计划重验证继续严格包含 `modified`，只把源删除后的目标复核改成排除 `modified`、仍包含完整拓扑和稳定 Page 内容 hash 的 protected semantic digest，时间戳单独漂移只产生 warning，语义变化仍为 partial failure。三项均已有纯合同覆盖，尚待下一次用户真实运行。
+
+阶段诊断也已细化：`cache-materialization.json` 同时记录 legacy materialize decision、真正的 `cache_origin` 以及 preflight/copy/publish 耗时；`cache-working-import-checkpoint.json` 记录 import-open/import-close/reopen 耗时；`cache-hierarchy-convergence.json` 记录逐 role hierarchy/content 耗时。这样 cold-build 后 materialize 不再伪装成普通 validated hit，后续真实 run 可直接定位慢点。
+
 Delete recipe 同时提升到 v2，在 `Disposable-Group` 内创建 `Disposable-Section` sentinel，使目标 Group 具有持久化 `.one` 形状；旧 fingerprint 自动 miss，不要求清理合法 cache。
 
-TODO 016 的“层级连续稳定两次后才读完整 Page 内容、每个 snapshot 同一 Page XML 只读一次”已经完成并取得真实 Copy Page 证据。本 TODO 尚未完成跨阶段 observation handoff、细分耗时指标和 batch 后真实复验，因此保持“进行中”。如果 batch 后仍出现持续 `missing_page`，下一步只对其精确 owning Section 做一次有界 reactivation并重新取得 Notebook snapshot；仍缺失则 fail closed，不能放宽结构双稳定门。
+TODO 016 的“层级连续稳定两次后才读完整 Page 内容、每个 snapshot 同一 Page XML 只读一次”已经完成并取得真实 Copy Page 证据。本 TODO 已完成当前三层关键耗时指标，但尚未完成跨阶段 observation handoff 和上述三项修复后的真实复验，因此保持“进行中”。如果后续仍出现持续 `missing_page`，下一步只对其精确 owning Section 做一次有界 reactivation并重新取得 Notebook snapshot；仍缺失则 fail closed，不能放宽结构双稳定门。
 
 ## 目标
 

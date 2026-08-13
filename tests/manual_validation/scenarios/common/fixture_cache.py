@@ -1419,7 +1419,9 @@ class BundleCacheStore:
         run_dir: Path,
         *,
         working_names: Mapping[str, str] | None = None,
+        cache_origin: str = "validated_hit",
     ) -> MaterializedBundle:
+        materialize_started = time.monotonic()
         run_dir = managed_absolute(run_dir)
         working_root = run_dir / "notebooks"
         template_paths: dict[str, Path] = {}
@@ -1469,6 +1471,7 @@ class BundleCacheStore:
             working_paths,
         )
         working_root.mkdir(parents=True, exist_ok=True)
+        preflight_completed = time.monotonic()
         try:
             for role in roles:
                 template = template_paths[role]
@@ -1491,6 +1494,7 @@ class BundleCacheStore:
                     "working_inventory_before_open": copied_inventory.as_dict(),
                     "opened_template": False,
                 }
+            copy_completed = time.monotonic()
             for role in hit.entry["roles"]:
                 atomic_replace_with_retry(
                     staging / role,
@@ -1498,16 +1502,24 @@ class BundleCacheStore:
                     destination_must_be_absent=True,
                 )
                 published_working_paths.append(working_paths[role])
+            publish_completed = time.monotonic()
             evidence = {
                 "schema_version": CACHE_SCHEMA_VERSION,
                 "fingerprint": hit.fingerprint,
                 "template_instance_id": hit.template_instance_id,
                 "decision": "validated_hit",
+                "cache_origin": cache_origin,
                 "roles": evidence_roles,
                 "bundle_inventory_digest": hit.entry["bundle_inventory_digest"],
                 "materialized_at": utc_now(),
                 "templates_opened": False,
                 "path_budget": budget_evidence,
+                "phases_seconds": {
+                    "preflight": round(preflight_completed - materialize_started, 6),
+                    "copy_and_verify": round(copy_completed - preflight_completed, 6),
+                    "publish_working_paths": round(publish_completed - copy_completed, 6),
+                    "total": round(publish_completed - materialize_started, 6),
+                },
             }
             evidence_path = run_dir / "cache-materialization.json"
             _atomic_json(

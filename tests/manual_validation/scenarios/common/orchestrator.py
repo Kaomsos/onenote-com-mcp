@@ -94,12 +94,14 @@ def _materialize_with_budget_context(
     *,
     working_names: Mapping[str, str] | None,
     cache_entry_published: bool,
+    cache_origin: str,
 ) -> MaterializedBundle:
     try:
         return cache_store.materialize(
             hit,
             run_dir,
             working_names=working_names,
+            cache_origin=cache_origin,
         )
     except PathBudgetFailure as exc:
         exc.cache_entry_published = cache_entry_published
@@ -634,6 +636,11 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     options.run_dir,
                     working_names=_cached_working_names(args, scenario),
                     cache_entry_published=False,
+                    cache_origin=(
+                        "recovered_retryable_open_failure"
+                        if cache_decision == "recovered_retryable_open_failure"
+                        else "validated_hit"
+                    ),
                 )
                 if cache_decision != "recovered_retryable_open_failure":
                     cache_decision = "validated_hit"
@@ -856,6 +863,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                             options.run_dir,
                             working_names=_cached_working_names(args, scenario),
                             cache_entry_published=True,
+                            cache_origin="cold_build",
                         )
                     try:
                         notebooks, leases = _open_materialized_bundle(
@@ -1012,6 +1020,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                             options.run_dir,
                             working_names=_cached_working_names(args, scenario),
                             cache_entry_published=True,
+                            cache_origin="interactive_bootstrap",
                         )
                     try:
                         notebooks, leases = _open_materialized_bundle(
@@ -1634,6 +1643,8 @@ def _open_materialized_bundle(
     import_notebooks: dict[str, dict[str, Any]] = {}
     import_leases: dict[str, dict[str, Any]] = {}
     checkpoint_path = wrappers["source"].run_dir / "cache-working-import-checkpoint.json"
+    checkpoint_started = time.monotonic()
+    phase_started = checkpoint_started
     checkpoint: dict[str, Any] = {
         "schema_version": 1,
         "status": "running",
@@ -1644,6 +1655,7 @@ def _open_materialized_bundle(
         "filesystem_deleted": False,
         "template_modified": False,
         "started_at": utc_now(),
+        "phases_seconds": {},
     }
     write_json(checkpoint_path, checkpoint)
     try:
@@ -1686,6 +1698,11 @@ def _open_materialized_bundle(
                 working_paths=materialized.working_paths,
                 open_notebooks=after_import,
             )
+            now = time.monotonic()
+            checkpoint["phases_seconds"]["import_open"] = round(
+                now - phase_started, 6
+            )
+            phase_started = now
             checkpoint["phase"] = "import_close"
             write_json(checkpoint_path, checkpoint)
             close_results = _close_bundle(wrappers, roles)
@@ -1704,6 +1721,11 @@ def _open_materialized_bundle(
                     raise RestoreFailure(
                         f"Materialized import role {role} did not close its exact Notebook identity."
                     )
+            now = time.monotonic()
+            checkpoint["phases_seconds"]["import_close"] = round(
+                now - phase_started, 6
+            )
+            phase_started = now
             checkpoint["phase"] = "mutation_identity_reopen"
             write_json(checkpoint_path, checkpoint)
             for role in roles:
@@ -1737,6 +1759,13 @@ def _open_materialized_bundle(
                     notebook_id=str(notebooks[role]["id"]),
                     actual_path=Path(str(leases[role]["actual_local_path"])),
                 )
+            now = time.monotonic()
+            checkpoint["phases_seconds"]["mutation_identity_reopen"] = round(
+                now - phase_started, 6
+            )
+            checkpoint["phases_seconds"]["total"] = round(
+                now - checkpoint_started, 6
+            )
         checkpoint.update(
             status="passed",
             phase="awaiting_post_reopen_fixture_convergence",
