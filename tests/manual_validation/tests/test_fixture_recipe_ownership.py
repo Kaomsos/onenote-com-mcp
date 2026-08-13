@@ -144,8 +144,11 @@ def test_container_copy_recipes_partition_two_notebook_roles(
 def test_create_recipe_is_minimal_and_requires_persistence_checkpoint() -> None:
     recipe = SCENARIO_REGISTRY.get("create").fixture_recipe
 
-    assert recipe.recipe_version == 3
-    assert recipe.manifest_keys == {"duplicate_title_section"}
+    assert recipe.recipe_version == 4
+    assert recipe.manifest_keys == {
+        "duplicate_title_section",
+        "persistence_sentinel_page",
+    }
     assert recipe.requires_persistence_checkpoint is True
 
 
