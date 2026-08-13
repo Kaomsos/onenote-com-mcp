@@ -20,8 +20,9 @@ TODO 016 已在完整 Page 内容取证前增加 manifest-aware 双稳定门，�
 - `run-2026-08-14-00-30-14`、`00-34-11`、`00-36-26` 在逐对象、多 PowerShell/COM session 激活中耗尽一次 close/reopen；`00-38-40` 在 destination 双稳定门耗尽，但 failure finalizer 均精确关闭 lease，异常没有跨 child 扩散；
 - `run-2026-08-14-00-32-39` 的五个声明对象已出现，只有嵌套 `group_page` 在 16 次 hierarchy observation 中持续缺失，证明“Page 永远只等观察、不重新激活 owning Section”不能作为无条件规则；
 - `run-2026-08-14-00-18-56` 还暴露 Delete recipe 的空目标 SectionGroup 没有形成可持久化物理子树；这不是 activation timeout，应通过 recipe 形状修复。
+- 首版 batch 后的 `run-2026-08-14-01-33-41`、`01-34-10`、`01-34-35` 与 `01-35-21` 出现新回归：逐项 `OpenHierarchy` 已返回稳定 ID，但同一 COM session 末尾的立即 snapshot 尚未显示 child，lifecycle 连续执行两个无等待 batch 后在 Fixture 双稳定门之前误判失败；`01-33-54` 还证明末尾 `GetHierarchy` 的 `0x800706BA` 会让旧 bridge 丢弃已完成的逐项结果。相邻 `01-34-47` 的 rename 完整通过，支持“snapshot 可见性时序回归、不是 cache template 损坏”的判断。`01-34-22` 与 `01-35-34` 则在更早的全局开放 Notebook snapshot 失败，属于独立的只读 COM 可用性问题。
 
-已从本 TODO 提取并实现当前直接相关部分：lifecycle 在任何 child COM 调用前完成全部路径预算、containment、reparse 与 typed-parent 校验并冻结请求；新增非公开 `open_hierarchy_batch`，在一个 PowerShell/`OneNote.Application` session 中按 parent-before-child 打开精确 SectionGroup/Section，并在同一 session 末尾只取一次 pages hierarchy snapshot。每个 role 最多执行两轮，只重试 snapshot 中仍缺失的容器，已出现容器不重开；生产 MCP 的公开 tool/schema/response 未变化。
+已从本 TODO 提取并实现当前直接相关部分：lifecycle 在任何 child COM 调用前完成全部路径预算、containment、reparse 与 typed-parent 校验并冻结请求；新增非公开 `open_hierarchy_batch`，在一个 PowerShell/`OneNote.Application` session 中按 parent-before-child 打开精确 SectionGroup/Section，并在同一 session 末尾尝试取得一次 pages hierarchy snapshot。回归修正后，只有逐项 `OpenHierarchy` error 才最多重试该失败项一次；成功返回 ID 的容器即使暂未出现在同会话 snapshot 中也不会立即重开，而是交给既有 Fixture 双稳定 observer。末尾 `GetHierarchy` 失败现在作为 typed batch evidence 返回，不再吞掉逐项成功结果。Batch 中已可见的确定性类型、parent、path、回收站或唯一性冲突仍立即 fail closed；生产 MCP 的公开 tool/schema/response 未变化。
 
 Delete recipe 同时提升到 v2，在 `Disposable-Group` 内创建 `Disposable-Section` sentinel，使目标 Group 具有持久化 `.one` 形状；旧 fingerprint 自动 miss，不要求清理合法 cache。
 
@@ -100,6 +101,7 @@ Fixture runtime 验证 handoff 后，将其作为第一次候选观察，并独�
 
 - Batch 输入只能来自已验证的精确 managed working path 和 typed parent；任意路径、template path、absolute+parent 混用、重复 role 或越界路径均在启动 PowerShell 前拒绝。
 - 多个 SectionGroup/Section 在一次 batch 中只创建一个 PowerShell/COM session；调用次数测试冻结该上界。
+- 同会话 snapshot 暂不可见或末尾 hierarchy read 出现 typed transient error 时，成功返回 ID 的容器不被重开，且必须继续交给 Fixture 双稳定门；逐项 activation error 最多只重试失败集合一次。
 - Notebook 级 observer 用一次 snapshot 同时识别全部 present/missing/conflict 项，不再为每个对象重新读取 global hierarchy。
 - 已出现的容器不会在后续轮次再次 `OpenHierarchy`；Page 缺失只触发 hierarchy observation，不触发 Page/Section 打开。
 - 缺失 Page 后出现并连续两次稳定可以通过；ID/parent/order 震荡、回退、歧义或确定性冲突必须失败。

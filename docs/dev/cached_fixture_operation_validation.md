@@ -138,7 +138,7 @@ AND human verdict accepted（当该场景要求人工判断时）
 
 `cache-hierarchy-convergence.json` 记录 materialized working bundle 的轻量就绪门：每个 role 的全部 manifest-bound SectionGroup、Section 和 Page 必须先按 Notebook-relative typed address 唯一出现，并以相同 ID、parent、section、page level、parent Page 和 sibling order 连续稳定两次，runner 才开始 Page 内容读取。完整 snapshot 仍用读取前后的 hierarchy 证明取证窗口内 ID 集不变；每个 Page 的 hash、能力与 normalized object evidence 则从一次 `get_page_xml(page_info=all)` 通过生产 parser 派生，不再重复读取 `get_page_objects`。
 
-在该门之前，lifecycle 会先冻结 exact working tree 内全部容器请求，并通过非公开 batch 在单个 PowerShell/COM session 中按 parent-before-child 激活 SectionGroup/Section、随后读取一次 Notebook pages hierarchy。这个顺序避免 OneNote 导入 parent 后接管同级 `.one`，导致旧逐对象 loop 在下一次磁盘 `resolve` 时误判路径消失。Batch 最多两轮，只重试仍缺失容器；它不取代后续双稳定和完整内容验证，也不改变生产 MCP 公开 tool 契约。
+在该门之前，lifecycle 会先冻结 exact working tree 内全部容器请求，并通过非公开 batch 在单个 PowerShell/COM session 中按 parent-before-child 激活 SectionGroup/Section、随后尝试读取一次 Notebook pages hierarchy。这个顺序避免 OneNote 导入 parent 后接管同级 `.one`，导致旧逐对象 loop 在下一次磁盘 `resolve` 时误判路径消失。逐项 `OpenHierarchy` 错误最多只重试该失败项一次；成功返回 ID 的容器即使暂未出现在同会话 snapshot 中也不会立即重开，而是交给后续双稳定门等待。末尾 hierarchy 读取失败会作为 typed evidence 保留，不会吞掉逐项结果，也不能绕过后续完整结构和内容验证。该 batch 不改变生产 MCP 公开 tool 契约。
 
 ## 失败归因与处置
 

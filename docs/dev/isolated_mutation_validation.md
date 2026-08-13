@@ -23,7 +23,7 @@ Working identity 冲突扫描在短时 open lock 内于打开前后各捕获一�
 
 以下 parent-aware 规则细化并取代上文对所有节点统一“absolute 优先”的概括。
 
-Lifecycle 在第一次 child COM 调用前预收集并校验 exact working tree 内全部 SectionGroup/`.one` 请求，然后在一个内部 PowerShell/COM session 中按 parent-before-child 批量激活并读取一次 pages hierarchy。Notebook 直属 child 使用 absolute working path/空 relative ID；SectionGroup 下的嵌套 child 只使用文件名和同批或既有 snapshot 证明的精确 parent ID。这样既避免 parentless absolute open 绑定到无关 parent，也避免 OneNote 接管某个 `.one` 后旧逐对象 loop 再次解析磁盘路径而产生假失败。每个 role 最多两轮且只重试仍缺失容器；随后完整 manifest 层级仍须连续稳定两次。
+Lifecycle 在第一次 child COM 调用前预收集并校验 exact working tree 内全部 SectionGroup/`.one` 请求，然后在一个内部 PowerShell/COM session 中按 parent-before-child 批量激活并尝试读取一次 pages hierarchy。Notebook 直属 child 使用 absolute working path/空 relative ID；SectionGroup 下的嵌套 child 只使用文件名和同批或既有 snapshot 证明的精确 parent ID。这样既避免 parentless absolute open 绑定到无关 parent，也避免 OneNote 接管某个 `.one` 后旧逐对象 loop 再次解析磁盘路径而产生假失败。只有逐项 `OpenHierarchy` 错误才最多重试该失败项一次；成功返回 ID 但同会话 snapshot 尚未可见的容器直接进入 Fixture 层级收敛，末尾 hierarchy 读取错误也不会丢弃逐项成功结果。随后完整 manifest 层级仍须连续稳定两次，batch 本身不构成 mutation-ready 证明。
 
 Cache activation 对纯瞬态同步失败提供一次有界恢复：只有全部未激活尝试均为 exact-parent-bound `0x8004201D` 且不存在类型或 `OpenHierarchy` 冲突时，才在 mutation 前关闭并重开同一 working path。初次与恢复证据分别持久化；不复制第二份 working bundle，不修改、重建或隔离模板，也不重放 mutation。恢复仍失败时保留最终 working files、lease 和诊断并 fail closed；通用 failure finalizer 默认精确关闭该 Notebook，显式 keep 模式才保持打开。
 
