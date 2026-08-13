@@ -140,7 +140,26 @@ def test_registered_named_case_round_trips_through_guarded_cli(
                 else "create-source-notebook"
             )
         )
-        assert payload["ordered_steps"][1]["tool_allowlist"] == sorted(spec.tool_allowlist)
+        mutation_step = next(
+            step
+            for step in payload["ordered_steps"]
+            if step["step"] == case.scenario_name
+        )
+        assert mutation_step["tool_allowlist"] == sorted(spec.tool_allowlist)
+        if (
+            "--use-cache" in case.scenario_args
+            and payload["cache"]["cache_mode"] != "interactive_bootstrap"
+        ):
+            assert [step["step"] for step in payload["ordered_steps"]][1:3] == [
+                "cache-working-import-checkpoint",
+                "prepare-materialized-fixture",
+            ]
+            checkpoint = payload["ordered_steps"][1]
+            assert checkpoint["allowed_operations"] == [
+                "batch OpenHierarchy(exact parent)",
+                "close_exact_notebook(force=false)",
+                "reopen exact working path",
+            ]
     if getattr(scenario.fixture_recipe, "representation_discovery_only", False):
         assert payload["cache"]["cache_mode"] == "representation_discovery"
         assert payload["cache"]["enabled"] is False

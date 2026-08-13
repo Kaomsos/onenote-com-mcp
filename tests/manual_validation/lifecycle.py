@@ -258,6 +258,7 @@ class NotebookLifecycleWrapper:
         template_paths: tuple[Path, ...],
         role: str = "source",
         lease_archive_reason: str = "cold-build",
+        activate_hierarchy: bool = True,
         _allow_activation_retry: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Open one materialized working directory and prove no template was opened."""
@@ -276,9 +277,14 @@ class NotebookLifecycleWrapper:
         if lease_archive_reason not in {
             "activation-retry",
             "cold-build",
+            "materialized-import-checkpoint",
             "persistence-checkpoint",
         }:
             raise RunnerFailure("Lifecycle lease archive reason is not allowlisted.")
+        if not activate_hierarchy and lease_archive_reason != "materialized-import-checkpoint":
+            raise RunnerFailure(
+                "Hierarchy activation may only be deferred for the materialized import checkpoint."
+            )
         if self.lease_path.exists():
             previous = self._read_lease()
             if previous.get("state") != "closed":
@@ -289,7 +295,7 @@ class NotebookLifecycleWrapper:
                 else f"lifecycle-{lease_archive_reason}-lease-{self.role}.json"
             )
             if archived.exists():
-                raise RunnerFailure("Lifecycle cold-build lease archive already exists.")
+                raise RunnerFailure("Lifecycle lease archive already exists.")
             self.lease_path.replace(archived)
         opened = self._bridge.call(
             "open_hierarchy",
@@ -324,6 +330,20 @@ class NotebookLifecycleWrapper:
             "filesystem_deleted": False,
         }
         write_json(self.lease_path, lease)
+        if not activate_hierarchy:
+            lease.update(
+                hierarchy_open_status="deferred_to_fixture_convergence",
+                hierarchy_opened_at=utc_now(),
+            )
+            write_json(self.lease_path, lease)
+            self.progress.unit_completed(
+                "lifecycle",
+                f"{self.role} reopen working copy",
+                1,
+                1,
+                elapsed_seconds=time.perf_counter() - opened_started,
+            )
+            return notebook, lease
         try:
             opened_hierarchy = self._open_materialized_hierarchy(
                 working_path,

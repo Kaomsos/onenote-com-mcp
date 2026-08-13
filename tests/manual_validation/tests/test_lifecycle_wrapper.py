@@ -304,6 +304,72 @@ def test_persistence_checkpoint_uses_distinct_closed_lease_archive(tmp_path) -> 
     assert read_json(wrapper.lease_path)["state"] == "active"
 
 
+def test_materialized_import_checkpoint_reopen_defers_child_activation(tmp_path) -> None:
+    bridge = BatchFakeBridge()
+    hierarchy = FakeHierarchy()
+    bridge.hierarchy = hierarchy
+    bridge.reported_path = ""
+    wrapper = NotebookLifecycleWrapper(
+        tmp_path / "run", timeout_seconds=10, bridge=bridge
+    )
+    wrapper._hierarchy = hierarchy
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Root.one").write_bytes(b"root")
+    bridge.reported_path = str(working.resolve())
+    write_json(
+        wrapper.lease_path,
+        {
+            "schema_version": 2,
+            "role": "source",
+            "notebook_id": "import-notebook-id",
+            "expected_name": "source-working-copy",
+            "expected_local_path": str(working.resolve()),
+            "state": "closed",
+        },
+    )
+
+    notebook, lease = wrapper.open_working_notebook(
+        "source-working-copy",
+        working,
+        template_paths=(template,),
+        lease_archive_reason="materialized-import-checkpoint",
+        activate_hierarchy=False,
+        _allow_activation_retry=False,
+    )
+
+    assert notebook["id"] == "notebook-id"
+    assert lease["opened_hierarchy"] == []
+    assert lease["hierarchy_open_status"] == "deferred_to_fixture_convergence"
+    assert not any(name == "open_hierarchy_batch" for name, _kwargs in bridge.calls)
+    archived = wrapper.run_dir / "lifecycle-materialized-import-checkpoint-lease.json"
+    assert read_json(archived)["notebook_id"] == "import-notebook-id"
+
+
+def test_deferred_child_activation_is_restricted_to_materialized_checkpoint(
+    tmp_path,
+) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    working.mkdir(parents=True)
+    template.mkdir(parents=True)
+    bridge.reported_path = str(working.resolve())
+
+    with pytest.raises(RunnerFailure, match="may only be deferred"):
+        wrapper.open_working_notebook(
+            "source-working-copy",
+            working,
+            template_paths=(template,),
+            activate_hierarchy=False,
+        )
+
+    assert bridge.calls == []
+    assert not wrapper.lease_path.exists()
+
+
 def test_open_working_copy_explicitly_opens_bounded_sections_and_groups(tmp_path) -> None:
     wrapper, bridge, _hierarchy = _wrapper(tmp_path)
     working = wrapper.notebook_root / "source-working-copy"

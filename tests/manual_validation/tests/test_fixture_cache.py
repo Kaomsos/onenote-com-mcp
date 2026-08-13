@@ -62,6 +62,145 @@ def _source(tmp_path: Path, role: str = "source") -> Path:
     return root
 
 
+def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
+    tmp_path,
+) -> None:
+    run_dir = tmp_path / "run"
+    working_paths = {
+        role: run_dir / "notebooks" / f"{role}-working"
+        for role in ("source", "destination")
+    }
+    template_paths = {
+        role: tmp_path / "cache" / f"{role}-template"
+        for role in ("source", "destination")
+    }
+    for path in (*working_paths.values(), *template_paths.values()):
+        path.mkdir(parents=True)
+    materialized = MaterializedBundle(
+        "f" * 64,
+        "programmatic-test",
+        template_paths,
+        working_paths,
+        run_dir / "cache-materialization.json",
+    )
+    calls: list[tuple[str, str, object]] = []
+
+    class FakeStore:
+        def record_opened_working_role(self, _bundle, **kwargs):
+            calls.append(("record", kwargs["role"], kwargs["notebook_id"]))
+
+    class FakeWrapper:
+        def __init__(self, role: str) -> None:
+            self.role = role
+            self.run_dir = run_dir
+            suffix = "" if role == "source" else f"-{role}"
+            self.lease_path = run_dir / f"lifecycle-lease{suffix}.json"
+            self.open_count = 0
+
+        def working_notebook_open_lock(self):
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        def snapshot_open_notebooks(self):
+            calls.append(("snapshot", self.role, self.open_count))
+            return {}
+
+        def assert_no_active_working_conflict(self, **kwargs):
+            calls.append(("conflict", self.role, kwargs.get("notebook_ids")))
+
+        def open_working_notebook(self, _name, path, **kwargs):
+            self.open_count += 1
+            calls.append(
+                (
+                    "open",
+                    self.role,
+                    {
+                        "count": self.open_count,
+                        "activate_hierarchy": kwargs.get("activate_hierarchy", True),
+                        "archive": kwargs.get("lease_archive_reason", "cold-build"),
+                    },
+                )
+            )
+            identity = "import" if self.open_count == 1 else "mutation"
+            notebook_id = f"{self.role}-{identity}-id"
+            return (
+                {"id": notebook_id, "name": working_paths[self.role].name},
+                {
+                    "actual_local_path": str(Path(path).resolve()),
+                    "hierarchy_open_status": "passed",
+                    "opened_hierarchy": [{"object_id": "section-id"}],
+                },
+            )
+
+        def close_exact_notebook(self):
+            notebook_id = f"{self.role}-import-id"
+            calls.append(("close", self.role, notebook_id))
+            return {
+                "closed": True,
+                "source_notebook_id": notebook_id,
+                "close_before": {"id": notebook_id},
+            }
+
+    wrappers = {role: FakeWrapper(role) for role in ("source", "destination")}
+    notebooks, leases = validation._open_materialized_bundle(
+        FakeStore(),
+        materialized,
+        wrappers,
+        ("source", "destination"),
+    )
+
+    lifecycle_calls = [
+        (name, role)
+        for name, role, _value in calls
+        if name in {"open", "close"}
+    ]
+    assert lifecycle_calls == [
+        ("open", "source"),
+        ("open", "destination"),
+        ("close", "source"),
+        ("close", "destination"),
+        ("open", "source"),
+        ("open", "destination"),
+    ]
+    open_calls = [value for name, _role, value in calls if name == "open"]
+    assert open_calls == [
+        {"count": 1, "activate_hierarchy": True, "archive": "cold-build"},
+        {"count": 1, "activate_hierarchy": True, "archive": "cold-build"},
+        {
+            "count": 2,
+            "activate_hierarchy": False,
+            "archive": "materialized-import-checkpoint",
+        },
+        {
+            "count": 2,
+            "activate_hierarchy": False,
+            "archive": "materialized-import-checkpoint",
+        },
+    ]
+    assert notebooks["source"]["id"] == "source-mutation-id"
+    assert notebooks["destination"]["id"] == "destination-mutation-id"
+    assert leases["source"]["actual_local_path"] == str(
+        working_paths["source"].resolve()
+    )
+    assert calls[-2:] == [
+        ("record", "source", "source-mutation-id"),
+        ("record", "destination", "destination-mutation-id"),
+    ]
+    checkpoint = read_json(run_dir / "cache-working-import-checkpoint.json")
+    assert checkpoint["status"] == "passed"
+    assert checkpoint["close_force"] is False
+    assert checkpoint["roles"]["source"]["exact_import_identity_closed"] is True
+    assert checkpoint["roles"]["destination"]["exact_import_identity_closed"] is True
+    assert checkpoint["roles"]["source"]["import_notebook_id"] == "source-import-id"
+    assert checkpoint["roles"]["source"]["mutation_notebook_id"] == (
+        "source-mutation-id"
+    )
+    assert checkpoint["roles"]["source"]["mutation_hierarchy_source"] == (
+        "post_reopen_fixture_convergence"
+    )
+
+
 def _publish(tmp_path: Path):
     recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     store = BundleCacheStore(tmp_path / "cache")
@@ -1647,6 +1786,7 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
             self.timeout_seconds = timeout_seconds
             self.lease_path = run_dir / "lifecycle-lease.json"
             self.current_notebook: dict[str, str] | None = None
+            self.materialized_open_count = 0
 
         def create_fresh_notebook(self, name: str):
             path = (self.run_dir / "notebooks" / name).resolve()
@@ -1662,12 +1802,30 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
             write_json(self.lease_path, {"schema_version": 1, **lease})
             return notebook, lease
 
-        def open_working_notebook(self, expected_name, working_path, *, template_paths):
+        def open_working_notebook(
+            self,
+            expected_name,
+            working_path,
+            *,
+            template_paths,
+            lease_archive_reason="cold-build",
+            activate_hierarchy=True,
+            _allow_activation_retry=True,
+        ):
             assert expected_name == working_name
             assert working_path.name == working_name
             assert working_path not in template_paths
+            self.materialized_open_count += 1
+            if self.materialized_open_count == 1:
+                assert lease_archive_reason == "cold-build"
+                assert activate_hierarchy is True
+                assert _allow_activation_retry is False
+            else:
+                assert lease_archive_reason == "materialized-import-checkpoint"
+                assert activate_hierarchy is False
+                assert _allow_activation_retry is False
             notebook = {
-                "id": "working-id",
+                "id": f"working-id-{self.materialized_open_count}",
                 "name": working_name,
                 "path": working_name,
             }
@@ -1676,6 +1834,12 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
                 "expected_name": working_name,
                 "expected_local_path": str(working_path.resolve()),
                 "actual_local_path": str(working_path.resolve()),
+                "hierarchy_open_status": (
+                    "passed"
+                    if activate_hierarchy
+                    else "deferred_to_fixture_convergence"
+                ),
+                "opened_hierarchy": [] if not activate_hierarchy else [{}],
             }
             self.current_notebook = notebook
             write_json(self.lease_path, {"schema_version": 1, **lease})
@@ -1683,7 +1847,11 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
 
         def close_exact_notebook(self):
             assert self.current_notebook is not None
-            return {"closed": True, "close_before": dict(self.current_notebook)}
+            return {
+                "closed": True,
+                "source_notebook_id": self.current_notebook["id"],
+                "close_before": dict(self.current_notebook),
+            }
 
         def any_cache_template_open(self, _entry) -> bool:
             return False
