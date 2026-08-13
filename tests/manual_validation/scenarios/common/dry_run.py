@@ -8,7 +8,8 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, TYPE_CHECKING
 
-from ...runtime import RuntimeOptions
+from ...path_budget import fingerprint_disk_key, instance_location_from_id
+from ...runtime import RunnerFailure, RuntimeOptions
 
 if TYPE_CHECKING:
     from .specs import ScenarioSpec
@@ -297,6 +298,12 @@ def build_isolated_dry_run_plan(
         args,
         allow_unselected=True,
     )
+    try:
+        instance_location = instance_location_from_id(template_instance_id)
+    except RunnerFailure:
+        if template_instance_id != "required-explicit-template-instance":
+            raise
+        instance_location = None
     result["cache"] = {
         "cache_mode": (
             "cache_required"
@@ -318,14 +325,18 @@ def build_isolated_dry_run_plan(
         ),
         "cache_root": str(cache_root),
         "fingerprint": recipe.cache_fingerprint,
+        "fingerprint_disk_key": fingerprint_disk_key(recipe.cache_fingerprint),
         "template_instance_id": template_instance_id,
+        "instance_location": (
+            instance_location.as_dict() if instance_location is not None else None
+        ),
         "roles": {
             role: {
                 "template_path": str(
                     cache_root
-                    / recipe.cache_fingerprint
+                    / fingerprint_disk_key(recipe.cache_fingerprint)
                     / "instances"
-                    / template_instance_id
+                    / Path(*(instance_location.parts if instance_location else ("explicit-required",)))
                     / "notebooks"
                     / role
                     / "template-notebook"

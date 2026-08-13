@@ -83,6 +83,14 @@ def print_result(result: dict[str, Any], *, json_output: bool) -> None:
         print(f"{key}: {rendered}")
 
 
+def print_failure(exc: RunnerFailure, *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(exc.as_error_dict(), ensure_ascii=False, sort_keys=True))
+        return
+    for line in exc.terminal_lines():
+        print(line)
+
+
 async def dispatch(args: argparse.Namespace) -> dict[str, Any]:
     from .scenarios import dispatch_command
 
@@ -101,8 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result, exit_code = run_maintenance(args)
         except RunnerFailure as exc:
-            error = {"ok": False, "error": str(exc), "exit_code": exc.exit_code}
-            print_result(error, json_output=bool(args.json_output))
+            print_failure(exc, json_output=bool(args.json_output))
             return exc.exit_code
         print_result(result, json_output=bool(args.json_output))
         return exit_code
@@ -123,9 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     except RunnerFailure as exc:
         from .scenarios.common.orchestrator import record_failure
 
-        record_failure(args, str(exc), exc.exit_code)
-        error = {"ok": False, "error": str(exc), "exit_code": exc.exit_code}
-        print_result(error, json_output=bool(getattr(args, "json_output", False)))
+        record_failure(args, exc, exc.exit_code)
+        print_failure(exc, json_output=bool(getattr(args, "json_output", False)))
         return exc.exit_code
     except ClientFailure as exc:
         from .scenarios.common.orchestrator import record_failure
@@ -139,4 +145,4 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-__all__ = ["build_parser", "dispatch", "main", "print_result"]
+__all__ = ["build_parser", "dispatch", "main", "print_failure", "print_result"]

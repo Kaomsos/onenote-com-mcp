@@ -13,6 +13,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, TypeAlias
 
 from ...runtime import InvariantFailure
+from ...path_budget import validate_role
 from ..common.fixture_models import (
     FixtureBuildResult,
     FixtureContext,
@@ -36,8 +37,10 @@ class NotebookRoleSpec:
     fixture_parameters: Mapping[str, JSONValue] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if re.fullmatch(r"[a-z][a-z0-9_-]*", self.role) is None:
-            raise ValueError(f"Invalid Notebook role: {self.role!r}")
+        try:
+            validate_role(self.role)
+        except ValueError as exc:
+            raise ValueError(f"Invalid Notebook role: {self.role!r}; {exc}") from exc
         object.__setattr__(
             self,
             "fixture_parameters",
@@ -169,7 +172,7 @@ class RecipeBase(ABC):
             ),
         )
         self.cache_identity = FixtureCacheIdentity(
-            schema_version=1,
+            schema_version=2,
             recipe_name=cache_recipe_name or scenario_name,
             recipe_version=self.recipe_version,
             notebook_roles=tuple(sorted(self.notebook_roles, key=lambda item: item.role)),

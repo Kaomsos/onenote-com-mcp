@@ -27,12 +27,26 @@ from local_onenote_mcp.bridge import OneNoteBridge
 from local_onenote_mcp.constants import HIERARCHY_SCOPES, XML_SCHEMA_2013
 
 from ..local_filesystem import atomic_replace_with_retry
+from ..path_budget import (
+    AUTHORED_INSTANCE_KEY_PATTERN,
+    FINGERPRINT_DISK_KEY_PATTERN,
+    FINGERPRINT_PATTERN,
+    PUBLISH_STAGING_PATTERN,
+    ROLE_PATTERN,
+    authored_location,
+    fingerprint_disk_key,
+    managed_absolute,
+    preflight_path,
+    preflight_paths,
+    programmatic_location,
+    validate_physical_name_has_no_onenote_id,
+)
 from ..runtime import EXIT_INVARIANT, RunnerFailure
 from ..test_utils import utc_now
 from ..scenarios.common.fixture_cache import (
     CACHE_SCHEMA_VERSION,
-    FINGERPRINT_PATTERN,
-    INSTANCE_PATTERN,
+    AUTHORED_INSTANCE_PATTERN,
+    PROGRAMMATIC_INSTANCE_PATTERN,
     MANAGED_MARKER,
     bundle_inventory,
     inventory_directory,
@@ -48,8 +62,11 @@ CONFIRMATIONS = {
 }
 VALIDATION_MARKER = ".managed-validation-root.json"
 VALIDATION_PURPOSE = "local-onenote-mcp-manual-validation"
+VALIDATION_MARKER_SCHEMA_VERSION = 1
+RUN_SCHEMA_VERSION = 2
+MAINTENANCE_SCHEMA_VERSION = 2
 RUN_NAME_PATTERN = re.compile(r"run-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}")
-STAGING_PATTERN = re.compile(r"\.staging-[0-9a-f]{32}")
+STAGING_PATTERN = PUBLISH_STAGING_PATTERN
 RECEIPT_PREFIX = "cleanup-receipt-"
 SUMMARY_PREFIX = "cleanup-summary-"
 
@@ -65,8 +82,13 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
+    validate_physical_name_has_no_onenote_id(path)
     existed = path.exists()
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:16]}.tmp")
+    preflight_paths(
+        ((path, "maintenance_metadata", None), (temporary, "atomic_metadata_temp", None)),
+        phase="maintenance_metadata_preflight",
+    )
     temporary.write_text(
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -99,13 +121,9 @@ def _is_reparse_point(path: Path) -> bool:
 
 
 def _filesystem_path(path: Path) -> Path:
-    """Use an extended Windows path for deep cache trees without changing identity."""
+    """Return the ordinary absolute path required by the 240-unit contract."""
 
-    resolved = path.resolve()
-    text = str(resolved)
-    if os.name == "nt" and not text.startswith("\\\\?\\"):
-        return Path(f"\\\\?\\{text}")
-    return resolved
+    return managed_absolute(path)
 
 
 def _remove_tree(path: Path) -> None:
@@ -117,6 +135,11 @@ def _working_open_lock(validation_root: Path, *, timeout_seconds: int = 30):
     """Serialize real cleanup with run-local working Notebook identity/open checks."""
 
     lock_path = validation_root / "working-notebook-open.lock"
+    preflight_path(
+        lock_path,
+        phase="maintenance_preflight",
+        target_kind="maintenance_open_lock",
+    )
     started = time.monotonic()
     with lock_path.open("a+b") as stream:
         stream.seek(0, 2)
@@ -331,9 +354,20 @@ def _validate_root(
     *,
     workspace_root: Path | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
-    workspace_root = (workspace_root or Path(__file__).resolve().parents[3]).resolve()
-    expected = (workspace_root / ".local-validation").resolve()
-    resolved = validation_root.resolve()
+    workspace_root = managed_absolute(
+        workspace_root or Path(__file__).resolve().parents[3]
+    )
+    expected = managed_absolute(workspace_root / ".local-validation")
+    resolved = managed_absolute(validation_root)
+    preflight_paths(
+        (
+            (workspace_root, "repository_path", None),
+            (resolved, "run_root", None),
+            (resolved / VALIDATION_MARKER, "maintenance_metadata", None),
+            (resolved / "fixture-cache", "cache_root", None),
+        ),
+        phase="maintenance_preflight",
+    )
     checks: dict[str, Any] = {
         "fixed_repository_root": _same_path(resolved, expected),
         "not_filesystem_root": resolved.parent != resolved,
@@ -351,7 +385,7 @@ def _validate_root(
     if marker.exists():
         value = _read_json(marker)
         checks["root_marker_valid"] = (
-            value.get("schema_version") == 1
+            value.get("schema_version") == VALIDATION_MARKER_SCHEMA_VERSION
             and value.get("purpose") == VALIDATION_PURPOSE
         )
         if not checks["root_marker_valid"]:
@@ -368,6 +402,88 @@ def _validate_root(
         checks["root_marker_hidden"] = None
         checks["historical_metadata_mode"] = True
     return resolved, workspace_root, checks
+
+
+def _preflight_maintenance_tree(action: str, validation_root: Path) -> None:
+    """Budget every existing and prospective managed maintenance path before COM."""
+
+    cache_root = validation_root / "fixture-cache"
+    include_runs = action in {"clear-runs", "clear-all"}
+    include_cache = action in {"clear-cache", "clear-all"}
+    paths: list[tuple[Path, str, str | None]] = [
+        (validation_root, "run_root", None),
+        (validation_root / VALIDATION_MARKER, "maintenance_metadata", None),
+        (validation_root / "working-notebook-open.lock", "maintenance_open_lock", None),
+        (cache_root, "cache_root", None),
+    ]
+    if include_cache and cache_root.exists():
+        marker_path = cache_root / MANAGED_MARKER
+        preflight_path(
+            marker_path,
+            phase=f"{action}_path_budget_preflight",
+            target_kind="maintenance_metadata",
+        )
+        if not marker_path.is_file():
+            raise RunnerFailure("Managed fixture cache ownership marker is missing.")
+        marker = _read_json(marker_path)
+        if marker.get("schema_version") != CACHE_SCHEMA_VERSION:
+            raise RunnerFailure(
+                "Legacy fixture cache schema remains. Return to the pre-upgrade version "
+                "and complete its human-gated clear all workflow."
+            )
+    for final in (
+        validation_root / f"{RECEIPT_PREFIX}{'0' * 32}.json",
+        validation_root / f"{SUMMARY_PREFIX}{'0' * 32}.json",
+        cache_root / "index.json",
+    ):
+        paths.extend(
+            (
+                (final, "maintenance_metadata", None),
+                (
+                    final.with_name(f".{final.name}.{'0' * 16}.tmp"),
+                    "atomic_metadata_temp",
+                    None,
+                ),
+            )
+        )
+    preflight_paths(paths, phase=f"{action}_path_budget_preflight")
+    if not validation_root.exists():
+        return
+    stack = [validation_root]
+    while stack:
+        current = stack.pop()
+        children = sorted(current.iterdir(), key=lambda path: path.name)
+        directories: list[Path] = []
+        for candidate in children:
+            if candidate == cache_root and not include_cache:
+                continue
+            if (
+                candidate.parent == validation_root
+                and candidate.name.startswith("run-")
+                and not include_runs
+            ):
+                continue
+            if cache_root == candidate or cache_root in candidate.parents:
+                kind = "cache_managed_path"
+            elif candidate.parent == validation_root and candidate.name.startswith(
+                "run-"
+            ):
+                kind = "run_root"
+            elif any(
+                parent.parent == validation_root and parent.name.startswith("run-")
+                for parent in (candidate, *candidate.parents)
+            ):
+                kind = "run_evidence"
+            else:
+                kind = "maintenance_metadata"
+            preflight_path(
+                candidate,
+                phase=f"{action}_path_budget_preflight",
+                target_kind=kind,
+            )
+            if candidate.is_dir() and not _is_reparse_point(candidate):
+                directories.append(candidate)
+        stack.extend(reversed(directories))
 
 
 def _assess_run(
@@ -401,7 +517,7 @@ def _assess_run(
             state = None
     checks["run_state_owned"] = bool(
         state
-        and state.get("schema_version") == 1
+        and state.get("schema_version") == RUN_SCHEMA_VERSION
         and state.get("human_only") is True
         and state.get("agent_execution_prohibited") is True
         and isinstance(state.get("command"), str)
@@ -455,6 +571,58 @@ def _load_cache_index(cache_root: Path) -> tuple[dict[str, Any], str | None]:
     return index, None
 
 
+def _typed_instance_location(
+    instance_id: str,
+    projection_digest: str | None = None,
+) -> dict[str, Any]:
+    if PROGRAMMATIC_INSTANCE_PATTERN.fullmatch(instance_id):
+        return programmatic_location(instance_id).as_dict()
+    if AUTHORED_INSTANCE_PATTERN.fullmatch(instance_id):
+        return authored_location(
+            instance_id,
+            projection_digest=projection_digest,
+        ).as_dict()
+    raise RunnerFailure("Cache instance metadata has an invalid typed logical identity.")
+
+
+def _typed_instance_path(cache_root: Path, fingerprint: str, instance_id: str) -> Path:
+    location = _typed_instance_location(instance_id)
+    return cache_root.joinpath(
+        fingerprint_disk_key(fingerprint),
+        "instances",
+        *location["parts"],
+    ).resolve()
+
+
+def _entry_identity_at_path(
+    entry: Mapping[str, Any],
+    *,
+    target: Path,
+    cache_root: Path,
+) -> tuple[str, str] | None:
+    fingerprint = str(entry.get("fingerprint", ""))
+    instance_id = str(entry.get("template_instance_id", ""))
+    location = entry.get("instance_location")
+    if (
+        FINGERPRINT_PATTERN.fullmatch(fingerprint) is None
+        or not isinstance(location, Mapping)
+        or entry.get("fingerprint_disk_key") != fingerprint_disk_key(fingerprint)
+    ):
+        return None
+    digest = location.get("projection_digest")
+    try:
+        expected_location = _typed_instance_location(
+            instance_id,
+            str(digest) if digest is not None else None,
+        )
+        expected_path = _typed_instance_path(cache_root, fingerprint, instance_id)
+    except RunnerFailure:
+        return None
+    if dict(location) != expected_location or not _same_path(target, expected_path):
+        return None
+    return fingerprint, instance_id
+
+
 def _disk_cache_identities(cache_root: Path) -> tuple[set[tuple[str, str]], list[Path]]:
     identities: set[tuple[str, str]] = set()
     unknown: list[Path] = []
@@ -467,10 +635,9 @@ def _disk_cache_identities(cache_root: Path) -> tuple[set[tuple[str, str]], list
             "cleanup-tombstones.jsonl",
             "quarantine-evidence.jsonl",
             "recovery-evidence.jsonl",
-            "working-leases",
         } or STAGING_PATTERN.fullmatch(fingerprint_root.name):
             continue
-        if not fingerprint_root.is_dir() or FINGERPRINT_PATTERN.fullmatch(
+        if not fingerprint_root.is_dir() or FINGERPRINT_DISK_KEY_PATTERN.fullmatch(
             fingerprint_root.name
         ) is None:
             unknown.append(fingerprint_root)
@@ -484,11 +651,44 @@ def _disk_cache_identities(cache_root: Path) -> tuple[set[tuple[str, str]], list
         if not instances.is_dir():
             unknown.append(instances)
             continue
-        for instance in instances.iterdir():
-            if instance.is_dir() and INSTANCE_PATTERN.fullmatch(instance.name):
-                identities.add((fingerprint_root.name, instance.name))
+        for typed in instances.iterdir():
+            candidates: list[Path]
+            if typed.name == "p" and typed.is_dir():
+                candidates = [typed]
+            elif typed.name == "a" and typed.is_dir():
+                children = list(typed.iterdir())
+                candidates = [
+                    child
+                    for child in children
+                    if child.is_dir()
+                    and AUTHORED_INSTANCE_KEY_PATTERN.fullmatch(child.name)
+                ]
+                unknown.extend(child for child in children if child not in candidates)
             else:
-                unknown.append(instance)
+                unknown.append(typed)
+                continue
+            for target in candidates:
+                entry_path = target / "bundle-entry.json"
+                if not entry_path.is_file():
+                    unknown.append(target)
+                    continue
+                try:
+                    entry = _read_json(entry_path)
+                except RunnerFailure:
+                    unknown.append(target)
+                    continue
+                identity = _entry_identity_at_path(
+                    entry,
+                    target=target,
+                    cache_root=cache_root,
+                )
+                if (
+                    identity is None
+                    or fingerprint_disk_key(identity[0]) != fingerprint_root.name
+                ):
+                    unknown.append(target)
+                else:
+                    identities.add(identity)
     return identities, unknown
 
 
@@ -501,17 +701,21 @@ def _assess_cache_entry(
     index_error: str | None,
     snapshot: OpenNotebookPathSnapshot,
 ) -> CleanupAssessment:
-    target = (cache_root / fingerprint / "instances" / instance_id).resolve()
+    try:
+        target = _typed_instance_path(cache_root, fingerprint, instance_id)
+    except RunnerFailure:
+        target = (cache_root / "invalid-typed-cache-target").resolve()
     key = f"{fingerprint}:{instance_id}"
     index_entry = index.get("entries", {}).get(key) if not index_error else None
     typed_identity = (
         FINGERPRINT_PATTERN.fullmatch(fingerprint) is not None
-        and INSTANCE_PATTERN.fullmatch(instance_id) is not None
+        and (
+            PROGRAMMATIC_INSTANCE_PATTERN.fullmatch(instance_id) is not None
+            or AUTHORED_INSTANCE_PATTERN.fullmatch(instance_id) is not None
+        )
     )
     exact_typed_path = (
-        typed_identity
-        and target.parent.name == "instances"
-        and _inside(target, cache_root)
+        typed_identity and _inside(target, cache_root)
     )
     checks: dict[str, Any] = {
         "typed_identity": typed_identity,
@@ -537,16 +741,23 @@ def _assess_cache_entry(
     checks["entry_metadata_owned"] = bool(
         entry
         and entry.get("schema_version") == CACHE_SCHEMA_VERSION
-        and entry.get("fingerprint") == fingerprint
-        and entry.get("template_instance_id") == instance_id
+        and _entry_identity_at_path(entry, target=target, cache_root=cache_root)
+        == (fingerprint, instance_id)
         and isinstance(entry.get("roles"), list)
         and bool(entry.get("roles"))
+        and all(
+            isinstance(role, str) and ROLE_PATTERN.fullmatch(role)
+            for role in entry.get("roles", [])
+        )
     )
     checks["index_identity_owned"] = bool(
-        isinstance(index_entry, dict)
+        typed_identity
+        and isinstance(index_entry, dict)
         and index_entry.get("fingerprint") == fingerprint
+        and index_entry.get("fingerprint_disk_key") == fingerprint_disk_key(fingerprint)
         and index_entry.get("template_instance_id") == instance_id
         and entry is not None
+        and index_entry.get("instance_location") == entry.get("instance_location")
         and index_entry.get("state") == entry.get("state")
     )
     template_paths: list[Path] = []
@@ -623,35 +834,45 @@ def _assess_special_cache_target(
     plain, reparse = _plain_tree(target)
     checks["plain_tree"] = plain
     checks["reparse_point"] = reparse
-    if kind == "legacy_working_leases":
-        checks["owned_name"] = target.name == "working-leases"
-        open_matches: list[dict[str, str]] = []
-    else:
-        checks["owned_name"] = STAGING_PATTERN.fullmatch(target.name) is not None
-        entry_path = target / "bundle-entry.json"
-        entry = _read_json(entry_path) if entry_path.is_file() else None
-        checks["staging_entry_owned"] = bool(
-            entry
-            and entry.get("schema_version") == CACHE_SCHEMA_VERSION
-            and FINGERPRINT_PATTERN.fullmatch(str(entry.get("fingerprint", "")))
-            and INSTANCE_PATTERN.fullmatch(str(entry.get("template_instance_id", "")))
-            and isinstance(entry.get("roles"), list)
-            and entry.get("roles")
-        )
-        template_paths = [
-            target / "notebooks" / str(role) / "template-notebook"
-            for role in (entry or {}).get("roles", [])
-        ]
-        checks["template_paths_exist"] = bool(template_paths) and all(
-            path.is_dir() for path in template_paths
-        )
-        open_matches = snapshot.any_exact(template_paths) if snapshot.status == "complete" else []
+    checks["owned_name"] = STAGING_PATTERN.fullmatch(target.name) is not None
+    marker_path = target / "staging-marker.json"
+    marker = _read_json(marker_path) if marker_path.is_file() else None
+    marker_fingerprint = str((marker or {}).get("fingerprint", ""))
+    marker_instance = str((marker or {}).get("template_instance_id", ""))
+    marker_location = (marker or {}).get("instance_location")
+    expected_location: dict[str, Any] | None = None
+    if isinstance(marker_location, Mapping):
+        projection_digest = marker_location.get("projection_digest")
+        try:
+            expected_location = _typed_instance_location(
+                marker_instance,
+                str(projection_digest) if projection_digest is not None else None,
+            )
+        except RunnerFailure:
+            expected_location = None
+    marker_roles = (marker or {}).get("roles")
+    checks["staging_marker_owned"] = bool(
+        marker
+        and marker.get("schema_version") == CACHE_SCHEMA_VERSION
+        and marker.get("staging_name") == target.name
+        and FINGERPRINT_PATTERN.fullmatch(marker_fingerprint)
+        and marker.get("fingerprint_disk_key")
+        == fingerprint_disk_key(marker_fingerprint)
+        and isinstance(marker_location, Mapping)
+        and dict(marker_location) == expected_location
+        and isinstance(marker_roles, list)
+        and marker_roles
+        and all(isinstance(role, str) and ROLE_PATTERN.fullmatch(role) for role in marker_roles)
+    )
+    template_paths = [
+        target / "notebooks" / str(role) / "template-notebook"
+        for role in (marker or {}).get("roles", [])
+        if (target / "notebooks" / str(role) / "template-notebook").is_dir()
+    ]
+    open_matches = snapshot.any_exact(template_paths) if snapshot.status == "complete" else []
     checks["open_templates"] = open_matches
     checks["template_not_open"] = snapshot.status == "complete" and not open_matches
-    owned = checks["owned_name"] and (
-        kind == "legacy_working_leases"
-        or (checks.get("staging_entry_owned") and checks.get("template_paths_exist"))
-    )
+    owned = checks["owned_name"] and checks.get("staging_marker_owned")
     if not checks["direct_cache_child"] or not owned:
         reason = "refused_unowned"
     elif not plain:
@@ -717,6 +938,17 @@ def _discover(
                 )
                 return assessments, None, "Managed cache root is invalid."
             index, index_error = _load_cache_index(cache_root)
+            if index_error is not None:
+                assessments.append(
+                    CleanupAssessment(
+                        "cache_index",
+                        cache_root / "index.json",
+                        {},
+                        {"schema_valid": False, "error": index_error},
+                        "refused",
+                        "refused_legacy_or_invalid_index",
+                    )
+                )
             disk_identities, unknown = _disk_cache_identities(cache_root)
             index_identities: set[tuple[str, str]] = set()
             if index_error is None:
@@ -749,17 +981,7 @@ def _discover(
                         "refused_unowned",
                     )
                 )
-            legacy = cache_root / "working-leases"
-            if legacy.exists():
-                assessments.append(
-                    _assess_special_cache_target(
-                        legacy,
-                        cache_root=cache_root,
-                        kind="legacy_working_leases",
-                        snapshot=snapshot,
-                    )
-                )
-            for staging in sorted(cache_root.glob(".staging-*"), key=lambda path: path.name):
+            for staging in sorted(cache_root.glob(".s-*"), key=lambda path: path.name):
                 assessments.append(
                     _assess_special_cache_target(
                         staging,
@@ -778,7 +1000,7 @@ def _ensure_validation_marker(validation_root: Path) -> None:
     _atomic_json(
         marker,
         {
-            "schema_version": 1,
+            "schema_version": VALIDATION_MARKER_SCHEMA_VERSION,
             "purpose": VALIDATION_PURPOSE,
             "created_at": utc_now(),
             "local_only": True,
@@ -796,7 +1018,7 @@ def _delete_assessment(
     receipt_id = uuid.uuid4().hex
     receipt_path = validation_root / f"{RECEIPT_PREFIX}{receipt_id}.json"
     receipt = {
-        "schema_version": 1,
+        "schema_version": MAINTENANCE_SCHEMA_VERSION,
         "receipt_id": receipt_id,
         "action": action,
         "status": "pending",
@@ -850,8 +1072,11 @@ def _rebuild_cache_index(
         instance_id = str(value.get("template_instance_id", ""))
         if (
             FINGERPRINT_PATTERN.fullmatch(fingerprint)
-            and INSTANCE_PATTERN.fullmatch(instance_id)
-            and not (cache_root / fingerprint / "instances" / instance_id).exists()
+            and (
+                PROGRAMMATIC_INSTANCE_PATTERN.fullmatch(instance_id)
+                or AUTHORED_INSTANCE_PATTERN.fullmatch(instance_id)
+            )
+            and not _typed_instance_path(cache_root, fingerprint, instance_id).exists()
         ):
             removed_keys.add(key)
     if removed_keys:
@@ -871,7 +1096,7 @@ def _cache_scaffold_plan(cache_root: Path) -> list[Path]:
     for fingerprint_root in sorted(cache_root.iterdir(), key=lambda path: path.name):
         if (
             not fingerprint_root.is_dir()
-            or FINGERPRINT_PATTERN.fullmatch(fingerprint_root.name) is None
+            or FINGERPRINT_DISK_KEY_PATTERN.fullmatch(fingerprint_root.name) is None
             or _is_reparse_point(fingerprint_root)
         ):
             continue
@@ -882,11 +1107,14 @@ def _cache_scaffold_plan(cache_root: Path) -> list[Path]:
         if len(children) != 1 or children[0].name != "instances":
             continue
         instances = children[0]
-        if (
-            not instances.is_dir()
-            or _is_reparse_point(instances)
-            or any(instances.iterdir())
-        ):
+        if not instances.is_dir() or _is_reparse_point(instances):
+            continue
+        instance_children = list(instances.iterdir())
+        authored = instances / "a"
+        if authored in instance_children and authored.is_dir() and not any(authored.iterdir()):
+            planned.append(authored)
+            instance_children.remove(authored)
+        if instance_children:
             continue
         planned.extend((instances, fingerprint_root))
     return planned
@@ -949,7 +1177,7 @@ def _receipt_compaction_plan(
                 continue
             receipt_target = receipt.get("target", {})
             if (
-                receipt.get("schema_version") == 1
+                receipt.get("schema_version") == MAINTENANCE_SCHEMA_VERSION
                 and receipt.get("status") == "deleted"
                 and receipt.get("action") == action
                 and isinstance(receipt_target, dict)
@@ -1013,6 +1241,7 @@ def run_maintenance(
         selected_root,
         workspace_root=workspace_root,
     )
+    _preflight_maintenance_tree(action, resolved_root)
     if dry_run:
         return _run_maintenance_locked(
             action=action,
@@ -1026,6 +1255,7 @@ def run_maintenance(
         )
     resolved_root.mkdir(parents=False, exist_ok=True)
     with _working_open_lock(resolved_root):
+        _preflight_maintenance_tree(action, resolved_root)
         return _run_maintenance_locked(
             action=action,
             dry_run=False,
@@ -1073,8 +1303,11 @@ def _run_maintenance_locked(
             instance_id = str(value.get("template_instance_id", ""))
             if (
                 FINGERPRINT_PATTERN.fullmatch(fingerprint)
-                and INSTANCE_PATTERN.fullmatch(instance_id)
-                and not (cache_root / fingerprint / "instances" / instance_id).exists()
+                and (
+                    PROGRAMMATIC_INSTANCE_PATTERN.fullmatch(instance_id)
+                    or AUTHORED_INSTANCE_PATTERN.fullmatch(instance_id)
+                )
+                and not _typed_instance_path(cache_root, fingerprint, instance_id).exists()
             ):
                 index_tombstones_eligible += 1
     finalization_plan = {
@@ -1180,7 +1413,7 @@ def _run_maintenance_locked(
     if not dry_run:
         summary_path = resolved_root / f"{SUMMARY_PREFIX}{uuid.uuid4().hex}.json"
         summary = {
-            "schema_version": 1,
+            "schema_version": MAINTENANCE_SCHEMA_VERSION,
             **result,
             "created_at": utc_now(),
             "summary_path": str(summary_path),

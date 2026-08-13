@@ -5,16 +5,28 @@ from __future__ import annotations
 from types import SimpleNamespace
 import json
 from pathlib import Path
+import re
 
 import pytest
 
 from tests.manual_validation.maintenance import cleanup
 from tests.manual_validation.maintenance.cleanup import OpenNotebookPathSnapshot
+from tests.manual_validation.path_budget import (
+    fingerprint_disk_key,
+    programmatic_location,
+)
 from tests.manual_validation.runner import build_parser, main
-from tests.manual_validation.runtime import EXIT_INVARIANT, RunnerFailure
+from tests.manual_validation.runtime import EXIT_INVARIANT, PathBudgetFailure, RunnerFailure
 from tests.manual_validation.scenarios.common.fixture_cache import BundleCacheStore
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.test_utils import write_json
+
+
+@pytest.fixture
+def tmp_path(tmp_path_factory) -> Path:
+    """Unique short root for deep canonical maintenance layouts."""
+
+    return tmp_path_factory.mktemp("fc")
 
 
 def _args(action: str, *, dry_run: bool):
@@ -45,7 +57,7 @@ def _run(validation: Path, name: str, notebook_count: int = 1) -> Path:
     write_json(
         target / "run-state.json",
         {
-            "schema_version": 1,
+            "schema_version": cleanup.RUN_SCHEMA_VERSION,
             "command": "copy-page",
             "scenario": "copy-page",
             "status": "running",
@@ -82,13 +94,14 @@ def test_cleanup_metadata_uses_guarded_atomic_replace(tmp_path, monkeypatch) -> 
     assert calls == [(calls[0][0], destination)]
     assert calls[0][0].name.startswith(f".{destination.name}.")
     assert calls[0][0].name.endswith(".tmp")
+    assert re.fullmatch(r"\..+\.[0-9a-f]{16}\.tmp", calls[0][0].name)
 
 
 def _cache(validation: Path, tmp_path: Path):
     recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     store = BundleCacheStore(validation / "fixture-cache")
     store.initialize()
-    instance_id = "x"
+    instance_id = recipe.default_template_instance_id
     hit = store.publish(
         recipe,
         instance_id,
@@ -240,6 +253,98 @@ def test_dry_run_performs_no_managed_write_or_delete(tmp_path, monkeypatch) -> N
     assert result["dry_run"] is True
     assert target.exists()
     assert before == sorted(str(path.relative_to(validation)) for path in validation.rglob("*"))
+
+
+def test_maintenance_preflights_prospective_metadata_before_com(tmp_path, monkeypatch) -> None:
+    workspace = tmp_path / ("x" * 100)
+    validation = workspace / ".local-validation"
+
+    def unexpected_capture(cls, **_kwargs):
+        raise AssertionError("OneNote snapshot must not run before path-budget preflight")
+
+    monkeypatch.setattr(
+        OpenNotebookPathSnapshot,
+        "capture",
+        classmethod(unexpected_capture),
+    )
+    with pytest.raises(PathBudgetFailure) as captured:
+        cleanup.run_maintenance(
+            _args("clear-all", dry_run=True),
+            validation_root=validation,
+            workspace_root=workspace,
+        )
+
+    assert captured.value.phase == "clear-all_path_budget_preflight"
+    assert captured.value.actual_utf16 > 240
+    assert not validation.exists()
+
+
+def test_legacy_cache_is_rejected_before_com_but_out_of_scope_for_clear_runs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace, validation = _roots(tmp_path)
+    cache_root = validation / "fixture-cache"
+    cache_root.mkdir()
+    write_json(
+        cache_root / ".managed-fixture-cache.json",
+        {
+            "schema_version": 1,
+            "purpose": "local-onenote-mcp-fixture-cache",
+        },
+    )
+    write_json(cache_root / "index.json", {"schema_version": 1, "entries": {}})
+
+    def unexpected_capture(cls, **_kwargs):
+        raise AssertionError("legacy cache must be rejected before OneNote snapshot")
+
+    monkeypatch.setattr(
+        OpenNotebookPathSnapshot,
+        "capture",
+        classmethod(unexpected_capture),
+    )
+    with pytest.raises(RunnerFailure, match="pre-upgrade version"):
+        cleanup.run_maintenance(
+            _args("clear-cache", dry_run=True),
+            validation_root=validation,
+            workspace_root=workspace,
+        )
+
+    result, exit_code = cleanup.run_maintenance(
+        _args("clear-runs", dry_run=True),
+        validation_root=validation,
+        workspace_root=workspace,
+        snapshot=OpenNotebookPathSnapshot("complete"),
+    )
+    assert exit_code == 0
+    assert result["counts"]["discovered"] == 0
+
+
+def test_legacy_run_is_refused_without_compatibility_delete(tmp_path) -> None:
+    workspace, validation = _roots(tmp_path)
+    legacy = validation / "run-2026-08-13-00-00-03"
+    legacy.mkdir()
+    write_json(
+        legacy / "run-state.json",
+        {
+            "schema_version": 1,
+            "human_only": True,
+            "agent_execution_prohibited": True,
+            "run_dir": str(legacy.resolve()),
+        },
+    )
+
+    result, exit_code = cleanup.run_maintenance(
+        _args("clear-runs", dry_run=True),
+        validation_root=validation,
+        workspace_root=workspace,
+        snapshot=OpenNotebookPathSnapshot("complete"),
+    )
+
+    assert exit_code == EXIT_INVARIANT
+    assert result["counts"]["refused"] == 1
+    assert result["targets"][0]["decision"] == "refused"
+    assert legacy.exists()
 
 
 def test_open_run_is_refused_while_independent_run_is_planned(tmp_path) -> None:
@@ -402,17 +507,21 @@ def test_clear_cache_integrates_historical_receipt_index_and_empty_scaffold_clea
     store = BundleCacheStore(validation / "fixture-cache")
     store.initialize()
     fingerprint = "c" * 64
-    instance_id = "historical"
-    instances = store.cache_root / fingerprint / "instances"
+    instance_id = f"programmatic-{'c' * 16}"
+    disk_key = fingerprint_disk_key(fingerprint)
+    location = programmatic_location(instance_id)
+    instances = store.cache_root / disk_key / "instances"
     instances.mkdir(parents=True)
     write_json(
         store.cache_root / "index.json",
         {
-            "schema_version": 1,
+            "schema_version": cleanup.CACHE_SCHEMA_VERSION,
             "entries": {
                 f"{fingerprint}:{instance_id}": {
                     "fingerprint": fingerprint,
+                    "fingerprint_disk_key": disk_key,
                     "template_instance_id": instance_id,
+                    "instance_location": location.as_dict(),
                     "state": "tombstone",
                 }
             },
@@ -423,7 +532,7 @@ def test_clear_cache_integrates_historical_receipt_index_and_empty_scaffold_clea
     write_json(
         receipt,
         {
-            "schema_version": 1,
+            "schema_version": cleanup.MAINTENANCE_SCHEMA_VERSION,
             "receipt_id": "d" * 32,
             "action": "clear-runs",
             "status": "deleted",
@@ -475,7 +584,7 @@ def test_clear_cache_integrates_historical_receipt_index_and_empty_scaffold_clea
     assert compacted_summary["receipt_compaction"]["compacted_count"] == 1
 
 
-def test_clear_cache_handles_legacy_working_leases_as_independent_metadata(tmp_path) -> None:
+def test_clear_cache_refuses_legacy_working_leases_without_compatibility_delete(tmp_path) -> None:
     workspace, validation = _roots(tmp_path)
     _recipe, store, _hit = _cache(validation, tmp_path)
     legacy = store.cache_root / "working-leases"
@@ -486,12 +595,13 @@ def test_clear_cache_handles_legacy_working_leases_as_independent_metadata(tmp_p
         _args("clear-cache", dry_run=True), workspace, validation
     )
 
-    assert exit_code == 0
+    assert exit_code == EXIT_INVARIANT
     legacy_target = next(
-        target for target in result["targets"] if target["kind"] == "legacy_working_leases"
+        target for target in result["targets"] if target["target"] == str(legacy.resolve())
     )
-    assert legacy_target["decision"] == "would_delete"
-    assert legacy_target["checks"]["template_not_open"] is True
+    assert legacy_target["kind"] == "cache_unknown"
+    assert legacy_target["decision"] == "refused"
+    assert legacy.exists()
 
 
 def test_cache_index_path_escape_is_refused_without_scanning_outside_root(
@@ -505,7 +615,7 @@ def test_cache_index_path_escape_is_refused_without_scanning_outside_root(
     write_json(
         store.cache_root / "index.json",
         {
-            "schema_version": 1,
+            "schema_version": cleanup.CACHE_SCHEMA_VERSION,
             "entries": {
                 "../../outside:x": {
                     "fingerprint": "../../outside",
@@ -535,16 +645,21 @@ def test_owned_staging_is_planned_as_one_exact_target(tmp_path) -> None:
     workspace, validation = _roots(tmp_path)
     store = BundleCacheStore(validation / "fixture-cache")
     store.initialize()
-    staging = store.cache_root / f".staging-{'a' * 32}"
+    staging = store.cache_root / f".s-{'a' * 16}"
     template = staging / "notebooks" / "source" / "template-notebook"
     template.mkdir(parents=True)
     (template / "Open Notebook.onetoc2").write_bytes(b"catalog")
     write_json(
-        staging / "bundle-entry.json",
+        staging / "staging-marker.json",
         {
-            "schema_version": 1,
+            "schema_version": cleanup.CACHE_SCHEMA_VERSION,
+            "staging_name": staging.name,
             "fingerprint": "b" * 64,
-            "template_instance_id": "x",
+            "fingerprint_disk_key": "b" * 32,
+            "template_instance_id": f"programmatic-{'b' * 16}",
+            "instance_location": programmatic_location(
+                f"programmatic-{'b' * 16}"
+            ).as_dict(),
             "roles": ["source"],
         },
     )
@@ -621,7 +736,7 @@ def test_fixed_root_rejects_workspace_or_arbitrary_path(tmp_path) -> None:
 
 
 def test_main_refuses_noninteractive_confirmation_before_any_delete(
-    monkeypatch, capsys
+    monkeypatch, capsys, tmp_path
 ) -> None:
     monkeypatch.setattr(
         OpenNotebookPathSnapshot,
@@ -629,6 +744,18 @@ def test_main_refuses_noninteractive_confirmation_before_any_delete(
         classmethod(lambda cls, **_kwargs: OpenNotebookPathSnapshot("complete")),
     )
     monkeypatch.setattr(cleanup, "_discover", lambda *_args, **_kwargs: ([], None, None))
+    validation = tmp_path / "workspace" / ".local-validation"
+    workspace = validation.parent
+    workspace.mkdir()
+    monkeypatch.setattr(
+        cleanup,
+        "_validate_root",
+        lambda *_args, **_kwargs: (
+            validation,
+            workspace,
+            {"fixed_repository_root": True},
+        ),
+    )
     assert main(["clear", "runs", "--json"]) == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False

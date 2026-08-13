@@ -50,10 +50,14 @@ def test_create_duplicate_title_regression_uses_fresh_ids_and_exact_cleanup(
         "name": "Duplicate-Title-Target",
         "parent_id": "notebook",
     }
+    page_ids = [
+        "{01234567-89AB-CDEF-0123-456789ABCDEF}{1}{E1001}",
+        "{89ABCDEF-0123-4567-89AB-CDEF01234567}{1}{E1002}",
+    ]
     pages = [
         {
             "resource_type": "page",
-            "id": f"page-{ordinal}",
+            "id": page_ids[ordinal - 1],
             "title": "Duplicate-Title-Regression",
             "section_id": section["id"],
             "parent_id": section["id"],
@@ -70,8 +74,8 @@ def test_create_duplicate_title_regression_uses_fresh_ids_and_exact_cleanup(
     }
     after = {
         "items": [notebook, section, *pages],
-        "page_hashes": {"page-1": "hash-1", "page-2": "hash-2"},
-        "page_objects": {"page-1": [], "page-2": []},
+        "page_hashes": dict(zip(page_ids, ("hash-1", "hash-2"), strict=True)),
+        "page_objects": {page_id: [] for page_id in page_ids},
     }
     snapshots = iter([before, after, before])
 
@@ -87,7 +91,7 @@ def test_create_duplicate_title_regression_uses_fresh_ids_and_exact_cleanup(
             self.calls.append((name, arguments))
             if name == "create_page":
                 self.create_count += 1
-                page_id = f"page-{self.create_count}"
+                page_id = page_ids[self.create_count - 1]
                 return {
                     "page_id": page_id,
                     "allocated_id": page_id,
@@ -116,8 +120,15 @@ def test_create_duplicate_title_regression_uses_fresh_ids_and_exact_cleanup(
     assert result["duplicate_title_regression"]["fresh_and_distinct"] is True
     assert result["restored"] is True
     delete_calls = [arguments for name, arguments in client.calls if name == "delete_page"]
-    assert [call["page_id"] for call in delete_calls] == ["page-2", "page-1"]
+    assert [call["page_id"] for call in delete_calls] == list(reversed(page_ids))
     assert all(call["permanently"] is False for call in delete_calls)
+    evidence_root = tmp_path / "scenarios" / "create"
+    assert {path.name for path in evidence_root.glob("cleanup-*.json")} == {
+        "cleanup-created-page-01-result.json",
+        "cleanup-created-page-02-result.json",
+    }
+    create_results = test_utils.read_json(evidence_root / "create-results.json")
+    assert [item["page_id"] for item in create_results["created"]] == page_ids
 
 
 def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:

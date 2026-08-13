@@ -7,6 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime import RunnerFailure, RuntimeOptions
+from ..path_budget import (
+    MAX_RUN_EVIDENCE_LEAF_UNITS,
+    fingerprint_disk_key,
+    instance_location_from_id,
+    managed_absolute,
+    preflight_paths,
+    validate_working_name,
+)
 from ..run_identity import new_run_identity, validation_notebook_names
 
 # Importing each public scenario applies its ``@SCENARIO_REGISTRY.register``
@@ -93,8 +101,76 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
         json_output=args.json_output,
         dry_run=args.dry_run,
         use_cache=bool(args.use_cache),
-        cache_root=(Path(".local-validation") / "fixture-cache").resolve(),
+        cache_root=managed_absolute(Path(".local-validation") / "fixture-cache"),
     )
+    run_root = managed_absolute(run_dir)
+    budget_paths: list[tuple[Path, str, str | None]] = [
+        (run_root, "run_root", None),
+    ]
+    evidence_reserve = run_root / ("e" * MAX_RUN_EVIDENCE_LEAF_UNITS)
+    budget_paths.extend(
+        (
+            (evidence_reserve, "run_evidence", None),
+            (
+                evidence_reserve.with_name(
+                    f".{evidence_reserve.name}.{'0' * 16}.tmp"
+                ),
+                "run_evidence_temp",
+                None,
+            ),
+        )
+    )
+    for evidence_name in (
+        "run-state.json",
+        "run-metrics.json",
+        "run-result.json",
+        "run-failure.json",
+        "cache-materialization.json",
+    ):
+        evidence_path = run_root / evidence_name
+        budget_paths.extend(
+            (
+                (evidence_path, "run_evidence", None),
+                (
+                    evidence_path.with_name(
+                        f".{evidence_path.name}.{'0' * 16}.tmp"
+                    ),
+                    "run_evidence_temp",
+                    None,
+                ),
+            )
+        )
+    for role, name in cached_names.items():
+        validate_working_name(name)
+        budget_paths.append(
+            (run_root / "notebooks" / name, "working_copy", None)
+        )
+    for name in fresh_names.values():
+        budget_paths.append(
+            (run_root / "notebooks" / name, "run_notebook_root", None)
+        )
+    if args.use_cache:
+        instance_id = scenario.fixture_recipe.select_template_instance_id(
+            args,
+            allow_unselected=True,
+        )
+        if instance_id != "required-explicit-template-instance":
+            location = instance_location_from_id(instance_id)
+            for role in roles:
+                budget_paths.append(
+                    (
+                        options.cache_root
+                        / fingerprint_disk_key(scenario.fixture_recipe.cache_fingerprint)
+                        / "instances"
+                        / Path(*location.parts)
+                        / "notebooks"
+                        / role
+                        / "template-notebook",
+                        "cache_template",
+                        None,
+                    )
+                )
+    preflight_paths(budget_paths, phase="run_identity_preflight")
     return await run_validate(args, options)
 
 

@@ -108,7 +108,13 @@ class CreateScenario(Scenario):
         cleanup_results: list[dict[str, Any]] = []
         restored = False
         if not keep_worksite:
-            for page in reversed([page for page in pages if page is not None]):
+            cleanup_targets = list(
+                enumerate(
+                    [page for page in pages if page is not None],
+                    start=1,
+                )
+            )
+            for ordinal, page in reversed(cleanup_targets):
                 cleanup_results.append(
                     await call_with_result_evidence(
                         client,
@@ -120,7 +126,7 @@ class CreateScenario(Scenario):
                             "expected_modified": page.get("modified"),
                             "permanently": False,
                         },
-                        out / f"cleanup-{page['id']}-result.json",
+                        out / f"cleanup-created-page-{ordinal:02d}-result.json",
                     )
                 )
             restored_snapshot = await capture_snapshot(client, notebook_id)

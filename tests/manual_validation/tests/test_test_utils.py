@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+import re
 
 import pytest
 
 from tests.manual_validation import test_utils
+from tests.manual_validation.runtime import PathBudgetFailure
 from tests.manual_validation.test_utils import (
     assert_valid_page_tree,
     capture_snapshot,
@@ -46,7 +49,29 @@ def test_json_and_sensitive_xml_use_unique_atomic_temporary_files(
     assert report["binary_payload_count"] == 1
     assert len(temporary_names) == len(set(temporary_names)) == 3
     assert all(name.startswith(".") and name.endswith(".tmp") for name in temporary_names)
+    assert all(re.fullmatch(r"\..+\.[0-9a-f]{16}\.tmp", name) for name in temporary_names)
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_sensitive_xml_budget_failure_precedes_parent_creation(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "not-created" / "page.xml"
+
+    def reject(_paths, *, phase):
+        raise PathBudgetFailure(
+            phase=phase,
+            target_kind="run_xml_evidence",
+            path=Path(target),
+            actual_utf16=241,
+            limit_utf16=240,
+            relative_path=None,
+            remediation={"code": "use_shorter_unique_run_dir", "message": "shorten"},
+        )
+
+    monkeypatch.setattr(test_utils, "preflight_paths", reject)
+    with pytest.raises(PathBudgetFailure):
+        write_sensitive_page_xml(target, "<one:Page/>")
+
+    assert not target.parent.exists()
 
 
 def test_snapshot_comparison_ignores_capture_time_and_item_order() -> None:

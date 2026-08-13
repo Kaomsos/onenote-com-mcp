@@ -12,7 +12,12 @@ from pathlib import Path
 import pytest
 
 from tests.manual_validation import local_filesystem
-from tests.manual_validation.runtime import InvariantFailure, RunnerFailure, RuntimeOptions
+from tests.manual_validation.runtime import (
+    InvariantFailure,
+    PathBudgetFailure,
+    RunnerFailure,
+    RuntimeOptions,
+)
 from tests.manual_validation.run_identity import (
     new_run_identity,
     validation_notebook_names,
@@ -25,6 +30,7 @@ from tests.manual_validation.scenarios.common.fixture_cache import (
 )
 from tests.manual_validation.scenarios.common import fixture_cache as fixture_cache_module
 from tests.manual_validation.scenarios.common.fixture_runtime import (
+    _assert_authored_cache_identity,
     _rebind_materialized_structure,
     prepare_materialized_fixture,
 )
@@ -36,6 +42,13 @@ from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
     NotebookRoleSpec,
     RecipeBase,
 )
+
+
+@pytest.fixture
+def tmp_path(tmp_path_factory) -> Path:
+    """Unique short root for deep Windows cache/materialize paths."""
+
+    return tmp_path_factory.mktemp("fc")
 
 
 def _source(tmp_path: Path, role: str = "source") -> Path:
@@ -66,6 +79,297 @@ def _windows_error(code: int) -> OSError:
     error = PermissionError(f"injected WinError {code}")
     error.winerror = code
     return error
+
+
+def _legacy_empty_cache_shell(tmp_path: Path, *, with_summary: bool) -> Path:
+    validation_root = tmp_path / ".local-validation"
+    cache_root = validation_root / "fixture-cache"
+    cache_root.mkdir(parents=True)
+    write_json(
+        validation_root / ".managed-validation-root.json",
+        {
+            "schema_version": 1,
+            "purpose": "local-onenote-mcp-manual-validation",
+        },
+    )
+    write_json(
+        cache_root / ".managed-fixture-cache.json",
+        {
+            "schema_version": 1,
+            "purpose": "local-onenote-mcp-fixture-cache",
+        },
+    )
+    write_json(cache_root / "index.json", {"schema_version": 1, "entries": {}})
+    if with_summary:
+        summary_path = validation_root / ("cleanup-summary-" + "a" * 32 + ".json")
+        write_json(
+            summary_path,
+            {
+                "schema_version": 1,
+                "action": "clear-all",
+                "dry_run": False,
+                "ok": True,
+                "human_confirmation_required": True,
+                "confirmation_mode": "interactive_stdin",
+                "created_at": "2026-08-13T00:00:00+00:00",
+                "summary_path": str(summary_path.resolve()),
+                "managed_roots": {
+                    "validation": str(validation_root.resolve()),
+                    "cache": str(cache_root.resolve()),
+                    "workspace": str(tmp_path.resolve()),
+                },
+                "root_checks": {
+                    "fixed_repository_root": True,
+                    "not_filesystem_root": True,
+                    "not_workspace_root": True,
+                    "root_marker_valid": True,
+                    "root_reparse_point_free": True,
+                },
+                "open_path_snapshot": {"status": "complete", "error": None},
+                "counts": {
+                    "discovered": 0,
+                    "planned": 0,
+                    "deleted": 0,
+                    "refused": 0,
+                    "failed": 0,
+                },
+                "targets": [],
+                "finalization": {"failures": []},
+            },
+        )
+    return cache_root
+
+
+def test_legacy_empty_cache_shell_requires_durable_clear_all_proof(tmp_path) -> None:
+    cache_root = _legacy_empty_cache_shell(tmp_path, with_summary=False)
+
+    with pytest.raises(RunnerFailure, match="Legacy fixture cache schema"):
+        BundleCacheStore(cache_root).initialize()
+
+    assert read_json(cache_root / ".managed-fixture-cache.json")["schema_version"] == 1
+    assert read_json(cache_root / "index.json")["schema_version"] == 1
+
+
+def test_legacy_empty_cache_shell_activation_refuses_any_payload(tmp_path) -> None:
+    cache_root = _legacy_empty_cache_shell(tmp_path, with_summary=True)
+    (cache_root / ("a" * 64)).mkdir()
+
+    with pytest.raises(RunnerFailure, match="Legacy fixture cache schema"):
+        BundleCacheStore(cache_root).initialize()
+
+
+def test_legacy_empty_cache_shell_activates_schema_v2(tmp_path) -> None:
+    cache_root = _legacy_empty_cache_shell(tmp_path, with_summary=True)
+
+    BundleCacheStore(cache_root).initialize()
+
+    marker = read_json(cache_root / ".managed-fixture-cache.json")
+    index = read_json(cache_root / "index.json")
+    assert marker["schema_version"] == 2
+    assert index["schema_version"] == 2
+    assert marker["activated_from_schema_version"] == 1
+    assert index["activated_from_schema_version"] == 1
+    assert marker["activation_summary"] == index["activation_summary"]
+
+
+def test_legacy_empty_cache_shell_activation_resumes_after_index_stamp(tmp_path) -> None:
+    cache_root = _legacy_empty_cache_shell(tmp_path, with_summary=True)
+    summary_path = next(cache_root.parent.glob("cleanup-summary-*.json"))
+    write_json(
+        cache_root / "index.json",
+        {
+            "schema_version": 2,
+            "entries": {},
+            "activated_from_schema_version": 1,
+            "activation_summary": str(summary_path.resolve()),
+            "activated_at": "2026-08-13T00:00:01+00:00",
+        },
+    )
+
+    BundleCacheStore(cache_root).initialize()
+
+    assert read_json(cache_root / ".managed-fixture-cache.json")["schema_version"] == 2
+    assert read_json(cache_root / "index.json")["schema_version"] == 2
+
+
+def test_legacy_empty_cache_shell_allows_only_post_summary_schema_v2_runs(tmp_path) -> None:
+    cache_root = _legacy_empty_cache_shell(tmp_path, with_summary=True)
+    run_root = cache_root.parent / "run-2026-08-13-00-00-01"
+    run_root.mkdir()
+    write_json(
+        run_root / "run-state.json",
+        {
+            "schema_version": 2,
+            "human_only": True,
+            "agent_execution_prohibited": True,
+            "started_at": "2026-08-13T00:00:01+00:00",
+        },
+    )
+
+    BundleCacheStore(cache_root).initialize()
+    assert read_json(cache_root / ".managed-fixture-cache.json")["schema_version"] == 2
+
+    second = _legacy_empty_cache_shell(tmp_path / "legacy-run", with_summary=True)
+    legacy_run = second.parent / "run-2026-08-13-00-00-02"
+    legacy_run.mkdir()
+    write_json(
+        legacy_run / "run-state.json",
+        {
+            "schema_version": 1,
+            "human_only": True,
+            "agent_execution_prohibited": True,
+        },
+    )
+    with pytest.raises(RunnerFailure, match="Legacy fixture cache schema"):
+        BundleCacheStore(second).initialize()
+
+
+def test_orchestrator_accepts_only_proof_backed_empty_legacy_cache_shell(tmp_path) -> None:
+    cache_root = _legacy_empty_cache_shell(tmp_path, with_summary=True)
+
+    validation._assert_no_legacy_validation_payload(
+        cache_root.parent / "run-new",
+        cache_root,
+    )
+
+    (cache_root / ("b" * 64)).mkdir()
+    with pytest.raises(RunnerFailure, match="Legacy fixture cache metadata"):
+        validation._assert_no_legacy_validation_payload(
+            cache_root.parent / "run-new",
+            cache_root,
+        )
+
+
+def test_orchestrator_rejects_schema_v2_run_without_ownership_flags(tmp_path) -> None:
+    validation_root = tmp_path / ".local-validation"
+    run_root = validation_root / "run-2026-08-13-00-00-04"
+    run_root.mkdir(parents=True)
+    write_json(run_root / "run-state.json", {"schema_version": 2})
+
+    with pytest.raises(RunnerFailure, match="unowned run metadata"):
+        validation._assert_no_legacy_validation_payload(
+            validation_root / "run-new",
+            None,
+        )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        Path("unknown-directory"),
+        Path("unknown-file.json"),
+        Path("a" * 32) / "unexpected",
+        Path("b" * 32) / "instances" / "p" / "unexpected",
+        Path("c" * 32) / "instances" / "p",
+        Path(f".s-{'d' * 16}"),
+    ),
+)
+def test_cache_initialize_rejects_unknown_schema_v2_layout(tmp_path, relative) -> None:
+    store = BundleCacheStore(tmp_path / "cache")
+    store.initialize()
+    target = store.cache_root / relative
+    if target.suffix:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("unknown", encoding="utf-8")
+    else:
+        target.mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(RunnerFailure, match="layout|staging"):
+        store.initialize()
+
+
+def test_authored_live_revalidation_checks_full_projection_digest(tmp_path) -> None:
+    recipe, store, _source_path, _programmatic = _publish(tmp_path)
+    authored_id = f"authored-{'a' * 24}"
+    authored = store.publish(
+        recipe,
+        authored_id,
+        source_paths={"source": _source(tmp_path / "authored-full-digest")},
+        source_notebooks={"source": {"id": "authored-id", "name": "Authored"}},
+        closed_roles={"source"},
+        validation={"passed": True},
+        projection_digest="a" * 64,
+    )
+
+    _assert_authored_cache_identity(
+        authored,
+        type(
+            "Frozen",
+            (),
+            {
+                "template_instance_id": authored_id,
+                "projection_digest": "a" * 64,
+            },
+        )(),
+    )
+    with pytest.raises(InvariantFailure, match="full frozen identity"):
+        _assert_authored_cache_identity(
+            authored,
+            type(
+                "Frozen",
+                (),
+                {
+                    "template_instance_id": authored_id,
+                    "projection_digest": ("a" * 24) + ("b" * 40),
+                },
+            )(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation", "phase"),
+    (
+        ("quarantine", "cache_quarantine_preflight"),
+        ("invalidate", "cache_invalidation_preflight"),
+    ),
+)
+def test_cache_state_change_budget_failure_precedes_metadata_or_open_probe(
+    tmp_path,
+    monkeypatch,
+    operation,
+    phase,
+) -> None:
+    recipe, store, _source_path, hit = _publish(tmp_path)
+    original_preflight = fixture_cache_module.preflight_paths
+    probes: list[bool] = []
+
+    def fail_selected(paths, *, phase: str):
+        if phase == selected_phase:
+            raise PathBudgetFailure(
+                phase=phase,
+                target_kind="cache_tombstone_evidence",
+                path=store.tombstone_path,
+                actual_utf16=241,
+                limit_utf16=240,
+                relative_path=None,
+                remediation={"code": "shorten_repository_path", "message": "shorten"},
+            )
+        return original_preflight(paths, phase=phase)
+
+    selected_phase = phase
+    monkeypatch.setattr(fixture_cache_module, "preflight_paths", fail_selected)
+    with pytest.raises(PathBudgetFailure):
+        if operation == "quarantine":
+            store.quarantine_exact(
+                recipe,
+                hit.template_instance_id,
+                reason="test",
+                run_id="run-test",
+            )
+        else:
+            store.invalidate_exact(
+                recipe,
+                hit.template_instance_id,
+                reason="test",
+                open_state_probe=lambda _entry: probes.append(True) or False,
+            )
+
+    entry = read_json(hit.entry_path / "bundle-entry.json")
+    index = read_json(store.cache_root / "index.json")
+    key = f"{hit.fingerprint}:{hit.template_instance_id}"
+    assert entry["state"] == "ready"
+    assert index["entries"][key]["state"] == "ready"
+    assert probes == []
 
 
 def test_publish_and_materialize_preserve_opaque_byte_inventory(tmp_path) -> None:
@@ -104,7 +408,7 @@ def test_cache_publish_retries_transient_windows_directory_lock(
     def flaky_replace(source, destination) -> None:
         nonlocal directory_attempts
         source_path = Path(source)
-        if source_path.name.startswith(".staging-") and source_path.is_dir():
+        if source_path.name.startswith(".s-") and source_path.is_dir():
             directory_attempts += 1
             if directory_attempts == 1:
                 raise _windows_error(5)
@@ -134,7 +438,7 @@ def test_materialize_retries_transient_windows_directory_lock(
     def flaky_replace(source, destination) -> None:
         nonlocal directory_attempts
         source_path = Path(source)
-        if source_path.parent.name.startswith(".materializing-"):
+        if source_path.parent.name.startswith(".m-"):
             directory_attempts += 1
             if directory_attempts == 1:
                 raise _windows_error(32)
@@ -153,7 +457,7 @@ def test_materialize_retries_transient_windows_directory_lock(
         inventory_directory(materialized.working_paths["source"])
     )
     assert source != materialized.working_paths["source"]
-    assert not list((tmp_path / "run").glob(".materializing-*"))
+    assert not list((tmp_path / "run").glob(".m-*"))
 
 
 def test_cache_publish_retry_exhaustion_leaves_no_matchable_entry(
@@ -168,7 +472,7 @@ def test_cache_publish_retry_exhaustion_leaves_no_matchable_entry(
 
     def locked_publish(source_path, destination_path) -> None:
         candidate = Path(source_path)
-        if candidate.name.startswith(".staging-") and candidate.is_dir():
+        if candidate.name.startswith(".s-") and candidate.is_dir():
             raise _windows_error(32)
         original_replace(source_path, destination_path)
 
@@ -188,7 +492,7 @@ def test_cache_publish_retry_exhaustion_leaves_no_matchable_entry(
 
     assert captured.value.winerror == 32
     assert store.exact_entry_state(recipe, recipe.default_template_instance_id) is None
-    assert not list(store.cache_root.glob(".staging-*"))
+    assert not list(store.cache_root.glob(".s-*"))
 
 
 def test_publish_requires_every_declared_role_to_be_closed(tmp_path) -> None:
@@ -1119,7 +1423,7 @@ def test_multi_role_materialize_preserves_competing_destination(
         nonlocal directory_publications
         source_path = Path(source)
         destination_path = Path(destination)
-        if source_path.parent.name.startswith(".materializing-"):
+        if source_path.parent.name.startswith(".m-"):
             directory_publications += 1
             if directory_publications == 2:
                 destination_path.mkdir()
@@ -1146,4 +1450,4 @@ def test_multi_role_materialize_preserves_competing_destination(
     assert (competitor / "competitor.txt").read_text(encoding="utf-8") == (
         "not-owned-by-materialize"
     )
-    assert not list(run_dir.glob(".materializing-*"))
+    assert not list(run_dir.glob(".m-*"))

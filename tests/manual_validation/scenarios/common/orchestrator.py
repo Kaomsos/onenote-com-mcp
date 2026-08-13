@@ -13,7 +13,13 @@ from ...mcp_stdio_client import (
     MCPStdioClient,
 )
 from ...lifecycle import NotebookLifecycleWrapper
-from ...runtime import EXIT_RESTORE, RestoreFailure, RunnerFailure, RuntimeOptions
+from ...runtime import (
+    EXIT_RESTORE,
+    PathBudgetFailure,
+    RestoreFailure,
+    RunnerFailure,
+    RuntimeOptions,
+)
 from ...test_utils import (
     load_manifest,
     read_json,
@@ -27,7 +33,14 @@ from .fixture_runtime import (
     prepare_fixture_bundle,
     prepare_materialized_fixture_bundle,
 )
-from .fixture_cache import BundleCacheStore, CacheHit, MaterializedBundle
+from .fixture_cache import (
+    CACHE_SCHEMA_VERSION,
+    MANAGED_MARKER,
+    BundleCacheStore,
+    CacheHit,
+    MaterializedBundle,
+    legacy_empty_cache_activation_evidence,
+)
 from ..fixture_recipes.recipe_base import BuildMode
 from .dry_run import build_isolated_dry_run_plan
 from .report import render_report
@@ -73,12 +86,78 @@ def _cached_working_names(args: argparse.Namespace, scenario) -> dict[str, str] 
     return {role: str(name) for role, name in names.items()}
 
 
+def _materialize_with_budget_context(
+    cache_store: BundleCacheStore,
+    hit: CacheHit,
+    run_dir: Path,
+    *,
+    working_names: Mapping[str, str] | None,
+    cache_entry_published: bool,
+) -> MaterializedBundle:
+    try:
+        return cache_store.materialize(
+            hit,
+            run_dir,
+            working_names=working_names,
+        )
+    except PathBudgetFailure as exc:
+        exc.cache_entry_published = cache_entry_published
+        raise
+
+
 def _assert_fresh_run_dir(run_dir: Path) -> None:
     if run_dir.exists() and not run_dir.is_dir():
         raise RunnerFailure("--run-dir must identify a directory, not a file.")
     if run_dir.exists() and any(run_dir.iterdir()):
         raise RunnerFailure(
             "--run-dir must be absent or empty so evidence and disposable targets cannot be mixed."
+        )
+
+
+def _assert_no_legacy_validation_payload(
+    run_dir: Path,
+    cache_root: Path | None,
+) -> None:
+    run_parent = run_dir.resolve().parent
+    cache_parent = cache_root.resolve().parent if cache_root is not None else None
+    validation_root = (
+        cache_parent
+        if cache_parent is not None and cache_parent.name == ".local-validation"
+        else run_parent
+    )
+    if validation_root.name != ".local-validation" or not validation_root.exists():
+        return
+    for candidate in validation_root.glob("run-*"):
+        if candidate.resolve() == run_dir.resolve() or not candidate.is_dir():
+            continue
+        state_path = candidate / "run-state.json"
+        if not state_path.is_file():
+            raise RunnerFailure(
+                "Legacy or unknown run metadata remains. Return to the pre-upgrade version "
+                "and complete its human-gated clear all workflow."
+            )
+        state = read_json(state_path)
+        if (
+            state.get("schema_version") != 2
+            or state.get("human_only") is not True
+            or state.get("agent_execution_prohibited") is not True
+        ):
+            raise RunnerFailure(
+                "Legacy or unowned run metadata remains. Return to the pre-upgrade version and "
+                "complete its human-gated clear all workflow."
+            )
+    selected_cache = (cache_root or (validation_root / "fixture-cache")).resolve()
+    if not selected_cache.exists():
+        return
+    marker_path = selected_cache / MANAGED_MARKER
+    if not marker_path.is_file() or read_json(marker_path).get(
+        "schema_version"
+    ) != CACHE_SCHEMA_VERSION:
+        if legacy_empty_cache_activation_evidence(selected_cache) is not None:
+            return
+        raise RunnerFailure(
+            "Legacy fixture cache metadata remains. Return to the pre-upgrade version "
+            "and complete its human-gated clear all workflow."
         )
 
 
@@ -102,7 +181,7 @@ def _initial_state(args: argparse.Namespace, options: RuntimeOptions) -> dict[st
     scenario = SCENARIO_REGISTRY.get(args.scenario)
     multi_role = len(scenario.fixture_recipe.cache_identity.notebook_roles) > 1
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "command": args.scenario,
         "scenario": args.scenario,
         "status": "running",
@@ -439,6 +518,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
             "remove --use-cache."
         )
     _assert_fresh_run_dir(options.run_dir)
+    _assert_no_legacy_validation_payload(options.run_dir, options.cache_root)
     state = _initial_state(args, options)
     state_path = options.run_dir / "run-state.json"
     write_json(state_path, state)
@@ -522,10 +602,12 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     raise RunnerFailure(
                         "Selected template instance is evidence_only and cannot enter this Scenario."
                     )
-                materialized = cache_store.materialize(
+                materialized = _materialize_with_budget_context(
+                    cache_store,
                     cache_hit,
                     options.run_dir,
                     working_names=_cached_working_names(args, scenario),
+                    cache_entry_published=False,
                 )
                 if cache_decision != "recovered_retryable_open_failure":
                     cache_decision = "validated_hit"
@@ -701,10 +783,12 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                                 validation=manifest["fixture_validation"],
                                 artifacts=artifacts,
                             )
-                        materialized = cache_store.materialize(
+                        materialized = _materialize_with_budget_context(
+                            cache_store,
                             cache_hit,
                             options.run_dir,
                             working_names=_cached_working_names(args, scenario),
+                            cache_entry_published=True,
                         )
                     try:
                         notebooks, leases = _open_materialized_bundle(
@@ -830,12 +914,21 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                                     "snapshot": final_snapshot,
                                 }
                             },
+                            projection_digest=str(
+                                scenario_result.get("template_instance", {}).get(
+                                    "projection_digest", ""
+                                )
+                                or ""
+                            )
+                            or None,
                             state=str(scenario_result.get("template_state", "ready")),
                         )
-                        materialized = cache_store.materialize(
+                        materialized = _materialize_with_budget_context(
+                            cache_store,
                             cache_hit,
                             options.run_dir,
                             working_names=_cached_working_names(args, scenario),
+                            cache_entry_published=True,
                         )
                     try:
                         notebooks, leases = _open_materialized_bundle(
@@ -999,12 +1092,20 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     return result
 
 
-def _record_run_failure(args: argparse.Namespace, message: str, exit_code: int) -> None:
+def _record_run_failure(
+    args: argparse.Namespace,
+    error: str | RunnerFailure,
+    exit_code: int,
+) -> bool:
     run_dir = Path(args.run_dir)
     state_path = run_dir / "run-state.json"
     if not state_path.exists():
-        return
+        return False
+    message = str(error)
     state = read_json(state_path)
+    if isinstance(error, PathBudgetFailure):
+        error.filesystem_changes_started = True
+        error.onenote_opened = any(run_dir.glob("lifecycle-lease*.json"))
     lifecycle_path = run_dir / "lifecycle.json"
     lifecycle = read_json(lifecycle_path) if lifecycle_path.exists() else None
     failure_status = (
@@ -1032,11 +1133,17 @@ def _record_run_failure(args: argparse.Namespace, message: str, exit_code: int) 
             else "The fresh Notebook remains open and all evidence is preserved for inspection."
         ),
     }
+    if isinstance(error, PathBudgetFailure):
+        structured_error = error.as_error_dict()
+        structured_error["failure_evidence_written"] = True
+        failure["structured_error"] = structured_error
     if isinstance(state.get("run_identity"), dict):
         failure["run_identity"] = dict(state["run_identity"])
     if isinstance(state.get("notebook_names"), dict):
         failure["notebook_names"] = dict(state["notebook_names"])
     write_json(run_dir / "run-failure.json", failure)
+    if isinstance(error, PathBudgetFailure):
+        error.with_failure_evidence(True)
     state.update(
         status=failure_status,
         failed_step=failed_step,
@@ -1045,9 +1152,14 @@ def _record_run_failure(args: argparse.Namespace, message: str, exit_code: int) 
         failed_at=failure["failed_at"],
     )
     write_json(state_path, state)
+    return True
 
 
-def record_failure(args: argparse.Namespace, message: str, exit_code: int) -> None:
+def record_failure(
+    args: argparse.Namespace,
+    error: str | RunnerFailure,
+    exit_code: int,
+) -> None:
     """Persist run-level and scenario-level failure handoffs."""
 
     try:
@@ -1056,7 +1168,8 @@ def record_failure(args: argparse.Namespace, message: str, exit_code: int) -> No
             or not getattr(args, "run_dir", None)
         ):
             return
-        _record_run_failure(args, message, exit_code)
+        _record_run_failure(args, error, exit_code)
+        message = str(error)
         run_dir = Path(args.run_dir)
         state_path = run_dir / "run-state.json"
         if state_path.exists() and read_json(state_path).get("current_step") != args.scenario:

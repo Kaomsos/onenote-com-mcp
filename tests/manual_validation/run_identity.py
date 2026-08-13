@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import re
 from typing import Iterable
+
+from .path_budget import MAX_WORKING_NAME_UNITS, windows_path_units
 
 
 _LABEL_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -66,9 +69,17 @@ def validation_notebook_name(
         parts.append("CACHED")
     parts.append(identity.safe_timestamp)
     name = f"__{'-'.join(parts)}__"
-    if len(name) > _MAX_NOTEBOOK_NAME_LENGTH:
+    limit = MAX_WORKING_NAME_UNITS if cached else _MAX_NOTEBOOK_NAME_LENGTH
+    if cached and windows_path_units(name) > limit:
+        logical = "-".join(parts)
+        digest = hashlib.sha256(logical.encode("utf-8")).hexdigest()[:8]
+        fixed = f"-{digest}-CACHED-{identity.safe_timestamp}__"
+        prefix_budget = limit - windows_path_units(fixed) - 2
+        readable = selected[:prefix_budget].rstrip("-")
+        name = f"__{readable}{fixed}"
+    if windows_path_units(name) > limit:
         raise ValueError(
-            f"Generated validation Notebook name exceeds {_MAX_NOTEBOOK_NAME_LENGTH} characters."
+            f"Generated validation Notebook name exceeds {limit} UTF-16 units."
         )
     return name
 

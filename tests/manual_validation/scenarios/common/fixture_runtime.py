@@ -27,6 +27,20 @@ from ..fixture_recipes.recipe_base import (
 from ..fixture_recipes.interactive import UserAuthoredRecipe
 
 
+def _assert_authored_cache_identity(hit: CacheHit, frozen: Any) -> None:
+    location = hit.entry.get("instance_location")
+    recorded_digest = (
+        location.get("projection_digest") if isinstance(location, Mapping) else None
+    )
+    if (
+        frozen.template_instance_id != hit.template_instance_id
+        or recorded_digest != frozen.projection_digest
+    ):
+        raise InvariantFailure(
+            "User-authored working bundle differs from the cache entry's full frozen identity."
+        )
+
+
 def _record_run_identity(manifest: dict[str, Any], args: argparse.Namespace) -> None:
     identity = getattr(args, "run_identity", None)
     if hasattr(identity, "as_dict"):
@@ -453,8 +467,7 @@ async def prepare_materialized_fixture(
         interactive_validation = scenario.fixture_recipe.validate_authored_content(observation)
         if isinstance(scenario.fixture_recipe, UserAuthoredRecipe):
             frozen = scenario.fixture_recipe.freeze_authored_instance(observation)
-            if frozen.template_instance_id != hit.template_instance_id:
-                raise InvariantFailure("User-authored working bundle drifted from its frozen instance.")
+            _assert_authored_cache_identity(hit, frozen)
     manifest["run_id"] = options.run_dir.name
     manifest["notebook"] = stable_item(notebook)
     manifest["structure"] = {
@@ -580,10 +593,7 @@ async def prepare_materialized_fixture_bundle(
         interactive_validation = recipe.validate_authored_content(bundle_observation)
         if isinstance(recipe, UserAuthoredRecipe):
             frozen = recipe.freeze_authored_instance(bundle_observation)
-            if frozen.template_instance_id != hit.template_instance_id:
-                raise InvariantFailure(
-                    "User-authored working bundle drifted from its frozen instance."
-                )
+            _assert_authored_cache_identity(hit, frozen)
     if source_manifest is None:
         raise InvariantFailure("Materialized bundle has no source manifest.")
     combined_structure = {

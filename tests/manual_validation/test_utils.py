@@ -26,6 +26,7 @@ from local_onenote_mcp.services.pages import stable_page_content_digest
 
 from .mcp_stdio_client import COPY_BUDGET_ENV, MCPStdioClient, ScenarioPolicy
 from .local_filesystem import atomic_replace_with_retry
+from .path_budget import preflight_paths, validate_run_evidence_leaf
 from .run_identity import new_run_identity
 from .runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
 
@@ -48,8 +49,13 @@ def installed_runner_version() -> str:
 
 
 def write_json(path: Path, value: Any) -> None:
+    validate_run_evidence_leaf(path)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:16]}.tmp")
+    preflight_paths(
+        ((path, "run_evidence", None), (temporary, "atomic_metadata_temp", None)),
+        phase="run_evidence_preflight",
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -94,8 +100,13 @@ def write_sensitive_page_xml(path: Path, xml: str) -> dict[str, Any]:
         return f"{match.group(1)}{marker}{match.group(3)}"
 
     redacted_xml = _BINARY_DATA_PATTERN.sub(redact, xml)
+    validate_run_evidence_leaf(path)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex[:16]}.tmp")
+    preflight_paths(
+        ((path, "run_xml_evidence", None), (temporary, "atomic_metadata_temp", None)),
+        phase="run_evidence_preflight",
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(redacted_xml, encoding="utf-8")
     atomic_replace_with_retry(temporary, path)
     return {

@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+from ...path_budget import preflight_path, validate_run_evidence_leaf
 from ...test_utils import display_name, manifest_path, read_json, utc_now
 
 def render_report(run_dir: Path) -> Path:
@@ -281,6 +282,12 @@ def render_report(run_dir: Path) -> Path:
             ]
         )
     path = run_dir / "report.md"
+    validate_run_evidence_leaf(path)
+    preflight_path(
+        path,
+        phase="run_evidence_preflight",
+        target_kind="run_evidence",
+    )
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
