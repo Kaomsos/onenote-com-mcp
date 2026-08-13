@@ -21,6 +21,8 @@
 
 阶段一的目标和真实证据门已经满足。阶段二的 delta snapshot 会扩大“哪些历史 target 可以不再读取”的判断风险，本轮明确不实施；后续若仍需降本，应另开范围并保留当前全量保护合同。
 
+后续在 TODO 030 范围内又补齐了一项与本 TODO 同方向但不改变其完成结论的复用：cache build 仍生成并验证权威内容基线；working copy import/close/reopen 只做轻量层级与 identity 证明；reopen 后唯一一次完整 `scenario before` snapshot 同时承担 materialized 内容真实性复核和 mutation before 基线。Runner 通过 exact role/Notebook ID/digest 的单次 handoff 让 scenario 直接消费这份 snapshot，消除了 materialized validation 与 scenario before 之间整轮重复 hierarchy/Page 读取；未消费完全部 role 时 mutation 在调用前 fail closed。该实现仍只属于 manual validation，未引入阶段二 delta snapshot，也未改变生产工具契约。
+
 ## 背景
 
 `copy-page` 具名人工验证不是单次 Copy smoke test，而是同 Section、跨 Section、跨 Notebook 三种目标范围与 root-only/subtree 两种范围组成的六 case 安全矩阵。它需要证明 fresh target identity、内容保真、相对层级、同名 anchors/source 不变、精确非永久 cleanup、双 Notebook restore 与 lifecycle close，因此大量调用本来就是只读取证，而不是重复执行 mutation。

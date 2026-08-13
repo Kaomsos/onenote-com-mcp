@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -29,6 +30,7 @@ from tests.manual_validation.mcp_stdio_client import (
     scenario_client,
     summarize,
 )
+from tests.manual_validation.test_utils import capture_snapshot, read_json
 
 
 def test_scenario_client_reuses_existing_process_without_factory(tmp_path) -> None:
@@ -244,6 +246,129 @@ def test_call_audit_has_start_and_completion_timestamps(tmp_path) -> None:
     audit = (tmp_path / "calls.jsonl").read_text(encoding="utf-8")
     assert '"started_at"' in audit
     assert '"completed_at"' in audit
+
+
+def test_materialized_scenario_before_snapshot_handoff_is_exact_and_single_use(
+    tmp_path,
+) -> None:
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"get_tree", "get_page_xml"},
+        run_dir=tmp_path / "mcp",
+        timeout_seconds=10,
+    )
+    snapshot = {
+        "captured_at": "2026-08-14T00:00:00+00:00",
+        "notebook_id": "notebook-source",
+        "items": [{"id": "section", "resource_type": "section"}],
+        "page_hashes": {},
+        "page_objects": {},
+    }
+    evidence_path = tmp_path / "scenario-before-snapshot-handoff.json"
+    client.stage_scenario_before_snapshots(
+        {"source": snapshot},
+        {"source": "notebook-source"},
+        evidence_path,
+    )
+    client.call_tool = AsyncMock(side_effect=AssertionError("handoff must avoid COM reads"))
+
+    first = asyncio.run(capture_snapshot(client, "notebook-source"))
+
+    assert first == snapshot
+    assert client.call_tool.await_count == 0
+    evidence = read_json(evidence_path)
+    assert evidence["status"] == "consumed"
+    assert evidence["roles"]["source"]["consumed"] is True
+    assert evidence["roles"]["source"]["snapshot_sha256"]
+
+
+def test_materialized_scenario_before_snapshot_rejects_wrong_notebook(tmp_path) -> None:
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"get_tree", "get_page_xml"},
+        run_dir=tmp_path / "mcp",
+        timeout_seconds=10,
+    )
+    client.stage_scenario_before_snapshots(
+        {"source": {"notebook_id": "notebook-source", "items": [], "page_hashes": {}}},
+        {"source": "notebook-source"},
+        tmp_path / "scenario-before-snapshot-handoff.json",
+    )
+
+    with pytest.raises(ClientFailure, match="unbound Notebook"):
+        asyncio.run(capture_snapshot(client, "notebook-other"))
+
+
+def test_materialized_multi_role_handoff_requires_each_exact_snapshot(tmp_path) -> None:
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"get_tree", "get_page_xml"},
+        run_dir=tmp_path / "mcp",
+        timeout_seconds=10,
+    )
+    evidence_path = tmp_path / "scenario-before-snapshot-handoff.json"
+    snapshots = {
+        role: {
+            "notebook_id": f"notebook-{role}",
+            "items": [],
+            "page_hashes": {},
+        }
+        for role in ("destination", "source")
+    }
+    client.stage_scenario_before_snapshots(
+        snapshots,
+        {role: str(snapshot["notebook_id"]) for role, snapshot in snapshots.items()},
+        evidence_path,
+    )
+
+    assert asyncio.run(capture_snapshot(client, "notebook-source")) == snapshots["source"]
+    partial = read_json(evidence_path)
+    assert partial["status"] == "partially_consumed"
+    assert partial["remaining_roles"] == 1
+
+    assert asyncio.run(capture_snapshot(client, "notebook-destination")) == snapshots["destination"]
+    complete = read_json(evidence_path)
+    assert complete["status"] == "consumed"
+    assert complete["remaining_roles"] == 0
+
+
+def test_first_mutation_is_blocked_with_unconsumed_scenario_before_snapshot(tmp_path) -> None:
+    class FakeSession:
+        calls = 0
+
+        async def call_tool(self, *_args, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(
+                isError=False,
+                structuredContent={"result": {"ok": True, "complete": True}},
+                content=[],
+            )
+
+    client = MCPStdioClient(
+        policy=WRITE_POLICY,
+        allowed_tools={"create_page"},
+        run_dir=tmp_path / "mcp",
+        timeout_seconds=10,
+    )
+    client.run_dir.mkdir(parents=True)
+    session = FakeSession()
+    client._session = session
+    evidence_path = tmp_path / "scenario-before-snapshot-handoff.json"
+    client.stage_scenario_before_snapshots(
+        {"source": {"notebook_id": "notebook-source", "items": [], "page_hashes": {}}},
+        {"source": "notebook-source"},
+        evidence_path,
+    )
+
+    with pytest.raises(ClientFailure, match="had not been consumed"):
+        asyncio.run(client.call_tool("create_page", {}, retry_read=False))
+
+    evidence = read_json(evidence_path)
+    assert evidence["status"] == "discarded"
+    assert evidence["discard_reason"] == (
+        "mutation_blocked_before_snapshot_consumption:create_page"
+    )
+    assert session.calls == 0
 
 def test_protocol_level_tool_error_is_audited_once(tmp_path) -> None:
     class FakeSession:

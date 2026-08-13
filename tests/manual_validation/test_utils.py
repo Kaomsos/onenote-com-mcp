@@ -552,6 +552,11 @@ def mathml_oe_adjacency_projection(xml: str) -> dict[str, Any]:
 
 
 async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str, Any]:
+    consume_handoff = getattr(client, "consume_scenario_before_snapshot", None)
+    if callable(consume_handoff):
+        handed_off = consume_handoff(notebook_id)
+        if handed_off is not None:
+            return handed_off
     tree_result = await client.call_tool("get_tree", {"root_id": notebook_id, "max_depth": 8})
     tree = tree_result["tree"]
     items = flatten_tree(tree)

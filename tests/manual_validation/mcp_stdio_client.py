@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -274,6 +275,9 @@ class MCPStdioClient:
         self.process_started = False
         self.available_tools: set[str] = set()
         self.health_result: dict[str, Any] | None = None
+        self._scenario_before_snapshots: dict[str, dict[str, Any]] = {}
+        self._scenario_before_handoff: dict[str, Any] | None = None
+        self._scenario_before_handoff_path: Path | None = None
 
     async def __aenter__(self) -> "MCPStdioClient":
         try:
@@ -335,6 +339,7 @@ class MCPStdioClient:
             raise
 
     async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        self._discard_scenario_before_snapshots("client_exit")
         await self._stack.aclose()
 
     async def call_tool(
@@ -350,6 +355,16 @@ class MCPStdioClient:
             raise ClientFailure("MCP session is not initialized.")
         arguments = arguments or {}
         mutation = is_mutation_tool(name)
+        if mutation and self._scenario_before_snapshots:
+            pending_count = len(self._scenario_before_snapshots)
+            self._discard_scenario_before_snapshots(
+                f"mutation_blocked_before_snapshot_consumption:{name}"
+            )
+            raise ClientFailure(
+                f"Mutation '{name}' was blocked because {pending_count} materialized "
+                "scenario before snapshot role(s) had not been consumed. The mutation "
+                "was not called."
+            )
         attempts = 1 if mutation or not retry_read else 2
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
@@ -422,6 +437,116 @@ class MCPStdioClient:
                 if attempt == attempts:
                     break
         raise ClientFailure(f"{name} transport failed after {attempts} attempt(s): {last_error}")
+
+    def stage_scenario_before_snapshots(
+        self,
+        role_snapshots: dict[str, dict[str, Any]],
+        role_notebook_ids: dict[str, str],
+        evidence_path: Path,
+    ) -> None:
+        """Stage one exact, content-validated before snapshot per materialized role."""
+
+        if self._scenario_before_snapshots or self._scenario_before_handoff is not None:
+            raise ClientFailure("Scenario before snapshot handoff was already staged.")
+        if not role_snapshots or set(role_snapshots) != set(role_notebook_ids):
+            raise ClientFailure("Scenario before snapshot handoff must cover every role exactly.")
+        notebook_ids = [str(value) for value in role_notebook_ids.values()]
+        if any(not value for value in notebook_ids) or len(notebook_ids) != len(set(notebook_ids)):
+            raise ClientFailure("Scenario before snapshot handoff Notebook IDs must be unique.")
+        roles: dict[str, Any] = {}
+        staged_snapshots: dict[str, dict[str, Any]] = {}
+        for role, snapshot in role_snapshots.items():
+            notebook_id = str(role_notebook_ids[role])
+            if str(snapshot.get("notebook_id", "")) != notebook_id:
+                raise ClientFailure(
+                    f"Scenario before snapshot role {role} is bound to the wrong Notebook ID."
+                )
+            payload = json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            staged_snapshots[notebook_id] = deepcopy(snapshot)
+            roles[role] = {
+                "notebook_id": notebook_id,
+                "snapshot_sha256": hashlib.sha256(payload).hexdigest(),
+                "page_count": len(snapshot.get("page_hashes", {})),
+                "consumed": False,
+            }
+        self._scenario_before_snapshots = staged_snapshots
+        self._scenario_before_handoff_path = evidence_path
+        self._scenario_before_handoff = {
+            "schema_version": 1,
+            "status": "staged",
+            "source": "reopen_scenario_before_snapshot",
+            "single_use": True,
+            "roles": roles,
+            "staged_at": datetime.now(timezone.utc).isoformat(),
+            "content_exposed": False,
+        }
+        self._persist_scenario_before_handoff()
+
+    def consume_scenario_before_snapshot(self, notebook_id: str) -> dict[str, Any] | None:
+        snapshot = self._scenario_before_snapshots.get(str(notebook_id))
+        if snapshot is None:
+            if self._scenario_before_snapshots:
+                raise ClientFailure(
+                    "Scenario requested a before snapshot for an unbound Notebook while an "
+                    "exact materialized handoff was pending."
+                )
+            return None
+        if self._scenario_before_handoff is None:
+            raise ClientFailure("Scenario before snapshot handoff metadata is missing.")
+        matched_role: dict[str, Any] | None = None
+        for role in self._scenario_before_handoff["roles"].values():
+            if role["notebook_id"] == str(notebook_id):
+                matched_role = role
+                break
+        if matched_role is None:
+            raise ClientFailure("Scenario before snapshot handoff has no matching role metadata.")
+        payload = json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        if hashlib.sha256(payload).hexdigest() != matched_role["snapshot_sha256"]:
+            raise ClientFailure("Scenario before snapshot handoff digest mismatch.")
+        self._scenario_before_snapshots.pop(str(notebook_id))
+        matched_role["consumed"] = True
+        matched_role["consumed_at"] = datetime.now(timezone.utc).isoformat()
+        remaining = len(self._scenario_before_snapshots)
+        self._scenario_before_handoff["status"] = (
+            "consumed" if remaining == 0 else "partially_consumed"
+        )
+        self._scenario_before_handoff["remaining_roles"] = remaining
+        self._persist_scenario_before_handoff()
+        return deepcopy(snapshot)
+
+    def _discard_scenario_before_snapshots(self, reason: str) -> None:
+        if not self._scenario_before_snapshots:
+            return
+        pending = set(self._scenario_before_snapshots)
+        self._scenario_before_snapshots.clear()
+        if self._scenario_before_handoff is not None:
+            for role in self._scenario_before_handoff["roles"].values():
+                if role["notebook_id"] in pending and role.get("consumed") is not True:
+                    role["discarded"] = True
+            self._scenario_before_handoff.update(
+                status="discarded",
+                discard_reason=reason,
+                discarded_at=datetime.now(timezone.utc).isoformat(),
+                remaining_roles=0,
+            )
+            self._persist_scenario_before_handoff()
+
+    def _persist_scenario_before_handoff(self) -> None:
+        if self._scenario_before_handoff_path is None or self._scenario_before_handoff is None:
+            return
+        from .test_utils import write_json
+
+        write_json(self._scenario_before_handoff_path, self._scenario_before_handoff)
 
     def _append_audit(self, record: dict[str, Any]) -> None:
         with (self.run_dir / "calls.jsonl").open("a", encoding="utf-8", newline="\n") as stream:

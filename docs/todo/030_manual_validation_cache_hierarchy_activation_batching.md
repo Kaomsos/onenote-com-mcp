@@ -37,6 +37,8 @@ Delete recipe 同时提升到 v2，在 `Disposable-Group` 内创建 `Disposable-
 
 TODO 016 的“层级连续稳定两次后才读完整 Page 内容、每个 snapshot 同一 Page XML 只读一次”已经完成并取得真实 Copy Page 证据。本 TODO 已完成当前三层关键耗时指标，但尚未完成跨阶段 observation handoff 和上述三项修复后的真实复验，因此保持“进行中”。如果后续仍出现持续 `missing_page`，下一步只对其精确 owning Section 做一次有界 reactivation并重新取得 Notebook snapshot；仍缺失则 fail closed，不能放宽结构双稳定门。
 
+当前进一步完成了内容证据的跨阶段复用：cache build 保持权威模板内容验证；working copy import/close/reopen 只承担轻量 hierarchy/identity checkpoint；reopen 后的唯一一次完整 `scenario before` snapshot 同时用于 materialized live Recipe 真实性复核和 scenario mutation 基线。Snapshot 按 exact role set、唯一 Notebook ID 与 SHA-256 digest 单次 handoff，scenario 的首个 `capture_snapshot()` 直接消费而不再调用 hierarchy/Page read；任一 role 尚未消费时首次 mutation 在 MCP 调用前 fail closed。终端阶段名相应改为 `scenario before`，证据写入 `scenario-before-snapshot-handoff.json`。这消除了当前最明显的一整轮重复 Page 与 hierarchy 读取，但不等同于本 TODO 目标 3 所述的轻量 hierarchy observation handoff，后者仍待实现与真实量化。
+
 ## 目标
 
 在不修改生产 MCP 公开 tool/response、不打开 immutable template、不复用跨 run 可变 Notebook 的前提下，实现以下四项优化：
@@ -104,7 +106,7 @@ Fixture runtime 验证 handoff 后，将其作为第一次候选观察，并独�
 - batch 数、`OpenHierarchy` 请求数、snapshot 数和 PowerShell/COM session 数；
 - Fixture 阶段是否接受 handoff、节省的 observation 数以及最终双稳定结果。
 
-终端 progress 保持 content-free，至少区分 `cache open`、`cache hierarchy` 和 `cache content`，长 batch 必须有有界 heartbeat，不能让用户误以为 runner 卡死。
+终端 progress 保持 content-free，至少区分 `cache open`、`cache hierarchy` 和 `scenario before`，长 batch 必须有有界 heartbeat，不能让用户误以为 runner 卡死。
 
 ## 自动化验证
 

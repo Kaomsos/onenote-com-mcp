@@ -29,12 +29,14 @@ from tests.manual_validation.scenarios.common.fixture_cache import (
     inventory_directory,
 )
 from tests.manual_validation.scenarios.common import fixture_cache as fixture_cache_module
+from tests.manual_validation.scenarios.common import fixture_runtime as fixture_runtime_module
 from tests.manual_validation.scenarios.common.fixture_runtime import (
     _await_materialized_structure_convergence,
     _assert_authored_cache_identity,
     _rebind_materialized_evidence,
     _rebind_materialized_structure,
     prepare_materialized_fixture,
+    prepare_materialized_fixture_bundle,
     prepare_reopened_fixture_bundle,
 )
 from tests.manual_validation.scenarios.common import orchestrator as validation
@@ -42,6 +44,8 @@ from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.scenarios.common.orchestrator import run_validate
 from tests.manual_validation.test_utils import read_json, write_json
 from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
+    BuildMode,
+    FixtureValidationReport,
     NotebookRoleSpec,
     RecipeBase,
 )
@@ -60,6 +64,130 @@ def _source(tmp_path: Path, role: str = "source") -> Path:
     (root / "Open Notebook.onetoc2").write_bytes(b"opaque-catalog")
     (root / "Section.one").write_bytes(b"opaque-section")
     return root
+
+
+def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_role(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    roles = ("destination", "source")
+    run_dir = tmp_path / "run"
+    entry_path = tmp_path / "cache-entry"
+    run_dir.mkdir(parents=True)
+    notebooks = {
+        role: {
+            "id": f"working-{role}",
+            "name": f"Working {role}",
+            "path": str(run_dir / role),
+            "resource_type": "notebook",
+        }
+        for role in roles
+    }
+    notebook_paths = {role: str(run_dir / role) for role in roles}
+    template_paths = {role: entry_path / "notebooks" / role / "template" for role in roles}
+    working_paths = {role: Path(notebook_paths[role]) for role in roles}
+    for role in roles:
+        artifact_root = entry_path / "notebooks" / role
+        artifact_root.mkdir(parents=True)
+        template_paths[role].mkdir()
+        working_paths[role].mkdir()
+        write_json(
+            artifact_root / "template-manifest.json",
+            {
+                "notebook": {
+                    "id": f"template-{role}",
+                    "name": f"Template {role}",
+                    "path": str(template_paths[role]),
+                    "resource_type": "notebook",
+                },
+                "structure": {},
+            },
+        )
+        write_json(
+            artifact_root / "template-fixture-result.json",
+            {"scenario": "fake-materialized"},
+        )
+
+    class FakeRecipe:
+        build_mode = BuildMode.PROGRAMMATIC
+        cache_identity = argparse.Namespace(
+            notebook_roles=tuple(argparse.Namespace(role=role) for role in roles)
+        )
+
+        def validate_live(self, observation):
+            assert set(observation.roles) == set(roles)
+            return FixtureValidationReport(
+                passed=True,
+                role_checks={role: ("content baseline verified",) for role in roles},
+                bundle_checks=("roles remain distinct",),
+            )
+
+    async def fake_convergence(_client, *, role, working_notebook, **_kwargs):
+        snapshot = {
+            "notebook_id": working_notebook["id"],
+            "items": [],
+            "page_hashes": {},
+            "page_objects": {},
+        }
+        return snapshot, {}, {"passed": True}, {
+            "schema_version": 1,
+            "role": role,
+            "phase": "hierarchy_convergence",
+            "passed": True,
+            "scenario_before_snapshot_started": False,
+            "scenario_before_snapshot_completed": False,
+        }
+
+    capture_calls: list[str] = []
+
+    async def fake_capture(_client, notebook_id):
+        capture_calls.append(notebook_id)
+        return {
+            "notebook_id": notebook_id,
+            "items": [],
+            "page_hashes": {},
+            "page_objects": {},
+        }
+
+    monkeypatch.setattr(
+        fixture_runtime_module,
+        "_await_materialized_structure_convergence",
+        fake_convergence,
+    )
+    monkeypatch.setattr(fixture_runtime_module, "capture_snapshot", fake_capture)
+    scenario = argparse.Namespace(name="fake-materialized", fixture_recipe=FakeRecipe())
+    hit = CacheHit("f" * 64, "instance", entry_path, {"roles": list(roles)})
+    materialized = MaterializedBundle(
+        hit.fingerprint,
+        hit.template_instance_id,
+        template_paths,
+        working_paths,
+        run_dir / "cache-materialization.json",
+    )
+
+    manifest, result = asyncio.run(
+        prepare_materialized_fixture_bundle(
+            scenario,
+            argparse.Namespace(),
+            RuntimeOptions(run_dir, 30, False, False, use_cache=True),
+            object(),
+            notebooks,
+            notebook_paths,
+            object(),
+            hit,
+            materialized,
+        )
+    )
+
+    assert capture_calls == ["working-destination", "working-source"]
+    convergence = read_json(run_dir / "cache-hierarchy-convergence.json")
+    assert convergence["passed"] is True
+    assert all(
+        role_report["scenario_before_snapshot_completed"] is True
+        for role_report in convergence["roles"].values()
+    )
+    assert manifest["fixture_validation"]["scenario_before_snapshot_reused"] is True
+    assert result["validation"]["scenario_before_snapshot_reused"] is True
 
 
 def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
@@ -1344,8 +1472,8 @@ def test_reparent_page_materialization_persists_rebound_run_local_evidence(
             {
                 "passed": True,
                 "phase": "hierarchy_convergence",
-                "full_content_validation_started": False,
-                "full_content_validation_completed": False,
+                "scenario_before_snapshot_started": False,
+                "scenario_before_snapshot_completed": False,
             },
         )
 
@@ -1403,8 +1531,8 @@ def test_reparent_page_materialization_persists_rebound_run_local_evidence(
     assert convergence["passed"] is True
     assert convergence["elapsed_seconds"] >= 0
     assert convergence["roles"]["source"]["hierarchy_elapsed_seconds"] >= 0
-    assert convergence["roles"]["source"]["content_elapsed_seconds"] >= 0
-    assert convergence["roles"]["source"]["full_content_validation_completed"] is True
+    assert convergence["roles"]["source"]["scenario_before_elapsed_seconds"] >= 0
+    assert convergence["roles"]["source"]["scenario_before_snapshot_completed"] is True
     cached_after = read_json(artifact_root / "template-manifest.json")
     assert cached_after["reparent_page_fixture"]["page_id"] == "source-reparent_page"
     assert (
@@ -1626,8 +1754,8 @@ def test_inserted_file_copy_live_validates_rebound_cached_structure(
             {
                 "passed": True,
                 "phase": "hierarchy_convergence",
-                "full_content_validation_started": False,
-                "full_content_validation_completed": False,
+                "scenario_before_snapshot_started": False,
+                "scenario_before_snapshot_completed": False,
             },
         )
 
@@ -1893,13 +2021,16 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
 
     class FakeMCP:
         def __init__(self, **_kwargs) -> None:
-            pass
+            self.staged_before = None
 
         async def __aenter__(self):
             return self
 
         async def __aexit__(self, *_args):
             return None
+
+        def stage_scenario_before_snapshots(self, snapshots, notebook_ids, evidence_path):
+            self.staged_before = (snapshots, notebook_ids, evidence_path)
 
     async def fake_prepare_fixture(
         _scenario,
@@ -1949,6 +2080,10 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
             "fixture_cache": {},
         }
         write_json(options.run_dir / "manifest.json", manifest)
+        write_json(
+            options.run_dir / "fixture-snapshot.json",
+            {"notebook_id": notebook["id"], "items": [], "page_hashes": {}},
+        )
         return manifest, {"notebook": dict(notebook), "validation": {"passed": True}}
 
     async def fake_prepare_fixture_bundle(

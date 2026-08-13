@@ -710,7 +710,7 @@ async def prepare_materialized_fixture(
             {
                 "schema_version": 1,
                 "passed": convergence.get("passed") is True
-                and convergence.get("full_content_validation_completed") is True,
+                and convergence.get("scenario_before_snapshot_completed") is True,
                 "roles": {"source": convergence},
                 "elapsed_seconds": round(time.monotonic() - validation_started, 6),
             },
@@ -723,24 +723,26 @@ async def prepare_materialized_fixture(
             f"{convergence.get('error', 'declared hierarchy was not stable')}."
         )
     options.progress.unit_completed("cache hierarchy", "source")
-    options.progress.unit_started("cache content", "source")
+    options.progress.unit_started("scenario before", "source")
     content_started = time.monotonic()
-    convergence["full_content_validation_started"] = True
+    convergence["scenario_before_snapshot_started"] = True
     persist_convergence()
     try:
         snapshot = await capture_snapshot(client, str(notebook["id"]))
     except Exception as exc:
         convergence.update(
             passed=False,
-            phase="full_content_validation",
-            full_content_validation_completed=False,
-            content_elapsed_seconds=round(time.monotonic() - content_started, 6),
+            phase="scenario_before_snapshot",
+            scenario_before_snapshot_completed=False,
+            scenario_before_elapsed_seconds=round(
+                time.monotonic() - content_started, 6
+            ),
             error_type=type(exc).__name__,
             error=str(exc),
         )
         persist_convergence()
         raise InvariantFailure(
-            "Materialized fixture full content validation failed: "
+            "Materialized fixture scenario before snapshot failed: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
     structure, remap = _rebind_materialized_structure(
@@ -757,19 +759,21 @@ async def prepare_materialized_fixture(
     if remap["passed"] is not True or hierarchy_changed:
         convergence.update(
             passed=False,
-            phase="full_content_validation",
-            full_content_validation_completed=True,
-            content_elapsed_seconds=round(time.monotonic() - content_started, 6),
+            phase="scenario_before_snapshot",
+            scenario_before_snapshot_completed=True,
+            scenario_before_elapsed_seconds=round(
+                time.monotonic() - content_started, 6
+            ),
             error=(
                 "declared hierarchy changed after convergence"
                 if hierarchy_changed
-                else "declared hierarchy was incomplete during full content validation"
+                else "declared hierarchy was incomplete during scenario before snapshot"
             ),
         )
         persist_convergence()
         write_json(options.run_dir / "cache-structure-remap.json", remap)
         raise InvariantFailure(
-            "Materialized fixture full content validation could not preserve and uniquely "
+            "Materialized fixture scenario before snapshot could not preserve and uniquely "
             "rebind the stable hierarchy: "
             + ", ".join(
                 f"{value['manifest_key']}={value['reason']}"
@@ -778,12 +782,13 @@ async def prepare_materialized_fixture(
         )
     convergence.update(
         passed=True,
-        phase="full_content_validation",
-        full_content_validation_completed=True,
-        content_elapsed_seconds=round(time.monotonic() - content_started, 6),
+        phase="scenario_before_snapshot",
+        scenario_before_snapshot_completed=True,
+        content_truth_validation_completed=True,
+        scenario_before_elapsed_seconds=round(time.monotonic() - content_started, 6),
     )
     persist_convergence()
-    options.progress.unit_completed("cache content", "source")
+    options.progress.unit_completed("scenario before", "source")
     evidence, evidence_remap = _rebind_materialized_evidence(
         manifest.get("structure", {}),
         structure,
@@ -990,8 +995,8 @@ async def _await_materialized_structure_convergence(
                     "stable_observations": stable_count,
                     "declared_object_count": len(structure),
                     "observations": observations,
-                    "full_content_validation_started": False,
-                    "full_content_validation_completed": False,
+                    "scenario_before_snapshot_started": False,
+                    "scenario_before_snapshot_completed": False,
                 },
             )
         if deterministic_error is not None:
@@ -1013,8 +1018,8 @@ async def _await_materialized_structure_convergence(
             "stable_observations": stable_count,
             "declared_object_count": len(structure),
             "observations": observations,
-            "full_content_validation_started": False,
-            "full_content_validation_completed": False,
+            "scenario_before_snapshot_started": False,
+            "scenario_before_snapshot_completed": False,
             "error": (
                 str(deterministic_error)
                 if deterministic_error is not None
@@ -1068,6 +1073,7 @@ async def prepare_materialized_fixture_bundle(
     source_manifest: dict[str, Any] | None = None
     cached_results: dict[str, Mapping[str, Any]] = {}
     convergence_path = options.run_dir / "cache-hierarchy-convergence.json"
+    validation_started = time.monotonic()
 
     def persist_convergence() -> None:
         write_json(
@@ -1077,7 +1083,7 @@ async def prepare_materialized_fixture_bundle(
                 "passed": set(convergence_reports) == set(roles)
                 and all(
                     value.get("passed") is True
-                    and value.get("full_content_validation_completed") is True
+                    and value.get("scenario_before_snapshot_completed") is True
                     for value in convergence_reports.values()
                 ),
                 "roles": convergence_reports,
@@ -1121,18 +1127,18 @@ async def prepare_materialized_fixture_bundle(
         options.progress.unit_completed(
             "cache hierarchy", role, role_index, len(roles)
         )
-        options.progress.unit_started("cache content", role, role_index, len(roles))
+        options.progress.unit_started("scenario before", role, role_index, len(roles))
         content_started = time.monotonic()
-        convergence["full_content_validation_started"] = True
+        convergence["scenario_before_snapshot_started"] = True
         persist_convergence()
         try:
             snapshot = await capture_snapshot(client, str(notebooks[role]["id"]))
         except Exception as exc:
             convergence.update(
                 passed=False,
-                phase="full_content_validation",
-                full_content_validation_completed=False,
-                content_elapsed_seconds=round(
+                phase="scenario_before_snapshot",
+                scenario_before_snapshot_completed=False,
+                scenario_before_elapsed_seconds=round(
                     time.monotonic() - content_started, 6
                 ),
                 error_type=type(exc).__name__,
@@ -1140,7 +1146,7 @@ async def prepare_materialized_fixture_bundle(
             )
             persist_convergence()
             raise InvariantFailure(
-                f"Materialized fixture role {role} full content validation failed: "
+                f"Materialized fixture role {role} scenario before snapshot failed: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
         rebound, remap = _rebind_materialized_structure(
@@ -1158,9 +1164,9 @@ async def prepare_materialized_fixture_bundle(
             remaps[role] = remap
             convergence.update(
                 passed=False,
-                phase="full_content_validation",
-                full_content_validation_completed=True,
-                content_elapsed_seconds=round(
+                phase="scenario_before_snapshot",
+                scenario_before_snapshot_completed=True,
+                scenario_before_elapsed_seconds=round(
                     time.monotonic() - content_started, 6
                 ),
                 error=(
@@ -1179,17 +1185,20 @@ async def prepare_materialized_fixture_bundle(
                 },
             )
             raise InvariantFailure(
-                f"Materialized fixture role {role} full content validation observed an "
+                f"Materialized fixture role {role} scenario before snapshot observed an "
                 "incomplete or changed hierarchy."
             )
         convergence.update(
             passed=True,
-            phase="full_content_validation",
-            full_content_validation_completed=True,
-            content_elapsed_seconds=round(time.monotonic() - content_started, 6),
+            phase="scenario_before_snapshot",
+            scenario_before_snapshot_completed=True,
+            content_truth_validation_completed=True,
+            scenario_before_elapsed_seconds=round(
+                time.monotonic() - content_started, 6
+            ),
         )
         persist_convergence()
-        options.progress.unit_completed("cache content", role, role_index, len(roles))
+        options.progress.unit_completed("scenario before", role, role_index, len(roles))
         cached_evidence = {
             key: cached_manifest[key]
             for key in ("copy_fixture", "reparent_page_fixture")
@@ -1281,6 +1290,7 @@ async def prepare_materialized_fixture_bundle(
             },
             "bundle_checks": list(report.bundle_checks),
             "live_materialized_revalidation": True,
+            "scenario_before_snapshot_reused": True,
         },
         fixture_cache={
             "cache_mode": "use_cache",
@@ -1334,6 +1344,7 @@ async def prepare_materialized_fixture_bundle(
             },
             "bundle_checks": list(report.bundle_checks),
             "live_materialized_revalidation": True,
+            "scenario_before_snapshot_reused": True,
         },
     }
     write_json(options.run_dir / "prepared.json", snapshots["source"])

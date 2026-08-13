@@ -934,6 +934,29 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 elapsed_seconds=time.perf_counter() - fixture_progress_started,
             )
             progress.phase_started("scenario", 3, 5)
+            if materialized is not None:
+                if not hasattr(client, "stage_scenario_before_snapshots"):
+                    raise RunnerFailure(
+                        "Scenario MCP client cannot accept the materialized before-snapshot handoff."
+                    )
+                role_snapshots = {
+                    role: read_json(
+                        (
+                            options.run_dir / f"fixture-snapshot-{role}.json"
+                            if (options.run_dir / f"fixture-snapshot-{role}.json").exists()
+                            else options.run_dir / "fixture-snapshot.json"
+                        )
+                    )
+                    for role in roles
+                }
+                client.stage_scenario_before_snapshots(
+                    role_snapshots,
+                    {
+                        role: str(notebooks[role]["id"])
+                        for role in roles
+                    },
+                    options.run_dir / "scenario-before-snapshot-handoff.json",
+                )
             scenario.prepare_arguments(args, manifest)
             if getattr(scenario, "requires_lifecycle_wrappers", False):
                 scenario_result = await scenario.execute_with_lifecycle(
