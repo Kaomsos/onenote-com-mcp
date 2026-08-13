@@ -97,10 +97,11 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
 
 
 @pytest.mark.parametrize(
-    ("scenario_name", "destination_keys"),
+    ("scenario_name", "recipe_version", "destination_keys"),
     [
         (
             "copy-section",
+            4,
             {
                 "cross_notebook_group",
                 "cross_notebook_anchor_a",
@@ -109,20 +110,23 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
         ),
         (
             "copy-section-group",
+            5,
             {
                 "cross_notebook_anchor_section",
                 "cross_notebook_anchor_group_a",
+                "cross_notebook_anchor_group_a_sentinel",
                 "cross_notebook_anchor_group_b",
+                "cross_notebook_anchor_group_b_sentinel",
             },
         ),
     ],
 )
 def test_container_copy_recipes_partition_two_notebook_roles(
-    scenario_name, destination_keys
+    scenario_name, recipe_version, destination_keys
 ) -> None:
     recipe = SCENARIO_REGISTRY.get(scenario_name).fixture_recipe
 
-    assert recipe.recipe_version == 4
+    assert recipe.recipe_version == recipe_version
     assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
         "destination",
         "source",
@@ -133,6 +137,16 @@ def test_container_copy_recipes_partition_two_notebook_roles(
         | recipe.manifest_keys_for_role("source")
         == recipe.manifest_keys
     )
+    if scenario_name == "copy-section-group":
+        assert recipe.requires_persistence_checkpoint is True
+
+
+def test_create_recipe_is_minimal_and_requires_persistence_checkpoint() -> None:
+    recipe = SCENARIO_REGISTRY.get("create").fixture_recipe
+
+    assert recipe.recipe_version == 3
+    assert recipe.manifest_keys == {"duplicate_title_section"}
+    assert recipe.requires_persistence_checkpoint is True
 
 
 def test_copy_notebook_recipe_declares_nested_section_group_subtree() -> None:

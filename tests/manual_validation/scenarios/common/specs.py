@@ -20,7 +20,6 @@ from .config import (
     COPY_NOTEBOOK_TOOLS,
     COPY_PAGE_TOOLS,
     COPY_TOOLS,
-    CREATE_TOOLS,
     DELETE_TOOLS,
     MOVE_PAGE_TOOLS,
     MOVE_SECTION_GROUP_TOOLS,
@@ -96,7 +95,7 @@ def _profile(
 
 
 DELETE_SCENARIO_POLICY = ScenarioPolicy(writes_enabled=True, deletes_enabled=True)
-CREATE_FIXTURE_TOOLS = set(CREATE_TOOLS) - {"create_notebook"}
+CREATE_SCENARIO_TOOLS = READ_TOOLS | {"create_section", "create_page"}
 LAYERED_PAGE_FIXTURE_TOOLS = {
     "create_page",
     "append_to_page",
@@ -143,25 +142,16 @@ SCENARIO_SPECS = {
     "create": ScenarioSpec(
         "create",
         _profile(
-            "full-preset",
-            (
-                "Group-A/Content-Section/{Parent,Child,Sibling}",
-                "Group-A/Duplicate-Title-Target (empty before scenario execution)",
-                "Group-B",
-                "Delete-Sandbox/Disposable-Group",
-                "Delete-Sandbox/Disposable-Section/Disposable-Page",
+            "minimal-create-target",
+            ("Duplicate-Title-Target (empty before scenario execution)",),
+            ("duplicate_title_section",),
+            CREATE_SCENARIO_TOOLS,
+            checks=(
+                "the exact empty target Section resolves under the disposable Notebook",
             ),
-            (
-                "group_a", "group_b", "delete_sandbox", "content_section",
-                "duplicate_title_section",
-                "parent_page", "child_page", "sibling_page", "disposable_group",
-                "disposable_section", "disposable_page",
-            ),
-            CREATE_FIXTURE_TOOLS,
-            content=("RichText", "Table", "Image", "page_tree"),
         ),
         DELETE_SCENARIO_POLICY,
-        frozenset(CREATE_FIXTURE_TOOLS | {"delete_page"}),
+        frozenset(CREATE_SCENARIO_TOOLS | {"delete_page"}),
     ),
     "rename": ScenarioSpec(
         "rename",
@@ -633,7 +623,9 @@ SCENARIO_SPECS = {
             (
                 "source:Group-A/Source-Section/Rich-Page[strict rich text+table+image]",
                 "source:Group-A/Source-Section/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "source:{00-Group-Anchor-A,99-Group-Anchor-B}/Fixture-Sentinel",
                 "destination:Cross-Notebook-Anchor",
+                "destination:{00-Group-Anchor-A,99-Group-Anchor-B}/Fixture-Sentinel",
             ),
             (
                 "group_a",
@@ -641,10 +633,14 @@ SCENARIO_SPECS = {
                 "parent_page",
                 "semantic_page",
                 "same_notebook_anchor_a",
+                "same_notebook_anchor_a_sentinel",
                 "same_notebook_anchor_b",
+                "same_notebook_anchor_b_sentinel",
                 "cross_notebook_anchor_section",
                 "cross_notebook_anchor_group_a",
+                "cross_notebook_anchor_group_a_sentinel",
                 "cross_notebook_anchor_group_b",
+                "cross_notebook_anchor_group_b_sentinel",
             ),
             {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
@@ -652,6 +648,7 @@ SCENARIO_SPECS = {
                 "strict parent uses canonical read-back verification",
                 "semantic child uses List/Tag semantic read-back verification",
                 "same-Notebook and cross-Notebook destination roots are role-bound",
+                "each otherwise-empty destination SectionGroup is persisted by one typed sentinel Section",
             ),
         ),
         COPY_POLICY,

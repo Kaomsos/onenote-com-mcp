@@ -171,7 +171,7 @@ def test_each_dry_run_declares_one_process_and_scenario_fixture(
 
 def test_fixture_profiles_are_scenario_specific() -> None:
     names = {name: spec.fixture.name for name, spec in SCENARIO_SPECS.items()}
-    assert names["create"] == "full-preset"
+    assert names["create"] == "minimal-create-target"
     assert names["rename"] == "rename-target"
     assert names["reparent-section"] == "section-reparent"
     assert names["reparent-page"] == "typed-page-reparent"
