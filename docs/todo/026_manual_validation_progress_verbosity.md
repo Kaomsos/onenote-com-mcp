@@ -1,7 +1,7 @@
 # 026：Manual Validation 实时进度与 Verbosity
 
 > ID：026
-> 状态：进行中
+> 状态：已完成
 > 优先级：P2
 > 类型：Manual Validation / CLI UX / 安全日志
 > 更新日期：2026-08-13
@@ -29,9 +29,18 @@
 - [x] 具名非 JSON compact formatter、失败诊断上限、ID/XML/query redaction、verbose read batching 和 `all` 子进程透传/截断已实现；
 - [x] `--json` 优先合同、dry-run 零副作用、三档过滤/顺序/flush/统计及敏感字段边界已有纯测试；
 - [x] Manual-validation 纯测试为 `597 passed`；标准完整基线为 `930 passed, 1 warning`，warning 是仓库 `.pytest_cache` 的既有 `WinError 5`；`copy-page --dry-run --verbosity normal`、`rename --dry-run --verbosity verbose` 和 `rename --dry-run --json --verbosity verbose` 均通过；
-- [ ] 等待用户本人运行真实 `copy-page --verbosity normal` 与 `rename --verbosity verbose`，确认长/短场景的实时精细度、紧凑结尾和 lifecycle 展示。
+- [x] 用户本人已运行真实 `copy-page --verbosity normal` 与 `rename --verbosity verbose`，确认长/短场景的实时精细度、紧凑结尾和 lifecycle 展示均无问题。
 
 上述自动化与 dry-run 均未启动真实 OneNote scenario；它们不能替代最后一项用户前台展示确认。
+
+## 用户前台确认
+
+2026-08-13，用户明确确认两档真实展示“跑完了，没问题”。对应的本地 content-free artifact 复核如下：
+
+- `run-2026-08-13-16-56-40`：`copy-page`，`status=passed`、`restored=true`、`worksite_preserved=false`、`lifecycle=closed_preserved`，单 MCP 进程，`report.md` 已生成；
+- `run-2026-08-13-17-03-02`：`rename`，`status=passed`、`restored=true`、`worksite_preserved=false`、`lifecycle=closed_preserved`，单 MCP 进程，`report.md` 已生成。
+
+真实场景由用户本人在前台显式启动；Agent 只读取上述已有 artifact 的 scenario/status/lifecycle/计数与报告存在性，未读取或记录 OneNote ID、正文、XML、binary、query 或完整响应，也未再次启动任何真实场景。至此实现、文档、纯合同、完整 pytest、dry-run 和用户真实展示确认全部闭合，本 TODO 标记为“已完成”。
 
 ## 完成定义
 
