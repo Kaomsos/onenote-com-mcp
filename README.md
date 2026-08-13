@@ -253,13 +253,13 @@ uv run python scripts\smoke_mcp.py
 # docs/dev/isolated_mutation_validation.md
 
 # Every named scenario is a complete isolated suite. This dry-run must be
-# reviewed by the user and does not access OneNote. It shows the scenario's
-# minimal fixture, full static policy/tool allowlist, one-process budget, and
-# exact lifecycle lease contract:
-.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run
+# reviewed by the user and does not access OneNote. Normal output is a compact
+# policy/tool-count and lifecycle summary; add --json when the full fixture,
+# allowlist, process budget, and exact lease plan must be reviewed:
+.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run --verbosity normal
 
 # Only the user may explicitly start the corresponding real scenario suite:
-.venv\Scripts\python.exe tests\manual_validation\run.py rename
+.venv\Scripts\python.exe tests\manual_validation\run.py rename --verbosity normal
 
 # The create scenario also verifies two same-title Pages receive distinct IDs;
 # default cleanup is exact and non-permanent:
@@ -281,6 +281,14 @@ uv run python scripts\smoke_mcp.py
 # The user may remove --dry-run to run every isolated scenario serially. Each
 # child creates its own Notebook/run-dir; move-page remains strict.
 ```
+
+Named scenarios default to `--verbosity normal`; use `quiet` for phase-only output or
+`verbose` for content-free mutation timing, convergence scalars, batched read counts,
+policy/allowlist counts, and phase timings. Human-readable modes always end with a
+compact result and artifact paths rather than the complete nested run result. `--json`
+overrides verbosity and remains the only mode that prints the complete payload (one JSON
+document for a named scenario, JSON Lines for `all`). Progress never prints tool
+arguments, OneNote IDs, Page content, XML, binary data, queries, or full responses.
 
 ---
 

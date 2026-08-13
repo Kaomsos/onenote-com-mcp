@@ -11,10 +11,8 @@ import sys
 import time
 from typing import Any, Sequence
 
+from .progress import VERBOSITY_LEVELS, bounded_terminal_text
 from .runtime import EXIT_MCP
-
-
-VERBOSITY_LEVELS = ("quiet", "normal", "verbose")
 
 
 def register_all_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -70,6 +68,7 @@ def _child_command(args: argparse.Namespace, scenario: str) -> list[str]:
         command.append("--json")
     if bool(getattr(args, "use_cache", False)):
         command.append("--use-cache")
+    command.extend(["--verbosity", args.verbosity])
     return command
 
 
@@ -138,7 +137,11 @@ class ProgressReporter:
         show_stdout = not passed or self.verbosity in {"normal", "verbose"}
         show_stderr = bool(stderr.strip()) and (not passed or self.verbosity == "verbose")
         if show_stdout and stdout.strip():
-            value = _parse_child_json(stdout) if self.json_output else stdout
+            value = (
+                _parse_child_json(stdout)
+                if self.json_output
+                else bounded_terminal_text(stdout, verbosity=self.verbosity)
+            )
             self.emit(
                 "scenario-output",
                 scenario=scenario,
@@ -150,7 +153,11 @@ class ProgressReporter:
                 "scenario-output",
                 scenario=scenario,
                 stream="stderr",
-                text=stderr,
+                text=(
+                    stderr
+                    if self.json_output
+                    else bounded_terminal_text(stderr, verbosity=self.verbosity)
+                ),
             )
 
 

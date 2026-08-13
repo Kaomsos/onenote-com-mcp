@@ -265,7 +265,15 @@ def test_all_passes_dry_run_timeout_and_json_to_each_child(capsys) -> None:
     assert run_all(args, scenarios=("create", "rename"), run_child=fake_run) == 0
 
     for command, scenario in zip(commands, ("create", "rename"), strict=True):
-        assert command[2:] == [scenario, "--timeout", "42", "--dry-run", "--json"]
+        assert command[2:] == [
+            scenario,
+            "--timeout",
+            "42",
+            "--dry-run",
+            "--json",
+            "--verbosity",
+            "normal",
+        ]
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     result_events = [event for event in events if event["event"] == "scenario-output"]
     assert [event["text"]["scenario"] for event in result_events] == ["create", "rename"]
@@ -284,7 +292,8 @@ def test_all_passes_use_cache_to_each_independent_child() -> None:
         scenarios=("create", "copy-page"),
         run_child=fake_run,
     ) == 0
-    assert all(command[-2:] == ["--dry-run", "--use-cache"] for command in commands)
+    assert all("--dry-run" in command and "--use-cache" in command for command in commands)
+    assert all(command[-2:] == ["--verbosity", "quiet"] for command in commands)
 
 
 def test_all_omits_timeout_to_preserve_per_scenario_defaults() -> None:
@@ -296,7 +305,8 @@ def test_all_omits_timeout_to_preserve_per_scenario_defaults() -> None:
 
     assert run_all(_args(dry_run=True), scenarios=("rename",), run_child=fake_run) == 0
     assert "--timeout" not in commands[0]
-    assert commands[0][-1] == "--dry-run"
+    assert "--dry-run" in commands[0]
+    assert commands[0][-2:] == ["--verbosity", "quiet"]
 
 
 def test_all_reports_failure_continues_and_returns_first_failure(capsys) -> None:
@@ -346,3 +356,19 @@ def test_normal_and_verbose_expand_success_output(capsys) -> None:
     assert "command:" in verbose
     assert "stdout: scenario result" in verbose
     assert "stderr: diagnostic" in verbose
+
+
+def test_non_json_child_diagnostics_are_bounded(capsys) -> None:
+    large = "\n".join(f"line-{index}-" + "x" * 200 for index in range(1_000))
+
+    def fake_run(_command, **_kwargs):
+        return SimpleNamespace(returncode=5, stdout=large, stderr=large)
+
+    assert run_all(
+        _args(verbosity="quiet"),
+        scenarios=("rename",),
+        run_child=fake_run,
+    ) == 5
+    output = capsys.readouterr().out
+    assert output.count("output truncated") == 2
+    assert len(output) < 10_000

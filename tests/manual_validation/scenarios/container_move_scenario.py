@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from typing import Any
 
 from ..mcp_stdio_client import MCPStdioClient, MOVE_CONTAINERS_POLICY, scenario_client
@@ -86,6 +87,8 @@ class ContainerMoveScenario(Scenario):
             timeout_seconds=options.timeout,
             client_factory=MCPStdioClient,
         ) as active_client:
+            move_started = time.perf_counter()
+            options.progress.unit_started("case", f"{self.resource_type}-move", 1, 1)
             before = await capture_bundle(active_client)
             write_json(out / "before.json", before)
             current_source = find_snapshot_item(before, str(source["id"]))
@@ -204,6 +207,13 @@ class ContainerMoveScenario(Scenario):
                 "remaining_state": remaining,
             }
             write_json(out / "result.json", result)
+            options.progress.unit_completed(
+                "case",
+                f"{self.resource_type}-move",
+                1,
+                1,
+                elapsed_seconds=time.perf_counter() - move_started,
+            )
             render_report(options.run_dir)
             return result
 

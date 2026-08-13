@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime import RunnerFailure, RuntimeOptions
+from ..progress import RunProgressReporter
 from ..path_budget import (
     MAX_RUN_EVIDENCE_LEAF_UNITS,
     fingerprint_disk_key,
@@ -96,6 +97,11 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
     args.run_dir = run_dir
     if args.timeout < 1:
         raise RunnerFailure("--timeout must be at least 1 second.")
+    progress = RunProgressReporter(
+        str(getattr(args, "verbosity", "normal")),
+        enabled=not bool(args.json_output),
+    )
+    args.progress = progress
     options = RuntimeOptions(
         run_dir=run_dir,
         timeout=args.timeout,
@@ -103,6 +109,8 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
         dry_run=args.dry_run,
         use_cache=bool(args.use_cache),
         cache_root=managed_absolute(Path(".local-validation") / "fixture-cache"),
+        verbosity=str(getattr(args, "verbosity", "normal")),
+        progress=progress,
     )
     run_root = managed_absolute(run_dir)
     budget_paths: list[tuple[Path, str, str | None]] = [

@@ -39,11 +39,13 @@ Working identity 冲突扫描在短时 open lock 内于打开前后各捕获一�
 推荐流程无需在 OneNote UI 中预先创建结构：
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run
-.venv\Scripts\python.exe tests\manual_validation\run.py rename
+.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run --verbosity normal
+.venv\Scripts\python.exe tests\manual_validation\run.py rename --verbosity normal
 ```
 
 第一条只展示计划；第二条必须由用户本人明确运行。把 `rename` 替换为另一个顶层 scenario 即可验证其他行为；每条命令都独立创建完整 Notebook bundle，不依赖上一条。单 role Fresh Notebook 名称为 `__<scenario>-<YYYY-MM-DD-HH-MM-SS>__`；cache working Notebook 增加 `CACHED`。多 role bundle（当前代表为 `copy-page`）还在 scenario 后增加 `source`/`destination` role，并为每个 role 写独立 lifecycle lease。默认 run 目录使用同一本地时间戳，例如 `.local-validation\run-2026-08-11-11-05-49`。完整本地 ISO 时间、UTC offset 和时区名称仍写入 `run_identity`，JSON 事件字段仍使用 UTC ISO-8601。只有在 scenario 失败后排障或专门验证附件、墨迹、媒体等没有稳定 typed 创建工具的内容时，才需要下面的 UI 人工准备。
+
+具名 scenario 默认使用 `normal` 进度；`quiet` 仅保留主要阶段和紧凑结尾，`verbose` 增加 content-free 的 mutation attempt/耗时/convergence 标量、每 25 次 read 汇总、policy/allowlist 与阶段统计。普通文本不会展开完整 summary，也不会显示 tool arguments、OneNote ID、正文、XML、binary、query 或完整响应。完整计划/结果只在显式 `--json` 时输出；该选项覆盖 verbosity，具名场景保持一个 JSON document，`all` 保持 JSON Lines。失败诊断在普通文本下有行数/字节上限，完整证据保留在 run artifact。
 
 在 OneNote UI 中手工创建仅用于测试的 Notebook：
 

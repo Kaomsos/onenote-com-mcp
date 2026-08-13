@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from typing import Any
 
 from ..mcp_stdio_client import MCPStdioClient, MOVE_PAGE_POLICY, scenario_client
@@ -77,6 +78,8 @@ async def _execute_move_page(
 
         for index, case in enumerate(cases, start=1):
             case_name = str(case["name"])
+            case_started = time.perf_counter()
+            options.progress.unit_started("case", case_name, index, len(cases))
             source = resolve_manifest_item(manifest, str(case["source_key"]))
             child = resolve_manifest_item(manifest, str(case["child_key"]))
             current_source = find_snapshot_item(current_snapshot, str(source["id"]))
@@ -206,6 +209,13 @@ async def _execute_move_page(
             )
             all_target_ids.extend(target_ids)
             current_snapshot = after
+            options.progress.unit_completed(
+                "case",
+                case_name,
+                index,
+                len(cases),
+                elapsed_seconds=time.perf_counter() - case_started,
+            )
 
         write_json(out / "after.json", current_snapshot)
         remaining = {

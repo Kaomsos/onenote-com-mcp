@@ -16,6 +16,8 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from .progress import RunProgressReporter
+
 
 POLICY_ENV_NAMES = {
     "writes_enabled": "LOCAL_ONENOTE_ENABLE_WRITES",
@@ -256,6 +258,7 @@ class MCPStdioClient:
         run_dir: Path,
         timeout_seconds: int,
         search_budget: dict[str, int] | None = None,
+        progress: RunProgressReporter | None = None,
     ) -> None:
         self.policy = policy
         self.allowed_tools = set(allowed_tools) | {"health_check"}
@@ -265,6 +268,7 @@ class MCPStdioClient:
             field: (search_budget or {}).get(field, default)
             for field, (_env_name, default) in SEARCH_BUDGET_ENV.items()
         }
+        self.progress = progress or RunProgressReporter.disabled()
         self._stack = AsyncExitStack()
         self._session: ClientSession | None = None
         self.process_started = False
@@ -350,6 +354,7 @@ class MCPStdioClient:
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             started = asyncio.get_running_loop().time()
+            self.progress.tool_started(name, attempt, mutation=mutation)
             recorded = False
             record: dict[str, Any] = {
                 "tool": name,
@@ -369,6 +374,13 @@ class MCPStdioClient:
                 record["result"] = summarize(envelope)
                 self._append_audit(record)
                 recorded = True
+                self.progress.tool_completed(
+                    name,
+                    attempt,
+                    mutation=mutation,
+                    elapsed_seconds=float(record["elapsed_seconds"]),
+                    envelope=envelope,
+                )
                 if envelope.get("ok") is not True or envelope.get("complete") is not True:
                     code = envelope.get("code", "operation_failed")
                     message = envelope.get("error", "tool call did not complete")
@@ -386,6 +398,13 @@ class MCPStdioClient:
                     )
                     record["client_error"] = f"{type(exc).__name__}: {exc}"
                     self._append_audit(record)
+                    self.progress.tool_failed(
+                        name,
+                        attempt,
+                        mutation=mutation,
+                        elapsed_seconds=float(record["elapsed_seconds"]),
+                        error_type=type(exc).__name__,
+                    )
                 raise
             except Exception as exc:  # transport errors need a clean audit trail
                 last_error = exc
@@ -393,6 +412,13 @@ class MCPStdioClient:
                 record["elapsed_seconds"] = round(asyncio.get_running_loop().time() - started, 6)
                 record["transport_error"] = f"{type(exc).__name__}: {exc}"
                 self._append_audit(record)
+                self.progress.tool_failed(
+                    name,
+                    attempt,
+                    mutation=mutation,
+                    elapsed_seconds=float(record["elapsed_seconds"]),
+                    error_type=type(exc).__name__,
+                )
                 if attempt == attempts:
                     break
         raise ClientFailure(f"{name} transport failed after {attempts} attempt(s): {last_error}")

@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from .mcp_stdio_client import ClientFailure
+from .progress import (
+    VERBOSITY_LEVELS,
+    RunProgressReporter,
+    bounded_terminal_text,
+    print_compact_scenario_result,
+    safe_error_text,
+)
 from .runtime import EXIT_ARGUMENT, EXIT_MCP, RunnerFailure
 
 
@@ -53,6 +60,16 @@ def build_parser() -> argparse.ArgumentParser:
             help="Print stable JSON only.",
         )
         command.add_argument(
+            "--verbosity",
+            choices=VERBOSITY_LEVELS,
+            default="normal",
+            help=(
+                "Terminal detail: quiet shows major phases, normal also shows case and "
+                "scenario mutation progress (default), verbose adds content-free timing. "
+                "Ignored when --json is present."
+            ),
+        )
+        command.add_argument(
             "--use-cache",
             action="store_true",
             help=(
@@ -83,12 +100,28 @@ def print_result(result: dict[str, Any], *, json_output: bool) -> None:
         print(f"{key}: {rendered}")
 
 
-def print_failure(exc: RunnerFailure, *, json_output: bool) -> None:
+def print_failure(
+    exc: RunnerFailure,
+    *,
+    json_output: bool,
+    run_dir: Path | None = None,
+    verbosity: str = "normal",
+    phase: str = "preflight",
+) -> None:
     if json_output:
         print(json.dumps(exc.as_error_dict(), ensure_ascii=False, sort_keys=True))
         return
-    for line in exc.terminal_lines():
-        print(line)
+    diagnostic = bounded_terminal_text(
+        "\n".join(safe_error_text(line) for line in exc.terminal_lines()),
+        verbosity=verbosity,
+    )
+    print(diagnostic, flush=True)
+    print(f"Phase: {phase}", flush=True)
+    if run_dir is not None:
+        resolved = run_dir.resolve()
+        print(f"Worksite preserved: {str(resolved.exists()).lower()}", flush=True)
+        print(f"Artifacts: {resolved}", flush=True)
+        print(f"Failure evidence: {resolved / 'run-failure.json'}", flush=True)
 
 
 async def dispatch(args: argparse.Namespace) -> dict[str, Any]:
@@ -131,17 +164,54 @@ def main(argv: list[str] | None = None) -> int:
         from .scenarios.common.orchestrator import record_failure
 
         record_failure(args, exc, exc.exit_code)
-        print_failure(exc, json_output=bool(getattr(args, "json_output", False)))
+        progress = getattr(args, "progress", None)
+        if isinstance(progress, RunProgressReporter):
+            progress.failure(str(exc), run_dir=getattr(args, "run_dir", None))
+        print_failure(
+            exc,
+            json_output=bool(getattr(args, "json_output", False)),
+            run_dir=getattr(args, "run_dir", None),
+            verbosity=str(getattr(args, "verbosity", "normal")),
+            phase=(
+                progress.current_phase
+                if isinstance(progress, RunProgressReporter)
+                else "preflight"
+            ),
+        )
         return exc.exit_code
     except ClientFailure as exc:
         from .scenarios.common.orchestrator import record_failure
 
         record_failure(args, str(exc), EXIT_MCP)
-        error = {"ok": False, "error": str(exc), "exit_code": EXIT_MCP}
-        print_result(error, json_output=bool(getattr(args, "json_output", False)))
+        progress = getattr(args, "progress", None)
+        if isinstance(progress, RunProgressReporter):
+            progress.failure(str(exc), run_dir=getattr(args, "run_dir", None))
+        if bool(getattr(args, "json_output", False)):
+            error = {"ok": False, "error": str(exc), "exit_code": EXIT_MCP}
+            print_result(error, json_output=True)
+        else:
+            print_failure(
+                RunnerFailure(str(exc), EXIT_MCP),
+                json_output=False,
+                run_dir=getattr(args, "run_dir", None),
+                verbosity=str(getattr(args, "verbosity", "normal")),
+                phase=(
+                    progress.current_phase
+                    if isinstance(progress, RunProgressReporter)
+                    else "preflight"
+                ),
+            )
         return EXIT_MCP
     result = {"ok": True, **result}
-    print_result(result, json_output=bool(getattr(args, "json_output", False)))
+    if bool(getattr(args, "json_output", False)):
+        print_result(result, json_output=True)
+    else:
+        print_compact_scenario_result(
+            result,
+            verbosity=str(getattr(args, "verbosity", "normal")),
+            dry_run=bool(getattr(args, "dry_run", False)),
+            progress=getattr(args, "progress", None),
+        )
     return 0
 
 

@@ -19,6 +19,7 @@ from local_onenote_mcp.services.convergence import DEFAULT_CONVERGENCE, converge
 from local_onenote_mcp.services.hierarchy import HierarchyService
 
 from .runtime import EXIT_MCP, RestoreFailure, RunnerFailure
+from .progress import RunProgressReporter
 from .test_utils import read_json, stable_item, utc_now, write_json
 
 
@@ -45,10 +46,12 @@ class NotebookLifecycleWrapper:
         timeout_seconds: int,
         bridge: OneNoteBridge | None = None,
         role: str = "source",
+        progress: RunProgressReporter | None = None,
     ) -> None:
         self.run_dir = run_dir.resolve()
         self.notebook_root = (self.run_dir / "notebooks").resolve()
         self.role = role
+        self.progress = progress or RunProgressReporter.disabled()
         suffix = "" if role == "source" else f"-{role}"
         self.lease_path = self.run_dir / f"lifecycle-lease{suffix}.json"
         self.materialized_evidence_path = (
@@ -61,6 +64,7 @@ class NotebookLifecycleWrapper:
         self._hierarchy = HierarchyService(self._bridge)
 
     def create_fresh_notebook(self, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        self.progress.unit_started("lifecycle", f"{self.role} create", 1, 1)
         if self.lease_path.exists():
             raise RunnerFailure("Lifecycle lease already exists; refusing to create another source Notebook.")
         exact = [
@@ -112,6 +116,13 @@ class NotebookLifecycleWrapper:
             "filesystem_deleted": False,
         }
         write_json(self.lease_path, lease)
+        self.progress.unit_completed(
+            "lifecycle",
+            f"{self.role} create",
+            1,
+            1,
+            elapsed_seconds=elapsed,
+        )
         return notebook, lease
 
     def _reported_notebook_directory(self, notebook_id: str) -> Path:
@@ -248,6 +259,9 @@ class NotebookLifecycleWrapper:
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Open one materialized working directory and prove no template was opened."""
 
+        opened_started = time.perf_counter()
+        self.progress.unit_started("lifecycle", f"{self.role} open working copy", 1, 1)
+
         if role != self.role:
             raise RunnerFailure("Lifecycle role argument differs from its frozen wrapper role.")
         working_path = working_path.resolve(strict=True)
@@ -320,6 +334,13 @@ class NotebookLifecycleWrapper:
             hierarchy_opened_at=utc_now(),
         )
         write_json(self.lease_path, lease)
+        self.progress.unit_completed(
+            "lifecycle",
+            f"{self.role} open working copy",
+            1,
+            1,
+            elapsed_seconds=time.perf_counter() - opened_started,
+        )
         return notebook, lease
 
     def _open_materialized_hierarchy(
@@ -642,6 +663,7 @@ class NotebookLifecycleWrapper:
             ) from exc
 
     def close_exact_notebook(self) -> dict[str, Any]:
+        self.progress.unit_started("lifecycle", f"{self.role} close", 1, 1)
         lease = self._read_lease()
         if lease.get("state") != "active":
             raise RestoreFailure("Lifecycle lease is not active; refusing source Notebook close.")
@@ -692,6 +714,13 @@ class NotebookLifecycleWrapper:
                 close_result=result,
             )
             write_json(self.lease_path, lease)
+            self.progress.unit_completed(
+                "lifecycle",
+                f"{self.role} close",
+                1,
+                1,
+                elapsed_seconds=elapsed,
+            )
             return result
         except Exception as exc:
             lease.update(state="close_failed", close_failed_at=utc_now(), close_error=str(exc))

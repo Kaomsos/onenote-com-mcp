@@ -75,6 +75,17 @@ def test_use_cache_is_the_single_default_off_cache_flag_for_named_and_all() -> N
         parser.parse_args(["copy-page", "--reuse-fixture-cache"])
 
 
+def test_named_verbosity_defaults_to_normal_while_all_defaults_to_quiet() -> None:
+    parser = build_parser()
+
+    assert parser.parse_args(["rename"]).verbosity == "normal"
+    assert parser.parse_args(["rename", "--verbosity", "quiet"]).verbosity == "quiet"
+    assert parser.parse_args(["rename", "--verbosity", "verbose"]).verbosity == "verbose"
+    assert parser.parse_args(["all"]).verbosity == "quiet"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["rename", "--verbosity", "trace"])
+
+
 def test_page_reorder_uses_explicit_reorder_page_entry_only() -> None:
     parser = build_parser()
 

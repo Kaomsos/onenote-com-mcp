@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from ...mcp_stdio_client import ClientFailure, MCPStdioClient, ScenarioPolicy, scenario_client
@@ -107,6 +108,8 @@ async def execute_container_reorder(
         expected_orders: dict[str, list[str]] = {}
         current = before
         for index, (target_key, after_key) in enumerate(plans, start=1):
+            case_started = time.monotonic()
+            options.progress.unit_started("case", f"reorder-{index}", index, len(plans))
             declared_target = resolve_manifest_item(manifest, target_key)
             declared_after = resolve_manifest_item(manifest, after_key)
             target = find_snapshot_item(current, str(declared_target["id"]))
@@ -146,6 +149,13 @@ async def execute_container_reorder(
             )
             current = await capture_snapshot(active_client, notebook_id)
             write_json(out / f"forward-{index}.json", current)
+            options.progress.unit_completed(
+                "case",
+                f"reorder-{index}",
+                index,
+                len(plans),
+                elapsed_seconds=time.monotonic() - case_started,
+            )
 
         after = current
         write_json(out / "after.json", after)
@@ -192,6 +202,8 @@ async def execute_container_reorder(
             return result
 
         try:
+            restore_started = time.monotonic()
+            options.progress.unit_started("restore", "container-order")
             for index, plan in enumerate(reversed(original), start=1):
                 target = find_snapshot_item(current, plan["target_id"])
                 if target is None:
@@ -217,6 +229,11 @@ async def execute_container_reorder(
             for parent_id, original_order in before_orders.items():
                 if direct_order(restored, parent_id, resource_type) != original_order:
                     raise RestoreFailure("Restored full sibling order does not match the before snapshot.")
+            options.progress.unit_completed(
+                "restore",
+                "container-order",
+                elapsed_seconds=time.monotonic() - restore_started,
+            )
         except (ClientFailure, RunnerFailure) as exc:
             if isinstance(exc, RestoreFailure):
                 raise

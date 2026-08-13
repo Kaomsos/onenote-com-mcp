@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from typing import Any
 
 from ...mcp_stdio_client import (
@@ -336,6 +337,8 @@ async def execute_typed_reparent(
         current_snapshot: dict[str, Any],
         operations: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        restore_started = time.monotonic()
+        options.progress.unit_started("restore", resource_type)
         restore_snapshot = current_snapshot
         for index, operation in enumerate(reversed(operations), start=1):
             active_target_id = operation.get("current_target_id", operation["target_id"])
@@ -397,6 +400,11 @@ async def execute_typed_reparent(
             )
         else:
             assert_restored(before, restore_snapshot)
+        options.progress.unit_completed(
+            "restore",
+            resource_type,
+            elapsed_seconds=time.monotonic() - restore_started,
+        )
         return restore_snapshot
 
     async with scenario_client(
@@ -416,6 +424,8 @@ async def execute_typed_reparent(
         for index, (case, plan_target_key, source_key, destination_key) in enumerate(
             plans, start=1
         ):
+            case_started = time.monotonic()
+            options.progress.unit_started("case", case, index, len(plans))
             declared_target = resolve_manifest_item(manifest, plan_target_key)
             source = parent(source_key)
             destination = parent(destination_key)
@@ -477,6 +487,13 @@ async def execute_typed_reparent(
                 operation["destination_position"] = position_evidence
                 write_json(out / "requests.json", {"operations": operations})
                 verified[case] = checks
+                options.progress.unit_completed(
+                    "case",
+                    case,
+                    index,
+                    len(plans),
+                    elapsed_seconds=time.monotonic() - case_started,
+                )
             except InvariantFailure as exc:
                 if resource_type == "page":
                     try:

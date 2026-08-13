@@ -519,6 +519,8 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
         )
     _assert_fresh_run_dir(options.run_dir)
     _assert_no_legacy_validation_payload(options.run_dir, options.cache_root)
+    progress = options.progress
+    progress.run_started(args.scenario, options.run_dir)
     state = _initial_state(args, options)
     state_path = options.run_dir / "run-state.json"
     write_json(state_path, state)
@@ -550,7 +552,13 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     roles = tuple(
         role.role for role in scenario.fixture_recipe.cache_identity.notebook_roles
     )
-    wrappers = _role_wrappers(options.run_dir, options.timeout, roles)
+    progress.phase_started("notebook", 1, 5)
+    wrappers = _role_wrappers(
+        options.run_dir,
+        options.timeout,
+        roles,
+        progress=options.progress,
+    )
     wrapper = wrappers["source"]
     cache_store: BundleCacheStore | None = None
     cache_hit: CacheHit | None = None
@@ -650,6 +658,10 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     metrics["phases_seconds"]["lifecycle_create"] = round(
         time.perf_counter() - phase_started, 6
     )
+    progress.phase_completed(
+        "notebook",
+        elapsed_seconds=metrics["phases_seconds"]["lifecycle_create"],
+    )
     state["completed_steps"].append(
         {
             "step": (
@@ -669,6 +681,8 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     _refresh_call_metrics(metrics, options.run_dir)
     write_json(metrics_path, metrics)
 
+    progress.phase_started("fixture", 2, 5)
+    fixture_progress_started = time.perf_counter()
     phase_started = time.perf_counter()
     metrics["mcp_process_start_attempts"] = 1
     write_json(metrics_path, metrics)
@@ -681,12 +695,19 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     if spec.search_budget:
         client_options["search_budget"] = dict(spec.search_budget)
     client_handle = MCPStdioClient(**client_options)
+    client_handle.progress = progress
     entered_client = False
     try:
         async with client_handle as client:
             entered_client = True
             metrics["observed_mcp_process_starts"] = 1
             write_json(metrics_path, metrics)
+            progress.server_ready(
+                enabled_policies=sorted(
+                    name for name, enabled in spec.policy.as_dict().items() if enabled
+                ),
+                tool_count=len(spec.tool_allowlist),
+            )
             if cache_hit is not None and materialized is not None:
                 try:
                     manifest, fixture_result = await prepare_materialized_fixture_bundle(
@@ -853,6 +874,12 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 {"step": "prepare-fixture", "result": fixture_result}
             )
             write_json(state_path, state)
+            progress.cache_decision(cache_decision, len(roles))
+            progress.phase_completed(
+                "fixture",
+                elapsed_seconds=time.perf_counter() - fixture_progress_started,
+            )
+            progress.phase_started("scenario", 3, 5)
             scenario.prepare_arguments(args, manifest)
             scenario_result = await scenario.execute(
                 args,
@@ -985,6 +1012,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     cache_decision = "bootstrap_published"
                     scenario_result["template_published"] = True
                     scenario_result["post_publish_materialization_validated"] = True
+            progress.phase_completed("scenario")
     finally:
         metrics["observed_mcp_process_starts"] = int(
             entered_client or getattr(client_handle, "process_started", False)
@@ -1005,9 +1033,14 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     state["current_step"] = "report"
     write_json(state_path, state)
 
+    progress.phase_started("report", 4, 5)
     phase_started = time.perf_counter()
     report_path = render_report(options.run_dir)
     metrics["phases_seconds"]["report"] = round(time.perf_counter() - phase_started, 6)
+    progress.phase_completed(
+        "report",
+        elapsed_seconds=metrics["phases_seconds"]["report"],
+    )
     state["completed_steps"].append({"step": "report", "path": str(report_path.resolve())})
     state["current_step"] = (
         ("preserve-notebook-bundle" if len(roles) > 1 else "preserve-source-notebook")
@@ -1016,6 +1049,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     )
     state["finalization_started"] = True
     write_json(state_path, state)
+    progress.phase_started("lifecycle", 5, 5)
     phase_started = time.perf_counter()
     lifecycle = await finalize_bundle(
         args,
@@ -1026,6 +1060,10 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     )
     metrics["phases_seconds"]["lifecycle_finalize"] = round(
         time.perf_counter() - phase_started, 6
+    )
+    progress.phase_completed(
+        "lifecycle",
+        elapsed_seconds=metrics["phases_seconds"]["lifecycle_finalize"],
     )
     metrics["phases_seconds"]["total"] = round(time.perf_counter() - total_started, 6)
     _refresh_call_metrics(metrics, options.run_dir)
@@ -1266,15 +1304,19 @@ def _role_wrappers(
     run_dir: Path,
     timeout_seconds: int,
     roles: tuple[str, ...],
+    *,
+    progress,
 ) -> dict[str, NotebookLifecycleWrapper]:
-    return {
-        role: NotebookLifecycleWrapper(
+    wrappers: dict[str, NotebookLifecycleWrapper] = {}
+    for role in roles:
+        wrapper = NotebookLifecycleWrapper(
             run_dir,
             timeout_seconds=timeout_seconds,
             **({} if role == "source" else {"role": role}),
         )
-        for role in roles
-    }
+        wrapper.progress = progress
+        wrappers[role] = wrapper
+    return wrappers
 
 
 def _create_fresh_bundle(

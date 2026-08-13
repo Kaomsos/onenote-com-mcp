@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
+
+from .progress import RunProgressReporter
 
 
 EXIT_ARGUMENT = 2
@@ -141,6 +143,12 @@ class RuntimeOptions:
     dry_run: bool
     use_cache: bool = False
     cache_root: Path | None = None
+    verbosity: str = "normal"
+    progress: RunProgressReporter = field(
+        default_factory=RunProgressReporter.disabled,
+        compare=False,
+        repr=False,
+    )
 
 
 __all__ = [

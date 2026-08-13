@@ -447,10 +447,10 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
   [--verbosity quiet|normal|verbose]
 ```
 
-- 默认 `quiet`：只输出每个场景的开始、PASS/FAIL、总进度，以及失败场景的 stdout/stderr。
-- `normal`：额外输出每个成功场景的结果；检查全部 dry-run 计划时建议使用 `all --dry-run --verbosity normal`。
-- `verbose`：在 `normal` 基础上输出每个子进程命令及成功场景的 stderr。
-- `--dry-run`、`--json` 和显式 `--timeout` 原样传给每个 scenario；`--json` 时聚合进度使用 JSON Lines。
+- 默认 `quiet`：输出每个场景的开始、PASS/FAIL、总进度；成功子场景的输出隐藏，失败诊断始终可见但受行数/字节上限约束。
+- `normal`：额外展示每个成功子场景捕获到的紧凑进度和结果；检查全部 dry-run 计划时建议使用 `all --dry-run --verbosity normal`。
+- `verbose`：在 `normal` 基础上输出子进程命令、逐次 mutation 细节、read 批汇总及有界 stderr。
+- `--dry-run`、`--json`、所选 verbosity 和显式 `--timeout` 原样传给每个 scenario；`--json` 时聚合进度使用 JSON Lines，并允许完整 JSON payload。
 - 未指定 `--timeout` 时保留各 scenario 自己的默认值（普通场景 180 秒，Copy/Move 1800 秒）。
 - `all` 没有自己的 `run-dir`，因此不支持 `--run-dir`；它也不会把多个场景放进同一目录。
 
@@ -464,8 +464,21 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
   [--keep-worksite] `
   [--timeout <seconds>] `
   [--dry-run] `
-  [--json]
+  [--json] `
+  [--verbosity quiet|normal|verbose]
 ```
+
+具名 Scenario 默认 `normal`，三级输出均为立即 flush 的普通文本行，不使用 spinner、ANSI 覆盖或动态终端控制：
+
+| 级别 | 实时进度 | 最终输出 |
+| --- | --- | --- |
+| `quiet` | run 开始，以及 Notebook、fixture、scenario、report、close/keep 等主要阶段和所有失败 | 一行 PASS/FAIL、总耗时、run/report 路径 |
+| `normal`（默认） | `quiet`，加 cache 决策、fixture role、case/hop、mutation、restore/cleanup 的开始/完成与阶段耗时 | 紧凑状态、case 数、restored/worksite、lifecycle、MCP 进程和调用计数 |
+| `verbose` | `normal`，加每次 mutation tool 名、attempt、耗时、convergence/reconciliation 标量；read 每 25 次汇总 | 加各阶段耗时、policy/allowlist 摘要和 content-free 调用统计 |
+
+所有非 JSON 模式都只显示紧凑投影，完整事实以 `run-result.json`、`report.md` 和场景 artifact 为准。未知或复杂字段不会自动展开。任何 verbosity 都不得输出 tool arguments、OneNote ID、正文、XML、binary、query、完整响应或嵌套 JSON；失败会显示 failed phase、错误、artifact/evidence 路径，有界诊断之外的完整内容留在 artifact。
+
+`--json` 优先于 verbosity：具名 Scenario 的 stdout 恰好是一个完整 JSON document，不混入进度文本；`all --json` 保持 JSON Lines。Dry-run 非 JSON 只显示步骤数量、cache/lifecycle、启用权限和 allowlist 数量；需要完整计划时显式使用 `--dry-run --json`。
 
 - Fresh Notebook：`__<scenario>-<YYYY-MM-DD-HH-MM-SS>__`。
 - Cache working Notebook：`__<scenario>-CACHED-<同一时间戳>__`；多 role bundle 在 `CACHED` 前增加 role。

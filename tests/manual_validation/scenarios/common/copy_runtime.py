@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import time
 from typing import Any
 
 from ...mcp_stdio_client import (
@@ -647,8 +648,10 @@ async def execute_copy_page(
         case_results: list[dict[str, Any]] = []
         plan_index: list[dict[str, Any]] = []
 
-        for case in cases:
+        for case_index, case in enumerate(cases, start=1):
             case_name = str(case["name"])
+            case_started = time.perf_counter()
+            options.progress.unit_started("case", case_name, case_index, len(cases))
             include_descendants = case.get("include_descendants")
             effective_scope = include_descendants is True
             pre_plan_source = find_snapshot_item(current_snapshot, spec["source"]["id"])
@@ -817,6 +820,13 @@ async def execute_copy_page(
                 }
             )
             current_snapshot = case_after
+            options.progress.unit_completed(
+                "case",
+                case_name,
+                case_index,
+                len(cases),
+                elapsed_seconds=time.perf_counter() - case_started,
+            )
 
         write_json(out / "plans.json", {"cases": plan_index})
         write_json(out / "after.json", current_snapshot)
@@ -911,6 +921,8 @@ async def execute_copy_display_equation(
         hops: list[dict[str, Any]] = []
 
         for hop in range(1, 4):
+            hop_started = time.perf_counter()
+            options.progress.unit_started("hop", f"display-equation-{hop}", hop, 3)
             current_source = find_snapshot_item(current_snapshot, current_source_id)
             if current_source is None or current_source.get("resource_type") != "page":
                 raise InvariantFailure(
@@ -1073,6 +1085,13 @@ async def execute_copy_display_equation(
             copied_results.append(copied)
             current_source_id = target_id
             current_snapshot = after
+            options.progress.unit_completed(
+                "hop",
+                f"display-equation-{hop}",
+                hop,
+                3,
+                elapsed_seconds=time.perf_counter() - hop_started,
+            )
 
         write_json(out / "copy-chain.json", {"schema_version": 2, "hops": hops})
         target_ids = [str(value["target_id"]) for value in hops]
@@ -1160,8 +1179,10 @@ async def execute_copy_container(
         case_results: list[dict[str, Any]] = []
         plan_index: list[dict[str, Any]] = []
 
-        for case in cases:
+        for case_index, case in enumerate(cases, start=1):
             case_name = str(case["name"])
+            case_started = time.perf_counter()
+            options.progress.unit_started("case", case_name, case_index, len(cases))
             pre_plan_source = find_snapshot_item(current_snapshot, spec["source"]["id"])
             if pre_plan_source is None:
                 raise RunnerFailure(
@@ -1258,6 +1279,13 @@ async def execute_copy_container(
                 }
             )
             current_snapshot = case_after
+            options.progress.unit_completed(
+                "case",
+                case_name,
+                case_index,
+                len(cases),
+                elapsed_seconds=time.perf_counter() - case_started,
+            )
 
         write_json(out / "plans.json", {"cases": plan_index})
         write_json(out / "after.json", current_snapshot)
