@@ -27,7 +27,7 @@
 | 019 | [Manual Validation 受控 Clear Actions](019_manual_validation_clear_actions.md) | 已完成 | P2 | `clear runs/cache/all`、交互确认、实际路径快照、逐目标 receipt/summary、成功审计收敛和空 cache scaffold 清理已交付；用户真实 clear 共删除 112 个目标且无拒绝/失败。 |
 | 020 | [UserAuthored Fixture 开发脚手架完整化](020_user_authored_fixture_development_scaffold.md) | 待办 | P3 | 当前骨架已够开发取证使用；完整 authoring-zone、多实例、ready/evidence-only 和失效真实矩阵延期，且不阻塞 TODO 014 或生产 Copy/Move。 |
 | 021 | [Windows Fixture Cache 路径长度预算](021_windows_fixture_cache_path_budget.md) | 已完成 | P3 | 240 UTF-16 units、短 typed schema、结构化错误与一次性空壳切换已交付；用户完成升级前真实 `clear all`，v2 激活后默认全量 `890 passed`。 |
-| 022 | [四层 Typed Metadata Query、原生 Scope 与 List 工具退役](022_typed_metadata_query_tools_and_native_scopes.md) | 阻塞 | P1 | 阶段 A 与真实 cache cold-build Query 已通过，场景纳入 `all`；阶段 B 仅阻塞于用户对五个 List 工具退役的独立批准。 |
+| 022 | [四层 Typed Metadata Query 与原生 Scope](022_typed_metadata_query_tools_and_native_scopes.md) | 已完成 | P1 | 四个 fixed-type Query、严格 root/start-node scope、live pagination、关系过滤和 fresh/cache 真实场景均已交付；层级浏览工具重组转由 TODO 033。 |
 | 023 | [公开仓库发布准备与来源合规](023_public_repository_release_readiness.md) | 待办 | P0 | 公开前完成品牌与 Demo、双语文档和社区规范、Credit/relicense、线性历史、原作者通知及隐私/供应链/发布验证。 |
 | 024 | [Search 与 Typed Query 短时只读快照缓存](024_search_and_query_read_snapshot_cache.md) | 待办 | P2 | 规划进程内可配置 TTL（默认 15 秒）的 `GetHierarchy`/`FindPages` 缓存、mutation 前失效与 Agent 可见一致性合同；完成状态要求用户确认 `read-cache-coherence` 真实场景证据。 |
 | 025 | [OneNote COM 收敛、Mutation 对账与调用协调](025_onenote_com_convergence_and_mutation_coordination.md) | 已完成 | P1 | typed HRESULT、公共收敛/对账、进程内协调与关键路径迁移已落地；918 个纯测试、dry-run 及用户前台 convergence/create/reorder/delete/copy/move 回归均通过。 |
@@ -37,6 +37,8 @@
 | 029 | [MCP Tool Mutation Readiness 状态建模与 Page Reparent 加固](029_mcp_mutation_readiness_and_reconciliation_hardening.md) | 待办 | P1 | 以 Page Reparent 为纵向切片落实 execute-once 四态对账、reconciled success、恢复建议与生命周期负合同，并审计 MCP mutation tool 生态的 readiness/replay policy。 |
 | 030 | [Manual Validation Cache 层级激活批处理与证据复用](030_manual_validation_cache_hierarchy_activation_batching.md) | 已完成 | P2 | 单 COM parent-first batch、Notebook 双稳定、每 Page 单次读取与 scenario-before snapshot handoff 已交付；用户真实单/多 role 及 `all --use-cache` 15/15 通过。 |
 | 031 | [启动 OneNote Desktop GUI 的显式工具](031_start_onenote_desktop_tool.md) | 待办 | P1 | 规划 check-only `health_check` 之外的显式 `start_onenote_app`：可信本机 executable、single launch、可见 GUI 收敛和幂等返回；不包含长期 COM owner。 |
+| 032 | [Hierarchy Navigation 人工验证](032_hierarchy_navigation_manual_validation.md) | 已完成 | P2 | `get_parent/get_path/get_tree` 对照场景已交付；用户确认 fresh 与 cache cold-build working copy 的容器路径、缩进树和 depth boundary 真实验收全部通过。 |
+| 033 | [Notebook 结构浏览的 List 与 Expand 工具重组](033_notebook_structure_list_and_expand_tools.md) | 待办 | P1 | 保留无参数 `list_notebooks`，新增四个 typed Expand，将 `get_tree` 更名为 `expand_hierarchy`，直接移除旧 List，并以单一场景覆盖完整浏览契约。 |
 
 ## 文件命名
 
