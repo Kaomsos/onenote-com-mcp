@@ -9,6 +9,8 @@
 
 反复调试复杂 fixture 时可显式加 `--use-cache`。它不会放宽 policy/tool allowlist，也不会打开 cache template；validated hit 始终 materialize 新的 run-scoped working copy。Cache 与 run 不维持 working lease、所有权或生命周期关系。相同 fingerprint/instance 可以同时服务多个 consumer：每个 run 必须使用唯一 working paths，打开过程由短时全局锁串行化，并把实际 live Notebook ID 写入本 run 的 `lifecycle-lease*.json`；实际 ID/path 相交、role 内重复或身份尚未可靠重绑定时才拒绝。`--keep-worksite` 只保留一组独立 working bundle，不会阻止下一次 validated hit，也不会阻止物理独立 cache entry 的 invalidation/cleanup；cache cleanup 仅在 template 自身的实际路径仍被 OneNote 打开时拒绝。Materialized hierarchy 只使用下文定义的 parent-aware batch：所有物理 child 请求先冻结，再在同一个短命 COM session 中按 parent-before-child 激活；不存在逐对象 global/exact-self fallback。随后以 Notebook-relative typed address 重绑完整 live hierarchy、连续确认两次结构稳定，并对每个 Page 只做一次完整内容读取。Working-copy activation、重绑或内容验证失败保留本次 working Notebook、实际 live ID lease 和诊断，但不污染已验证的 immutable template。省略 `--use-cache` 仍是默认、最保守的 fresh 路径，并保证零 cache lookup/read/write/invalidation/cleanup。
 
+Programmatic cold build 发布前会在 lifecycle 边界内对每个 exact Notebook 调用一次 `SyncHierarchy`，随后执行 `CloseNotebook(force=false)` 并确认精确关闭，再复制已关闭的 bytes。Sync 调用失败时不发布 cache，并保留 active lease 交给默认失败收尾；成功证据记录在 lifecycle close result。该持久化 checkpoint 不会 reopen Notebook，也不会改变只有 Search 可以 close/reopen 激活 index 的限制。
+
 Cache 只在 `.local-validation/fixture-cache/` managed root 内保存关闭的 disposable Notebook opaque bytes。失效清理不是通用 Notebook 删除：只能命中由 fingerprint/instance 精确定位、ownership/containment/reparse/open-state/lease 全部通过的单一 template/staging entry，并留下 root-level tombstone。工作副本、失败现场、普通 artifact 和用户 Notebook 永远不属于该清理能力。
 
 Lookup 不会把目录仍存在的 `invalid` entry 当成普通 miss。历史上仅因 working-copy materialized-open failure 被误隔离的 entry，可在原 validation 与 byte inventory 重新通过时恢复；其他 `invalid` entry 会在首次 lookup 和 programmatic publish 前的 fingerprint lock 内精确清理，再以 `invalidated_rebuild` 重建。`cleanup_failed`、缺失 ownership metadata、未知状态或 template 实际路径仍打开都会 fail closed；run-local active lifecycle lease 不参与 cache cleanup，原子 publish 继续拒绝覆盖现有实例。
@@ -23,7 +25,7 @@ Working identity 冲突扫描在短时 open lock 内于打开前后各捕获一�
 
 以下 parent-aware 规则细化并取代上文对所有节点统一“absolute 优先”的概括。
 
-Lifecycle 在第一次 child COM 调用前预收集并校验 exact working tree 内全部 SectionGroup/`.one` 请求，然后在一个内部 PowerShell/COM session 中按 parent-before-child 批量激活并尝试读取一次 pages hierarchy。Notebook 直属 child 使用 absolute working path/空 relative ID；SectionGroup 下的嵌套 child 只使用文件名和同批精确 parent ID。只有逐项 `OpenHierarchy` 错误才最多重试该失败项一次，确定性冲突立即失败。请求成功后不再 close/reopen；完整 manifest 层级必须在同一 live identity 上从新的完整枚举中按 typed relative address 重绑并连续稳定两次，每个 Page 随后只完整读取一次。只有这套稳定结构与内容证据可以进入 mutation。
+Lifecycle 在第一次 child COM 调用前预收集并校验 exact working tree 内全部用户 SectionGroup/`.one` 请求，然后在一个内部 PowerShell/COM session 中按 parent-before-child 批量激活并尝试读取一次 pages hierarchy。精确的顶层 `OneNote_RecycleBin` 及其子树属于 OneNote 系统状态，不发送 `OpenHierarchy`；它仍参与 cache byte inventory，且在忽略前仍执行 containment/reparse 检查并写入 content-free evidence。Notebook 直属 child 使用 absolute working path/空 relative ID；SectionGroup 下的嵌套 child 只使用文件名和同批精确 parent ID。只有逐项 `OpenHierarchy` 错误才最多重试该失败项一次，确定性冲突立即失败。请求成功后不再 close/reopen；完整 manifest 层级必须在同一 live identity 上从新的完整枚举中按 typed relative address 重绑并连续稳定两次，每个 Page 随后只完整读取一次。只有这套稳定结构与内容证据可以进入 mutation。
 
 单次打开流程不复制第二份 working bundle，不修改、重建或打开模板，也不重放 mutation。首次打开、ID 重绑、双稳定或内容验证任一步失败都会保留 working files、lease 和诊断并在 mutation 前 fail closed；通用 failure finalizer 默认精确关闭当前 Notebook，显式 keep 模式才保持打开。
 

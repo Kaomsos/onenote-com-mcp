@@ -24,6 +24,7 @@ from .test_utils import read_json, stable_item, utc_now, write_json
 
 
 MAX_MATERIALIZED_HIERARCHY_ENTRIES = 256
+ONENOTE_RECYCLE_BIN_DIRECTORY = "OneNote_RecycleBin"
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -356,6 +357,7 @@ class NotebookLifecycleWrapper:
         attempts: list[dict[str, Any]] = []
         opened: list[dict[str, Any]] = []
         batch_observations: list[dict[str, Any]] = []
+        ignored_system_paths: list[dict[str, str]] = []
 
         def save(status: str, error: str | None = None) -> None:
             evidence: dict[str, Any] = {
@@ -368,6 +370,7 @@ class NotebookLifecycleWrapper:
                 "attempts": attempts,
                 "opened": opened,
                 "batch_observations": batch_observations,
+                "ignored_system_paths": ignored_system_paths,
                 "content_saved": False,
                 "recorded_at": utc_now(),
             }
@@ -380,16 +383,29 @@ class NotebookLifecycleWrapper:
             for child in children:
                 if not (child.is_dir() or child.suffix.casefold() == ".one"):
                     continue
-                if len(requests) >= MAX_MATERIALIZED_HIERARCHY_ENTRIES:
-                    raise RunnerFailure(
-                        "Materialized Notebook hierarchy exceeds its bounded budget."
-                    )
                 resolved = child.resolve(strict=True)
                 if working_path not in resolved.parents or _is_reparse_point(child):
                     raise RunnerFailure(
                         "Materialized Notebook hierarchy escaped its exact plain working tree."
                     )
                 key = child.relative_to(working_path).as_posix()
+                if (
+                    not parent_key
+                    and child.is_dir()
+                    and child.name.casefold()
+                    == ONENOTE_RECYCLE_BIN_DIRECTORY.casefold()
+                ):
+                    ignored_system_paths.append(
+                        {
+                            "relative_path": key,
+                            "reason": "onenote_recycle_bin_not_activation_target",
+                        }
+                    )
+                    continue
+                if len(requests) >= MAX_MATERIALIZED_HIERARCHY_ENTRIES:
+                    raise RunnerFailure(
+                        "Materialized Notebook hierarchy exceeds its bounded budget."
+                    )
                 resource_type = "section_group" if child.is_dir() else "section"
                 expected_path = HierarchyService.friendly_child_path(parent_path, child.name)
                 requests.append(
@@ -708,12 +724,38 @@ class NotebookLifecycleWrapper:
                 EXIT_MCP,
             ) from exc
 
-    def close_exact_notebook(self) -> dict[str, Any]:
+    def close_exact_notebook(
+        self,
+        *,
+        sync_to_disk: bool = False,
+    ) -> dict[str, Any]:
         self.progress.unit_started("lifecycle", f"{self.role} close", 1, 1)
         lease = self._read_lease()
         if lease.get("state") != "active":
             raise RestoreFailure("Lifecycle lease is not active; refusing source Notebook close.")
         current = self.get_exact_notebook(lease)
+        persistence_sync = {
+            "requested": sync_to_disk,
+            "accepted": False,
+            "completion_proof": "CloseNotebook(force=false)" if sync_to_disk else None,
+        }
+        if sync_to_disk:
+            try:
+                self._bridge.call(
+                    "sync_hierarchy",
+                    object_id=str(current["id"]),
+                )
+                persistence_sync["accepted"] = True
+            except Exception as exc:
+                lease.update(
+                    persistence_sync_failed_at=utc_now(),
+                    persistence_sync_error=f"{type(exc).__name__}: {exc}",
+                )
+                write_json(self.lease_path, lease)
+                raise RestoreFailure(
+                    "Exact Notebook cache-publish persistence sync failed before close; "
+                    "the active lease was preserved for normal failure finalization."
+                ) from exc
         started = time.perf_counter()
         try:
             self._bridge.call("close_notebook", notebook_id=str(current["id"]), force=False)
@@ -752,6 +794,7 @@ class NotebookLifecycleWrapper:
                 "final_state": stable_item(final_state) if final_state else None,
                 "elapsed_seconds": elapsed,
                 "convergence": convergence.summary(),
+                "persistence_sync": persistence_sync,
                 "filesystem_deleted": False,
             }
             lease.update(

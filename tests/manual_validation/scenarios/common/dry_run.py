@@ -197,7 +197,10 @@ def build_isolated_dry_run_plan(
             if recipe.consumer_scenario
             else [
                 "validated-hit materialization",
-                "programmatic cold build, close, publish, then materialize",
+                (
+                    "programmatic cold build, SyncHierarchy, CloseNotebook(false), "
+                    "publish, then materialize"
+                ),
                 "exact invalid-entry cleanup before rebuild",
             ]
         )
@@ -434,7 +437,11 @@ def build_isolated_dry_run_plan(
             else
             [
                 "validated-hit: lock, inventory, materialize, batch open hierarchy, live validate",
-                "cold-miss: build fresh, live validate, close all, stage, inventory, publish, materialize, batch open hierarchy, live validate",
+                (
+                    "cold-miss: build fresh, live validate, SyncHierarchy, close all, "
+                    "stage, inventory, publish, materialize, batch open hierarchy, "
+                    "live validate"
+                ),
                 (
                     "invalid: exact safe cleanup then interactive bootstrap"
                     if interactive_bootstrap

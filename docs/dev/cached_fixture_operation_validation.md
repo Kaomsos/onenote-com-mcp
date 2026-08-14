@@ -4,6 +4,8 @@
 > 适用范围：需要在真实 OneNote COM 后端上反复验证、且 fixture 构建成本较高或只能由用户在 UI 中创建的操作
 > 当前强制安全契约以 [`tests/manual_validation/AGENTS.md`](../../tests/manual_validation/AGENTS.md) 和 [Human-gated Manual Validation Runner](../../tests/manual_validation/README.md) 为准。
 
+Scenario/Recipe/cache/lifecycle 的设计原理与架构不变量以[Manual Validation Scenario 与 Fixture 架构](../design/manual_validation_scenario_fixture_architecture.md)为准。本文只说明开发者何时采用该架构、如何接入一个操作、应生成什么证据以及怎样完成验证，不重复定义测试系统架构。
+
 本文推荐把一项真实后端验证拆成以下证据链，而不是把 fixture 创建、业务操作和人工观察揉成一次不可复现的手工试验：
 
 ```text
@@ -18,7 +20,7 @@
 
 面向实际操作者的步骤见[缓存 Fixture 驱动的操作验收指南](../../tests/manual_validation/cached_fixture_operation_validation.md)。
 
-## 为什么推荐这条链路
+## 何时采用这条链路
 
 它主要解决开发阶段的四类问题：
 
@@ -27,7 +29,7 @@
 3. **保留自动化门限**：人工 `ACCEPT` 只能补充 UI/播放/视觉证据，不能覆盖 ID、拓扑、内容投影、binary hash 或 source-deletion gate 的机器失败。
 4. **支持多种操作**：同一个稳定 fixture 可以服务不同的固定 consumer Scenario，但每个 consumer 仍拥有独立的操作合同和最小权限，不把 Copy 的结论外推到 Move、Delete 或其他 mutation。
 
-## 四个阶段的开发合同
+## 四个实施阶段
 
 ### 1. 缓存 Fixture：只复用输入状态
 
@@ -130,15 +132,7 @@ AND human verdict accepted（当该场景要求人工判断时）
 
 这里的 `operation-result` 是职责名称，不要求已有场景立即重命名其 `copy-result`、`move-result` 等稳定 artifact。新场景应优先保持“输入、执行、机器比较、人工结论”可单独审计。
 
-`cache-structure-remap.json` 同时保存 typed structure 的 source→working ID 映射，以及已声明 evidence 字段的 `evidence_rebinding`。例如 Reparent Page 只允许把 `reparent_page_fixture.page_id` 和 `reparent_page_fixture.list_tag.page_id` 从 manifest 绑定的 source Page 改写为同一结构键对应的 working Page；任一原值不等于 source ID、字段形状异常或 working 结构缺失都会在 mutation 前 fail closed，并使 exact cache entry 进入既有 quarantine 流程。正文、人工说明和其他任意字符串不会参与递归替换，immutable template 也不会被回写。
-
-`SyncHierarchy` 返回只能证明请求被 COM 接受，不能证明下一次 mutation 必然成功，但 manual runner 不再据此推导必须 close/reopen。Fresh fixture 在创建后的同一 live identity 上完成完整 Recipe validation；programmatic cold build 只在发布 immutable template 时执行必要的精确关闭。Create v5 只构建业务实际需要的 `Duplicate-Title-Target` Section并移除了 persistence sentinel Page；Copy SectionGroup v5 与 Delete v2 的 typed sentinel Section 继续防止空 Group 缺少物理子树，这一 shape 约束独立于已删除的 persistence checkpoint。
-
-默认 evidence 应 content-free：保存 typed IDs、计数、hash、投影和布尔检查，不保存正文或二进制。只有具名场景通过显式参数授权敏感证据时，才可在本次本地 run 目录保存经过约定 redaction 的内容；不得进入 cache template 或版本库。
-
-`cache-hierarchy-convergence.json` 记录 materialized working bundle 的轻量就绪门：每个 role 的全部 manifest-bound SectionGroup、Section 和 Page 必须先按 Notebook-relative typed address 唯一出现，并以相同 ID、parent、section、page level、parent Page 和 sibling order 连续稳定两次，runner 才开始 Page 内容读取。完整 snapshot 仍用读取前后的 hierarchy 证明取证窗口内 ID 集不变；每个 Page 的 hash、能力与 normalized object evidence 则从一次 `get_page_xml(page_info=all)` 通过生产 parser 派生，不再重复读取 `get_page_objects`。
-
-所有 materialized working role 只打开一次 exact working path。Lifecycle 先冻结 exact working tree 内全部容器请求，并通过非公开 batch 在单个 PowerShell/COM session 中按 parent-before-child 激活 SectionGroup/Section、随后尝试读取一次 Notebook pages hierarchy；逐项 `OpenHierarchy` 错误最多只重试该失败项一次，确定性冲突立即失败。随后由 manifest 双稳定门重新枚举完整 hierarchy、按 typed relative address 重绑全部 live ID，再对每个 Page读取一次完整 XML 完成内容验证。`materialized-hierarchy-open[-<role>].json` 记录 batch 结果，`cache-hierarchy-convergence.json` 记录逐 role hierarchy/content 耗时，`cache-materialization.json` 记录真正 cache origin 和 preflight/copy/publish 耗时；template 始终关闭且不修改。该流程不改变生产 MCP 公开 tool 契约。
+实现这些 artifact 时直接复用[架构文档定义的 identity、层级收敛、单次内容取证和 template immutability 不变量](../design/manual_validation_scenario_fixture_architecture.md)，不要在具体 Scenario 中另建第二套 remap、readiness 或 cache 状态机。开发检查重点是：字段能否追溯到 manifest key、失败阶段是否明确、证据是否默认 content-free，以及 mutation 前是否已经由公共 runtime 完成 live-validation handoff。
 
 ## 失败归因与处置
 
@@ -188,6 +182,7 @@ Fixture cache、publish/materialize staging、working copy、inventory/artifact�
 
 ## 与当前文档的关系
 
+- 设计原理与权威架构：[`../design/manual_validation_scenario_fixture_architecture.md`](../design/manual_validation_scenario_fixture_architecture.md)
 - 隔离 lifecycle、权限和具名 Scenario 总流程：[`isolated_mutation_validation.md`](isolated_mutation_validation.md)
 - 当前公开 tool 与安全合同：[`../design/tool_contracts.md`](../design/tool_contracts.md)
 - Fixture cache 和 Interactive/UserAuthored 当前操作入口：[`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md)

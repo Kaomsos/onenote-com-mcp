@@ -29,6 +29,8 @@ class FakeBridge:
         if name == "close_notebook":
             self.hierarchy.closed = True
             return {"ok": True}
+        if name == "sync_hierarchy":
+            return {"ok": True}
         if name == "get_hierarchy":
             return {
                 "xml": (
@@ -251,9 +253,13 @@ def test_materialized_batch_freezes_paths_before_one_parent_first_com_session(
     working = wrapper.notebook_root / "source-working-copy"
     template = tmp_path / "cache" / "template-notebook"
     (working / "Group").mkdir(parents=True)
+    (working / "OneNote_RecycleBin").mkdir(parents=True)
     template.mkdir(parents=True)
     (working / "Group" / "A.one").write_bytes(b"a")
     (working / "Group" / "B.one").write_bytes(b"b")
+    (working / "OneNote_RecycleBin" / "OneNote_DeletedPages.one").write_bytes(
+        b"deleted"
+    )
     (working / "Root.one").write_bytes(b"root")
     bridge.reported_path = str(working.resolve())
 
@@ -286,6 +292,12 @@ def test_materialized_batch_freezes_paths_before_one_parent_first_com_session(
     evidence = read_json(wrapper.materialized_evidence_path)
     assert evidence["schema_version"] == 2
     assert evidence["batch_session_count"] == 1
+    assert evidence["ignored_system_paths"] == [
+        {
+            "relative_path": "OneNote_RecycleBin",
+            "reason": "onenote_recycle_bin_not_activation_target",
+        }
+    ]
     assert all(attempt["activated"] is True for attempt in evidence["attempts"])
 
 
@@ -628,6 +640,11 @@ def test_close_is_bound_to_exact_lease_and_preserves_files(tmp_path) -> None:
     assert result["closed"] is True
     assert result["convergence"]["stable_observations"] == 2
     assert result["source_notebook_id"] == "notebook-id"
+    assert result["persistence_sync"] == {
+        "requested": False,
+        "accepted": False,
+        "completion_proof": None,
+    }
     assert bridge.calls[-1] == (
         "close_notebook",
         {"notebook_id": "notebook-id", "force": False},
@@ -635,6 +652,50 @@ def test_close_is_bound_to_exact_lease_and_preserves_files(tmp_path) -> None:
     assert source.exists()
     assert (source / "Source.one").exists()
     assert read_json(wrapper.lease_path)["state"] == "closed"
+
+
+def test_cache_publish_close_syncs_exact_notebook_to_disk_first(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+
+    result = wrapper.close_exact_notebook(sync_to_disk=True)
+
+    assert result["closed"] is True
+    assert result["persistence_sync"] == {
+        "requested": True,
+        "accepted": True,
+        "completion_proof": "CloseNotebook(force=false)",
+    }
+    assert bridge.calls[-2:] == [
+        ("sync_hierarchy", {"object_id": "notebook-id"}),
+        (
+            "close_notebook",
+            {"notebook_id": "notebook-id", "force": False},
+        ),
+    ]
+
+
+def test_cache_publish_sync_failure_preserves_active_lease_for_finalization(
+    tmp_path,
+) -> None:
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+    original_call = bridge.call
+
+    def fail_sync(name: str, **kwargs):
+        if name == "sync_hierarchy":
+            raise RuntimeError("injected sync failure")
+        return original_call(name, **kwargs)
+
+    bridge.call = fail_sync
+
+    with pytest.raises(RestoreFailure, match="persistence sync failed"):
+        wrapper.close_exact_notebook(sync_to_disk=True)
+
+    lease = read_json(wrapper.lease_path)
+    assert lease["state"] == "active"
+    assert "injected sync failure" in lease["persistence_sync_error"]
+    assert hierarchy.closed is False
 
 
 def test_binding_mismatch_refuses_close_and_keeps_notebook_open(tmp_path) -> None:

@@ -3,7 +3,8 @@
 > 状态：当前有效的工程经验
 > 观察日期：2026-08-14
 > 观察环境：Windows `10.0.26200.0` x64、OneNote Desktop `16.0.20228.20158`、本地进程外 COM
-> 当前架构：[`../design/architecture.md`](../design/architecture.md#6-运行时生命周期与并发)
+> 生产 COM 生命周期：[`../design/architecture.md`](../design/architecture.md#6-运行时生命周期与并发)<br>
+> Manual Validation 架构：[`../design/manual_validation_scenario_fixture_architecture.md`](../design/manual_validation_scenario_fixture_architecture.md)
 > 相关 cache 经验：[`fixture_cache_consumer_materialization_and_live_validation.md`](fixture_cache_consumer_materialization_and_live_validation.md)
 > 验证流程：[`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md)、[`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md)
 
@@ -63,4 +64,4 @@ GUI 已预启动的通过运行与未启动的失败运行执行过相同 checkp
 
 这组结论只覆盖上述 Windows/OneNote 版本和本地 manual-validation 工作流。它不证明所有 OneNote 版本在没有 GUI 时都会退出，也不证明 GUI 窗口的可见性本身是必要条件；目前能够从证据支持的是“scenario 开始前已有 OneNote Desktop 进程/会话”与成功强相关。未来若通过受控进程取证区分“进程存在”“可见窗口存在”和“持有长期 COM reference”，应更新本文而不是保留模糊的 GUI 前置条件。
 
-当前行为和已知架构缺口以 [`architecture.md`](../design/architecture.md#6-运行时生命周期与并发) 为准。人工运行命令与授权边界仍以 [`isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md) 和 [`manual_validation/README.md`](../../tests/manual_validation/README.md) 为准；本文不定义新的 CLI、自动启动行为或公开 MCP 契约。
+生产 COM 生命周期以 [`architecture.md`](../design/architecture.md#6-运行时生命周期与并发) 为准，Scenario/Fixture 的当前处理边界以 [`manual_validation_scenario_fixture_architecture.md`](../design/manual_validation_scenario_fixture_architecture.md) 为准。人工运行命令与授权边界仍以 [`isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md) 和 [`manual_validation/README.md`](../../tests/manual_validation/README.md) 为准；本文不定义新的 CLI、自动启动行为或公开 MCP 契约。

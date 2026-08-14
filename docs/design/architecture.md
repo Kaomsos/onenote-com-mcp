@@ -392,9 +392,7 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 
 `OneNote.Application` 在当前 Windows 安装中由 `ONENOTE.EXE` 进程外 COM server 承载。`OneNoteBridge` 只复用 Python 配置对象，不复用 PowerShell 进程或 COM reference；因此长驻 MCP server 也不构成跨 bridge 调用的 COM lifecycle owner。生产 MCP 当前不承诺自动启动的 OneNote 实例会在两个独立 bridge 调用之间保持运行，也不承诺前一 client 激活的临时 live hierarchy 会被下一 client 继承。
 
-Manual validation 已有一项当前环境限制：如果 scenario 启动前 OneNote Desktop 尚未运行，由首个短命 PowerShell/COM client 冷启动 OneNote 后，fixture working Notebook 可能只保留可读的空 shell，而 SectionGroup/Section/Page hierarchy 在后续独立调用中持续缺失；少数情况下整个刚打开的 Notebook ID 会消失。相同流程在 OneNote 已预启动时可以完成 hierarchy 双稳定。该对照把初始 OneNote 进程状态识别为主变量；`CloseNotebook(force=false)` 是 checkpoint/identity 交接步骤，但不是已证明的根因。完整观察、推断边界和错误归因见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)。
-
-当前代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在；manual-validation 单项在创建/打开 working Notebook 前复用同一门限，真实 `all` 在启动首个 child 前只检查一次。缺失或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote；dry-run 不读取 GUI 状态。Manual validation 后续仍以 typed hierarchy 双稳定 fail closed，不得因为 Notebook shell 可读、`OpenHierarchy` 返回 ID 或观察超时而放行 mutation。
+当前生产代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在。缺失或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote。短命 COM client 冷启动 OneNote 时的已观察平台限制见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)；测试 runner 如何复用该门限由独立的 [Manual Validation 架构](manual_validation_scenario_fixture_architecture.md)定义。
 
 当前尚未实现自动 GUI 启动或 scenario-scoped COM keeper。显式 `start_onenote_app` 由 [TODO 031](../todo/031_start_onenote_desktop_tool.md) 跟踪；长期 COM owner 暂不采用。运行前由用户启动 OneNote 仍是当前可执行前置条件，生产 MCP 与 runner 不承诺可靠冷启动自举。
 
@@ -410,25 +408,13 @@ Manual validation 已有一项当前环境限制：如果 scenario 启动前 One
 
 本会话与默认自动验证仅运行 `pytest -m "not write_contract"`。真实 COM mutation 以及 `write_contract` 流程只能按 [隔离 mutation 验证](../dev/isolated_mutation_validation.md) 人工触发。
 
-Manual-validation fixture 架构位于生产 MCP 之外，但同样遵守 local-only 与 fail-closed 边界。每个公开 Scenario 唯一拥有一个 `RecipeBase`；Recipe 用有序 Notebook role 集合、完整 profile/manifest/validator 声明构建稳定 cache identity。公共 cache runtime 独占 index、锁、opaque copy、byte inventory、publish、materialize 和精确失效清理；working identity 只由各 run 的 lifecycle lease 管理，Recipe 本身不得执行文件系统或 lifecycle 操作。
+Manual validation 是生产 MCP 之外的 human-gated 测试系统，不属于本生产架构。其 Scenario、Fixture Recipe、cache、working-copy lifecycle 和证据流以独立的[Manual Validation Scenario 与 Fixture 架构](manual_validation_scenario_fixture_architecture.md)为准；实施步骤见[缓存 Fixture 驱动的真实操作验证推荐实践](../dev/cached_fixture_operation_validation.md)。
 
-Windows 普通路径现统一执行 240 UTF-16 code units 的确定性 preflight；component、opaque relative path、role、working name 和 64-unit run evidence leaf 另有更窄上限。完整 64-hex fingerprint 与 logical instance identity 保留在 entry/index/lock/evidence，磁盘定位使用 32-hex fingerprint key，以及 `instances/p` 或 `instances/a/<1..24 hex>`。Publish/materialize staging 分别使用 `.s-<16 hex>` 与 `.m-<16 hex>`，JSON/XML 原子临时文件同样使用 16-hex nonce。Runtime 不使用 `\\?\` extended-length path，不依赖 `LongPathsEnabled`；所有源 inventory、最终 cache、staging、working、artifact 与原子临时路径都在 copy、publish 或 COM open 前枚举验证。Opaque tree 逐层先预算再进入；authored live revalidation 核对完整 projection digest；maintenance 在 lock/只读 COM snapshot 前预算现有树与将生成的 metadata。稳定合同与预算公式见 [Windows Fixture Cache 路径配额](windows_fixture_cache_path_budget.md)，实施证据由 [TODO 021](../todo/021_windows_fixture_cache_path_budget.md) 跟踪。
-
-旧 payload 没有 lookup、迁移或删除兼容。升级前 human-gated `clear all` 成功后，首次新 cache 初始化只可在 durable summary、空 v1 index、精确 managed roots、完整只读 open snapshot 和零旧 payload/run 全部成立时，将遗留的空 ownership marker/index 原子 stamp 为 v2；summary 后以 schema、ownership flags、`started_at` 和 mtime 证明的新 v2 run 可共存，任何旧、非空或不确定状态继续 fail closed。
-
-该基础设施的本地文件/目录原子发布共享一个仅限 Windows `WinError 5/32` 的状态守卫重试：首次失败后按 `50/100/200/400/800ms` 有界退避，总预算约 1.55 秒；每次重试前 source 与 destination 的 `lstat` 身份必须保持不变。Cache entry 和 working directory 额外要求 destination 首次及重试期间始终不存在；多 role materialization 失败时只回收本次已成功发布的 owned paths。该重试不适用于 `copytree`、删除、COM、MCP 调用或任何 mutation，因此不构成 mutation 重试或权限放宽。
-
-普通运行默认 fresh 且零 cache access。显式 `--use-cache` 的数据流固定为 `closed validated disposable bundle → managed immutable template → new run-scoped working bundle → exact-path single open and parent-aware batch activation → manifest hierarchy double stability → typed old→live ID rebinding → one full read per Page/current live validation → scenario mutation`。Lifecycle 在第一次 child COM 调用前完成路径预算、root containment、reparse 与 typed-parent 校验并冻结请求，然后在一个 PowerShell/COM session 中按 parent-before-child 打开全部容器、末尾尝试读取一次 pages hierarchy；逐项 `OpenHierarchy` 错误最多只重试该失败项一次，确定性冲突立即 fail closed。Fixture observer 随后重新枚举完整 hierarchy，全部 manifest-bound SectionGroup、Section、Page 必须按 typed relative address 连续稳定两次，之后才重绑全部 live ID并对每个 Page 执行一次完整内容读取。该唯一 `scenario before` snapshot 同时承担 cache 内容真实性复核和 mutation 基线取证。`cache-materialization.json` 将字节 materialize 动作与 `validated_hit|cold_build|interactive_bootstrap` 来源分开记录，并保存 preflight/copy/publish working path 耗时；`materialized-hierarchy-open[-<role>].json`、`cache-hierarchy-convergence.json` 和 `scenario-before-snapshot-handoff.json` 分别记录 batch、轻量收敛与单次消费。Fresh fixture 在创建后的同一 live identity 上验证并进入 mutation；Create v5 移除了只为旧 persistence 假设增加的 sentinel Page，Copy SectionGroup/Delete 的 typed sentinel Section 仍作为空 Group 的物理形状约束保留。OneNote 只打开 working path；template bytes 不接受 mutation、restore、keep-worksite 或失败现场回写。Cache 不保存或查询 run working lease，也不与 run 维持所有权或生命周期关系；多个 validated hit 可以从同一 immutable entry materialize 到各自唯一的 run-scoped paths，并在实际 live Notebook ID 全部互异时并存。`.local-validation` 下的短时 open lock 串行化首次打开与 live identity 绑定，各 run lease 只拒绝实际 live ID/path 相交、role 内重复或尚未可靠重绑定的身份。任一地址映射、双稳定或 validator 失败均在 mutation 前 fail closed；默认 finalizer 精确关闭当前 lease。working activation、COM 或 convergence 失败不自动 quarantine 已验证 template，只有确定性的 template identity、inventory 或缓存证据失败才使 entry 不可命中。InteractiveFixtureRecipe 与 UserAuthoredRecipe 只能通过各自静态注册、排除于 `all` 的 human-gated bootstrap Scenario 发布；cache-only consumer 的 miss 只返回 `interactive_bootstrap_required`。
-
-`clear` 是生产 MCP 和 Scenario registry 之外的本地 maintenance 边界，仅公开 `runs`、`cache`、`all` 三个子 action。Dry-run 零 managed write/delete，但读取一次当前 OneNote Notebook ID/实际目录快照；真实执行只接受交互式前台 stdin，在完成安全计划后通过后续提示读取动作绑定确认值，不提供 CLI confirmation 参数，并持有同一短时 open lock。它只删除固定 `.local-validation/` 根下由 run metadata 或 cache marker/index/entry/inventory 共同证明 ownership 的精确目标，删除前写 pending receipt，删除后写 final receipt 和 summary。完整 target evidence 进入 durable summary 后，成功 `deleted` receipt 可自动压缩删除；pending/failed/unbound receipt 保留。Cache maintenance 同时移除无 payload 的 tombstone index 项，并只用逐层 `rmdir` 清理 canonical fingerprint 下可证明为空的 scaffold。Validation root、cache root/marker、summary、用户 Notebook 和任意外部路径不属于删除目标。
-
-冲突扫描的当前调用界限是：短时 open lock 内在打开 working bundle 前后各捕获一次开放 Notebook ID/实际目录 snapshot；任意数量的历史 run-local lease 都只与该 snapshot 做内存比较，不得逐 lease 重复枚举 OneNote 或调用 `GetHierarchy`。
 
 ## 8. 已知演进边界
 
 1. 完整层级快照会在一次复杂用例中被多次读取；若引入缓存，mutation 前确认和写后回读必须绕过缓存。
 2. `tools.context` 是进程级 service 绑定，适合当前单 server 实例；多租户或多 bridge 配置需要改为显式 MCP context 注入。
 3. PowerShell/COM 每次调用的延迟尚无正式基准；长驻 broker 必须先验证 COM apartment、超时和恢复语义。
-4. Manual validation 在 OneNote 未预启动时存在已观察到的 COM 冷启动生命周期缺口；当前以 GUI preflight fail closed，未来显式启动工具由 TODO 031 跟踪，不能把延长轮询、重复激活或 ID rebind 当作修复。
-5. 字典是当前 MCP 边界格式；新增 DTO 时必须复用 `domain/` 的字段契约，不能建立第二套对象模型。
-6. Page、Section、SectionGroup Reparent 均为默认注册的 typed 实验工具，共用独立 Reparent 开关且只允许同一 Notebook；用户已确认三个迁移后的 typed 真实场景在当前环境全部通过，跨版本证据仍需单独积累。
+4. 字典是当前 MCP 边界格式；新增 DTO 时必须复用 `domain/` 的字段契约，不能建立第二套对象模型。
+5. Page、Section、SectionGroup Reparent 均为默认注册的 typed 实验工具，共用独立 Reparent 开关且只允许同一 Notebook；用户已确认三个迁移后的 typed 真实场景在当前环境全部通过，跨版本证据仍需单独积累。

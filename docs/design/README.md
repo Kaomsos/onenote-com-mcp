@@ -4,7 +4,8 @@
 
 | 文档 | 职责 | 状态 |
 | --- | --- | --- |
-| [`architecture.md`](architecture.md) | 生产 MCP、manual-validation fixture cache 与生命周期总体架构 | 当前实现态 |
+| [`architecture.md`](architecture.md) | 生产 MCP、bridge、service 与运行时总体架构 | 当前实现态 |
+| [`manual_validation_scenario_fixture_architecture.md`](manual_validation_scenario_fixture_architecture.md) | 测试专用 Scenario、Fixture Recipe、cache、working lifecycle 与证据流架构 | 当前实现态 |
 | [`object_model.md`](object_model.md) | Notebook、SectionGroup、Section、Page 与内容对象模型 | 当前契约 |
 | [`hierarchy_parser.md`](hierarchy_parser.md) | OneNote hierarchy XML 解析边界 | 当前契约 |
 | [`tool_contracts.md`](tool_contracts.md) | MCP tool 参数、返回结构、policy 与错误语义 | 当前契约 |

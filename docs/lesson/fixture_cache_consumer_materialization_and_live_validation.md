@@ -3,7 +3,7 @@
 > 状态：当前有效的工程经验<br>
 > 观察日期：2026-08-11、2026-08-13、2026-08-14<br>
 > 范围：Windows OneNote Desktop、本地 COM、隔离的 InsertedFile fixture cache consumer、双 Notebook Copy consumer 与一次完整 `all --use-cache` 失败/成功矩阵<br>
-> 当前架构：[`../design/architecture.md`](../design/architecture.md)<br>
+> 当前架构：[`../design/manual_validation_scenario_fixture_architecture.md`](../design/manual_validation_scenario_fixture_architecture.md)<br>
 > 验证流程：[`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md)、[`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md)<br>
 > 相关对象表示经验：[`onenote_page_object_kind_and_file_attachment_representation.md`](onenote_page_object_kind_and_file_attachment_representation.md)
 
@@ -116,4 +116,4 @@ validated cache lookup
 
 ## 适用边界
 
-本文解释的是 fixture cache consumer 在 OneNote COM 环境中建立 live identity、分类失败和管理 lease 的工程经验，不定义 cache schema、CLI 或当前状态机的完整契约。当前实现以 [`../design/architecture.md`](../design/architecture.md) 为准，人工验证授权、参数和操作流程以 [`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md) 与 [`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md) 为准，未完成的扩展仍以 [`../todo/014_recipe_fixture_validation_and_local_notebook_cache.md`](../todo/014_recipe_fixture_validation_and_local_notebook_cache.md) 为准。
+本文解释的是 fixture cache consumer 在 OneNote COM 环境中建立 live identity、分类失败和管理 lease 的工程经验，不定义 cache schema、CLI 或当前状态机的完整契约。当前实现以 [`../design/manual_validation_scenario_fixture_architecture.md`](../design/manual_validation_scenario_fixture_architecture.md) 为准，人工验证授权、参数和操作流程以 [`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md) 与 [`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md) 为准，未完成的扩展仍以 [`../todo/014_recipe_fixture_validation_and_local_notebook_cache.md`](../todo/014_recipe_fixture_validation_and_local_notebook_cache.md) 为准。

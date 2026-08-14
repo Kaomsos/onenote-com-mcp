@@ -147,4 +147,4 @@ Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫�
 - [TODO 014](014_recipe_fixture_validation_and_local_notebook_cache.md)：已完成的 immutable fixture cache 架构与真实验收记录；本 TODO 不改变其完成状态。
 - [Windows Fixture Cache 路径配额设计](../design/windows_fixture_cache_path_budget.md)：本 TODO 的权威目标布局、配额公式、identity 和一次性 schema 切换合同。
 - [Manual Validation Runner](../../tests/manual_validation/README.md)：当前 cache 使用方式、安全边界与本地原子发布重试合同。
-- [当前架构](../design/architecture.md)：fixture cache、working copy 和 maintenance 的权威设计说明。
+- [当前架构](../design/manual_validation_scenario_fixture_architecture.md)：fixture cache、working copy 和 maintenance 的权威设计说明。

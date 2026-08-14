@@ -802,7 +802,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 if options.use_cache and scenario.fixture_recipe.build_mode == BuildMode.PROGRAMMATIC:
                     if cache_store is None:
                         raise RunnerFailure("Fixture cache runtime was not initialized.")
-                    _close_bundle(wrappers, roles)
+                    _close_bundle(wrappers, roles, sync_to_disk=True)
                     recipe = scenario.fixture_recipe
                     instance_id = recipe.default_template_instance_id
                     artifacts = bundle_cache_artifacts(
@@ -1800,10 +1800,12 @@ def _checkpoint_fresh_search_bundle(
 def _close_bundle(
     wrappers: Mapping[str, NotebookLifecycleWrapper],
     roles: tuple[str, ...],
+    *,
+    sync_to_disk: bool = False,
 ) -> dict[str, dict[str, Any]]:
     closed: dict[str, dict[str, Any]] = {}
     for role in roles:
-        result = wrappers[role].close_exact_notebook()
+        result = wrappers[role].close_exact_notebook(sync_to_disk=sync_to_disk)
         if result.get("closed") is not True:
             raise RestoreFailure(f"Notebook role {role} did not close precisely.")
         closed[role] = result
