@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+from typing import Any
 
 from ...path_budget import preflight_paths
 from ...runtime import InvariantFailure, PathBudgetFailure
-from ...test_utils import write_json
+from ...test_utils import stable_item, utc_now, write_json
 from ..common.fixture_builders import (
     enforce_page_position_with_query as enforce_page_position,
     ensure_group_with_query as ensure_group,
@@ -73,7 +74,7 @@ def _preflight_query_fixture_paths(
         exc.mutation_started = context.role != "query-b"
         failure = exc.as_error_dict()
         failure.update(
-            scenario="query-metadata-scopes",
+            scenario="query",
             role=context.role,
             physical_names_use_compact_token=True,
         )
@@ -83,7 +84,7 @@ def _preflight_query_fixture_paths(
             f"before role mutation: {exc.actual_utf16}/{exc.limit_utf16}."
         ) from exc
     evidence.update(
-        scenario="query-metadata-scopes",
+        scenario="query",
         role=context.role,
         physical_names_use_compact_token=True,
     )
@@ -103,8 +104,8 @@ from .recipe_base import (
 )
 
 
-class QueryMetadataScopesFixtureRecipe(RecipeBase):
-    recipe_version = 5
+class QueryFixtureRecipe(RecipeBase):
+    recipe_version = 6
     bundle_invariants = (
         "source and query-b Notebook IDs and paths are unique",
         "both working Notebook roles remain open until the explicit close probe",
@@ -112,7 +113,7 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
     )
 
     def __init__(self) -> None:
-        profile = get_scenario_spec("query-metadata-scopes").fixture
+        profile = get_scenario_spec("query").fixture
         source_keys = (
             "query_outer_group",
             "query_outer_group_sibling",
@@ -146,7 +147,7 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
             "query_b_root_page_sibling",
         )
         super().__init__(
-            "query-metadata-scopes",
+            "query",
             notebook_roles=(
                 NotebookRoleSpec(
                     "query-b",
@@ -160,6 +161,60 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
                 ),
             ),
         )
+
+    @staticmethod
+    async def capture_snapshot(client, notebook_id: str) -> dict[str, Any]:
+        """Capture Query fixture metadata without crossing into List/Expand tools."""
+
+        items: list[dict[str, Any]] = []
+        for tool in ("query_section_group", "query_section", "query_page"):
+            offset = 0
+            while True:
+                response = await client.call_tool(
+                    tool,
+                    {
+                        "scope": {
+                            "mode": "start_node",
+                            "start_node_id": notebook_id,
+                        },
+                        "offset": offset,
+                        "page_size": 200,
+                    },
+                )
+                page = response.get("items", [])
+                if not isinstance(page, list) or any(
+                    not isinstance(item, dict) for item in page
+                ):
+                    raise InvariantFailure(
+                        f"{tool} returned invalid fixture snapshot items."
+                    )
+                items.extend(stable_item(item) for item in page)
+                if not response.get("has_more"):
+                    break
+                next_offset = response.get("next_offset")
+                if not isinstance(next_offset, int) or next_offset <= offset:
+                    raise InvariantFailure(
+                        f"{tool} fixture snapshot pagination did not advance."
+                    )
+                offset = next_offset
+        ids = [str(item.get("id", "")) for item in items]
+        if any(not object_id for object_id in ids) or len(ids) != len(set(ids)):
+            raise InvariantFailure(
+                "Query fixture snapshot contains a missing or duplicate object ID."
+            )
+        return {
+            "captured_at": utc_now(),
+            "notebook_id": notebook_id,
+            "items": items,
+            "page_hashes": {},
+            "page_canonical_hashes": {},
+            "page_reparent_hashes": {},
+            "page_xml_hashes": {},
+            "page_objects": {},
+            "page_capability_projections": {},
+            "page_mathml_structure_projections": {},
+            "metadata_source": "typed_query_tools",
+        }
 
     async def build(self, context: FixtureContext) -> FixtureBuildResult:
         token = compact_query_token(context.token)
@@ -556,12 +611,10 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
             raise InvariantFailure(
                 f"Unsupported typed Query validation role: {context.role}"
             )
-        page_hashes = context.snapshot.get("page_hashes", {})
         checks.require(
-            isinstance(page_hashes, dict)
-            and all(str(page["id"]) in page_hashes for page in pages),
-            "Typed Query fixture snapshot lacks complete Page content evidence.",
-            "every typed Query Page was read once during fixture snapshot validation",
+            all(str(page["id"]) in _by_id for page in pages),
+            "Typed Query fixture snapshot lacks complete Page metadata evidence.",
+            "every typed Query Page was observed through query_page",
         )
         return tuple(checks.checks)
 
@@ -603,6 +656,6 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
         )
 
 
-RECIPE = QueryMetadataScopesFixtureRecipe()
+RECIPE = QueryFixtureRecipe()
 
-__all__ = ["QueryMetadataScopesFixtureRecipe", "RECIPE", "compact_query_token"]
+__all__ = ["QueryFixtureRecipe", "RECIPE", "compact_query_token"]

@@ -8,11 +8,11 @@
 
 ## 完成结论（2026-08-15）
 
-本 TODO 的四层 Typed Metadata Query、原生 scope、分页、open-only、关系过滤和真实场景已经交付完成。用户确认 `run-2026-08-14-16-49-13` 的 `query-metadata-scopes --use-cache` cold build 完整通过：root、三类 start node、关闭 Notebook 排除、Page 缩进父级、分页和动态打开 Notebook 基线均通过，默认 lifecycle 已关闭且 immutable template 未打开。Query 场景现以 `included_in_all=true` 纳入批处理。
+本 TODO 的四层 Typed Metadata Query、原生 scope、分页、open-only、关系过滤和真实场景已经交付完成。用户确认 `run-2026-08-14-16-49-13` 中当时名为 `query-metadata-scopes --use-cache` 的 cold build 完整通过：root、三类 start node、关闭 Notebook 排除、Page 缩进父级、分页和动态打开 Notebook 基线均通过，默认 lifecycle 已关闭且 immutable template 未打开。该场景当前简化命名为 `query`，继续以 `included_in_all=true` 纳入批处理。
 
 默认 profile 已注册四个 fixed-type Query，删除公开 `query_hierarchy` 且未新增 `global_query`；service 使用 root/最浅 scope 或 root `hsSections` catalog 加一个精确 native start call，实施 open-only、严格关系/时间、回收站和 `offset/page_size` live pagination。health、README 与 canonical tool contract 已同步。
 
-自动化聚焦合同通过；完成审计后又补齐原生起点矩阵、空 root、XML fail-closed、schema ID/mode description、完整模拟 scenario runtime 与精确 pre-closed lifecycle receipt 合同，当时完整纯测试基线为 `974 passed`。`query-metadata-scopes` 最初以 fresh-only、`included_in_all=false` 的双 Notebook scenario 加入；两个 role 现在各自具备嵌套 Group、Notebook/Group 直属 Section、根页和缩进页，并持久化独立 typed tree、expected 投影、每个请求/响应与 bridge operation，覆盖末页和越界页。其 cache 策略的后续变更见下方 2026-08-14 记录。静态权限仅包含 fixture Writes 和读工具，Delete/Copy/Move/Permanent Delete/Raw XML 均关闭。
+自动化聚焦合同通过；完成审计后又补齐原生起点矩阵、空 root、XML fail-closed、schema ID/mode description、完整模拟 scenario runtime 与精确 pre-closed lifecycle receipt 合同，当时完整纯测试基线为 `974 passed`。该场景最初以 `query-metadata-scopes`、fresh-only、`included_in_all=false` 的双 Notebook scenario 加入；两个 role 现在各自具备嵌套 Group、Notebook/Group 直属 Section、根页和缩进页，并持久化 Query-only fixture metadata、expected 投影、每个请求/响应与 bridge operation，覆盖末页和越界页。其 cache 策略的后续变更见下方 2026-08-14 记录。静态权限仅包含 fixture Writes、health 与四个 `query_*`，Delete/Copy/Move/Permanent Delete/Raw XML/List/Expand 均关闭。
 
 2026-08-14 又将该旧场景对齐到当前 scenario-owned fixture bundle validation：验证上下文显式携带 role，逐 role fail-closed 校验完整 key set、对象类型、两条 container chain、Page Section/root level/indentation parent 和每 Page 单次内容 snapshot；bundle 层另证明 source/query-b 共享同一个非空 token。Recipe 现支持 cache，并沿用 materialized fixture 的 batch-open、typed rebind、两次层级稳定和单次内容 snapshot；Query 不执行 Search 专用 close/reopen。固定 title token 只有在真实产生预期 ID 严格超集时才写 content-free collision warning 并 fail closed，不再预防性拒绝 cache。
 
@@ -313,7 +313,7 @@ and do not reduce GetHierarchy retrieval or metadata scanning.
 2. 默认 profile 已删除 `query_hierarchy`，且未注册 `global_query`；
 3. service 内部共享按固定资源类型分派的 query engine，但不接受来自 MCP 的任意 `resource_type`；
 4. health check 已公开稳定的 metadata-query capability，包括四个工具名、支持的 scope mode、分页和 `query_kind`；
-5. Query 聚焦合同、完整纯测试、`query-metadata-scopes` dry-run 与用户真实运行证据均已完成；
+5. Query 聚焦合同、完整纯测试、当前 `query` dry-run 与原场景名下的用户真实运行证据均已完成；
 6. 当前工具浏览模型的后续调整由 TODO 033 负责，不改变本 TODO 的 Query 完成结论。
 
 ## 自动化合同
@@ -334,7 +334,7 @@ and do not reduce GetHierarchy retrieval or metadata scanning.
 
 ## 真实后端验证场景
 
-human-gated 场景 `query-metadata-scopes` 已经真实验收并设置 `included_in_all=true`。查询本身只读，但 fixture 使用本次 run 创建的 disposable Notebook，因此真实运行仍只能由用户显式启动；Agent 只运行纯测试和 `--dry-run`。
+human-gated 场景当前名为 `query`，其前身 `query-metadata-scopes` 已经真实验收，并设置 `included_in_all=true`。查询本身只读，但 fixture 使用本次 run 创建的 disposable Notebook，因此真实运行仍只能由用户显式启动；Agent 只运行纯测试和 `--dry-run`。重命名后的 recipe/cache identity 使用新 fingerprint，仍需用户补充当前名称下的 fresh/cache 证据。
 
 场景至少准备两个同时打开的 Notebook，每个包含嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 和缩进 Page，并使用 run-unique 名称和修改时间证据。验证：
 
@@ -355,7 +355,7 @@ human-gated 场景 `query-metadata-scopes` 已经真实验收并设置 `included
 3. 实现严格名称、直接父级、Page 缩进父级、RFC 3339 时间、回收站与 offset/page_size live pagination 合同；
 4. 删除默认 `query_hierarchy` 注册，不新增 `global_query`；
 5. 返回统一的 typed query envelope，并更新 health capability；
-6. 补齐自动化矩阵和 `query-metadata-scopes` 的 scenario-owned recipe、静态权限、dry-run 与 runtime evidence；
+6. 补齐自动化矩阵和 `query` 的 scenario-owned recipe、静态权限、dry-run 与 runtime evidence；
 7. 同步 canonical 设计、README、manual-validation README、overview 和 TODO 索引。
 
 ## 完成定义
@@ -368,6 +368,6 @@ human-gated 场景 `query-metadata-scopes` 已经真实验收并设置 `included
 - Page 标题、Section 容器和缩进父页均可查询，且不读取 Page 正文；
 - 时间、直接父级、回收站和 offset/page_size 行为有明确 fail-closed 合同，无过滤 Query 可以通过 live pagination 取尽当前类型；
 - 不逐 Notebook 扫描、不合并多个起点、不使用 `FindMeta` 模拟复合查询，也不回退到磁盘或名称解析；
-- 聚焦合同和完整纯测试集通过；`query-metadata-scopes --dry-run --json` 为零副作用成功；
-- 用户显式运行并确认 `query-metadata-scopes` 的 root、三类 start node、关闭 Notebook 排除、Page 缩进父级和分页证据；
+- 聚焦合同和完整纯测试集通过；`query --dry-run --json` 为零副作用成功；
+- 用户显式运行并确认 `query` 的 root、三类 start node、关闭 Notebook 排除、Page 缩进父级和分页证据；
 - 当前 design 文档、README、health check、manual-validation README、overview、TODO 索引和最终实现一致。

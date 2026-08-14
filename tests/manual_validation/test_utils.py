@@ -562,7 +562,7 @@ async def capture_snapshot(
         handed_off = consume_handoff(notebook_id)
         if handed_off is not None:
             return handed_off
-    tree_result = await client.call_tool("get_tree", {"root_id": notebook_id, "max_depth": 8})
+    tree_result = await client.call_tool("expand_hierarchy", {"root_id": notebook_id, "max_depth": 8})
     tree = tree_result["tree"]
     items = flatten_tree(tree)
     pages = sorted(
@@ -595,7 +595,7 @@ async def capture_snapshot(
             if isinstance(obj, dict)
         ]
     refreshed_tree_result = await client.call_tool(
-        "get_tree", {"root_id": notebook_id, "max_depth": 8}
+        "expand_hierarchy", {"root_id": notebook_id, "max_depth": 8}
     )
     refreshed_items = flatten_tree(refreshed_tree_result["tree"])
     initial_ids = {str(item["id"]) for item in items if item.get("id")}

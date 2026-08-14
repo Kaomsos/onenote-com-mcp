@@ -1374,7 +1374,7 @@ class _MaterializedHierarchyClient:
 
     async def call_tool(self, name, _arguments):
         self.calls.append(name)
-        assert name == "get_tree"
+        assert name == "expand_hierarchy"
         return {"tree": next(self.trees)}
 
 
@@ -1460,7 +1460,7 @@ def test_materialized_structure_waits_for_pages_and_two_stable_observations() ->
     assert report["stable_observations"] == 2
     assert rebound["page"]["id"] == "working-page"
     assert remap["passed"] is True
-    assert client.calls == ["get_tree", "get_tree", "get_tree"]
+    assert client.calls == ["expand_hierarchy", "expand_hierarchy", "expand_hierarchy"]
 
 
 def test_materialized_structure_rejects_hierarchy_oscillation() -> None:
@@ -1990,7 +1990,7 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
             write_json(self.lease_path, {"schema_version": 1, **lease})
             return notebook, lease
 
-        def close_exact_notebook(self):
+        def close_exact_notebook(self, *, sync_to_disk=False):
             assert self.current_notebook is not None
             return {
                 "closed": True,

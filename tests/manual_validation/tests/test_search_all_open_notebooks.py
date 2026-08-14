@@ -207,7 +207,7 @@ def test_search_fresh_dry_run_has_exclusive_index_activation_checkpoint(capsys) 
 
 
 def test_non_index_query_dry_run_does_not_gain_search_checkpoint(capsys) -> None:
-    assert main(["query-metadata-scopes", "--dry-run", "--json"]) == 0
+    assert main(["query", "--dry-run", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
 
     assert "activate-search-index-fixture" not in {
@@ -222,7 +222,7 @@ class _CheckpointWrapper:
         self.closed = 0
         self.opened = 0
 
-    def close_exact_notebook(self):
+    def close_exact_notebook(self, *, sync_to_disk=False):
         self.closed += 1
         return {"closed": True, "source_notebook_id": f"old-{self.role}"}
 
@@ -353,7 +353,7 @@ class _FreshIndexClient:
         self.events: list[str] = []
 
     async def call_tool(self, name, arguments, retry_read=True):
-        if name == "get_tree":
+        if name == "expand_hierarchy":
             notebook_id = str(arguments["root_id"])
             role = notebook_id.removeprefix("live-")
             notebook = {

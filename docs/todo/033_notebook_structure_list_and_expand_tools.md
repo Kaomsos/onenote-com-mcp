@@ -1,7 +1,7 @@
 # 033：Notebook 结构浏览的 List 与 Expand 工具重组
 
 > ID：033
-> 状态：待办
+> 状态：已完成
 > 优先级：P1
 > 类型：公开工具契约 / 层级浏览 / 对象操作模型 / Manual Validation
 > 更新日期：2026-08-15
@@ -181,15 +181,17 @@ Notebook
          └─ Root Sibling Page
 ```
 
-同一场景依次验证：
+`hierarchy-navigation` 场景只验证 List/Expand 家族：
 
-1. `list_notebooks()` 包含两个 fixture role，并与无过滤 `query_notebook` 的独立分页基线一致；
+1. `list_notebooks()` 包含两个 fixture role，且所有 ID 非空、唯一；
 2. `expand_notebook(id)` 保留多层 Group/Section 顺序，所有 Section 都是叶节点且没有 Page；
 3. `expand_section_group(id)` 不越出指定 Group，并展开到全部 Section；
 4. `expand_section(id)` 将 level 1/2/3 Page 投影为精确树，两个 child sibling 和 grandchild 各出现一次；
 5. `expand_page(id)` 只返回 Parent Page 的后代，不包含 root sibling；
 6. `expand_hierarchy(root_id, max_depth=...)` 分别接受 Notebook、SectionGroup、Section、Page，并在未被深度截断的局部与对应 typed Expand 产生相同节点关系；另保留一个明确的 depth boundary case；
 7. scenario MCP audit 证明所有生产浏览调用只读取 hierarchy metadata，不调用 Page XML、正文、对象或二进制工具。
+
+名字与元数据过滤由独立的 `query` 场景验证；该场景只调用 `query_notebook`、`query_section_group`、`query_section`、`query_page`。两个场景的 fixture build、fresh snapshot、cache convergence、正式断言和静态 allowlist 均不跨用另一工具族。List 与无过滤 Query 全集等价继续由纯自动化合同覆盖，不在真实场景中互相调用。
 
 场景继续支持 fresh 与 `--use-cache`，默认 `included_in_all=false`；只有用户完成真实 fresh/cache 验收并单独批准后才可进入 `all`。Agent 只能运行纯测试和显式 `--dry-run`。
 
@@ -201,6 +203,7 @@ Notebook
 - Notebook/Group 的 typed boundary 不读取 Page，Section/Page 正确重建缩进树；
 - `expand_hierarchy` 保持原 `get_tree` 的四类 root、`max_depth` 和 recycle 合同；
 - `list_notebooks` 与稳定的无过滤 Query 全集等价，无参数且返回 `items/count`；
+- 精确 root Expand 要求 root ID 在 snapshot 中恰好命中一次，随后只校验 root 所属 Notebook；无关打开 Notebook 的独立 ID/关系/缩进异常不得阻断目标树；
 - 未知 ID、关闭 Notebook、回收站 root、关系断裂、重复 ID 和读取失败均 fail closed；
 - tools/service/health/README/design/manual-validation 中不存在旧公开名称或兼容 adapter；
 - 运行聚焦纯测试、manual-validation 纯合同、完整 `pytest -q`、相关 `--dry-run --json` 和 `git diff --check`。
@@ -225,3 +228,13 @@ Notebook
 - 单一 `hierarchy-navigation` 场景覆盖 `list_notebooks`、五个 Expand、四层 root、depth boundary 和无正文读取；
 - 聚焦与完整纯测试、dry-run 和 diff 检查通过；
 - 用户确认 fresh 与 cache 两种真实场景均通过；是否纳入 `all` 仍需独立批准。
+
+## 实施进度与验收证据
+
+2026-08-15 已完成代码、纯测试和文档交付：默认 registry 只保留六个最终浏览入口；service 使用共享 snapshot 校验、关系图和 tree builder；health、README、design、object model、smoke 与 manual-validation allowlist 已同步。`hierarchy-navigation` 已升级为两个同时打开的 disposable Notebook role，只覆盖 List、四个 typed Expand、`expand_hierarchy` 四类 root、depth boundary、Page 缩进树和 hierarchy-only MCP audit，仍保持 `included_in_all=false`。名字/元数据过滤场景已独立简化命名为 `query`，只覆盖四个 Query 工具。
+
+用户随后运行的新场景在 `run-2026-08-15-03-01-46` 与 `run-2026-08-15-03-01-55` 的 `browse-b` fixture snapshot 阶段一致失败：两个不同 disposable Notebook root 都被同一个外部 Section ID `{517A73E7-C6C2-0218-0E10-458C1D68F2FA}{1}{B0}` 的缩进断层阻断。保存证据证明该 ID 属于用户原本打开的其他 Notebook，而非任一 fixture role。根因是 Browse service 在解析 root-wide COM snapshot 后先校验全部打开 Notebook，再选择精确 root。现已改为先要求精确 root ID 在 snapshot 中恰好命中一次，再按该 root 的 Notebook ID 收窄完整关系图校验；目标 Notebook 内错误仍 fail closed，并增加“空 fixture Notebook 不受外部 Notebook 的 ID/关系/缩进异常阻断、异常 Notebook 自身仍拒绝”的回归合同。
+
+修复后用户真实运行的 `run-2026-08-15-03-12-51`（fresh）和 `run-2026-08-15-03-13-44`（`--use-cache` cold build）均完整通过。两次结果都证明 `list_notebooks_contract_passed`、`typed_expand_contract_passed`、`generic_four_root_contract_passed`、`max_depth_boundary_passed`、`page_indentation_tree_passed` 和 `hierarchy_metadata_only_audit_passed` 为 true；所有 exact role lifecycle 均为 `closed_preserved`，没有删除文件系统内容。Query 分离场景也已由 `run-2026-08-15-03-02-04`（fresh）、`run-2026-08-15-03-03-47`（cache cold build）和 `run-2026-08-15-03-06-19`（validated hit）证明通过。
+
+最终自动化基线为完整纯测试 `976 passed`、manual-validation `575 passed`、场景 fresh/cache dry-run 成功和 `git diff --check` 通过。TODO 033 因此完成。`hierarchy-navigation` 继续保持 `included_in_all=false`；纳入 `all` 不属于本次真实验收的隐含授权，仍需单独批准。

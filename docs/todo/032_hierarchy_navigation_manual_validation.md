@@ -57,3 +57,5 @@ Manual-validation 的设计原理见 [Scenario 与 Fixture 架构](../design/man
 ## 完成结论
 
 `get_parent`、`get_path` 与 `get_tree` 在 fresh 和 cache working copy 上都得到一致的真实 OneNote 后端结果：Page 的 COM 容器父级/路径稳定停在 Section，而 `parent_page_id/page_level` 独立投影出精确的多层缩进树。实现、自动化与 HUMAN-GATED 证据均满足本 TODO 的完成定义，状态更新为“已完成”。
+
+> 后续契约迁移（2026-08-15）：TODO 033 已直接移除历史公开名 `get_tree`，当前等价的通用数值深度入口为 `expand_hierarchy`。本条目的既有 fresh/cache 证据仍保留为当时实际执行名称；同一 `hierarchy-navigation` 场景现由 TODO 033 扩展并承担最终 List/Expand 浏览合同。

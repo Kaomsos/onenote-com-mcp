@@ -97,16 +97,16 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 ## 4. 建立只读基线
 
 1. 用 `resolve_identifier("__LOCAL_ONENOTE_MCP_ISOLATED__", "notebook")` 取得 Notebook ID；后续 mutation 禁止继续用名称或路径。
-2. 调用 `get_tree(notebook_id)`，记录所有 ID、父级、Page `order/page_level`。
+2. 调用 `expand_hierarchy(root_id=notebook_id)`，记录所有 ID、父级、Page `order/page_level`。
 3. 对 3 个 Page 调用 `get_page_xml(page_id, "all")`，在测试记录中保存 SHA-256。
 4. 对含图片/附件的 Page 调用 `get_page_objects`，记录 `id/callback_id/format`，但不要把二进制粘贴到日志。
-5. 调用 `list_sections` 和 `list_pages`，确认没有回收站对象混入。
+5. 调用 `expand_notebook` 和相关 `expand_section`，确认没有回收站对象混入。
 
 任何 ID、标题、父级或内容与准备结构不一致时立即停止。
 
 ## 5. Rename 验证
 
-依次人工调用并在每次后执行 `get_tree`：
+依次人工调用并在每次后执行 `expand_hierarchy`：
 
 ```json
 {
@@ -137,7 +137,7 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 
 1. 将 `03-Sibling` 放到 `01-Parent` 后，并设 `page_level=2`；确认其 `parent_page_id=01-Parent ID`。
 2. 将 `03-Sibling` 恢复到原位置和 `page_level=1`。
-3. 每一步后读取 `list_pages`、`get_tree` 和包括 Description Page 在内的全部 Page 完整 XML 摘要。
+3. 每一步后读取 `expand_section`、`expand_hierarchy` 和包括 Description Page 在内的全部 Page 完整 XML 摘要。
 
 调用模板：
 
@@ -155,7 +155,7 @@ LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 }
 ```
 
-验收：调用返回的 `order/page_level` 与只读回读一致；所有 Page ID 和正文摘要保持不变；UI 中缩进树与 `get_tree` 一致。
+验收：调用返回的 `order/page_level` 与只读回读一致；所有 Page ID 和正文摘要保持不变；UI 中缩进树与 `expand_hierarchy` 一致。
 
 Section Reorder 不使用本节的手工 raw/tool 模板。用户应先审查 dry-run，再显式运行独立场景：
 

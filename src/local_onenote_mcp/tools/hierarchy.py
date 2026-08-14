@@ -84,27 +84,17 @@ QueryPageSize = Annotated[
         ),
     ),
 ]
+ExactHierarchyId = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+    Field(description="Exact OneNote COM hierarchy object ID."),
+]
 
 
-async def list_hierarchy(
-    start_identifier: str = "",
-    scope: str = "pages",
-    include_xml: bool = False,
-    include_recycle_bin: bool = False,
-) -> dict[str, Any]:
-    """List live typed OneNote hierarchy objects."""
+async def list_notebooks() -> dict[str, Any]:
+    """List currently open Notebook metadata in stable hierarchy order."""
 
-    return invoke(
-        lambda: get_services().hierarchy.list_hierarchy(
-            start_identifier, scope, include_xml, include_recycle_bin
-        )
-    )
-
-
-async def list_notebooks(include_recycle_bin: bool = False) -> dict[str, Any]:
-    """List live notebooks."""
-
-    return invoke(lambda: get_services().hierarchy.list_notebooks(include_recycle_bin))
+    return invoke(get_services().hierarchy.list_notebooks)
 
 
 async def get_notebook(notebook_id: str) -> dict[str, Any]:
@@ -113,44 +103,16 @@ async def get_notebook(notebook_id: str) -> dict[str, Any]:
     return invoke(lambda: {"item": get_services().hierarchy.resource(notebook_id, "notebook")})
 
 
-async def list_section_groups(
-    parent_id: str = "",
-    recursive: bool = True,
-    include_recycle_bin: bool = False,
-) -> dict[str, Any]:
-    """List SectionGroups, optionally below a typed parent ID."""
-
-    return invoke(
-        lambda: get_services().hierarchy.list_section_groups(parent_id, recursive, include_recycle_bin)
-    )
-
-
 async def get_section_group(section_group_id: str) -> dict[str, Any]:
     """Get stable metadata for one SectionGroup by ID."""
 
     return invoke(lambda: {"item": get_services().hierarchy.resource(section_group_id, "section_group")})
 
 
-async def list_sections(
-    parent_id: str = "",
-    recursive: bool = True,
-    include_recycle_bin: bool = False,
-) -> dict[str, Any]:
-    """List Sections, optionally below a typed parent ID."""
-
-    return invoke(lambda: get_services().hierarchy.list_sections(parent_id, recursive, include_recycle_bin))
-
-
 async def get_section(section_id: str) -> dict[str, Any]:
     """Get stable metadata for one Section by ID."""
 
     return invoke(lambda: {"item": get_services().hierarchy.resource(section_id, "section")})
-
-
-async def list_pages(section_id: str, include_recycle_bin: bool = False) -> dict[str, Any]:
-    """List Page metadata in one Section."""
-
-    return invoke(lambda: get_services().hierarchy.list_pages(section_id, include_recycle_bin))
 
 
 async def query_notebook(
@@ -298,25 +260,57 @@ async def get_path(object_id: str) -> dict[str, Any]:
     return invoke(lambda: get_services().hierarchy.path(object_id))
 
 
-async def get_tree(root_id: str, max_depth: int = 8, include_recycle_bin: bool = False) -> dict[str, Any]:
-    """Get a typed hierarchy and Page indentation tree."""
+async def expand_notebook(id: ExactHierarchyId) -> dict[str, Any]:
+    """Expand one exact open Notebook through nested SectionGroups to Section leaves."""
 
-    return invoke(lambda: get_services().hierarchy.tree(root_id, max_depth, include_recycle_bin))
+    return invoke(lambda: get_services().hierarchy.expand_typed(id, "notebook"))
+
+
+async def expand_section_group(id: ExactHierarchyId) -> dict[str, Any]:
+    """Expand one exact SectionGroup through nested groups to Section leaves."""
+
+    return invoke(lambda: get_services().hierarchy.expand_typed(id, "section_group"))
+
+
+async def expand_section(id: ExactHierarchyId) -> dict[str, Any]:
+    """Expand one exact Section to its complete Page indentation tree."""
+
+    return invoke(lambda: get_services().hierarchy.expand_typed(id, "section"))
+
+
+async def expand_page(id: ExactHierarchyId) -> dict[str, Any]:
+    """Expand one exact Page to its complete indentation-descendant subtree."""
+
+    return invoke(lambda: get_services().hierarchy.expand_typed(id, "page"))
+
+
+async def expand_hierarchy(
+    root_id: ExactHierarchyId,
+    max_depth: int = 8,
+    include_recycle_bin: bool = False,
+) -> dict[str, Any]:
+    """Expand any exact hierarchy root to a numeric depth without reading Page body text."""
+
+    return invoke(
+        lambda: get_services().hierarchy.expand_hierarchy(
+            root_id, max_depth, include_recycle_bin
+        )
+    )
 
 
 TOOLS = [
-    list_hierarchy,
     list_notebooks,
     get_notebook,
-    list_section_groups,
     get_section_group,
-    list_sections,
     get_section,
-    list_pages,
     query_notebook,
     query_section_group,
     query_section,
     query_page,
     get_path,
-    get_tree,
+    expand_notebook,
+    expand_section_group,
+    expand_section,
+    expand_page,
+    expand_hierarchy,
 ]

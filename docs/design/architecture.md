@@ -1,7 +1,7 @@
 # Local OneNote MCP 当前设计架构
 
 > 状态：当前实现态
-> 更新日期：2026-08-13
+> 更新日期：2026-08-15
 > 相关契约：[对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md) · [Windows Fixture Cache 路径配额目标设计](windows_fixture_cache_path_budget.md)
 
 ## 1. 架构结论
@@ -343,13 +343,13 @@ sequenceDiagram
     participant B as OneNoteBridge
     participant H as hierarchy.py
 
-    C->>T: list_pages(section_id)
-    T->>S: list_pages(section_id)
+    C->>T: expand_section(id)
+    T->>S: expand_typed(id, section)
     S->>B: get_hierarchy(scope=pages)
     B-->>S: hierarchy XML
     S->>H: parse_hierarchy(xml)
     H-->>S: typed resource dicts
-    S-->>T: section/pages/count
+    S-->>T: tree={item,children[]}
     T-->>C: ok envelope
 ```
 

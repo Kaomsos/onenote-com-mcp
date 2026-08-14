@@ -38,6 +38,15 @@ METADATA_QUERY_KIND = "hierarchy_metadata"
 METADATA_QUERY_PAGINATION_CONSISTENCY = "live_hierarchy"
 DEFAULT_METADATA_QUERY_PAGE_SIZE = 200
 MAX_METADATA_QUERY_PAGE_SIZE = 200
+HIERARCHY_BROWSING_TOOLS = (
+    "list_notebooks",
+    "expand_notebook",
+    "expand_section_group",
+    "expand_section",
+    "expand_page",
+    "expand_hierarchy",
+)
+MAX_HIERARCHY_TREE_ITEMS = 10_000
 _QUERY_START_TYPES = {
     "section_group": {"notebook", "section_group"},
     "section": {"notebook", "section_group"},
@@ -270,96 +279,262 @@ class HierarchyService(BaseService):
     def without_recycle_bin(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [item for item in items if item.get("is_in_recycle_bin") is not True]
 
-    def list_hierarchy(
-        self,
-        start_identifier: str = "",
-        scope: str = "pages",
-        include_xml: bool = False,
-        include_recycle_bin: bool = False,
-    ) -> dict[str, Any]:
-        xml = self.hierarchy_xml("", "pages")
-        items = parse_hierarchy(xml)
-        if not include_recycle_bin:
-            items = self.without_recycle_bin(items)
-        root = None
-        if start_identifier:
-            root = resolve_resource(items, start_identifier)
-            items = [
-                item
-                for item in items
-                if item["id"] == root["id"] or item["path"].startswith(root["path"] + "/")
-            ]
-        scope_types = {
-            "self": set(),
-            "children": RESOURCE_TYPES,
-            "notebooks": {"notebook"},
-            "sections": {"notebook", "section_group", "section"},
-            "pages": RESOURCE_TYPES,
+    @staticmethod
+    def _validate_hierarchy_snapshot(items: list[dict[str, Any]]) -> None:
+        """Reject ambiguous or incomplete hierarchy relationship graphs."""
+
+        object_ids = [str(item.get("id", "")) for item in items]
+        if any(not object_id for object_id in object_ids):
+            raise ValueError("Hierarchy snapshot contains an object without an ID.")
+        if len(object_ids) != len(set(object_ids)):
+            raise ValueError("Hierarchy snapshot contains duplicate object IDs.")
+
+        by_id = {str(item["id"]): item for item in items}
+        expected_parent_types = {
+            "section_group": {"notebook", "section_group"},
+            "section": {"notebook", "section_group"},
+            "page": {"section"},
         }
-        if scope not in scope_types:
-            self.enum("scope", scope, HIERARCHY_SCOPES)
-        if scope == "self":
-            items = [root] if root else []
-        elif scope == "children":
-            parent_id = root["id"] if root else None
-            items = [item for item in items if item["parent_id"] == parent_id]
-        else:
-            items = [item for item in items if item["resource_type"] in scope_types[scope]]
-        result: dict[str, Any] = {"items": items, "count": len(items)}
-        if include_xml:
-            result["xml"] = xml
-        return result
+        for item in items:
+            resource_type = str(item.get("resource_type", ""))
+            object_id = str(item["id"])
+            if resource_type not in RESOURCE_TYPES:
+                raise ValueError(f"Hierarchy snapshot contains an unknown resource type for '{object_id}'.")
+            parent_id = item.get("parent_id")
+            if resource_type == "notebook":
+                if parent_id not in {None, ""}:
+                    raise ValueError(f"Notebook '{object_id}' has an invalid hierarchy parent.")
+                continue
+            parent = by_id.get(str(parent_id or ""))
+            if parent is None or parent.get("resource_type") not in expected_parent_types[resource_type]:
+                raise ValueError(f"Hierarchy relationship is incomplete for '{object_id}'.")
+            if resource_type == "page":
+                section_id = str(item.get("section_id", ""))
+                if section_id != str(parent_id):
+                    raise ValueError(f"Page '{object_id}' is not bound to its container Section.")
+                parent_page_id = item.get("parent_page_id")
+                if parent_page_id:
+                    parent_page = by_id.get(str(parent_page_id))
+                    if (
+                        parent_page is None
+                        or parent_page.get("resource_type") != "page"
+                        or str(parent_page.get("section_id", "")) != section_id
+                    ):
+                        raise ValueError(f"Page indentation relationship is incomplete for '{object_id}'.")
 
-    def list_notebooks(self, include_recycle_bin: bool = False) -> dict[str, Any]:
-        notebooks = filter_resources(self.resources(include_recycle_bin), "notebook")
-        return {"notebooks": notebooks, "count": len(notebooks)}
+        for item in items:
+            object_id = str(item["id"])
+            seen: set[str] = set()
+            current = item
+            while current.get("resource_type") != "notebook":
+                current_id = str(current["id"])
+                if current_id in seen:
+                    raise ValueError(f"Hierarchy relationship cycle detected at '{object_id}'.")
+                seen.add(current_id)
+                parent = by_id.get(str(current.get("parent_id") or ""))
+                if parent is None:
+                    raise ValueError(f"Hierarchy relationship is incomplete for '{object_id}'.")
+                current = parent
+            notebook_id = str(current["id"])
+            declared_notebook_id = HierarchyService._notebook_id(item)
+            if declared_notebook_id and declared_notebook_id != notebook_id:
+                raise ValueError(f"Hierarchy Notebook relationship is inconsistent for '{object_id}'.")
 
-    def list_section_groups(
+        pages_by_section: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            if item.get("resource_type") == "page":
+                pages_by_section.setdefault(str(item.get("section_id", "")), []).append(item)
+        for section_id, pages in pages_by_section.items():
+            stack: list[dict[str, Any]] = []
+            for index, page in enumerate(pages):
+                level = int(page.get("page_level") or 0)
+                if level < 1 or (index == 0 and level != 1):
+                    raise ValueError(f"Section '{section_id}' has an invalid Page indentation root.")
+                if index and level > int(pages[index - 1].get("page_level") or 0) + 1:
+                    raise ValueError(f"Section '{section_id}' has a discontinuous Page indentation level.")
+                while stack and int(stack[-1].get("page_level") or 0) >= level:
+                    stack.pop()
+                expected_parent = str(stack[-1]["id"]) if stack else None
+                if page.get("parent_page_id") != expected_parent:
+                    raise ValueError(f"Page indentation relationship is inconsistent for '{page['id']}'.")
+                stack.append(page)
+
+    def _browsing_snapshot(
         self,
-        parent_id: str = "",
-        recursive: bool = True,
-        include_recycle_bin: bool = False,
-    ) -> dict[str, Any]:
-        items = self.resources(include_recycle_bin)
-        groups = filter_resources(items, "section_group")
-        if parent_id:
-            parent = find_resource_by_id(items, parent_id)
-            if not parent or parent["resource_type"] not in {"notebook", "section_group"}:
-                raise ValueError("parent_id must identify a notebook or section_group.")
-            if recursive:
-                prefix = parent["path"] + "/"
-                groups = [item for item in groups if item["path"].startswith(prefix)]
-            else:
-                groups = [item for item in groups if item["parent_id"] == parent_id]
-        return {"items": groups, "count": len(groups)}
-
-    def list_sections(
-        self,
-        parent_id: str = "",
-        recursive: bool = True,
-        include_recycle_bin: bool = False,
-    ) -> dict[str, Any]:
-        items = self.resources(include_recycle_bin)
-        sections = filter_resources(items, "section")
-        if parent_id:
-            parent = find_resource_by_id(items, parent_id)
-            if not parent or parent["resource_type"] not in {"notebook", "section_group"}:
-                raise ValueError("parent_id must identify a notebook or section_group.")
-            if recursive:
-                prefix = parent["path"] + "/"
-                sections = [item for item in sections if item["path"].startswith(prefix)]
-            else:
-                sections = [item for item in sections if item["parent_id"] == parent_id]
-        return {"sections": sections, "count": len(sections)}
-
-    def list_pages(self, section_id: str, include_recycle_bin: bool = False) -> dict[str, Any]:
-        section = self.resource(section_id, "section")
-        pages = [
+        scope: str,
+        *,
+        include_recycle_bin: bool,
+        root_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        raw_items = parse_hierarchy(self.hierarchy_xml("", scope))
+        if root_id is not None:
+            root_matches = [
+                item for item in raw_items if str(item.get("id", "")) == root_id
+            ]
+            if not root_matches:
+                raise ValueError(f"No object found for ID '{root_id}'.")
+            if len(root_matches) != 1:
+                raise ValueError(
+                    f"Hierarchy snapshot contains duplicate matches for root ID '{root_id}'."
+                )
+            raw_root = root_matches[0]
+            notebook_id = self._notebook_id(raw_root)
+            raw_items = [
+                item
+                for item in raw_items
+                if self._notebook_id(item) == notebook_id
+            ]
+        self._validate_hierarchy_snapshot(raw_items)
+        open_notebook_ids = self._open_notebook_ids(raw_items)
+        open_items = [
             item
-            for item in self.resources(include_recycle_bin)
-            if item["resource_type"] == "page" and item["section_id"] == section_id
+            for item in raw_items
+            if self._notebook_id(item) in open_notebook_ids
         ]
-        return {"section": section, "pages": pages, "count": len(pages)}
+        eligible = (
+            open_items
+            if include_recycle_bin
+            else self.without_recycle_bin(open_items)
+        )
+        self._validate_hierarchy_snapshot(eligible)
+        return raw_items, eligible
+
+    @staticmethod
+    def _require_browsing_root(
+        raw_items: list[dict[str, Any]],
+        eligible_items: list[dict[str, Any]],
+        root_id: str,
+        *,
+        expected_type: str | None,
+        include_recycle_bin: bool,
+    ) -> dict[str, Any]:
+        if not root_id or not root_id.strip():
+            raise ValueError("A non-empty exact OneNote COM ID is required.")
+        raw_root = find_resource_by_id(raw_items, root_id)
+        if raw_root is None:
+            raise ValueError(f"No object found for ID '{root_id}'.")
+        if expected_type is not None and raw_root.get("resource_type") != expected_type:
+            raise ValueError(f"ID '{root_id}' does not identify a {expected_type}.")
+        notebook_id = HierarchyService._notebook_id(raw_root)
+        notebook = find_resource_by_id(raw_items, notebook_id, "notebook")
+        if notebook is None or notebook.get("is_open") is False:
+            raise ValueError(f"ID '{root_id}' belongs to a closed Notebook.")
+        if raw_root.get("is_in_recycle_bin") is True and not include_recycle_bin:
+            raise ValueError(f"ID '{root_id}' is in the recycle bin.")
+        root = find_resource_by_id(eligible_items, root_id)
+        if root is None:
+            raise ValueError(f"ID '{root_id}' is not available in the requested hierarchy boundary.")
+        return root
+
+    @staticmethod
+    def _relationship_children(items: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+        children: dict[str, list[dict[str, Any]]] = {}
+        for item in items:
+            if item.get("resource_type") == "notebook":
+                continue
+            parent_id = (
+                item.get("parent_page_id") or item.get("section_id")
+                if item.get("resource_type") == "page"
+                else item.get("parent_id")
+            )
+            if not parent_id:
+                raise ValueError(f"Hierarchy relationship is incomplete for '{item['id']}'.")
+            children.setdefault(str(parent_id), []).append(item)
+        return children
+
+    @staticmethod
+    def _build_tree(
+        root: dict[str, Any],
+        children: dict[str, list[dict[str, Any]]],
+        *,
+        max_depth: int | None,
+        stop_at_types: frozenset[str] = frozenset(),
+    ) -> dict[str, Any]:
+        visited: set[str] = set()
+
+        def build(item: dict[str, Any], depth: int) -> dict[str, Any]:
+            object_id = str(item["id"])
+            if object_id in visited:
+                raise ValueError(f"Hierarchy object '{object_id}' appears more than once in the tree.")
+            visited.add(object_id)
+            if len(visited) > MAX_HIERARCHY_TREE_ITEMS:
+                raise ValueError(
+                    f"Complete hierarchy tree exceeds the public response boundary of "
+                    f"{MAX_HIERARCHY_TREE_ITEMS} items."
+                )
+            node = {"item": item, "children": []}
+            if item.get("resource_type") in stop_at_types:
+                return node
+            if max_depth is not None and depth >= max(0, max_depth):
+                return node
+            node["children"] = [
+                build(child, depth + 1) for child in children.get(object_id, [])
+            ]
+            return node
+
+        return build(root, 0)
+
+    def list_notebooks(self) -> dict[str, Any]:
+        _, items = self._browsing_snapshot("notebooks", include_recycle_bin=False)
+        notebooks = filter_resources(items, "notebook")
+        return {"items": notebooks, "count": len(notebooks)}
+
+    def expand_typed(self, root_id: str, resource_type: str) -> dict[str, Any]:
+        if resource_type not in RESOURCE_TYPES:
+            raise ValueError(f"Unsupported typed hierarchy root '{resource_type}'.")
+        scope = "sections" if resource_type in {"notebook", "section_group"} else "pages"
+        raw_items, items = self._browsing_snapshot(
+            scope,
+            include_recycle_bin=False,
+            root_id=root_id,
+        )
+        root = self._require_browsing_root(
+            raw_items,
+            items,
+            root_id,
+            expected_type=resource_type,
+            include_recycle_bin=False,
+        )
+        children = self._relationship_children(items)
+        stop_at_types = (
+            frozenset({"section"})
+            if resource_type in {"notebook", "section_group"}
+            else frozenset()
+        )
+        return {
+            "tree": self._build_tree(
+                root,
+                children,
+                max_depth=None,
+                stop_at_types=stop_at_types,
+            )
+        }
+
+    def expand_hierarchy(
+        self,
+        root_id: str,
+        max_depth: int = 8,
+        include_recycle_bin: bool = False,
+    ) -> dict[str, Any]:
+        raw_items, items = self._browsing_snapshot(
+            "pages",
+            include_recycle_bin=include_recycle_bin,
+            root_id=root_id,
+        )
+        root = self._require_browsing_root(
+            raw_items,
+            items,
+            root_id,
+            expected_type=None,
+            include_recycle_bin=include_recycle_bin,
+        )
+        return {
+            "tree": self._build_tree(
+                root,
+                self._relationship_children(items),
+                max_depth=max_depth,
+            )
+        }
 
     @staticmethod
     def _open_notebook_ids(items: list[dict[str, Any]]) -> set[str]:
@@ -694,30 +869,6 @@ class HierarchyService(BaseService):
             parent_id = parent.get("parent_id")
         ancestors.reverse()
         return {"item": item, "path": item["path"], "ancestors": ancestors}
-
-    def tree(self, root_id: str, max_depth: int = 8, include_recycle_bin: bool = False) -> dict[str, Any]:
-        items = self.resources(include_recycle_bin)
-        by_id = {item["id"]: item for item in items}
-        root = by_id.get(root_id)
-        if root is None:
-            raise ValueError(f"No object found for ID '{root_id}'.")
-        children: dict[str, list[dict[str, Any]]] = {}
-        for item in items:
-            if item["id"] == root_id:
-                continue
-            parent = item.get("parent_page_id") if item["resource_type"] == "page" else item.get("parent_id")
-            if item["resource_type"] == "page" and parent is None:
-                parent = item.get("section_id")
-            if parent:
-                children.setdefault(parent, []).append(item)
-
-        def build(item: dict[str, Any], depth: int) -> dict[str, Any]:
-            node = {"item": item, "children": []}
-            if depth < max(0, max_depth):
-                node["children"] = [build(child, depth + 1) for child in children.get(item["id"], [])]
-            return node
-
-        return {"tree": build(root, 0)}
 
     def update_xml(
         self,

@@ -88,7 +88,7 @@ async def _execute_delete(
         if find_snapshot_item(after, current["id"]) is not None:
             raise InvariantFailure("Deleted target is still visible in the default active snapshot.")
         recycle_tree_result = await client.call_tool(
-            "get_tree",
+            "expand_hierarchy",
             {"root_id": notebook_id, "max_depth": 8, "include_recycle_bin": True},
         )
         recycle_items = [stable_item(item) for item in flatten_tree(recycle_tree_result["tree"])]

@@ -130,7 +130,7 @@ def test_catalog_is_unique_and_covers_every_owned_recipe_base_dimension() -> Non
 
 
 def test_search_and_query_have_complete_cache_contracts() -> None:
-    for scenario_name in ("search-all-open-notebooks", "query-metadata-scopes"):
+    for scenario_name in ("search-all-open-notebooks", "query"):
         dimensions = {
             case.dimension for case in CASES if case.scenario_name == scenario_name
         }

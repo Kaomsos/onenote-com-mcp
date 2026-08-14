@@ -12,12 +12,12 @@ from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
 from ..test_utils import scenario_dir, write_json
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
-from .fixture_recipes.query_metadata_scopes import RECIPE
+from .fixture_recipes.query import RECIPE
 
 
 @SCENARIO_REGISTRY.register
-class QueryMetadataScopesScenario(Scenario):
-    name = "query-metadata-scopes"
+class QueryScenario(Scenario):
+    name = "query"
     fixture_recipe = RECIPE
     included_in_all = True
     timeout_default = 300
@@ -30,15 +30,6 @@ class QueryMetadataScopesScenario(Scenario):
     @staticmethod
     def _ids(result: dict[str, Any]) -> list[str]:
         return [str(item.get("id", "")) for item in result.get("items", [])]
-
-    @staticmethod
-    def _flatten_tree(node: dict[str, Any]) -> list[dict[str, Any]]:
-        item = node.get("item")
-        result = [dict(item)] if isinstance(item, dict) else []
-        for child in node.get("children", []):
-            if isinstance(child, dict):
-                result.extend(QueryMetadataScopesScenario._flatten_tree(child))
-        return result
 
     @staticmethod
     def _audit_operations(path, start: int) -> tuple[list[str], int]:
@@ -67,27 +58,27 @@ class QueryMetadataScopesScenario(Scenario):
         structure = {key: dict(value) for key, value in manifest["structure"].items()}
         notebooks = manifest["notebooks"]
         evidence: dict[str, Any] = {"requests": []}
-        raw_items: dict[str, list[dict[str, Any]]] = {}
+        metadata_items: dict[str, list[dict[str, Any]]] = {}
 
         for role in ("source", "query-b"):
-            tree_result = await client.call_tool(
-                "get_tree",
-                {"root_id": str(notebooks[role]["id"]), "max_depth": 8},
-                retry_read=False,
-            )
-            raw_items[role] = self._flatten_tree(tree_result["tree"])
+            notebook_id = str(notebooks[role]["id"])
+            metadata_items[role] = [dict(notebooks[role])] + [
+                dict(item)
+                for item in structure.values()
+                if str(item.get("notebook_id", "")) == notebook_id
+            ]
             write_json(
-                out / f"typed-hierarchy-{role}.json",
+                out / f"fixture-metadata-{role}.json",
                 {
-                    "notebook_id": str(notebooks[role]["id"]),
-                    "tree": tree_result["tree"],
-                    "flat_items": raw_items[role],
+                    "notebook_id": notebook_id,
+                    "items": metadata_items[role],
+                    "source": "validated scenario fixture manifest",
                 },
             )
 
-        raw_by_id = {
+        metadata_by_id = {
             str(item.get("id", "")): item
-            for items in raw_items.values()
+            for items in metadata_items.values()
             for item in items
             if item.get("id")
         }
@@ -170,17 +161,17 @@ class QueryMetadataScopesScenario(Scenario):
         independent_expected: dict[str, dict[str, Any]] = {}
         for key, manifest_item in structure.items():
             object_id = str(manifest_item.get("id", ""))
-            raw_item = raw_by_id.get(object_id)
-            if raw_item is None:
+            metadata_item = metadata_by_id.get(object_id)
+            if metadata_item is None:
                 raise InvariantFailure(
-                    f"Independent typed hierarchy evidence is missing fixture key {key}."
+                    f"Validated fixture metadata is missing fixture key {key}."
                 )
-            if raw_item.get("resource_type") != manifest_item.get("resource_type"):
+            if metadata_item.get("resource_type") != manifest_item.get("resource_type"):
                 raise InvariantFailure(
-                    f"Independent typed hierarchy evidence mistypes fixture key {key}."
+                    f"Validated fixture metadata mistypes fixture key {key}."
                 )
             independent_expected[key] = {
-                field: raw_item.get(field)
+                field: metadata_item.get(field)
                 for field in (
                     "id",
                     "resource_type",
@@ -196,7 +187,7 @@ class QueryMetadataScopesScenario(Scenario):
         write_json(
             out / "expected-results.json",
             {
-                "source": "independent typed-hierarchy role trees aligned to the fixture manifest",
+                "source": "validated scenario fixture metadata",
                 "items": independent_expected,
             },
         )
@@ -249,7 +240,7 @@ class QueryMetadataScopesScenario(Scenario):
                     )
             else:
                 start_id = str(requested_scope["start_node_id"])
-                start_item = raw_by_id[start_id]
+                start_item = metadata_by_id[start_id]
                 expected_notebook_id = (
                     start_id
                     if start_item.get("resource_type") == "notebook"
@@ -263,7 +254,7 @@ class QueryMetadataScopesScenario(Scenario):
                     "notebook_id": expected_notebook_id,
                 }:
                     raise InvariantFailure(
-                        f"{label} start-node scope does not match independent hierarchy evidence."
+                        f"{label} start-node scope does not match validated fixture metadata."
                     )
             expected_ids = expected.get("ids")
             ordered = bool(expected.get("ordered", False))
@@ -295,7 +286,7 @@ class QueryMetadataScopesScenario(Scenario):
                             "matched the reused fixture token."
                         )
                     raise InvariantFailure(
-                        f"{label} result IDs differ from independent hierarchy evidence."
+                        f"{label} result IDs differ from validated fixture metadata."
                     )
             for field in (
                 "count", "total_matches", "offset", "page_size", "has_more", "next_offset"
@@ -308,9 +299,9 @@ class QueryMetadataScopesScenario(Scenario):
                 "label": label,
                 "tool": tool,
                 "arguments": arguments,
-                "raw_hierarchy_evidence": [
-                    "typed-hierarchy-source.json",
-                    "typed-hierarchy-query-b.json",
+                "fixture_metadata_evidence": [
+                    "fixture-metadata-source.json",
+                    "fixture-metadata-query-b.json",
                 ],
                 "independent_expected_evidence": "expected-results.json",
                 "expected": expected,
@@ -610,4 +601,4 @@ class QueryMetadataScopesScenario(Scenario):
         raise RunnerFailure("Typed Query scenario requires lifecycle-controlled execution.")
 
 
-__all__ = ["QueryMetadataScopesScenario"]
+__all__ = ["QueryScenario"]

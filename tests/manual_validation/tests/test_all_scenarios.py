@@ -52,7 +52,7 @@ SCENARIO_MODULES = {
     "move_section_group": "MoveSectionGroupScenario",
     "onenote_convergence": "OneNoteConvergenceScenario",
     "search_all_open_notebooks": "SearchAllOpenNotebooksScenario",
-    "query_metadata_scopes": "QueryMetadataScopesScenario",
+    "query": "QueryScenario",
     "hierarchy_navigation": "HierarchyNavigationScenario",
     "bootstrap_inserted_file_fixture": "BootstrapInsertedFileFixtureScenario",
     "bootstrap_ink_drawing_fixture": "BootstrapInkDrawingFixtureScenario",
@@ -235,7 +235,7 @@ def test_all_membership_and_reviewed_capabilities_are_exact() -> None:
         "move-section",
         "move-section-group",
         "search-all-open-notebooks",
-        "query-metadata-scopes",
+        "query",
     )
 
     section_group_reorder = SCENARIO_REGISTRY.get("reorder-section-group")
@@ -292,7 +292,7 @@ def test_all_runs_every_scenario_serially_and_is_quiet_by_default(capsys) -> Non
     assert "PASS move-section" in output
     assert "PASS move-section-group" in output
     assert "PASS search-all-open-notebooks" in output
-    assert "PASS query-metadata-scopes" in output
+    assert "PASS query" in output
     assert "Completed 18 scenarios: 18 passed, 0 failed" in output
     assert "result for" not in output
 

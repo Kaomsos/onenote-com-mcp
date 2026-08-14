@@ -68,7 +68,7 @@ class NotebookLifecycleWrapper:
             raise RunnerFailure("Lifecycle lease already exists; refusing to create another source Notebook.")
         exact = [
             item
-            for item in self._hierarchy.list_notebooks(include_recycle_bin=True)["notebooks"]
+            for item in self._hierarchy.list_notebooks()["items"]
             if display_name(item).casefold() == name.casefold()
         ]
         if exact:
@@ -672,7 +672,7 @@ class NotebookLifecycleWrapper:
         }
         if not template_paths:
             return True
-        notebooks = self._hierarchy.list_notebooks(include_recycle_bin=True)["notebooks"]
+        notebooks = self._hierarchy.list_notebooks()["items"]
         for notebook in notebooks:
             if notebook.get("is_open") is False:
                 continue
@@ -690,9 +690,7 @@ class NotebookLifecycleWrapper:
         """Capture current open Notebook IDs and actual directories exactly once."""
 
         try:
-            notebooks = self._hierarchy.list_notebooks(include_recycle_bin=True)[
-                "notebooks"
-            ]
+            notebooks = self._hierarchy.list_notebooks()["items"]
             snapshot: dict[str, Path] = {}
             observed_paths: dict[Path, str] = {}
             for notebook in notebooks:

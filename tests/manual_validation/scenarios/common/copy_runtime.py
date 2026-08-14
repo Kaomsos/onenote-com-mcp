@@ -476,7 +476,7 @@ async def cleanup_copy(
     deleted: list[str] = []
     for target in cleanup_order:
         tree_result = await client.call_tool(
-            "get_tree",
+            "expand_hierarchy",
             {"root_id": notebook_id, "max_depth": 8},
         )
         current = next(

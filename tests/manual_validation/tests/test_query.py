@@ -26,21 +26,21 @@ from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
     FixtureBundleObservation,
     FixtureRoleObservation,
 )
-from tests.manual_validation.scenarios.fixture_recipes.query_metadata_scopes import (
+from tests.manual_validation.scenarios.fixture_recipes.query import (
     _preflight_query_fixture_paths,
     compact_query_token,
 )
 
 
 def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
-    scenario = SCENARIO_REGISTRY.get("query-metadata-scopes")
+    scenario = SCENARIO_REGISTRY.get("query")
     recipe = scenario.fixture_recipe
     spec = scenario.spec
 
     assert scenario.included_in_all is True
     assert scenario.requires_index_activation_checkpoint is False
     assert scenario.requires_lifecycle_wrappers is True
-    assert recipe.recipe_version == 5
+    assert recipe.recipe_version == 6
     assert recipe.supports_cache is True
     assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
         "query-b",
@@ -89,6 +89,8 @@ def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
         "query_page",
     } <= spec.tool_allowlist
     assert not any(tool.startswith("list_") for tool in spec.tool_allowlist)
+    assert not any(tool.startswith("expand_") for tool in spec.tool_allowlist)
+    assert "get_page_xml" not in spec.tool_allowlist
     assert spec.policy.writes_enabled is True
     assert spec.policy.deletes_enabled is False
     assert spec.policy.permanent_deletes_enabled is False
@@ -137,7 +139,7 @@ def test_query_deep_physical_path_is_budgeted_before_role_mutation(tmp_path) -> 
 
 
 def test_query_metadata_scope_dry_run_is_human_gated_and_least_privilege(capsys) -> None:
-    assert main(["query-metadata-scopes", "--dry-run", "--json"]) == 0
+    assert main(["query", "--dry-run", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
 
     assert payload["agent_execution_prohibited"] is True
@@ -167,7 +169,7 @@ def test_query_metadata_scope_dry_run_is_human_gated_and_least_privilege(capsys)
 
 def test_query_metadata_use_cache_plans_normal_materialization(capsys) -> None:
     assert main(
-        ["query-metadata-scopes", "--use-cache", "--dry-run", "--json"]
+        ["query", "--use-cache", "--dry-run", "--json"]
     ) == 0
     payload = json.loads(capsys.readouterr().out)
 
@@ -181,14 +183,14 @@ def _runtime_manifest() -> dict:
     source = {
         "id": "ns",
         "resource_type": "notebook",
-        "name": "__query-metadata-scopes-source-2026-08-13-00-00-00__",
+        "name": "__query-source-2026-08-13-00-00-00__",
         "path": "Source",
         "parent_id": None,
     }
     query_b = {
         "id": "nb",
         "resource_type": "notebook",
-        "name": "__query-metadata-scopes-query-b-2026-08-13-00-00-00__",
+        "name": "__query-query-b-2026-08-13-00-00-00__",
         "path": "QueryB",
         "parent_id": None,
     }
@@ -366,7 +368,7 @@ def test_query_recipe_places_second_direct_child_after_first_child(
 ) -> None:
     import asyncio
     from tests.manual_validation.scenarios.fixture_recipes import (
-        query_metadata_scopes as recipe_module,
+        query as recipe_module,
     )
 
     page_titles: dict[str, str] = {}
@@ -412,8 +414,8 @@ def test_query_recipe_places_second_direct_child_after_first_child(
     monkeypatch.setattr(recipe_module, "ensure_page", ensure_page)
     monkeypatch.setattr(recipe_module, "enforce_page_position", enforce)
 
-    recipe = SCENARIO_REGISTRY.get("query-metadata-scopes").fixture_recipe
-    spec = SCENARIO_REGISTRY.get("query-metadata-scopes").spec
+    recipe = SCENARIO_REGISTRY.get("query").fixture_recipe
+    spec = SCENARIO_REGISTRY.get("query").spec
     for role in ("source", "query-b"):
         run_dir = tmp_path / role
         run_dir.mkdir()
@@ -467,7 +469,7 @@ def test_query_recipe_places_second_direct_child_after_first_child(
 
 
 def _query_fixture_observation() -> FixtureBundleObservation:
-    scenario = SCENARIO_REGISTRY.get("query-metadata-scopes")
+    scenario = SCENARIO_REGISTRY.get("query")
     recipe = scenario.fixture_recipe
     manifest = _runtime_manifest()
     roles = {}
@@ -497,20 +499,20 @@ def _query_fixture_observation() -> FixtureBundleObservation:
 
 
 def test_query_recipe_uses_role_aware_complete_bundle_validation() -> None:
-    recipe = SCENARIO_REGISTRY.get("query-metadata-scopes").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("query").fixture_recipe
     observation = _query_fixture_observation()
 
     report = recipe.validate_live(observation)
 
     assert report.passed is True
-    assert "every typed Query Page was read once during fixture snapshot validation" in (
+    assert "every typed Query Page was observed through query_page" in (
         report.role_checks["query-b"]
     )
     assert "both typed Query roles share one non-empty run token" in report.bundle_checks
 
 
 def test_query_recipe_rejects_cross_role_token_drift() -> None:
-    recipe = SCENARIO_REGISTRY.get("query-metadata-scopes").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("query").fixture_recipe
     observation = _query_fixture_observation()
     query_b = observation.roles["query-b"]
     structure = deepcopy(dict(query_b.build.structure))
@@ -533,11 +535,56 @@ def test_query_recipe_rejects_cross_role_token_drift() -> None:
         recipe.validate_live(broken)
 
 
+def test_query_recipe_snapshot_uses_query_tools_only() -> None:
+    import asyncio
+
+    manifest = _runtime_manifest()
+
+    class SnapshotClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call_tool(self, name, arguments):
+            self.calls.append(name)
+            assert name in {
+                "query_section_group",
+                "query_section",
+                "query_page",
+            }
+            resource_type = {
+                "query_section_group": "section_group",
+                "query_section": "section",
+                "query_page": "page",
+            }[name]
+            notebook_id = arguments["scope"]["start_node_id"]
+            items = [
+                item
+                for item in manifest["structure"].values()
+                if item["resource_type"] == resource_type
+                and item["notebook_id"] == notebook_id
+            ]
+            return {"items": items, "has_more": False, "next_offset": None}
+
+    client = SnapshotClient()
+    snapshot = asyncio.run(
+        SCENARIO_REGISTRY.get("query").fixture_recipe.capture_snapshot(client, "ns")
+    )
+
+    assert set(client.calls) == {
+        "query_section_group",
+        "query_section",
+        "query_page",
+    }
+    assert snapshot["metadata_source"] == "typed_query_tools"
+    assert len(snapshot["items"]) == 14
+
+
 class _FakeQueryClient:
     def __init__(self, run_dir: Path, manifest: dict) -> None:
         self.run_dir = run_dir
         self.manifest = manifest
         self.open_count = 4
+        self.calls: list[str] = []
         self.catalog = {
             item["id"]: item
             for item in [*manifest["notebooks"].values(), *manifest["structure"].values()]
@@ -559,8 +606,9 @@ class _FakeQueryClient:
                 stream.write(json.dumps({"operation": "get_hierarchy"}) + "\n")
 
     async def call_tool(self, name, arguments, retry_read=False):
-        if name == "get_tree":
-            return {"tree": self._tree(str(arguments["root_id"]))}
+        self.calls.append(name)
+        if not name.startswith("query_"):
+            raise AssertionError(f"Query scenario crossed tool families: {name}")
 
         scope = arguments.get("scope", {"mode": "root"})
         self._append_audit(1 if scope["mode"] == "root" else 2)
@@ -671,11 +719,11 @@ def test_query_metadata_runtime_records_independent_expected_and_exact_bridge_ca
     import asyncio
 
     run_dir = tmp_path / "run"
-    (run_dir / "scenarios" / "query-metadata-scopes").mkdir(parents=True)
+    (run_dir / "scenarios" / "query").mkdir(parents=True)
     manifest = _runtime_manifest()
     client = _FakeQueryClient(run_dir, manifest)
     wrapper = _FakeCloseWrapper(client)
-    scenario = SCENARIO_REGISTRY.get("query-metadata-scopes")
+    scenario = SCENARIO_REGISTRY.get("query")
 
     result = asyncio.run(
         scenario.execute_with_lifecycle(
@@ -688,20 +736,26 @@ def test_query_metadata_runtime_records_independent_expected_and_exact_bridge_ca
         )
     )
 
-    evidence_dir = run_dir / "scenarios" / "query-metadata-scopes"
+    evidence_dir = run_dir / "scenarios" / "query"
     requests = json.loads((evidence_dir / "requests-and-responses.json").read_text(encoding="utf-8"))
     expected = json.loads((evidence_dir / "expected-results.json").read_text(encoding="utf-8"))
     assert result["status"] == "passed"
     assert result["requests_recorded"] == 20
     assert wrapper.closed is True
     assert len(requests["requests"]) == 20
+    assert set(client.calls) <= {
+        "query_notebook",
+        "query_section_group",
+        "query_section",
+        "query_page",
+    }
     assert all(
         set(record["bridge_operations"]) == {"get_hierarchy"}
         for record in requests["requests"]
     )
     assert set(expected["items"]) == set(manifest["structure"])
-    assert (evidence_dir / "typed-hierarchy-source.json").exists()
-    assert (evidence_dir / "typed-hierarchy-query-b.json").exists()
+    assert (evidence_dir / "fixture-metadata-source.json").exists()
+    assert (evidence_dir / "fixture-metadata-query-b.json").exists()
     baseline = json.loads(
         (evidence_dir / "open-notebook-baseline.json").read_text(encoding="utf-8")
     )
@@ -745,11 +799,11 @@ def test_query_cache_warns_only_when_reused_token_produces_extra_hits(tmp_path) 
     import asyncio
 
     run_dir = tmp_path / "run"
-    (run_dir / "scenarios" / "query-metadata-scopes").mkdir(parents=True)
+    (run_dir / "scenarios" / "query").mkdir(parents=True)
     manifest = _runtime_manifest()
     client = _CollisionQueryClient(run_dir, manifest)
     wrapper = _FakeCloseWrapper(client)
-    scenario = SCENARIO_REGISTRY.get("query-metadata-scopes")
+    scenario = SCENARIO_REGISTRY.get("query")
 
     with pytest.raises(InvariantFailure, match="cache_query_collision"):
         asyncio.run(
@@ -767,7 +821,7 @@ def test_query_cache_warns_only_when_reused_token_produces_extra_hits(tmp_path) 
         (
             run_dir
             / "scenarios"
-            / "query-metadata-scopes"
+            / "query"
             / "cache-query-collision-warning.json"
         ).read_text(encoding="utf-8")
     )

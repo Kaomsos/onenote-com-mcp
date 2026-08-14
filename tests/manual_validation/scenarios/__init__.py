@@ -41,7 +41,7 @@ from .move_section import MoveSectionScenario
 from .move_section_group import MoveSectionGroupScenario
 from .onenote_convergence import OneNoteConvergenceScenario
 from .search_all_open_notebooks import SearchAllOpenNotebooksScenario
-from .query_metadata_scopes import QueryMetadataScopesScenario
+from .query import QueryScenario
 from .hierarchy_navigation import HierarchyNavigationScenario
 from .bootstrap_inserted_file_fixture import BootstrapInsertedFileFixtureScenario
 from .bootstrap_ink_drawing_fixture import BootstrapInkDrawingFixtureScenario
@@ -207,7 +207,7 @@ __all__ = [
     "MoveSectionGroupScenario",
     "OneNoteConvergenceScenario",
     "SearchAllOpenNotebooksScenario",
-    "QueryMetadataScopesScenario",
+    "QueryScenario",
     "HierarchyNavigationScenario",
     "BootstrapInsertedFileFixtureScenario",
     "BootstrapInkDrawingFixtureScenario",

@@ -11,6 +11,8 @@ from ..policy import CopyBudget, MutationPolicy, SearchBudget
 from ..services import (
     DEFAULT_SEARCH_PAGE_SIZE,
     DEFAULT_METADATA_QUERY_PAGE_SIZE,
+    HIERARCHY_BROWSING_TOOLS,
+    MAX_HIERARCHY_TREE_ITEMS,
     MAX_METADATA_QUERY_PAGE_SIZE,
     IDENTIFIER_RESOLUTION_ORDER,
     MAX_SEARCH_PAGE_SIZE,
@@ -64,6 +66,12 @@ async def health_check() -> dict[str, Any]:
                     "max_page_size": MAX_METADATA_QUERY_PAGE_SIZE,
                     "consistency": METADATA_QUERY_PAGINATION_CONSISTENCY,
                 },
+            },
+            "hierarchy_browsing": {
+                "tools": list(HIERARCHY_BROWSING_TOOLS),
+                "tree_schema": "tree={item,children[]}",
+                "max_tree_items": MAX_HIERARCHY_TREE_ITEMS,
+                "page_body_reads": False,
             },
             "content_formats": ["plain", "html", "markdown"],
             "mutation_policy": {

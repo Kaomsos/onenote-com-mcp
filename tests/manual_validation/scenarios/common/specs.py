@@ -878,15 +878,13 @@ _TYPED_QUERY_FIXTURE_TOOLS = {
 }
 _TYPED_QUERY_READ_TOOLS = {
     "health_check",
-    "get_tree",
-    "get_page_xml",
     "query_notebook",
     "query_section_group",
     "query_section",
     "query_page",
 }
-SCENARIO_SPECS["query-metadata-scopes"] = ScenarioSpec(
-    "query-metadata-scopes",
+SCENARIO_SPECS["query"] = ScenarioSpec(
+    "query",
     _profile(
         "cacheable-typed-query-scopes",
         (
@@ -947,15 +945,19 @@ SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
     _profile(
         "cacheable-hierarchy-navigation",
         (
-            "Navigation-Group/{Navigation-Section,Navigation-Section-Sibling}",
+            "Navigation-Root-Section",
+            "Navigation-Group/{Navigation-Group-Section,Navigation-Inner-Group/Navigation-Target-Section}",
             (
-                "Navigation-Section/Navigation-Parent/"
+                "Navigation-Target-Section/Navigation-Parent/"
                 "{Navigation-Child/Navigation-Grandchild,Navigation-Child-Sibling}"
             ),
-            "Navigation-Section/Navigation-Root-Sibling",
+            "Navigation-Target-Section/Navigation-Root-Sibling",
+            "second open Notebook role",
         ),
         (
+            "navigation_root_section",
             "navigation_group",
+            "navigation_inner_group",
             "navigation_section",
             "navigation_section_sibling",
             "navigation_parent_page",
@@ -965,12 +967,14 @@ SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
             "navigation_root_page_sibling",
         ),
         _HIERARCHY_NAVIGATION_FIXTURE_TOOLS,
-        content=("container ancestry", "Page indentation levels 1/2/3"),
+        content=("nested container ancestry", "Page indentation levels 1/2/3"),
         checks=(
-            "get_parent returns COM container ancestry, including Section for a Page",
-            "get_path contains only the exact Notebook/SectionGroup/Section chain",
-            "get_tree projects parent_page_id/page_level as a branched Page tree",
-            "get_tree max_depth truncates below direct Page children",
+            "list_notebooks returns both open fixture Notebook roles with unique IDs",
+            "typed Expand tools preserve boundaries, order, uniqueness, and one shared tree schema",
+            "expand_hierarchy projects parent_page_id/page_level as a branched Page tree",
+            "expand_hierarchy accepts all four hierarchy root types",
+            "expand_hierarchy max_depth truncates below direct Page children",
+            "scenario browsing audit contains hierarchy metadata reads only",
         ),
     ),
     WRITE_POLICY,
@@ -978,22 +982,19 @@ SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
         _HIERARCHY_NAVIGATION_FIXTURE_TOOLS
         | {
             "health_check",
-            "get_tree",
-            "get_page_xml",
-            "get_parent",
-            "get_path",
-            "query_section_group",
-            "query_section",
-            "query_page",
+            "list_notebooks",
+            "expand_notebook",
+            "expand_section_group",
+            "expand_section",
+            "expand_page",
+            "expand_hierarchy",
         }
     ),
     {
         "cache_supported": True,
         "included_in_all": False,
-        "page_parent_semantics": {
-            "get_parent_and_get_path": "container",
-            "get_tree": "derived_indentation",
-        },
+        "notebook_roles": ["source", "browse-b"],
+        "page_parent_semantics": {"expand_hierarchy": "derived_indentation"},
     },
 )
 

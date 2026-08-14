@@ -10,7 +10,6 @@ from local_onenote_mcp.onenote_errors import OneNoteDesktopNotRunningError
 from local_onenote_mcp.policy import SearchBudget
 from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.tools.advanced import merge_sections, open_hierarchy, set_filing_location
-from local_onenote_mcp.tools.hierarchy import list_hierarchy
 from local_onenote_mcp.tools.mutations import create_page, create_section, delete_page_content
 from local_onenote_mcp.tools.operations import publish_object
 from local_onenote_mcp.tools.pages import RootSearchScope, StartNodeSearchScope, search_pages
@@ -59,6 +58,19 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
             "max_page_size": 200,
             "consistency": "live_hierarchy",
         },
+    }
+    assert result["hierarchy_browsing"] == {
+        "tools": [
+            "list_notebooks",
+            "expand_notebook",
+            "expand_section_group",
+            "expand_section",
+            "expand_page",
+            "expand_hierarchy",
+        ],
+        "tree_schema": "tree={item,children[]}",
+        "max_tree_items": 10_000,
+        "page_body_reads": False,
     }
     assert "search_default_backend" not in result
     assert "search_backends" not in result
@@ -322,6 +334,21 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
     assert "query_hierarchy" not in names
     assert "global_query" not in names
     assert {
+        "list_notebooks",
+        "expand_notebook",
+        "expand_section_group",
+        "expand_section",
+        "expand_page",
+        "expand_hierarchy",
+    } <= names
+    assert {
+        "list_hierarchy",
+        "list_section_groups",
+        "list_sections",
+        "list_pages",
+        "get_tree",
+    }.isdisjoint(names)
+    assert {
         "reorder_section",
         "reorder_section_group",
         "reparent_page",
@@ -547,17 +574,27 @@ def test_page_content_digest_ignores_only_empty_selection_text_placeholders():
     )
 
 
-def test_list_hierarchy_children_returns_only_direct_typed_children(monkeypatch):
-    xml = """<one:Notebooks xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">
-      <one:Notebook name="NB" ID="n"><one:SectionGroup name="G" ID="g"><one:Section name="S" ID="s" /></one:SectionGroup></one:Notebook>
-    </one:Notebooks>"""
-    monkeypatch.setattr(server.services.hierarchy, "hierarchy_xml", lambda start_id="", scope="pages": xml)
-
-    result = asyncio.run(list_hierarchy("n", scope="children"))
-
-    assert result["ok"] is True
-    assert [item["id"] for item in result["items"]] == ["g"]
-    assert result["items"][0]["resource_type"] == "section_group"
+def test_hierarchy_browsing_schemas_are_exact_and_typed():
+    tools = server.mcp._tool_manager._tools
+    assert tools["list_notebooks"].parameters.get("properties", {}) == {}
+    assert tools["list_notebooks"].parameters.get("required", []) == []
+    for name in (
+        "expand_notebook",
+        "expand_section_group",
+        "expand_section",
+        "expand_page",
+    ):
+        schema = tools[name].parameters
+        assert set(schema["properties"]) == {"id"}
+        assert schema["required"] == ["id"]
+        assert schema["properties"]["id"]["minLength"] == 1
+    hierarchy_schema = tools["expand_hierarchy"].parameters
+    assert set(hierarchy_schema["properties"]) == {
+        "root_id",
+        "max_depth",
+        "include_recycle_bin",
+    }
+    assert hierarchy_schema["required"] == ["root_id"]
 
 
 def test_open_hierarchy_resolves_existing_friendly_path_without_bridge(monkeypatch):

@@ -26,7 +26,7 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section-group
 .venv\Scripts\python.exe tests\manual_validation\run.py onenote-convergence
-.venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes
+.venv\Scripts\python.exe tests\manual_validation\run.py query
 .venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation
 ```
 
@@ -107,7 +107,7 @@ Cache materialization 会先按 Notebook-relative typed address 重绑结构 ID�
 .venv\Scripts\python.exe tests\manual_validation\run.py all --use-cache --dry-run --json
 ```
 
-`--use-cache` 只改变 fixture 来源：validated hit 把关闭的 immutable template opaque-copy 到本次 run 的 role-specific working 路径；cache build 已负责生成并验证 immutable template 的权威内容基线。每个 role 只打开一次 exact working path，并在同一个短命 PowerShell/COM session 内按精确 parent 批量 `OpenHierarchy`。随后 runner 重新枚举完整 hierarchy，按 Notebook-relative typed address 重绑全部 SectionGroup、Section 与 Page ID，要求连续两次结构稳定，然后只捕获一次完整 `scenario before` snapshot。它同时完成 materialized 内容真实性复核和 mutation 基线取证，并通过 exact role/Notebook ID/digest 单次 handoff 给 scenario；全部 role 未消费完时，首次 mutation 会在 MCP 调用前 fail closed。每个 Page 的 hash、能力与 normalized object evidence 都从同一次 `get_page_xml(page_info=all)` 本地派生，不再为对象投影重复调用 `get_page_objects`。Cached manifest 中明确属于旧 run 的 `notebook_copy_root`、逐 role working Notebook path 和 lifecycle lease 会在先证明同源关系后按字段重绑到当前 run，并记录 `cache-run-local-path-remap.json`；不会递归替换内容，也不会修改模板，旧字段缺失或彼此不一致时 mutation 前 fail closed。`cache-materialization.json` 将 materialize 决策与真正的 validated-hit/cold-build/bootstrap 来源分开记录，`cache-hierarchy-convergence.json` 细分 hierarchy/`scenario before` 耗时，`scenario-before-snapshot-handoff.json` 记录单次消费状态。Template 永不打开或修改；Cache 不保存 working lease，也不与 run 维持所有权或生命周期关系，多个 run 可从同一 immutable entry 得到各自唯一的 working paths。Programmatic miss 仍先构建并 live-validate fresh bundle、精确关闭、发布 immutable template，再只打开一次新的 materialized working copy。working activation、COM 或 convergence 失败只保留 run-local 失败证据，不再自动 quarantine 已验证 template；确定性的 template inventory、身份或缓存证据失败仍会在既有 cache 门限 fail closed。任一 ID rebind、双稳定、内容验证或 handoff 失败均保留 working files/evidence；默认 failure finalizer 精确关闭当前 lease，显式 keep 才保持打开。
+`--use-cache` 只改变 fixture 来源：validated hit 把关闭的 immutable template opaque-copy 到本次 run 的 role-specific working 路径；cache build 已负责生成并验证 immutable template 的权威基线。每个 role 只打开一次 exact working path，并在同一个短命 PowerShell/COM session 内按精确 parent 批量 `OpenHierarchy`。随后 runner 重新枚举完整 hierarchy，按 Notebook-relative typed address 重绑全部 SectionGroup、Section 与 Page ID，要求连续两次结构稳定，然后只捕获一次完整 `scenario before` snapshot。默认内容场景会从同一次 `get_page_xml(page_info=all)` 派生每个 Page 的 hash、能力与 normalized object evidence；声明 recipe-owned metadata snapshot 的只读场景则只使用自己的工具族取证，不跨入另一浏览工具族。Cached manifest 中明确属于旧 run 的 `notebook_copy_root`、逐 role working Notebook path 和 lifecycle lease 会在先证明同源关系后按字段重绑到当前 run，并记录 `cache-run-local-path-remap.json`；不会递归替换内容，也不会修改模板，旧字段缺失或彼此不一致时 mutation 前 fail closed。`cache-materialization.json` 将 materialize 决策与真正的 validated-hit/cold-build/bootstrap 来源分开记录，`cache-hierarchy-convergence.json` 细分 hierarchy/`scenario before` 耗时，`scenario-before-snapshot-handoff.json` 记录单次消费状态。Template 永不打开或修改；Cache 不保存 working lease，也不与 run 维持所有权或生命周期关系，多个 run 可从同一 immutable entry 得到各自唯一的 working paths。Programmatic miss 仍先构建并 live-validate fresh bundle、精确关闭、发布 immutable template，再只打开一次新的 materialized working copy。working activation、COM 或 convergence 失败只保留 run-local 失败证据，不再自动 quarantine 已验证 template；确定性的 template inventory、身份或缓存证据失败仍会在既有 cache 门限 fail closed。任一 ID rebind、双稳定、内容验证或 handoff 失败均保留 working files/evidence；默认 failure finalizer 精确关闭当前 lease，显式 keep 才保持打开。
 
 每个命令在 dispatch 时只读取一次主机本地时区，并冻结 run identity。Notebook、默认 run 目录以及 Copy/Move 目标名称共享 Windows-safe 的本地显示时间，例如 `2026-08-11-11-05-49`。完整本地 ISO 时间、UTC offset 和时区名称仍保存在 `run_identity`；JSON 中的 `created_at`、`failed_at`、`closed_at` 等事件字段仍使用 UTC ISO-8601。immutable template 继续使用内部 `template-notebook` 目录名，不作为 OneNote Notebook 打开。
 
@@ -265,16 +265,16 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 .venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks --use-cache
 ```
 
-`query-metadata-scopes` 是支持 fresh/cache、`included_in_all=true` 的双 Notebook typed metadata Query 场景。两个 role 各自创建带共享 token 的嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 与缩进 Page；Notebook root、Outer、Inner 和 Parent Page 等受测 scope 都至少包含两个 fixture-owned 同类型对象，确保多项 Query 的 scope、过滤和分页行为均由真实集合验证。fixture 构建与打开 Notebook 基线枚举同样只调用 typed Query，不依赖预备退役的旧枚举工具。Recipe v5 将第二个直接缩进 child 明确放在第一个 child 之后，避免两个 reorder 竞争同一个 predecessor；cache cold build 在 `CloseNotebook(force=false)` 前还通过 lifecycle wrapper 对每个 exact Notebook 请求一次 `SyncHierarchy`，使已验证 live hierarchy 先写回源文件。该 checkpoint 只服务 cache publish，不 reopen Notebook，也不扩大 scenario tool allowlist。物理 Group/Section 名称使用由完整 token 派生的 16 位紧凑 token；每个 role 在首个 fixture mutation 前预算最深 `.one` 路径，超过 240 UTF-16 units 时明确 fail closed。根 scope 的 `notebook_count` 以 scenario 开始前的一次无过滤 `query_notebook` 逐页取尽结果为基线，因此用户原本打开的无关 Notebook 不会造成误报；关闭 `query-b` 后验证基线减一。cache token 只有在真实产生额外结果时才输出无查询内容的 collision warning。Query 不需要 index，因此 fresh 和 cache 都不会执行 Search 专用的 close/reopen checkpoint。先前结构的用户真实证据仍保留；v5 使用新 fingerprint，旧的不可消费模板不会再次命中。
+`query` 是支持 fresh/cache、`included_in_all=true` 的双 Notebook typed metadata Query 场景。两个 role 各自创建带共享 token 的嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 与缩进 Page；Notebook root、Outer、Inner 和 Parent Page 等受测 scope 都至少包含两个 fixture-owned 同类型对象，确保多项 Query 的 scope、过滤和分页行为均由真实集合验证。fixture 构建、fresh snapshot、cache convergence、打开 Notebook 基线枚举和正式断言都只调用四个 typed Query，不调用 List 或 Expand。Recipe v6 将场景、recipe/cache identity 和证据目录统一为简洁名称 `query`，并以 Query-only metadata snapshot 代替通用 Expand/Page XML snapshot；第二个直接缩进 child 继续明确放在第一个 child 之后，避免两个 reorder 竞争同一个 predecessor。cache cold build 在 `CloseNotebook(force=false)` 前还通过 lifecycle wrapper 对每个 exact Notebook 请求一次 `SyncHierarchy`，使已验证 live hierarchy 先写回源文件。物理 Group/Section 名称使用由完整 token 派生的 16 位紧凑 token；每个 role 在首个 fixture mutation前预算最深 `.one` 路径，超过 240 UTF-16 units 时明确 fail closed。根 scope 的 `notebook_count` 以 scenario 开始前的一次无过滤 `query_notebook` 逐页取尽结果为基线，因此用户原本打开的无关 Notebook 不会造成误报；关闭 `query-b` 后验证基线减一。cache token 只有在真实产生额外结果时才输出无查询内容的 collision warning。Query 不需要 index，因此 fresh 和 cache 都不会执行 Search 专用的 close/reopen checkpoint。先前场景名的真实证据仍保留；v6 使用新 fingerprint，旧模板不会再次命中。
 
-Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 manifest key set、对象类型、同父级双 Group/双 Section、Page Section/root level/双 indentation child 和每 Page 单次内容 snapshot，并在 bundle 层证明两个 role 共用同一个非空 run token。场景保存两份独立 typed hierarchy tree、逐 fixture item 的 expected 投影、每个请求/响应及对应 bridge operation；验证四个 root Query、Notebook/SectionGroup/Section 原生起点、Page `section_id/parent_page_id`、RFC 3339 严格时间、`page_size=2` 的全部页/末页/越界页，以及每次调用恰好产生规定的一个或两个 `GetHierarchy` 且不读取 Page 正文。随后由 lifecycle wrapper 精确关闭 `query-b` role，并证明 `include_recycle_bin=true` 也不能把已关闭 Notebook 或后代重新引入。场景只授予 fixture Writes；Delete、Copy、Move、Permanent Delete 与 Raw XML 均关闭。真实运行只能由用户本人前台启动：
+Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 manifest key set、对象类型、同父级双 Group/双 Section、Page Section/root level/双 indentation child 和完整 Query metadata snapshot，并在 bundle 层证明两个 role 共用同一个非空 run token。场景保存两份独立 fixture metadata evidence、逐 fixture item 的 expected 投影、每个请求/响应及对应 bridge operation；验证四个 root Query、Notebook/SectionGroup/Section 原生起点、Page `section_id/parent_page_id`、RFC 3339 严格时间、`page_size=2` 的全部页/末页/越界页，以及每次调用恰好产生规定的一个或两个 `GetHierarchy` 且不读取 Page 正文。随后由 lifecycle wrapper 精确关闭 `query-b` role，并证明 `include_recycle_bin=true` 也不能把已关闭 Notebook 或后代重新引入。场景只授予 fixture Writes、health 与四个 Query；List、Expand、Delete、Copy、Move、Permanent Delete 与 Raw XML 均关闭。真实运行只能由用户本人前台启动：
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes
-.venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes --use-cache
+.venv\Scripts\python.exe tests\manual_validation\run.py query
+.venv\Scripts\python.exe tests\manual_validation\run.py query --use-cache
 ```
 
-`hierarchy-navigation` 是支持 fresh/cache、默认 `included_in_all=false` 的只读工具语义场景；fixture 构建仍使用受限 Write。它以同一份 level 1/2/3 分支 Page 结构对照验证：`get_parent` 与 `get_path` 保持 COM 容器关系，缩进 Page 的容器父级仍为 Section；`get_tree` 则优先使用派生的 `parent_page_id`，把两个 level-2 sibling 和一个 level-3 grandchild 投影到 Page 树，并验证 `max_depth=1` 截断。设计与完成条件由 [`TODO 032`](../../docs/todo/032_hierarchy_navigation_manual_validation.md) 跟踪。真实运行只能由用户本人前台启动：
+`hierarchy-navigation` 是支持 fresh/cache、默认 `included_in_all=false` 的只读结构浏览场景；fixture 构建仍使用受限 Write。它在两个同时打开的 disposable Notebook role 上只验证 `list_notebooks`、四个 typed Expand 与 `expand_hierarchy`：包括四类 root、Page 缩进树、depth boundary 和零 Page 正文读取。fixture build、snapshot、cache convergence 和正式断言均不调用 Query。设计与完成条件由 [`TODO 033`](../../docs/todo/033_notebook_structure_list_and_expand_tools.md) 跟踪。真实运行只能由用户本人前台启动：
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation
@@ -382,9 +382,9 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 .venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks --dry-run --json
 ```
 
-<!-- dry-run-case: query-metadata-scopes.default -->
+<!-- dry-run-case: query.default -->
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py query --dry-run --json
 ```
 
 <!-- dry-run-case: hierarchy-navigation.default -->

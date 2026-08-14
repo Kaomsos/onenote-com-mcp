@@ -119,8 +119,15 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
                 return {"xml": state["xml"]}
             if name == "get_page_objects":
                 return {"objects": state["objects"]}
-            if name == "list_pages":
-                return {"pages": [page]}
+            if name == "expand_section":
+                return {
+                    "tree": {
+                        "item": {"id": "section-id", "resource_type": "section"},
+                        "children": [
+                            {"item": {**page, "resource_type": "page"}, "children": []}
+                        ],
+                    }
+                }
             if name == "append_to_page":
                 self.append_arguments.append(dict(arguments))
                 self.contents.append(arguments["content"])
@@ -227,8 +234,15 @@ def test_copy_page_rich_fixture_writes_equation_detection_before_failure(tmp_pat
                 return {"xml": state["xml"]}
             if name == "get_page_objects":
                 return {"objects": state["objects"]}
-            if name == "list_pages":
-                return {"pages": [page]}
+            if name == "expand_section":
+                return {
+                    "tree": {
+                        "item": {"id": "section-id", "resource_type": "section"},
+                        "children": [
+                            {"item": {**page, "resource_type": "page"}, "children": []}
+                        ],
+                    }
+                }
             if name == "append_to_page":
                 self.contents.append(arguments["content"])
                 state["xml"] = build_page_update_xml(

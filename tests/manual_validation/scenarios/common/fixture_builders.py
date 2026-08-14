@@ -41,6 +41,25 @@ EXPECTED_EQUATION_EVIDENCE = {
 }
 
 
+def _tree_items(response: dict[str, Any], resource_type: str) -> list[dict[str, Any]]:
+    def flatten(node: dict[str, Any]) -> list[dict[str, Any]]:
+        item = node.get("item")
+        descendants = [
+            descendant
+            for child in node.get("children", [])
+            if isinstance(child, dict)
+            for descendant in flatten(child)
+        ]
+        return ([item] if isinstance(item, dict) else []) + descendants
+
+    tree = response.get("tree")
+    if not isinstance(tree, dict):
+        raise RunnerFailure("Expand response omitted its hierarchy tree.", EXIT_MCP)
+    return [
+        item for item in flatten(tree) if item.get("resource_type") == resource_type
+    ]
+
+
 def _equation_evidence(xml: str) -> dict[str, int]:
     projection = page_content_capability_projection(xml)
     structure = mathml_structure_projection(xml)
@@ -123,11 +142,20 @@ def _equation_fixture_report(xml: str) -> dict[str, Any]:
 
 
 async def ensure_group(client: MCPStdioClient, parent_id: str, name: str) -> dict[str, Any]:
-    listed = await client.call_tool(
-        "list_section_groups",
-        {"parent_id": parent_id, "recursive": False},
+    expanded = await client.call_tool(
+        "expand_hierarchy",
+        {"root_id": parent_id, "max_depth": 1},
     )
-    existing = exactly_one(listed.get("items", []), name, "section group")
+    children = expanded.get("tree", {}).get("children", [])
+    existing = exactly_one(
+        [
+            child["item"]
+            for child in children
+            if child.get("item", {}).get("resource_type") == "section_group"
+        ],
+        name,
+        "section group",
+    )
     if existing:
         return existing
     return (
@@ -135,11 +163,20 @@ async def ensure_group(client: MCPStdioClient, parent_id: str, name: str) -> dic
     )["section_group"]
 
 async def ensure_section(client: MCPStdioClient, parent_id: str, name: str) -> dict[str, Any]:
-    listed = await client.call_tool(
-        "list_sections",
-        {"parent_id": parent_id, "recursive": False},
+    expanded = await client.call_tool(
+        "expand_hierarchy",
+        {"root_id": parent_id, "max_depth": 1},
     )
-    existing = exactly_one(listed.get("sections", []), name, "section")
+    children = expanded.get("tree", {}).get("children", [])
+    existing = exactly_one(
+        [
+            child["item"]
+            for child in children
+            if child.get("item", {}).get("resource_type") == "section"
+        ],
+        name,
+        "section",
+    )
     if existing:
         return existing
     return (
@@ -152,8 +189,8 @@ async def ensure_page(
     title: str,
     content: str,
 ) -> dict[str, Any]:
-    listed = await client.call_tool("list_pages", {"section_id": section_id})
-    existing = exactly_one(listed.get("pages", []), title, "page")
+    expanded = await client.call_tool("expand_section", {"id": section_id})
+    existing = exactly_one(_tree_items(expanded, "page"), title, "page")
     if existing:
         return existing
     return (
@@ -300,8 +337,8 @@ async def enforce_page_position(
     after_page_id: str,
     page_level: int,
 ) -> dict[str, Any]:
-    listed = await client.call_tool("list_pages", {"section_id": section_id})
-    pages = sorted(listed["pages"], key=lambda item: int(item["order"]))
+    expanded = await client.call_tool("expand_section", {"id": section_id})
+    pages = sorted(_tree_items(expanded, "page"), key=lambda item: int(item["order"]))
     page = next((item for item in pages if item["id"] == page_id), None)
     if page is None:
         raise RunnerFailure(f"Prepared page disappeared: {page_id}", EXIT_MCP)
@@ -342,8 +379,11 @@ async def ensure_copy_rich_fixture(
     has_table = any(node.tag.rsplit("}", 1)[-1] == "Table" for node in ET.fromstring(xml).iter())
 
     async def current_page() -> dict[str, Any]:
-        listed = await client.call_tool("list_pages", {"section_id": section_id})
-        current = next((item for item in listed.get("pages", []) if item.get("id") == page_id), None)
+        expanded = await client.call_tool("expand_section", {"id": section_id})
+        current = next(
+            (item for item in _tree_items(expanded, "page") if item.get("id") == page_id),
+            None,
+        )
         if current is None:
             raise RunnerFailure(f"Copy fixture Page disappeared: {page_id}", EXIT_MCP)
         return current
@@ -554,8 +594,11 @@ async def ensure_copy_list_tag_fixture(
         )
 
     async def current_page() -> dict[str, Any]:
-        listed = await client.call_tool("list_pages", {"section_id": section_id})
-        current = next((item for item in listed.get("pages", []) if item.get("id") == page_id), None)
+        expanded = await client.call_tool("expand_section", {"id": section_id})
+        current = next(
+            (item for item in _tree_items(expanded, "page") if item.get("id") == page_id),
+            None,
+        )
         if current is None:
             raise RunnerFailure(f"List/Tag fixture Page disappeared: {page_id}", EXIT_MCP)
         return current

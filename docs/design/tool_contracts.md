@@ -1,10 +1,10 @@
 # MCP 工具参数与返回格式（P0/P1 + P2 实验实现）
 
 > 状态：默认工具 profile 的权威契约  
-> 更新日期：2026-08-14
-> ID 参数均指 OneNote COM 对象 ID，除 `resolve_identifier` 和兼容只读 `list_hierarchy.start_identifier` 外不接受名称或路径。
+> 更新日期：2026-08-15
+> ID 参数均指 OneNote COM 对象 ID；除 `resolve_identifier` 外不接受名称或路径。
 
-默认 profile 共 61 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。当前处于 typed Metadata Query 迁移阶段 A：四个 `query_*` 已注册、`query_hierarchy` 已移除，五个 `list_*` 仍保留到真实 Query 场景完成且用户单独批准退役。Section Reorder、三类 Reparent、P2 Copy、Page Move 与容器 Move 由默认关闭的独立策略保护；SectionGroup Reorder 不属于受支持能力，任何请求都必须 fail closed。只有下文列入 validated allowlist 的 Page 内容类型具有真实 OneNote 隔离证据，实验工具在对应真实场景完成前不升级稳定性承诺。
+默认 profile 共 61 个工具；参数和返回格式由 `tools/` 薄适配层公开，业务语义与回读验证由 `services/` 实现。层级浏览已收敛为唯一的 root discovery `list_notebooks`、四个 typed Expand 和通用 `expand_hierarchy`；四个 `query_*` 独立承担平展过滤与分页。Section Reorder、三类 Reparent、P2 Copy、Page Move 与容器 Move 由默认关闭的独立策略保护；SectionGroup Reorder 不属于受支持能力，任何请求都必须 fail closed。只有下文列入 validated allowlist 的 Page 内容类型具有真实 OneNote 隔离证据，实验工具在对应真实场景完成前不升级稳定性承诺。
 
 ## 1. 通用返回 envelope
 
@@ -35,41 +35,45 @@
 }
 ```
 
-列表通常返回 `items/notebooks/sections/pages`、`count`；对象读取返回 `item`。稳定 mutation 成功响应可含 `convergence={converged,attempts,elapsed_seconds,stable_observations,identity_remap,transient_errors}` 与 `reconciliation={state,execute_attempts,had_backend_error}`。默认要求至少两个连续一致的 live postcondition；这些摘要不含 Page XML、正文、binary、secret、完整路径或原始参数。
+List 与 Query 返回 `items/count`；对象读取返回 `item`；Expand 返回 `tree={item,children[]}`。稳定 mutation 成功响应可含 `convergence={converged,attempts,elapsed_seconds,stable_observations,identity_remap,transient_errors}` 与 `reconciliation={state,execute_attempts,had_backend_error}`。默认要求至少两个连续一致的 live postcondition；这些摘要不含 Page XML、正文、binary、secret、完整路径或原始参数。
 
 Typed backend error 保留规范十六进制 `hresult`（并可含 `hresult_signed`）、operation 和 content-free backend category。分类依据 [Microsoft OneNote error codes](https://learn.microsoft.com/en-us/office/client-developer/onenote/error-codes-onenote)：`0x80042030` 固定为 `onenote_modal_ui_blocked/after_user_action`；`0x8004201D` 为 `onenote_not_yet_synchronized/read_after_delay`；`0x80042023` 为 `onenote_operation_timeout/reconcile_before_retry`；文档列出的 object/file does-not-exist HRESULT 归为 `onenote_object_unavailable` 或 `onenote_file_unavailable`，仅允许 read-after-delay。未知 HRESULT 保持 `onenote_backend_error/unknown`。只有 not-yet-synchronized/timeout 加精确 unchanged pre-state 才可能重放声明为幂等的 mutation；object/file unavailable 或 modal 不能作为 mutation replay 依据。`partial_failure` 明确 `partial/reconciliation/manual_recovery_required`；convergence timeout 也明确 `partial=true/reconciliation=indeterminate`，partial 或 indeterminate 禁止盲目重做 Copy/Move/Create 或删除 source。
 
 单 MCP 进程中，纯读 Tool 可共享执行；mutation Tool 从 confirmation 到 convergence/reconciliation 持有独占权，因此同进程 read 不会观察 mutation 中间窗口。该合同不覆盖另一个 MCP 进程或用户直接编辑。未来只读 cache 必须在 COM 前通过同一 coordinator generation 失效，confirmation/read-back 永远读取 live 状态。
 
-## 2. 发现、List/Get、Query
+## 2. 发现、List/Expand/Get、Query
 
 | 工具 | 参数 | 成功时的主要返回 |
 | --- | --- | --- |
-| `health_check` | 无 | 先以不创建 COM 的 Windows native probe 要求既有 OneNote GUI；成功后返回 `onenote_desktop={process_running,visible_window_present,ready,probe}`、运行时位置、统计、`mutation_policy`、固定 Search 能力、`metadata_query={tools,scope_modes,query_kind,pagination}`、`search_budget`、`copy_budget`。 |
+| `health_check` | 无 | 先以不创建 COM 的 Windows native probe 要求既有 OneNote GUI；成功后返回 `onenote_desktop={process_running,visible_window_present,ready,probe}`、运行时位置、统计、`mutation_policy`、固定 Search 能力、`metadata_query={tools,scope_modes,query_kind,pagination}`、`hierarchy_browsing={tools,tree_schema,max_tree_items,page_body_reads}`、`search_budget`、`copy_budget`。 |
 | `resolve_identifier` | `identifier`, `item_type=""` | `item`、`identifier_resolution_order`；仅只读辅助。 |
-| `list_notebooks` | `include_recycle_bin=false` | `notebooks`, `count`。 |
+| `list_notebooks` | 无 | 当前打开 Notebook 的 `items`, `count`；顺序与稳定 hierarchy 下无过滤 `query_notebook` 全集一致。 |
 | `get_notebook` | `notebook_id` | `item: Notebook`。 |
-| `list_section_groups` | `parent_id=""`, `recursive=true`, `include_recycle_bin=false` | `items: SectionGroup[]`, `count`。 |
 | `get_section_group` | `section_group_id` | `item: SectionGroup`。 |
-| `list_sections` | `parent_id=""`, `recursive=true`, `include_recycle_bin=false` | `sections`, `count`；`recursive=false` 只返回直属项。 |
 | `get_section` | `section_id` | `item: Section`。 |
-| `list_pages` | `section_id`, `include_recycle_bin=false` | `section`, `pages`, `count`；不读取正文。 |
 | `get_page` | `page_id` | `item: Page`；不读取正文。 |
+| `expand_notebook` | `id` | 穿过任意嵌套 SectionGroup 到全部 Section；Section 为叶节点。 |
+| `expand_section_group` | `id` | 不越出精确 Group，穿过嵌套 Group 到全部 Section；Section 为叶节点。 |
+| `expand_section` | `id` | 精确 Section 下按 `parent_page_id/page_level` 组织的完整 Page 树。 |
+| `expand_page` | `id` | 精确 Page 的完整后代子页树，不含兄弟 Page。 |
+| `expand_hierarchy` | `root_id`, `max_depth=8`, `include_recycle_bin=false` | 任意四层精确 root 的数值深度树。 |
 | `query_notebook` | `name_equals=""`, `name_contains=""`, `modified_after=""`, `modified_before=""`, `offset=0`, `page_size=200` | 固定 open-only root；统一 typed Query envelope。 |
 | `query_section_group` | `scope`, `name_equals=""`, `name_contains=""`, `parent_id=""`, `modified_after=""`, `modified_before=""`, `include_recycle_bin=false`, `offset=0`, `page_size=200` | 只返回 SectionGroup；start node 允许 Notebook/SectionGroup。 |
 | `query_section` | 同上 | 只返回 Section；start node 允许 Notebook/SectionGroup。 |
 | `query_page` | `scope`, `title_equals=""`, `title_contains=""`, `section_id=""`, `parent_page_id=""`, `modified_after=""`, `modified_before=""`, `include_recycle_bin=false`, `offset=0`, `page_size=200` | 只返回 Page hierarchy metadata；start node 允许 Notebook/SectionGroup/Section，不读取正文。 |
 | `get_path` | `object_id` | `item`, `path`, `ancestors`。 |
 | `get_parent` | `object_id` | `item`, `parent`, `parent_id`。 |
-| `get_tree` | `root_id`, `max_depth=8`, `include_recycle_bin=false` | `tree={item,children[]}`；Page 使用缩进关系。 |
-| `list_hierarchy` | `start_identifier=""`, `scope="pages"`, `include_xml=false`, `include_recycle_bin=false` | 稳定字段 `items`, `count`；兼容读取接口。 |
 | `get_special_locations` | 无 | `locations={backup,unfiled,default_notebook_folder}`。 |
 
 四个 Query 固定返回 `items/count/total_matches/offset/page_size/has_more/next_offset/pagination_consistency="live_hierarchy"/resource_type/query_kind="hierarchy_metadata"/scope`。时间必须是带 offset 或 `Z` 的 RFC 3339 且 `modified_after < modified_before`；比较为严格大于/小于。`offset >= 0`，`page_size` 为 `1..200`，非法值明确拒绝。root 路线只执行一次空 start ID 的最浅 `GetHierarchy`：Notebook=`hsNotebooks`，SectionGroup/Section=`hsSections`，Page=`hsPages`。start-node 路线先执行一次 root/`hsSections` catalog 验证精确类型、open-only 与回收站边界，再对同一精确 ID 执行一次目标 scope；失败不回退到 root、名称、磁盘、`FindMeta` 或逐 Notebook 调用。start node 本身不进入候选。
 
 `query_section_group/query_section/query_page.scope` 是 `mode="root"` 或 `mode="start_node" + start_node_id` 的必填严格判别联合，两个分支禁止额外字段。容器 `parent_id` 只表示 scope 内直属 Notebook/SectionGroup；Page 分别使用直属 `section_id` 与同 Section 有序扁平序列派生的直接缩进 `parent_page_id`。`include_recycle_bin=true` 不得引入关闭 Notebook、越出 start node 的对象或允许回收站节点作为起点。分页应用于完整过滤结果之后，每页重新读取 live hierarchy，不冻结跨页 snapshot，也不减少 COM 输出或 Python metadata 扫描。无过滤 Query 可按 `next_offset` 取尽当前固定类型，并覆盖保留 List 的枚举用途。
 
-`item_type` 取 `notebook/section_group/section/page`。兼容 List 的 `scope` 仍取 `self/children/notebooks/sections/pages`；它与 typed Query 的判别 scope 不是同一合同。
+四个 typed Expand 的唯一参数都命名为 `id`，必须是非空精确 COM ID。工具名固定实际 root 类型；未知 ID、类型不符、已关闭 Notebook 和回收站 root 均 fail closed。它们不接受深度、过滤、分页、selector、`include_xml` 或回收站选项。Notebook/Group 只读 `hsSections`，Section/Page 只读 `hsPages`，不读取 Page 正文。
+
+全部 Expand 共享递归节点 `{item,children[]}`，叶节点固定 `children=[]`。容器按 `parent_id`，顶层 Page 按 `section_id`，缩进 Page 优先按 `parent_page_id`；children 保持同一 snapshot 的稳定顺序。共享关系图会拒绝空/重复 ID、断裂或循环关系、跨 Section Page parent、无效缩进和对象重复。精确 root Expand 先要求该 root ID 在同一次 COM snapshot 中恰好命中一次，再只对 root 所属 Notebook 校验完整关系图；其他打开 Notebook 中独立存在的缺失/重复 ID、Page 缩进或关系异常不得阻断目标树，目标 Notebook 内的同类异常仍 fail closed。完整树超过 10,000 个轻量 metadata 对象时明确失败，不返回伪完整树。`expand_hierarchy` 保留通用 `max_depth` 与显式 `include_recycle_bin`，但仍拒绝关闭 Notebook；它和 typed Expand 使用同一 builder。
+
+选择规则：打开了哪些 Notebook 使用 `list_notebooks`；按对象语义浏览使用 typed `expand_*`；任意 root 加数值深度使用 `expand_hierarchy`；按字段过滤、关系筛选或分页使用 `query_*`；精确单对象 metadata 使用 `get_*`；Page 正文搜索使用 `search_pages`。Expand 只返回 hierarchy tree，不修改 OneNote GUI 展开状态。
 
 `health_check` 的 Desktop readiness 检查发生在首次 hierarchy bridge/COM 调用之前。只有 `ONENOTE.EXE` 进程存在且拥有可见、无 owner 的顶层窗口时才进入 COM 统计读取；进程缺失或只有后台进程时返回 `code="onenote_desktop_not_running"`、`retryability="after_user_action"`、`operation="health_preflight"` 和 content-free readiness/`required_action`，且不冷启动 OneNote。native probe 无法可靠完成时返回 `onenote_desktop_probe_failed` 并同样 fail closed。当前没有自动启动工具；显式 `start_onenote_app` 由 [TODO 031](../todo/031_start_onenote_desktop_tool.md) 跟踪。
 

@@ -72,9 +72,12 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 "health_check",
                 "resolve_identifier",
                 "list_notebooks",
-                "list_sections",
-                "get_tree",
-                "query_hierarchy",
+                "expand_notebook",
+                "expand_section_group",
+                "expand_section",
+                "expand_page",
+                "expand_hierarchy",
+                "query_notebook",
                 "reparent_page",
                 "reparent_section",
                 "reparent_section_group",
@@ -84,6 +87,11 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 "update_hierarchy_xml",
                 "delete_hierarchy",
                 "merge_sections",
+                "list_hierarchy",
+                "list_section_groups",
+                "list_sections",
+                "list_pages",
+                "get_tree",
             }
             missing_tools = sorted(required_tools - tool_names)
             unexpectedly_exposed = sorted(forbidden_default_tools & tool_names)
@@ -123,11 +131,15 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 if not resolved.get("ok"):
                     failures.append(f"resolve_identifier notebook failed: {resolved.get('error')}")
                 else:
-                    sections = await call_tool(session, "list_sections", {"parent_id": notebook_id})
-                    tree = await call_tool(session, "get_tree", {"root_id": notebook_id})
-                    checks.append({"name": "list_sections", "ok": sections.get("ok"), "count": sections.get("count")})
-                    checks.append({"name": "get_tree", "ok": tree.get("ok")})
-                    if not sections.get("ok") or not tree.get("ok"):
+                    typed_tree = await call_tool(
+                        session, "expand_notebook", {"id": notebook_id}
+                    )
+                    depth_tree = await call_tool(
+                        session, "expand_hierarchy", {"root_id": notebook_id}
+                    )
+                    checks.append({"name": "expand_notebook", "ok": typed_tree.get("ok")})
+                    checks.append({"name": "expand_hierarchy", "ok": depth_tree.get("ok")})
+                    if not typed_tree.get("ok") or not depth_tree.get("ok"):
                         failures.append("Notebook hierarchy inspection failed.")
 
     return {"ok": not failures, "mode": "read_only", "checks": checks, "failures": failures}

@@ -205,7 +205,7 @@ class _SnapshotClient:
 
     async def call_tool(self, name, _arguments):
         self.calls.append(name)
-        if name == "get_tree":
+        if name == "expand_hierarchy":
             self.tree_calls += 1
             return {
                 "tree": self._tree(
@@ -260,7 +260,7 @@ def test_capture_snapshot_refreshes_hierarchy_after_page_evidence() -> None:
         }
     ]
     assert client.tree_calls == 2
-    assert client.calls == ["get_tree", "get_page_xml", "get_tree"]
+    assert client.calls == ["expand_hierarchy", "get_page_xml", "expand_hierarchy"]
 
 
 def test_capture_snapshot_rejects_hierarchy_id_changes_during_evidence() -> None:

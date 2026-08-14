@@ -27,7 +27,16 @@ async def _capture_snapshot_with_observer(
     client: MCPStdioClient,
     notebook_id: str,
     observer: Callable[[Mapping[str, Any], str], None] | None,
+    *,
+    recipe: Any | None = None,
 ) -> dict[str, Any]:
+    recipe_capture = getattr(recipe, "capture_snapshot", None)
+    if callable(recipe_capture):
+        if observer is not None:
+            raise InvariantFailure(
+                "A recipe-owned metadata snapshot cannot also request Page XML observation."
+            )
+        return await recipe_capture(client, notebook_id)
     if observer is None:
         return await capture_snapshot(client, notebook_id)
     return await capture_snapshot(
@@ -467,6 +476,7 @@ async def prepare_fixture_bundle(
                     (
                         page_observer(role, build) if callable(page_observer) else None
                     ),
+                    recipe=recipe,
                 )
                 snapshots[role] = snapshot
                 observations[role] = FixtureRoleObservation(
@@ -498,6 +508,7 @@ async def prepare_fixture_bundle(
                     structure=build.structure,
                     source_notebook=source_notebooks[role],
                     working_notebook=notebooks[role],
+                    snapshot_capture=getattr(recipe, "capture_snapshot", None),
                 )
                 if convergence.get("passed") is not True:
                     checkpoint_convergence[role] = convergence
@@ -520,6 +531,7 @@ async def prepare_fixture_bundle(
                     (
                         page_observer(role, build) if callable(page_observer) else None
                     ),
+                    recipe=recipe,
                 )
                 rebound, snapshot_remap = _rebind_materialized_structure(
                     dict(build.structure),
@@ -765,6 +777,7 @@ async def prepare_materialized_fixture(
         structure=source_structure,
         source_notebook=manifest.get("notebook", {}),
         working_notebook=notebook,
+        snapshot_capture=getattr(recipe, "capture_snapshot", None),
     )
     convergence["hierarchy_elapsed_seconds"] = round(
         time.monotonic() - hierarchy_started, 6
@@ -827,6 +840,7 @@ async def prepare_materialized_fixture(
                 if callable(page_observer)
                 else None
             ),
+            recipe=recipe,
         )
     except Exception as exc:
         convergence.update(
@@ -998,6 +1012,7 @@ async def _await_materialized_structure_convergence(
     max_observations: int = MATERIALIZED_STRUCTURE_MAX_OBSERVATIONS,
     stable_observations: int = MATERIALIZED_STRUCTURE_STABLE_OBSERVATIONS,
     delay_seconds: float = MATERIALIZED_STRUCTURE_OBSERVATION_DELAY_SECONDS,
+    snapshot_capture: Callable[[MCPStdioClient, str], Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]], dict[str, Any], dict[str, Any]]:
     """Wait for every manifest-bound hierarchy object to be present and stable."""
 
@@ -1022,19 +1037,30 @@ async def _await_materialized_structure_convergence(
     for attempt in range(1, max_observations + 1):
         observation: dict[str, Any] = {"attempt": attempt}
         try:
-            tree_result = await client.call_tool(
-                "get_tree",
-                {"root_id": str(working_notebook["id"]), "max_depth": 8},
-            )
-            tree = tree_result.get("tree") if isinstance(tree_result, Mapping) else None
-            if not isinstance(tree, dict):
-                raise InvariantFailure(
-                    "Materialized hierarchy observation returned no typed tree."
+            if snapshot_capture is not None:
+                latest_snapshot = await snapshot_capture(
+                    client, str(working_notebook["id"])
                 )
-            latest_snapshot = {
-                "notebook_id": str(working_notebook["id"]),
-                "items": [stable_item(item) for item in _flatten_materialized_tree(tree)],
-            }
+            else:
+                tree_result = await client.call_tool(
+                    "expand_hierarchy",
+                    {"root_id": str(working_notebook["id"]), "max_depth": 8},
+                )
+                tree = (
+                    tree_result.get("tree")
+                    if isinstance(tree_result, Mapping)
+                    else None
+                )
+                if not isinstance(tree, dict):
+                    raise InvariantFailure(
+                        "Materialized hierarchy observation returned no typed tree."
+                    )
+                latest_snapshot = {
+                    "notebook_id": str(working_notebook["id"]),
+                    "items": [
+                        stable_item(item) for item in _flatten_materialized_tree(tree)
+                    ],
+                }
             latest_rebound, latest_remap = _rebind_materialized_structure(
                 dict(structure),
                 source_notebook=source_notebook,
@@ -1213,6 +1239,7 @@ async def prepare_materialized_fixture_bundle(
             structure=structure,
             source_notebook=cached_manifest.get("notebook", {}),
             working_notebook=notebooks[role],
+            snapshot_capture=getattr(recipe, "capture_snapshot", None),
         )
         convergence_reports[role] = convergence
         convergence["hierarchy_elapsed_seconds"] = round(
@@ -1281,6 +1308,7 @@ async def prepare_materialized_fixture_bundle(
                     if callable(page_observer)
                     else None
                 ),
+                recipe=recipe,
             )
         except Exception as exc:
             convergence.update(

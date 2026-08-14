@@ -723,7 +723,7 @@ def test_keep_worksite_copy_spec_removes_cleanup_permissions(tmp_path) -> None:
     ]
     assert spec["policy"].deletes_enabled is False
     assert not {"delete_page", "delete_section", "delete_section_group"} & spec["tools"]
-    assert {"get_tree", "copy_page", "plan_copy"} <= spec["tools"]
+    assert {"expand_hierarchy", "copy_page", "plan_copy"} <= spec["tools"]
     assert not {"copy_section", "copy_section_group", "copy_notebook"} & spec["tools"]
 
 
@@ -1379,7 +1379,7 @@ def test_copy_cleanup_uses_exact_ids_leaf_to_root_with_fresh_reads() -> None:
             self.reads = 0
 
         async def call_tool(self, name, arguments):
-            if name == "get_tree":
+            if name == "expand_hierarchy":
                 self.reads += 1
                 return {
                     "tree": {
@@ -1437,8 +1437,15 @@ def test_copy_rich_fixture_is_idempotent_and_records_automated_types(tmp_path) -
                 return {"xml": state["xml"]}
             if name == "get_page_objects":
                 return {"objects": state["objects"]}
-            if name == "list_pages":
-                return {"pages": [page]}
+            if name == "expand_section":
+                return {
+                    "tree": {
+                        "item": {"id": "section-id", "resource_type": "section"},
+                        "children": [
+                            {"item": {**page, "resource_type": "page"}, "children": []}
+                        ],
+                    }
+                }
             if name == "append_to_page":
                 self.mutations.append(name)
                 state["xml"] = (
@@ -1485,8 +1492,15 @@ def test_list_tag_copy_fixture_is_programmatic_and_idempotent() -> None:
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
                 return {"xml": state["xml"]}
-            if name == "list_pages":
-                return {"pages": [page]}
+            if name == "expand_section":
+                return {
+                    "tree": {
+                        "item": {"id": "section-id", "resource_type": "section"},
+                        "children": [
+                            {"item": {**page, "resource_type": "page"}, "children": []}
+                        ],
+                    }
+                }
             if name == "append_to_page":
                 self.append_arguments.append(arguments)
                 state["xml"] = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="page-id">
@@ -1529,8 +1543,15 @@ def test_list_tag_copy_fixture_fails_closed_when_readback_is_incomplete() -> Non
                     '<one:List><one:Number numberSequence="0"/></one:List><one:T>Item</one:T>'
                     '</one:OE></one:OEChildren></one:Outline></one:Page>'
                 )}
-            if name == "list_pages":
-                return {"pages": [page]}
+            if name == "expand_section":
+                return {
+                    "tree": {
+                        "item": {"id": "section-id", "resource_type": "section"},
+                        "children": [
+                            {"item": {**page, "resource_type": "page"}, "children": []}
+                        ],
+                    }
+                }
             if name == "append_to_page":
                 return {"appended": True}
             raise AssertionError(name)

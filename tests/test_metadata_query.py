@@ -332,43 +332,13 @@ def test_malformed_native_xml_fails_without_root_or_findmeta_fallback():
     assert bridge.calls[0][0] == "get_hierarchy"
 
 
-def test_unfiltered_typed_queries_cover_supported_list_enumerations():
+def test_list_notebooks_equals_unfiltered_query_for_stable_open_hierarchy():
     query, _ = service()
 
-    assert {item["id"] for item in query.list_notebooks()["notebooks"]} == {
-        item["id"] for item in query.metadata_query("notebook")["items"]
-    } | {"nc"}
-    assert [item["id"] for item in query.list_section_groups("g1", True)["items"]] == [
-        item["id"]
-        for item in query.metadata_query(
-            "section_group", {"mode": "start_node", "start_node_id": "g1"}
-        )["items"]
-    ]
-    assert [item["id"] for item in query.list_section_groups("g1", False)["items"]] == [
-        item["id"]
-        for item in query.metadata_query(
-            "section_group",
-            {"mode": "start_node", "start_node_id": "g1"},
-            parent_id="g1",
-        )["items"]
-    ]
-    assert [item["id"] for item in query.list_sections("g1", True)["sections"]] == [
-        item["id"]
-        for item in query.metadata_query(
-            "section", {"mode": "start_node", "start_node_id": "g1"}
-        )["items"]
-    ]
-    assert [item["id"] for item in query.list_sections("g1", False)["sections"]] == [
-        item["id"]
-        for item in query.metadata_query(
-            "section",
-            {"mode": "start_node", "start_node_id": "g1"},
-            parent_id="g1",
-        )["items"]
-    ]
-    assert [item["id"] for item in query.list_pages("s1")["pages"]] == [
-        item["id"]
-        for item in query.metadata_query(
-            "page", {"mode": "start_node", "start_node_id": "s1"}
-        )["items"]
-    ]
+    listed = query.list_notebooks()
+    queried = query.metadata_query("notebook")
+
+    assert [item["id"] for item in listed["items"]] == [
+        item["id"] for item in queried["items"]
+    ] == ["n1", "n2"]
+    assert listed["count"] == queried["count"] == 2

@@ -41,6 +41,13 @@ def _manifest() -> dict:
     structure = dict(
         [
             item(
+                "navigation_root_section",
+                "root-section",
+                "section",
+                "Notebook/Navigation-Root-Section",
+                "notebook",
+            ),
+            item(
                 "navigation_group",
                 "group",
                 "section_group",
@@ -48,24 +55,31 @@ def _manifest() -> dict:
                 "notebook",
             ),
             item(
+                "navigation_inner_group",
+                "inner-group",
+                "section_group",
+                "Notebook/Navigation-Group/Navigation-Inner-Group",
+                "group",
+            ),
+            item(
                 "navigation_section",
                 "section",
                 "section",
-                "Notebook/Navigation-Group/Navigation-Section",
-                "group",
+                "Notebook/Navigation-Group/Navigation-Inner-Group/Navigation-Target-Section",
+                "inner-group",
             ),
             item(
                 "navigation_section_sibling",
                 "section-sibling",
                 "section",
-                "Notebook/Navigation-Group/Navigation-Section-Sibling",
+                "Notebook/Navigation-Group/Navigation-Group-Section",
                 "group",
             ),
             item(
                 "navigation_parent_page",
                 "parent",
                 "page",
-                "Notebook/Navigation-Group/Navigation-Section/Navigation-Parent",
+                "Notebook/Navigation-Group/Navigation-Inner-Group/Navigation-Target-Section/Navigation-Parent",
                 "section",
                 section_id="section",
                 page_level=1,
@@ -75,7 +89,7 @@ def _manifest() -> dict:
                 "navigation_child_page",
                 "child",
                 "page",
-                "Notebook/Navigation-Group/Navigation-Section/Navigation-Child",
+                "Notebook/Navigation-Group/Navigation-Inner-Group/Navigation-Target-Section/Navigation-Child",
                 "section",
                 section_id="section",
                 page_level=2,
@@ -85,7 +99,7 @@ def _manifest() -> dict:
                 "navigation_grandchild_page",
                 "grandchild",
                 "page",
-                "Notebook/Navigation-Group/Navigation-Section/Navigation-Grandchild",
+                "Notebook/Navigation-Group/Navigation-Inner-Group/Navigation-Target-Section/Navigation-Grandchild",
                 "section",
                 section_id="section",
                 page_level=3,
@@ -95,7 +109,7 @@ def _manifest() -> dict:
                 "navigation_child_page_sibling",
                 "child-sibling",
                 "page",
-                "Notebook/Navigation-Group/Navigation-Section/Navigation-Child-Sibling",
+                "Notebook/Navigation-Group/Navigation-Inner-Group/Navigation-Target-Section/Navigation-Child-Sibling",
                 "section",
                 section_id="section",
                 page_level=2,
@@ -105,7 +119,7 @@ def _manifest() -> dict:
                 "navigation_root_page_sibling",
                 "root-sibling",
                 "page",
-                "Notebook/Navigation-Group/Navigation-Section/Navigation-Root-Sibling",
+                "Notebook/Navigation-Group/Navigation-Inner-Group/Navigation-Target-Section/Navigation-Root-Sibling",
                 "section",
                 section_id="section",
                 page_level=1,
@@ -113,7 +127,18 @@ def _manifest() -> dict:
             ),
         ]
     )
-    return {"notebook": notebook, "structure": structure}
+    browse = {
+        "id": "browse-notebook",
+        "resource_type": "notebook",
+        "name": "__hierarchy-navigation-browse-b__",
+        "path": "Browse Notebook",
+        "parent_id": None,
+    }
+    return {
+        "notebook": notebook,
+        "notebooks": {"source": notebook, "browse-b": browse},
+        "structure": structure,
+    }
 
 
 def _node(item, children=()):
@@ -129,53 +154,93 @@ def _tree(manifest: dict) -> dict:
     root_sibling = _node(s["navigation_root_page_sibling"])
     section = _node(s["navigation_section"], [parent, root_sibling])
     section_sibling = _node(s["navigation_section_sibling"])
-    group = _node(s["navigation_group"], [section, section_sibling])
-    return _node(manifest["notebook"], [group])
+    inner = _node(s["navigation_inner_group"], [section])
+    group = _node(s["navigation_group"], [section_sibling, inner])
+    root_section = _node(s["navigation_root_section"])
+    return _node(manifest["notebook"], [root_section, group])
+
+
+def _find(node: dict, object_id: str) -> dict | None:
+    if node["item"]["id"] == object_id:
+        return node
+    for child in node["children"]:
+        found = _find(child, object_id)
+        if found is not None:
+            return found
+    return None
 
 
 class _NavigationClient:
     def __init__(self, manifest: dict, *, break_indentation: bool = False) -> None:
         self.manifest = manifest
         self.break_indentation = break_indentation
+        self.calls: list[str] = []
 
     async def call_tool(self, name, arguments, retry_read=False):
+        self.calls.append(name)
         s = self.manifest["structure"]
-        by_id = {
-            item["id"]: item
-            for item in [self.manifest["notebook"], *s.values()]
-        }
-        if name == "get_parent":
-            item = by_id[arguments["object_id"]]
-            parent = by_id[item["parent_id"]]
-            return {"item": item, "parent": parent, "parent_id": parent["id"]}
-        if name == "get_path":
-            item = by_id[arguments["object_id"]]
-            return {
-                "item": item,
-                "path": item["path"],
-                "ancestors": [
-                    self.manifest["notebook"],
-                    s["navigation_group"],
-                    s["navigation_section"],
-                ],
-            }
-        if name == "get_tree":
-            if arguments["root_id"] == self.manifest["notebook"]["id"]:
-                tree = _tree(self.manifest)
-                if self.break_indentation:
-                    parent = tree["children"][0]["children"][0]["children"][0]
-                    parent["children"].reverse()
-                return {"tree": tree}
-            if arguments["root_id"] == s["navigation_parent_page"]["id"]:
+        if name == "list_notebooks":
+            items = [
+                self.manifest["notebooks"]["source"],
+                self.manifest["notebooks"]["browse-b"],
+            ]
+            return {"items": items, "count": len(items)}
+        complete = _tree(self.manifest)
+        if self.break_indentation:
+            parent_node = _find(complete, "parent")
+            assert parent_node is not None
+            parent_node["children"].reverse()
+        if name == "expand_hierarchy":
+            found = _find(complete, arguments["root_id"])
+            assert found is not None
+            if arguments.get("max_depth") == 1:
                 return {
                     "tree": _node(
-                        s["navigation_parent_page"],
-                        [
-                            _node(s["navigation_child_page"]),
-                            _node(s["navigation_child_page_sibling"]),
-                        ],
+                        found["item"],
+                        [_node(child["item"]) for child in found["children"]],
                     )
                 }
+            return {"tree": found}
+        if name == "expand_notebook":
+            return {
+                "tree": _node(
+                    self.manifest["notebook"],
+                    [
+                        _node(s["navigation_root_section"]),
+                        _node(
+                            s["navigation_group"],
+                            [
+                                _node(s["navigation_section_sibling"]),
+                                _node(
+                                    s["navigation_inner_group"],
+                                    [_node(s["navigation_section"])],
+                                ),
+                            ],
+                        ),
+                    ],
+                )
+            }
+        if name == "expand_section_group":
+            return {
+                "tree": _node(
+                    s["navigation_group"],
+                    [
+                        _node(s["navigation_section_sibling"]),
+                        _node(
+                            s["navigation_inner_group"],
+                            [_node(s["navigation_section"])],
+                        ),
+                    ],
+                )
+            }
+        if name == "expand_section":
+            found = _find(complete, s["navigation_section"]["id"])
+            assert found is not None
+            return {"tree": found}
+        if name == "expand_page":
+            found = _find(complete, s["navigation_parent_page"]["id"])
+            assert found is not None
+            return {"tree": found}
         raise AssertionError((name, arguments))
 
 
@@ -186,14 +251,25 @@ def test_hierarchy_navigation_recipe_and_policy_are_cacheable_and_least_privileg
     recipe = scenario.fixture_recipe
     assert scenario.included_in_all is False
     assert recipe.supports_cache is True
-    assert recipe.recipe_version == 1
-    assert {"get_parent", "get_path", "get_tree"} <= scenario.spec.tool_allowlist
-    assert {"query_section_group", "query_section", "query_page"} <= (
-        scenario.spec.tool_allowlist
-    )
-    assert not any(
-        tool.startswith("list_") for tool in scenario.spec.tool_allowlist
-    )
+    assert recipe.recipe_version == 3
+    assert [role.role for role in recipe.cache_identity.notebook_roles] == [
+        "browse-b",
+        "source",
+    ]
+    assert {
+        "list_notebooks",
+        "expand_notebook",
+        "expand_section_group",
+        "expand_section",
+        "expand_page",
+        "expand_hierarchy",
+    } <= scenario.spec.tool_allowlist
+    assert not any(tool.startswith("query_") for tool in scenario.spec.tool_allowlist)
+    assert "get_parent" not in scenario.spec.tool_allowlist
+    assert "get_path" not in scenario.spec.tool_allowlist
+    assert {
+        tool for tool in scenario.spec.tool_allowlist if tool.startswith("list_")
+    } == {"list_notebooks"}
     assert scenario.spec.policy.writes_enabled is True
     assert scenario.spec.policy.deletes_enabled is False
     assert scenario.spec.policy.raw_xml_enabled is False
@@ -225,53 +301,58 @@ def test_hierarchy_navigation_recipe_proves_three_page_levels() -> None:
     assert "Page levels 1/2/3 derive the exact branched indentation tree" in checks
 
 
-def test_hierarchy_navigation_runtime_covers_parent_path_tree_and_depth(tmp_path) -> None:
+def test_hierarchy_navigation_recipe_snapshot_uses_expand_only() -> None:
+    manifest = _manifest()
+    client = _NavigationClient(manifest)
+
+    snapshot = asyncio.run(
+        SCENARIO_REGISTRY.get("hierarchy-navigation").fixture_recipe.capture_snapshot(
+            client, manifest["notebook"]["id"]
+        )
+    )
+
+    assert client.calls == ["expand_hierarchy"]
+    assert snapshot["metadata_source"] == "expand_hierarchy"
+    assert len(snapshot["items"]) == len(manifest["structure"]) + 1
+
+
+def test_hierarchy_navigation_runtime_uses_only_list_and_expand(tmp_path) -> None:
     run_dir = tmp_path / "run"
     (run_dir / "scenarios" / "hierarchy-navigation").mkdir(parents=True)
     manifest = _manifest()
+    client = _NavigationClient(manifest)
     result = asyncio.run(
         SCENARIO_REGISTRY.get("hierarchy-navigation").execute(
             SimpleNamespace(),
             RuntimeOptions(run_dir, 180, True, False),
             manifest,
-            client=_NavigationClient(manifest),
+            client=client,
             fixture_result={"status": "prepared"},
         )
     )
     assert result["status"] == "passed"
-    assert result["get_parent_cases_passed"] == 3
     assert result["page_indentation_tree_passed"] is True
+    assert result["list_notebooks_contract_passed"] is True
+    assert result["typed_expand_contract_passed"] is True
+    assert result["generic_four_root_contract_passed"] is True
+    assert set(client.calls) == {
+        "list_notebooks",
+        "expand_notebook",
+        "expand_section_group",
+        "expand_section",
+        "expand_page",
+        "expand_hierarchy",
+    }
     evidence = run_dir / "scenarios" / "hierarchy-navigation"
-    assert (evidence / "get-parent-cases.json").exists()
-    assert (evidence / "get-path-page.json").exists()
-    assert (evidence / "get-tree-notebook.json").exists()
-    assert (evidence / "get-tree-page-depth-boundary.json").exists()
-    parent_evidence = json.loads(
-        (evidence / "get-parent-cases.json").read_text(encoding="utf-8")
-    )
-    page_parent_case = next(
-        case
-        for case in parent_evidence["cases"]
-        if case["label"] == "indented-page-to-container-section"
-    )
-    assert page_parent_case["response"]["item"]["id"] == "grandchild"
-    assert page_parent_case["response"]["parent"]["id"] == "section"
-
-    path_evidence = json.loads(
-        (evidence / "get-path-page.json").read_text(encoding="utf-8")
-    )
-    assert [item["id"] for item in path_evidence["ancestors"]] == [
-        "notebook",
-        "group",
-        "section",
-    ]
+    assert (evidence / "list-notebooks.json").exists()
+    assert (evidence / "expand-hierarchy-notebook.json").exists()
+    assert (evidence / "expand-hierarchy-page-depth-boundary.json").exists()
 
     tree_evidence = json.loads(
-        (evidence / "get-tree-notebook.json").read_text(encoding="utf-8")
+        (evidence / "expand-hierarchy-notebook.json").read_text(encoding="utf-8")
     )
-    parent_node = (
-        tree_evidence["tree"]["children"][0]["children"][0]["children"][0]
-    )
+    parent_node = _find(tree_evidence["tree"], "parent")
+    assert parent_node is not None
     assert parent_node["item"]["page_level"] == 1
     assert [child["item"]["id"] for child in parent_node["children"]] == [
         "child",

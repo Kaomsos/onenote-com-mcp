@@ -54,7 +54,7 @@ def test_delete_executes_with_its_minimal_group_only_manifest(monkeypatch, tmp_p
             self.calls.append((name, arguments))
             if name == "delete_section_group":
                 return {"permanently": False}
-            if name == "get_tree":
+            if name == "expand_hierarchy":
                 return {
                     "tree": {
                         "item": notebook,

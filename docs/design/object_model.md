@@ -1,7 +1,7 @@
 # OneNote 对象模型（P0/P1 实现版）
 
 > 状态：实现契约
-> 更新日期：2026-08-14
+> 更新日期：2026-08-15
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
@@ -109,8 +109,10 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 
 - Notebook、SectionGroup、Section 的直接关系来自 XML 嵌套，`relationship_source=com`。
 - Page 的 `order/page_level/parent_page_id/has_children` 需要同 Section 的完整有序列表，`relationship_source=derived`。
-- `get_tree` 对容器使用 `parent_id`，对 Page 优先使用 `parent_page_id`；顶层 Page 挂到 `section_id`。
-- 不完整层级片段不能冒充准确的 `page_count` 或 Page 缩进树。
+- `list_notebooks` 是 OneNote 无真实 root 对象时的 open-only root discovery；它不伪造 COM root。
+- 五个 Expand 共用一份关系图与 tree builder：容器使用 `parent_id`，Page 优先使用 `parent_page_id`，顶层 Page 挂到 `section_id`。
+- `expand_notebook/expand_section_group` 在 Section 停止；`expand_section/expand_page` 返回完整 Page 缩进子树；`expand_hierarchy` 施加数值深度边界。
+- 不完整、重复、循环或跨 Section 的关系不能冒充准确的 tree；超过公共响应边界时明确失败。
 
 ## 5. Mutation 一致性
 
@@ -125,10 +127,10 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 
 | 能力 | 状态 |
 | --- | --- |
-| 四层 Create/List/Get、Page 内容读取和 typed 修改 | P0 已实现 |
+| 四层 Create/Get、Notebook root List、typed/通用 Expand、Page 内容读取和 typed 修改 | P0/P1 已实现 |
 | SectionGroup/Section/Page 回收站删除 | P0 已实现，默认关闭 |
 | typed/全部已打开 Notebook 正文搜索和调用级硬预算 | P0 已实现 |
-| Metadata Query、Path、Tree、Page 缩进树 | P1 已实现 |
+| Metadata Query、Path、共享 Expand tree、Page 缩进树 | P1 已实现 |
 | SectionGroup/Section Rename、Page Reorder | P1 已实现，默认关闭写入 |
 | Section 同父级 Reorder | P1 typed 实验实现；由独立开关 fail closed，已有用户确认的真实 UI 排序证据 |
 | SectionGroup 同父级 Reorder | 明确不支持并拒绝；后端仅提供按名称固定升序，不提供可变 sibling order |

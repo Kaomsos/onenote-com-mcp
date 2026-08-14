@@ -253,7 +253,7 @@ def test_materialized_scenario_before_snapshot_handoff_is_exact_and_single_use(
 ) -> None:
     client = MCPStdioClient(
         policy=READ_ONLY_POLICY,
-        allowed_tools={"get_tree", "get_page_xml"},
+        allowed_tools={"expand_hierarchy", "get_page_xml"},
         run_dir=tmp_path / "mcp",
         timeout_seconds=10,
     )
@@ -285,7 +285,7 @@ def test_materialized_scenario_before_snapshot_handoff_is_exact_and_single_use(
 def test_materialized_scenario_before_snapshot_rejects_wrong_notebook(tmp_path) -> None:
     client = MCPStdioClient(
         policy=READ_ONLY_POLICY,
-        allowed_tools={"get_tree", "get_page_xml"},
+        allowed_tools={"expand_hierarchy", "get_page_xml"},
         run_dir=tmp_path / "mcp",
         timeout_seconds=10,
     )
@@ -302,7 +302,7 @@ def test_materialized_scenario_before_snapshot_rejects_wrong_notebook(tmp_path) 
 def test_materialized_multi_role_handoff_requires_each_exact_snapshot(tmp_path) -> None:
     client = MCPStdioClient(
         policy=READ_ONLY_POLICY,
-        allowed_tools={"get_tree", "get_page_xml"},
+        allowed_tools={"expand_hierarchy", "get_page_xml"},
         run_dir=tmp_path / "mcp",
         timeout_seconds=10,
     )

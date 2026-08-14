@@ -145,8 +145,8 @@ class FakeHierarchy:
         self.closed = False
         self.created = False
 
-    def list_notebooks(self, include_recycle_bin: bool = False):
-        return {"notebooks": [] if not self.created else [self._item()]}
+    def list_notebooks(self):
+        return {"items": [] if not self.created else [self._item()], "count": int(self.created)}
 
     def wait_for_created(
         self,
@@ -527,11 +527,12 @@ def test_open_notebook_snapshot_rejects_two_ids_for_one_path(
 ) -> None:
     wrapper, _bridge, hierarchy = _wrapper(tmp_path)
     hierarchy.created = True
-    hierarchy.list_notebooks = lambda **_kwargs: {
-        "notebooks": [
+    hierarchy.list_notebooks = lambda: {
+        "items": [
             {"id": "notebook-one", "is_open": True},
             {"id": "notebook-two", "is_open": True},
-        ]
+        ],
+        "count": 2,
     }
     expected = (tmp_path / "working").resolve()
     monkeypatch.setattr(

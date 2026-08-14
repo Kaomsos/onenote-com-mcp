@@ -1098,7 +1098,7 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
         "create",
         "delete",
         "copy-page",
-        "query-metadata-scopes",
+        "query",
         "user-authored-fixture-consumer",
     ),
 )
@@ -1510,7 +1510,7 @@ def test_finalize_accepts_only_exact_durable_preclosed_lifecycle_evidence(tmp_pa
 
     result = asyncio.run(
         validation.finalize_notebook(
-            _args(run_dir, "query-metadata-scopes"),
+            _args(run_dir, "query"),
             RuntimeOptions(run_dir, 180, False, False),
             _manifest(run_dir),
             wrapper=wrapper,
@@ -1537,7 +1537,7 @@ def test_finalize_rejects_unbound_preclosed_lifecycle_evidence(tmp_path) -> None
     with pytest.raises(runtime.RestoreFailure, match="exact close evidence"):
         asyncio.run(
             validation.finalize_notebook(
-                _args(run_dir, "query-metadata-scopes"),
+                _args(run_dir, "query"),
                 RuntimeOptions(run_dir, 180, False, False),
                 _manifest(run_dir),
                 wrapper=wrapper,
