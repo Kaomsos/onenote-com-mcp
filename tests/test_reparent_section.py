@@ -628,7 +628,7 @@ def test_reparent_page_reports_promotion_failure_before_reparent(
 
 
 @pytest.mark.write_contract
-def test_reparent_page_rejects_snapshot_change_before_first_mutation(monkeypatch) -> None:
+def test_reparent_page_rejects_semantic_snapshot_change_before_first_mutation(monkeypatch) -> None:
     items = _page_scope_before()["items"]
     target = next(item for item in items if item["id"] == "selected")
     target["modified"] = "modified"
@@ -636,7 +636,7 @@ def test_reparent_page_rejects_snapshot_change_before_first_mutation(monkeypatch
     changed_target = next(
         item for item in changed["items"] if item["id"] == "selected"
     )
-    changed_target["modified"] = "changed-after-confirmation"
+    changed_target["title"] = "Changed After Confirmation"
     calls: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
@@ -662,6 +662,54 @@ def test_reparent_page_rejects_snapshot_change_before_first_mutation(monkeypatch
         )
 
     assert calls == []
+
+
+@pytest.mark.write_contract
+def test_reparent_page_allows_modified_clock_drift_before_first_mutation(monkeypatch) -> None:
+    items = _page_scope_before()["items"]
+    target = next(item for item in items if item["id"] == "selected")
+    target["modified"] = "modified"
+    changed = _page_scope_before()
+    changed_target = next(
+        item for item in changed["items"] if item["id"] == "selected"
+    )
+    changed_target["modified"] = "one-note-clock-drift"
+    destination = next(
+        item for item in changed["items"] if item["id"] == "destination-section"
+    )
+    destination["modified"] = "destination-clock-drift"
+    calls: list[str] = []
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_snapshot",
+        lambda _notebook_id: changed,
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "reparent_page_scope_xml",
+        lambda *_args, **_kwargs: "<typed-page-scope />",
+    )
+
+    def stop_after_mutation(operation, **_kwargs):
+        calls.append(operation)
+        raise RuntimeError("stop after first mutation")
+
+    monkeypatch.setattr(server.services.mutations, "call", stop_after_mutation)
+
+    with pytest.raises(RuntimeError, match="stop after first mutation"):
+        server.services.mutations.reparent_page(
+            "selected",
+            "destination-section",
+            "Selected",
+            "source-section",
+            "modified",
+            True,
+        )
+
+    assert calls == ["update_hierarchy"]
 
 
 @pytest.mark.write_contract

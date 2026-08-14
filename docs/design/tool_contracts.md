@@ -129,7 +129,7 @@ Rename 与 Page Reorder 要求写开关。Section Reorder 还要求 `LOCAL_ONENO
 
 `reorder_section_group` 的早期实验实现不构成产品能力。2026-08-10 的用户触发隔离验证中，Notebook 直属 Group 的 `A,B,C → A,C,B` 请求通过 `UpdateHierarchy(xs2013)` 返回成功，但立即按 ID 回读仍为后端固定的名称升序。该结果排除了 confirmation、父级选择、fixture 和 Runner 后置判断问题；嵌套父级操作因根级失败而没有执行。基于“后端没有 SectionGroup 可变顺序原语”这一能力边界，产品契约对 Notebook 与 SectionGroup 两种父级统一拒绝 reorder，而不是继续用更多 mutation 猜测后端行为。
 
-Reparent 统一表示同一 Notebook 内的容器换父级，不包含 Copy/Delete，也不能跨 Notebook。三个 typed 工具默认注册，但执行同时要求 Writes 与 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT=true`。service 在任何 COM mutation 前完成精确 ID/类型、confirmation、活动对象、同 Notebook 和目标类型检查；SectionGroup 额外拒绝自身/后代目标。Page 可从任意合法缩进 level 选择根对象：默认 root-only 路线先验证排除后代整体提升，再换父级所选 Page；显式 subtree 路线一次提交完整缩进范围并验证完整单射 `id_map`、相对拓扑和内容。任何路线的目标根均归一化为 level 1。调用方必须从 `item.id`/`id_map` 继续。所有验证均受现有 hierarchy/Page/XML budget 限制。底层 bridge `update_hierarchy` 只由这些受约束 service 及 Reorder 内部编排，生产 MCP 不存在接受外部任意 hierarchy XML 的工具。
+Reparent 统一表示同一 Notebook 内的容器换父级，不包含 Copy/Delete，也不能跨 Notebook。三个 typed 工具默认注册，但执行同时要求 Writes 与 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT=true`。service 在任何 COM mutation 前完成精确 ID/类型、confirmation、活动对象、同 Notebook 和目标类型检查；调用方提供的可选 `expected_modified` 在首次 live confirmation 时仍严格绑定。后续完整证据 capture 与首次确认之间使用 typed identity、名称/标题、parent、Notebook/Section、Page level/parent Page/order 等语义投影复核，不因 OneNote 单独推进目标或 destination 的 `modified`/派生聚合字段而误拒绝；任一受保护关系变化仍在 mutation 前 fail closed。SectionGroup 额外拒绝自身/后代目标。Page 可从任意合法缩进 level 选择根对象：默认 root-only 路线先验证排除后代整体提升，再换父级所选 Page；显式 subtree 路线一次提交完整缩进范围并验证完整单射 `id_map`、相对拓扑和内容。任何路线的目标根均归一化为 level 1。调用方必须从 `item.id`/`id_map` 继续。所有验证均受现有 hierarchy/Page/XML budget 限制。底层 bridge `update_hierarchy` 只由这些受约束 service 及 Reorder 内部编排，生产 MCP 不存在接受外部任意 hierarchy XML 的工具。
 
 Reparent service 不把 `SyncHierarchy` 请求接受当成 fixture 已持久化的前置条件，也不在生产 mutation 内负责 Notebook close/reopen 生命周期。OneNote COM 没有无副作用的 mutation-ready predicate；调用方进入工具前可证明的是 `logical_ready`，不是下一次 `UpdateHierarchy` 必然成功。工具冻结完整基线后只调用一次 Reparent mutation，再以两次稳定 hierarchy、完整内容 snapshot 与 bookend invariant 验证。状态模型、execute-once 与 reconciliation 调用设计见 [`mutation_readiness_and_call_design.md`](mutation_readiness_and_call_design.md)；尚未实现的生产加固由 [TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 跟踪。人工验证 Runner 同样不再用 close/reopen 建立 readiness；它依赖 OneNote Desktop preflight、首次 live identity、typed hierarchy 双稳定和完整内容门限，该 Runner 行为不改变公开工具参数或响应。
 
@@ -150,7 +150,7 @@ Notebook 没有 Delete 工具。
 
 ## 7. P2 Copy 与重建式 Move（实验）
 
-计划工具只读；执行工具除现有确认字段外必须提交刚生成的 `plan_digest`。摘要包含源树、每页稳定内容 hash、目标直属子项、名称、执行模式和 Page Copy/Move 的 `include_descendants`；稳定内容 hash 保留内容对象身份、正文、格式和二进制，但忽略 OneNote 自有的时钟、选择、视图和本地 cache/path 元数据。执行前重算不一致即在 mutation 前拒绝。计划返回的 `snapshots.source` 公开实际选择范围的稳定资源列表、`page_hashes` 和仅供诊断的 raw `page_xml_hashes`，`snapshots.destination` 公开目标直属快照；root-only Move 另以 `snapshots.move_source` 绑定将被保留的后代，但不返回原始 Page XML。
+计划工具只读；执行工具除现有确认字段外必须提交刚生成的 `plan_digest`。摘要包含源树的 typed identity/parent/order、每页稳定内容 hash、目标直属子项、名称、执行模式和 Page Copy/Move 的 `include_descendants`；它不把 OneNote 自主管理的 `modified` 当作语义版本。稳定内容 hash 保留内容对象身份、正文、格式和二进制，但忽略 OneNote 自有的时钟、选择、视图和本地 cache/path 元数据。执行前重算的语义摘要不一致即在 mutation 前拒绝；仅 `modified` 漂移则保留在 observation evidence/warning 中并允许继续。计划返回的 `snapshots.source` 公开实际选择范围的资源观测、`page_hashes` 和仅供诊断的 raw `page_xml_hashes`，`source_snapshot_digest` 是排除 `modified` 的保护摘要，`snapshots.destination` 公开目标直属观测；root-only Move 另以 `snapshots.move_source` 绑定将被保留的后代，但不返回原始 Page XML。
 
 | 工具 | 参数 | 成功时的主要返回/验证 |
 | --- | --- | --- |
@@ -166,7 +166,7 @@ Notebook 没有 Delete 工具。
 | `plan_move_section_group` | `section_group_id`, `destination_parent_id`, `destination_name=""` | 只读生成跨 Notebook SectionGroup Move 专属 digest。 |
 | `move_section_group` | `section_group_id`, `destination_parent_id`, `expected_name`, `expected_parent_id`, `plan_digest`, `expected_modified=null`, `destination_name=""` | 完整复制 Group/Section/Page 子树后只删除一次 Group 根，并复核源全部不活动和目标未变化。 |
 
-Section/SectionGroup Move 在删除源之前仍用包含 `modified` 的严格 source digest 重算计划，任何源时钟、拓扑或内容变化都阻止删除。源根非永久删除并证明完整源子树不再活动后，目标复核使用 protected semantic digest：严格保留资源类型/ID/名称或标题/parent/Notebook/Section/Page level/parent Page/sibling order 和稳定 Page 内容 hash，只排除 OneNote 在新复制子树后台持久化期间可能推进的 `modified`。仅时间戳变化会保留成功结果并写 warning；任一受保护拓扑或内容变化仍返回 `source_removed_destination_revalidation_failed` partial failure，mutation 不会重放。
+Page/Section/SectionGroup Move 在删除源之前重新捕获源，并使用 protected semantic digest 验证资源类型/ID/名称或标题/parent/Notebook/Section/Page level/parent Page/sibling order 和稳定 Page 内容 hash。仅 `modified` 漂移时继续执行，并把刚捕获的最新时间绑定到后续精确删除确认；受保护语义变化仍阻止任何源删除。源删除并证明源对象不再活动后，目标复核使用同一 protected semantic digest。源或目标的仅时间戳变化会保留成功结果并写 warning；任一受保护拓扑或内容变化仍返回对应 partial failure，Copy、Delete 或原 mutation 都不会自动重放。
 
 `copy_report` 固定包含 `id_map/allocated_ids/resolved_target_ids/copied_counts/skipped_content/issues/lossless/verified/fidelity/copy_contract_satisfied/page_results`。`fidelity` 为 `lossless` 或 `unverified`；`copy_contract_satisfied` 只在拓扑/机器 read-back 通过且没有 omitted/unverified issue 时为 true。`content_type_unverified` 与 omitted content 会阻止。Notebook Copy 还包含经过创建返回值核对的 `destination_path`。运行中失败保留已创建目标，返回 `created_ids/allocated_ids/resolved_target_ids/possibly_untracked_allocated_ids/id_map/source_touched/source_untouched/topology_touched/manual_recovery_required/completed_steps/failed_step`。
 

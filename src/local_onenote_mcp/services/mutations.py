@@ -1077,6 +1077,34 @@ class MutationService(BaseService):
         )
         return relationships, sibling_order
 
+    @staticmethod
+    def _reparent_confirmation_signature(item: dict[str, Any] | None) -> tuple[Any, ...] | None:
+        """Project the hierarchy facts that authorize a native Reparent.
+
+        OneNote can advance ``modified`` on a Page or container while it
+        finishes persisting an already-observed hierarchy.  Reparent binds the
+        caller's clock once above, then uses this semantic projection to make
+        sure the full evidence capture still names the same typed object and
+        relationship.  Volatile clocks and derived aggregate fields therefore
+        cannot be the sole reason a native move is rejected.
+        """
+
+        if item is None:
+            return None
+        return (
+            str(item.get("id", "")),
+            str(item.get("resource_type", "")),
+            str(item.get("name") or ""),
+            str(item.get("title") or ""),
+            str(item.get("parent_id") or ""),
+            str(item.get("notebook_id") or ""),
+            str(item.get("section_id") or ""),
+            int(item.get("page_level") or 0),
+            str(item.get("parent_page_id") or ""),
+            int(item.get("order") or 0),
+            bool(item.get("is_in_recycle_bin") is True),
+        )
+
     def _capture_reparent_snapshot(self, notebook_id: str) -> dict[str, Any]:
         """Capture bounded hierarchy and Page evidence for one active Notebook."""
 
@@ -1688,7 +1716,12 @@ class MutationService(BaseService):
         before_by_id = {item["id"]: item for item in before["items"]}
         snap_target = before_by_id.get(object_id)
         snap_destination = before_by_id.get(destination_parent_id)
-        if snap_target != target or snap_destination != destination:
+        if (
+            self._reparent_confirmation_signature(snap_target)
+            != self._reparent_confirmation_signature(target)
+            or self._reparent_confirmation_signature(snap_destination)
+            != self._reparent_confirmation_signature(destination)
+        ):
             raise RuntimeError("Hierarchy changed after Reparent confirmation; mutation was not attempted.")
 
         selected: list[dict[str, Any]] = []
