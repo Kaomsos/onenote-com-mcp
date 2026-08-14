@@ -29,6 +29,19 @@ from tests.manual_validation.scenarios.common.fixture_models import FixtureBuild
 
 
 CASES = required_recipe_contract_cases(SCENARIO_REGISTRY)
+PINNED_RECIPE_VERSIONS = {
+    "bootstrap-ink-drawing-fixture": 3,
+    "bootstrap-inserted-file-fixture": 3,
+    "bootstrap-media-file-fixture": 8,
+    "bootstrap-shape-fixture": 5,
+    "bootstrap-user-authored-fixture": 3,
+    "copy-notebook": 3,
+    "copy-page": 11,
+    "copy-section": 4,
+    "copy-section-group": 5,
+    "create": 5,
+    "reparent-page": 3,
+}
 
 
 def _interactive_observation(
@@ -101,6 +114,13 @@ def test_catalog_is_unique_and_covers_every_owned_recipe_base_dimension() -> Non
         } <= dimensions
 
 
+def test_pinned_cache_recipe_versions_match_the_central_catalog() -> None:
+    assert {
+        name: SCENARIO_REGISTRY.get(name).fixture_recipe.recipe_version
+        for name in PINNED_RECIPE_VERSIONS
+    } == PINNED_RECIPE_VERSIONS
+
+
 def test_fingerprint_is_structural_deterministic_and_runtime_value_free() -> None:
     recipe = SCENARIO_REGISTRY.get("copy-page").fixture_recipe
     identity = recipe.cache_identity
@@ -152,12 +172,6 @@ def test_interactive_miss_never_calls_scaffold_or_waits_for_input(monkeypatch) -
 def test_each_concrete_interactive_detector_has_success_and_failure_cases(scenario_name) -> None:
     scenario = SCENARIO_REGISTRY.get(scenario_name)
     recipe = scenario.fixture_recipe
-    assert recipe.recipe_version == {
-        "bootstrap-inserted-file-fixture": 3,
-        "bootstrap-ink-drawing-fixture": 3,
-        "bootstrap-media-file-fixture": 8,
-        "bootstrap-shape-fixture": 5,
-    }[scenario_name]
     cases = [case for case in CASES if case.scenario_name == scenario_name]
     variants = {
         case.variant
@@ -203,7 +217,6 @@ def test_each_concrete_interactive_detector_has_success_and_failure_cases(scenar
 def test_user_authored_catalog_requires_ready_evidence_only_and_ambiguity() -> None:
     recipe = SCENARIO_REGISTRY.get("bootstrap-user-authored-fixture").fixture_recipe
     assert isinstance(recipe, UserAuthoredRecipe)
-    assert recipe.recipe_version == 3
     outcomes = {
         (case.variant, case.expected_outcome)
         for case in CASES

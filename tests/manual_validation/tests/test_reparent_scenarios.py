@@ -45,11 +45,6 @@ def _validate_fixture_snapshot(name, snapshot, structure, content_fixture):
     )
 
 
-def test_reparent_page_recipe_keeps_validated_v3_cache_identity() -> None:
-    recipe = SCENARIO_REGISTRY.get("reparent-page").fixture_recipe
-    assert recipe.recipe_version == 3
-
-
 class FakeClient:
     def __init__(self, allowed_tools: set[str], timeout_seconds: int = 180) -> None:
         self.allowed_tools = set(allowed_tools) | {"get_page_text"}

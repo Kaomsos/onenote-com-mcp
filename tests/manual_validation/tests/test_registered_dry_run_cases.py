@@ -95,6 +95,7 @@ def test_registered_named_case_round_trips_through_guarded_cli(
     scenario = SCENARIO_REGISTRY.get(case.scenario_name)
     parsed.scenario = parsed.command
     spec = scenario.runtime_spec(parsed)
+    multi_role = len(scenario.fixture_recipe.cache_identity.notebook_roles) > 1
     assert payload["dry_run_contract"] is True
     assert payload["server_started"] is case.expected.server_started
     assert payload["expected_mcp_process_starts"] == case.expected.expected_mcp_process_starts
@@ -136,9 +137,7 @@ def test_registered_named_case_round_trips_through_guarded_cli(
             if "--use-cache" in case.scenario_args
             and payload["cache"]["cache_mode"] != "interactive_bootstrap"
             else (
-                "create-notebook-bundle"
-                if len(scenario.fixture_recipe.cache_identity.notebook_roles) > 1
-                else "create-source-notebook"
+                "create-notebook-bundle" if multi_role else "create-source-notebook"
             )
         )
         mutation_step = next(
@@ -165,6 +164,49 @@ def test_registered_named_case_round_trips_through_guarded_cli(
         assert payload["cache"]["cache_mode"] == "representation_discovery"
         assert payload["cache"]["enabled"] is False
         assert payload["cache"]["templates_opened"] is False
+    if case.case_id == f"{scenario.name}.default" and not consumer_cache_required:
+        expected_steps = [
+            "create-notebook-bundle" if multi_role else "create-source-notebook",
+            scenario.name,
+        ]
+        if scenario.name.startswith("bootstrap-"):
+            expected_steps.extend(
+                [
+                    "interactive-checkpoint",
+                    (
+                        "record-evidence-only-and-close"
+                        if getattr(
+                            scenario.fixture_recipe,
+                            "representation_discovery_only",
+                            False,
+                        )
+                        else "close-stage-publish-materialize-live-validate"
+                    ),
+                ]
+            )
+        expected_steps.extend(
+            [
+                "report",
+                "close-notebook-bundle" if multi_role else "close-source-notebook",
+            ]
+        )
+        assert [step["step"] for step in payload["ordered_steps"]] == expected_steps
+        assert payload["ordered_steps"][0]["allowed_operations"] == [
+            "create_fresh_notebook"
+        ]
+        assert payload["ordered_steps"][-1]["allowed_operations"] == [
+            "get_exact_notebook",
+            "close_exact_notebook",
+        ]
+    if "--keep-worksite" in case.scenario_args:
+        assert payload["worksite"] == {
+            "preserved": True,
+            "target_cleanup": scenario.worksite_dry_run_action,
+        }
+        expected_last_step = (
+            "preflight-cache-required" if consumer_cache_required else "report"
+        )
+        assert payload["ordered_steps"][-1]["step"] == expected_last_step
     assert payload["filesystem_cleanup"]["enabled"] is False
     if case.scenario_name == "copy-page":
         cases = payload["scenario_spec"]["execution_contract"]["cases"]

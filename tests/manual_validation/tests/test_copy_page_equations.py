@@ -21,7 +21,6 @@ from tests.manual_validation.test_utils import read_json
 
 
 def test_copy_page_recipe_requires_inline_and_display_equations() -> None:
-    assert RECIPE.recipe_version == 11
     assert RECIPE.config.kind is LayeredFixtureKind.PAGE
     assert RECIPE.config.include_equations is True
 

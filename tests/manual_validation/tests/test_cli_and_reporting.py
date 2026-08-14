@@ -140,18 +140,10 @@ def test_p2_scenarios_default_to_copy_execute_timeout() -> None:
     assert rename_args.timeout == 180
 
 
-@pytest.mark.parametrize("legacy_name", ["reconstructive-move-page"])
-def test_legacy_scenario_names_are_not_registered(legacy_name) -> None:
-    with pytest.raises(SystemExit):
-        build_parser().parse_args([legacy_name, "--dry-run"])
-
-
-def test_rename_section_target_uses_neutral_fixture_name() -> None:
+def test_rename_target_uses_current_fixture_key() -> None:
     parser = build_parser()
     args = parser.parse_args(["rename", "--target", "content_section", "--dry-run"])
     assert args.target == "content_section"
-    with pytest.raises(SystemExit):
-        parser.parse_args(["rename", "--target", "move_source", "--dry-run"])
 
 
 def test_keep_worksite_is_available_to_every_named_action_but_not_all() -> None:
@@ -162,43 +154,6 @@ def test_keep_worksite_is_available_to_every_named_action_but_not_all() -> None:
 
     with pytest.raises(SystemExit):
         parser.parse_args(["all", "--keep-worksite"])
-
-
-@pytest.mark.parametrize("scenario", SCENARIO_REGISTRY.public_names)
-def test_every_named_action_has_a_bounded_keep_worksite_dry_run(
-    scenario, tmp_path, capsys
-) -> None:
-    run_dir = tmp_path / scenario
-    assert main(
-        [
-            scenario,
-            "--run-dir",
-            str(run_dir),
-            "--keep-worksite",
-            "--dry-run",
-            "--json",
-        ]
-    ) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["lifecycle"] == "keep"
-    assert payload["worksite"] == {
-        "preserved": True,
-        "target_cleanup": SCENARIO_REGISTRY.get(scenario).worksite_dry_run_action,
-    }
-    expected_last_step = (
-        "preflight-cache-required"
-        if SCENARIO_REGISTRY.get(scenario).fixture_recipe.consumer_scenario
-        else "report"
-    )
-    assert payload["ordered_steps"][-1]["step"] == expected_last_step
-    assert not run_dir.exists()
-
-
-def test_semantic_content_checkpoint_option_was_removed() -> None:
-    parser = build_parser()
-    with pytest.raises(SystemExit):
-        parser.parse_args(["copy-page", "--verify-semantic-content"])
 
 
 def test_keep_worksite_dry_run_preserves_targets_and_source_notebook(tmp_path, capsys) -> None:

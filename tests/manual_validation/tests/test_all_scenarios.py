@@ -215,13 +215,28 @@ def test_unregistered_validation_scenario_does_not_enter_all(monkeypatch) -> Non
     assert set(registry.all_scenario_names) < set(registry.public_names)
 
 
-def test_failed_section_group_reorder_probe_is_public_but_excluded_from_all() -> None:
-    scenario = SCENARIO_REGISTRY.get("reorder-section-group")
+def test_all_membership_and_reviewed_capabilities_are_exact() -> None:
+    assert get_all_scenario_names() == (
+        "create",
+        "rename",
+        "reorder-page",
+        "reorder-section",
+        "reparent-section",
+        "reparent-page",
+        "reparent-section-group",
+        "delete",
+        "copy-page",
+        "copy-section",
+        "copy-section-group",
+        "copy-notebook",
+        "move-page",
+        "move-section",
+        "move-section-group",
+    )
 
-    assert scenario.included_in_all is False
-    assert "reorder-section-group" in SCENARIO_REGISTRY.public_names
-    assert "reorder-section-group" not in get_all_scenario_names()
-    assert scenario.capability_assessment == {
+    section_group_reorder = SCENARIO_REGISTRY.get("reorder-section-group")
+    assert section_group_reorder.included_in_all is False
+    assert section_group_reorder.capability_assessment == {
         "capability_status": "limited",
         "validation_status": "failed",
         "reason": (
@@ -229,27 +244,10 @@ def test_failed_section_group_reorder_probe_is_public_but_excluded_from_all() ->
             "did not apply the requested sibling order after UpdateHierarchy returned success."
         ),
     }
-
-
-def test_typed_page_reparent_is_included_in_all_after_stability_review() -> None:
-    name = "reparent-page"
-    scenario = SCENARIO_REGISTRY.get(name)
-
-    assert scenario.included_in_all is True
-    assert name in SCENARIO_REGISTRY.public_names
-    assert name in get_all_scenario_names()
-    assert scenario.capability_assessment["capability_status"] == "experimental"
-    assert scenario.capability_assessment["validation_status"] == "passed"
-
-
-def test_typed_section_group_reparent_is_included_in_all_after_stability_review() -> None:
-    scenario = SCENARIO_REGISTRY.get("reparent-section-group")
-
-    assert scenario.included_in_all is True
-    assert "reparent-section-group" in SCENARIO_REGISTRY.public_names
-    assert "reparent-section-group" in get_all_scenario_names()
-    assert scenario.capability_assessment["capability_status"] == "experimental"
-    assert scenario.capability_assessment["validation_status"] == "passed"
+    for name in ("reparent-page", "reparent-section-group"):
+        assessment = SCENARIO_REGISTRY.get(name).capability_assessment
+        assert assessment["capability_status"] == "experimental"
+        assert assessment["validation_status"] == "passed"
 
 
 def test_registry_wrapper_rejects_duplicate_scenario_names() -> None:
@@ -367,33 +365,6 @@ def test_streaming_all_defers_bounded_stderr_until_failure(capsys) -> None:
     output = capsys.readouterr().out
     assert output.index("rename | live progress") < output.index("FAIL rename")
     assert output.index("FAIL rename") < output.index("stderr: failure diagnostic")
-
-
-def test_all_includes_all_three_stable_move_scenarios() -> None:
-    included = set(get_all_scenario_names())
-
-    assert {"move-page", "move-section", "move-section-group"} <= included
-    assert all(
-        SCENARIO_REGISTRY.get(name).included_in_all is True
-        for name in ("move-page", "move-section", "move-section-group")
-    )
-
-
-def test_all_includes_supported_section_reorder_but_not_section_group_probe() -> None:
-    included = set(get_all_scenario_names())
-
-    assert "reorder-section" in included
-    assert SCENARIO_REGISTRY.get("reorder-section").included_in_all is True
-    assert "reorder-section-group" not in included
-    assert SCENARIO_REGISTRY.get("reorder-section-group").included_in_all is False
-
-
-def test_all_includes_all_three_reviewed_reparent_scenarios() -> None:
-    included = set(get_all_scenario_names())
-    names = ("reparent-page", "reparent-section", "reparent-section-group")
-
-    assert set(names) <= included
-    assert all(SCENARIO_REGISTRY.get(name).included_in_all is True for name in names)
 
 
 def test_all_passes_dry_run_timeout_and_json_to_each_child(capsys) -> None:

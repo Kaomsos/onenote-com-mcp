@@ -365,9 +365,6 @@ def test_materialized_bundle_opens_each_role_once_before_live_validation(
         ("record", "source", "source-live-id"),
         ("record", "destination", "destination-live-id"),
     ]
-    assert not (run_dir / "cache-working-import-checkpoint.json").exists()
-
-
 def _publish(tmp_path: Path):
     recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
     store = BundleCacheStore(tmp_path / "cache")

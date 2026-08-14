@@ -348,7 +348,7 @@ OneNote 可能重映射 Page/内容对象 ID，完整子树又扩大了目标集
 
 代码、公开契约和纯验证已经交付：十个执行工具返回统一 `destination_position`，Move 在源删除后重新投影；`reparent_page` 已加入默认 `false` 的 `include_descendants`，并实现 root-only 后代提升与完整子树路线；自动化合同覆盖目标根位置、Notebook 不适用、fresh ID、分叉 Page 范围、同父级 Page Move 的删除后索引，以及 promotion/Reparent 各阶段的结构化 partial outcome。十个既有 manual-validation runtime 已接入独立 after-snapshot projector；所有 hierarchy-child destination fixture 均准备至少两个可区分的同类型 anchors；新的 `reparent-page-scope` 已注册 Scenario-owned recipe、最小静态权限和正式 dry-run case。
 
-纯验证记录：完整 pytest 的交付基线为 `845 passed`，后续共享 manual-validation 稳定性与 mutation 安全强化纳入后的仓库基线为 `1037 passed`；manual-validation 纯合同曾整套 `533 passed`，本轮 anchor/recipe 增强后的目标相关 manual 集合为 `278 passed`；`reparent-page-scope --dry-run --json` 返回 `ok=true`、`server_started=false`。一次 manual 全套复跑出现与本 TODO 无关的 Windows 原子目录替换重试计数瞬态差异（预期 2、观察 3），该单测随后复跑为 `1 passed`。Agent 未启动任何真实 mutation；下述真实 run 均由用户本人在交互式前台终端启动，Agent 只读取保存的 evidence。
+纯验证记录：完整 pytest 的交付基线为 `845 passed`，后续共享 manual-validation 稳定性与 mutation 安全强化纳入后曾达到 `1037 passed`；清理重复 dry-run/orchestrator 展开、旧逐项 activation fake 路径和历史 tombstone 后，当前等价行为基线为 `924 passed`，其中 manual-validation 纯合同为 `540 passed`。`reparent-page-scope --dry-run --json` 返回 `ok=true`、`server_started=false`。Agent 未启动任何真实 mutation；下述真实 run 均由用户本人在交互式前台终端启动，Agent 只读取保存的 evidence。
 
 ### 最新真实运行进度
 

@@ -100,72 +100,6 @@ def _manifest(run_dir: Path, name: str = "__ISOLATED__") -> dict:
     }
 
 
-@pytest.mark.parametrize("scenario", SCENARIOS)
-def test_each_dry_run_declares_one_process_and_scenario_fixture(
-    scenario, capsys, tmp_path
-) -> None:
-    run_dir = tmp_path / scenario
-    assert main([scenario, "--run-dir", str(run_dir), "--dry-run", "--json"]) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == scenario
-    assert payload["server_started"] is False
-    assert payload["agent_execution_prohibited"] is True
-    consumer_cache_required = SCENARIO_REGISTRY.get(
-        scenario
-    ).fixture_recipe.consumer_scenario
-    assert payload["expected_mcp_process_starts"] == (
-        0 if consumer_cache_required else 1
-    )
-    assert payload["fixture_profile"]["name"] == SCENARIO_SPECS[scenario].fixture.name
-    assert payload["scenario_spec"]["tool_allowlist"] == sorted(
-        SCENARIO_SPECS[scenario].tool_allowlist
-    )
-    if consumer_cache_required:
-        assert [step["step"] for step in payload["ordered_steps"]] == [
-            "preflight-cache-required"
-        ]
-        assert payload["cache"]["decision"] == "rejected_missing_use_cache"
-        assert payload["ordered_steps"][0]["allowed_operations"] == []
-        assert not run_dir.exists()
-        return
-    multi_role = len(
-        SCENARIO_REGISTRY.get(scenario).fixture_recipe.cache_identity.notebook_roles
-    ) > 1
-    expected_steps = [
-        "create-notebook-bundle" if multi_role else "create-source-notebook",
-        scenario,
-    ]
-    if scenario.startswith("bootstrap-"):
-        expected_steps.extend(
-            [
-                "interactive-checkpoint",
-                (
-                    "record-evidence-only-and-close"
-                    if getattr(
-                        SCENARIO_REGISTRY.get(scenario).fixture_recipe,
-                        "representation_discovery_only",
-                        False,
-                    )
-                    else "close-stage-publish-materialize-live-validate"
-                ),
-            ]
-        )
-    expected_steps.extend(
-        ["report", "close-notebook-bundle" if multi_role else "close-source-notebook"]
-    )
-    assert [step["step"] for step in payload["ordered_steps"]] == expected_steps
-    assert payload["ordered_steps"][0]["allowed_operations"] == [
-        "create_fresh_notebook"
-    ]
-    assert payload["ordered_steps"][-1]["allowed_operations"] == [
-        "get_exact_notebook",
-        "close_exact_notebook",
-    ]
-    assert payload["filesystem_cleanup"]["enabled"] is False
-    assert not run_dir.exists()
-
-
 def test_fixture_profiles_are_scenario_specific() -> None:
     names = {name: spec.fixture.name for name, spec in SCENARIO_SPECS.items()}
     assert names["create"] == "minimal-create-target"
@@ -341,7 +275,6 @@ def test_copy_page_fixture_description_covers_six_case_bundle_matrix() -> None:
 
 
 def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree() -> None:
-    assert SCENARIO_REGISTRY.get("copy-page").fixture_recipe.recipe_version == 11
     assert tuple(
         role.role
         for role in SCENARIO_REGISTRY.get("copy-page").fixture_recipe.cache_identity.notebook_roles
@@ -1159,7 +1092,16 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
     monkeypatch.setattr(validation, "render_report", fake_report)
 
 
-@pytest.mark.parametrize("scenario", SCENARIOS)
+@pytest.mark.parametrize(
+    "scenario",
+    (
+        "create",
+        "delete",
+        "copy-page",
+        "query-metadata-scopes",
+        "user-authored-fixture-consumer",
+    ),
+)
 def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scenario) -> None:
     calls: list[str] = []
     _install_orchestration_fakes(monkeypatch, calls)
