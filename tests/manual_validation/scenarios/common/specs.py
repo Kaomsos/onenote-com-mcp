@@ -825,7 +825,7 @@ _SEARCH_FIXTURE_TOOLS = {
 SCENARIO_SPECS["search-all-open-notebooks"] = ScenarioSpec(
     "search-all-open-notebooks",
     _profile(
-        "fresh-index-search-probes",
+        "cacheable-index-search-probes",
         (
             "source:Probe Group/{Probe Section 1/Probe Page A1,Probe Section 2/Probe Page A2}",
             "source:Notebook Root Section/Probe Page A3",
@@ -844,7 +844,7 @@ SCENARIO_SPECS["search-all-open-notebooks"] = ScenarioSpec(
             "budget_page_b2",
         ),
         _SEARCH_FIXTURE_TOOLS,
-        content=("fresh 32-character search probe", "candidate budget marker", "long-text marker"),
+        content=("32-character search probe", "candidate budget marker", "long-text marker"),
         checks=(
             "both role Notebooks are simultaneously active and distinct",
             "main probe topology yields exact root/notebook/group/section counts 4/3/2/1",
@@ -852,13 +852,14 @@ SCENARIO_SPECS["search-all-open-notebooks"] = ScenarioSpec(
         ),
     ),
     WRITE_POLICY,
-    frozenset(READ_TOOLS | _SEARCH_FIXTURE_TOOLS | {"get_page_text", "search_pages"}),
+    frozenset(READ_TOOLS | _SEARCH_FIXTURE_TOOLS | {"search_pages"}),
     {
-        "fresh_only": True,
-        "included_in_all": False,
+        "cache_supported": True,
+        "included_in_all": True,
         "scope_counts": {"root": 4, "notebook": 3, "section_group": 2, "section": 1},
         "pagination": {"page_size": 2, "consistency": "live_index"},
         "probe_persistence": "sha256_length_character_classes_and_ids_only",
+        "fresh_index_activation_checkpoint": "close_false_reopen_exact_paths",
     },
     search_budget={
         "max_pages": 4,
@@ -878,7 +879,7 @@ _TYPED_QUERY_FIXTURE_TOOLS = {
 SCENARIO_SPECS["query-metadata-scopes"] = ScenarioSpec(
     "query-metadata-scopes",
     _profile(
-        "fresh-typed-query-scopes",
+        "cacheable-typed-query-scopes",
         (
             "source:Outer/Inner/Deep/{Parent,Child(level 2),Sibling}",
             "source:Root/RootPage",
@@ -903,8 +904,8 @@ SCENARIO_SPECS["query-metadata-scopes"] = ScenarioSpec(
     WRITE_POLICY,
     frozenset(READ_TOOLS | _TYPED_QUERY_FIXTURE_TOOLS),
     {
-        "fresh_only": True,
-        "included_in_all": False,
+        "cache_supported": True,
+        "included_in_all": True,
         "query_kind": "hierarchy_metadata",
         "pagination": {"page_size": 2, "consistency": "live_hierarchy"},
         "lifecycle_close_probe_role": "query-b",

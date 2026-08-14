@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from types import MappingProxyType
-from typing import Any, Mapping, TypeAlias
+from typing import Any, Callable, Mapping, TypeAlias
 
 from ...runtime import InvariantFailure
 from ...path_budget import validate_role
@@ -151,6 +151,7 @@ class RecipeBase(ABC):
     accepts_evidence_only = False
     consumer_scenario = False
     supports_cache = True
+    fresh_only_reason = "this Recipe requires a new run-scoped fixture"
     bundle_invariants = ("all role Notebook IDs and resolved paths are unique",)
 
     def __init__(
@@ -230,6 +231,10 @@ class RecipeBase(ABC):
     def validate_registration(self, spec: ScenarioSpec) -> None:
         if self.scenario_name != spec.name or self.profile != spec.fixture:
             raise ValueError(f"Fixture recipe/profile mismatch: {self.scenario_name}")
+        if not self.supports_cache and not self.fresh_only_reason.strip():
+            raise ValueError(
+                f"Fresh-only fixture recipe requires a rejection reason: {self.scenario_name}"
+            )
         if self.manifest_keys != frozenset(spec.fixture.manifest_keys):
             raise ValueError(
                 f"Fixture recipe manifest keys differ from profile: {self.scenario_name}"
@@ -258,6 +263,21 @@ class RecipeBase(ABC):
     ) -> tuple[str, ...]:
         raise NotImplementedError
 
+    def begin_snapshot_content_validation(self) -> None:
+        """Reset optional process-local state used while Page XML is read once."""
+
+    def snapshot_page_observer(
+        self,
+        role: str,
+        build: FixtureBuildResult,
+    ) -> Callable[[Mapping[str, Any], str], None] | None:
+        """Return an optional non-persisting observer for the existing Page read."""
+
+        return None
+
+    def complete_snapshot_content_validation(self) -> None:
+        """Validate optional process-local observations after every role was read."""
+
     def validate_live(self, observation: FixtureBundleObservation) -> FixtureValidationReport:
         expected_roles = tuple(role.role for role in self.cache_identity.notebook_roles)
         if tuple(sorted(observation.roles)) != expected_roles:
@@ -268,7 +288,11 @@ class RecipeBase(ABC):
         for role in expected_roles:
             current = observation.roles[role]
             role_checks[role] = self.validate(
-                FixtureValidationContext(args=current.args, snapshot=current.snapshot),
+                FixtureValidationContext(
+                    args=current.args,
+                    snapshot=current.snapshot,
+                    role=role,
+                ),
                 current.build,
             )
             notebook_ids.append(str(current.notebook.get("id", "")))

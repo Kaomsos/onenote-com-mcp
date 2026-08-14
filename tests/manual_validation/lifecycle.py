@@ -254,8 +254,9 @@ class NotebookLifecycleWrapper:
         *,
         template_paths: tuple[Path, ...],
         role: str = "source",
+        lease_archive_kind: str = "cold-build",
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Open one materialized working directory and prove no template was opened."""
+        """Open one exact working directory and prove no template path was opened."""
 
         opened_started = time.perf_counter()
         self.progress.unit_started("lifecycle", f"{self.role} open working copy", 1, 1)
@@ -268,14 +269,16 @@ class NotebookLifecycleWrapper:
         templates = tuple(path.resolve(strict=True) for path in template_paths)
         if working_path in templates:
             raise RunnerFailure("Lifecycle refuses to open a cache template path.")
+        if lease_archive_kind not in {"cold-build", "index-checkpoint"}:
+            raise RunnerFailure("Lifecycle lease archive kind is not allowlisted.")
         if self.lease_path.exists():
             previous = self._read_lease()
             if previous.get("state") != "closed":
                 raise RunnerFailure("Lifecycle lease is active; refusing a second Notebook open.")
             archived = self.run_dir / (
-                "lifecycle-cold-build-lease.json"
+                f"lifecycle-{lease_archive_kind}-lease.json"
                 if self.role == "source"
-                else f"lifecycle-cold-build-lease-{self.role}.json"
+                else f"lifecycle-{lease_archive_kind}-lease-{self.role}.json"
             )
             if archived.exists():
                 raise RunnerFailure("Lifecycle lease archive already exists.")

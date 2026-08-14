@@ -12,6 +12,7 @@ from ..fixture_recipes.interactive import InteractiveFixtureRecipe, UserAuthored
 class RecipeContractDimension(str, Enum):
     OWNERSHIP = "ownership"
     FRESH_DEFAULT = "fresh-default"
+    CACHE_UNSUPPORTED = "cache-unsupported"
     CACHE_COLD = "cache-cold"
     VALIDATED_HIT = "validated-hit"
     INVALIDATION = "invalidation"
@@ -53,12 +54,15 @@ class RecipeContractCase:
 BASE_CASES = (
     (RecipeContractDimension.OWNERSHIP, "static", ContractOutcome.PASS),
     (RecipeContractDimension.FRESH_DEFAULT, "zero-cache-io", ContractOutcome.PASS),
+    (RecipeContractDimension.MANIFEST, "complete", ContractOutcome.PASS),
+    (RecipeContractDimension.RESPONSIBILITY, "sentinel", ContractOutcome.PASS),
+)
+
+CACHE_CASES = (
     (RecipeContractDimension.CACHE_COLD, "publish-gated", ContractOutcome.PASS),
     (RecipeContractDimension.VALIDATED_HIT, "live-revalidate", ContractOutcome.PASS),
     (RecipeContractDimension.INVALIDATION, "incompatible", ContractOutcome.FAIL_CLOSED),
     (RecipeContractDimension.IMMUTABILITY, "working-only", ContractOutcome.PASS),
-    (RecipeContractDimension.MANIFEST, "complete", ContractOutcome.PASS),
-    (RecipeContractDimension.RESPONSIBILITY, "sentinel", ContractOutcome.PASS),
 )
 
 
@@ -68,6 +72,16 @@ def required_recipe_contract_cases(registry) -> tuple[RecipeContractCase, ...]:
         recipe = scenario.fixture_recipe
         roles = tuple(role.role for role in recipe.cache_identity.notebook_roles)
         declarations = list(BASE_CASES)
+        if recipe.supports_cache:
+            declarations.extend(CACHE_CASES)
+        else:
+            declarations.append(
+                (
+                    RecipeContractDimension.CACHE_UNSUPPORTED,
+                    "rejected",
+                    ContractOutcome.FAIL_CLOSED,
+                )
+            )
         if len(roles) > 1:
             declarations.extend(
                 (

@@ -99,19 +99,48 @@ def _interactive_observation(
 def test_catalog_is_unique_and_covers_every_owned_recipe_base_dimension() -> None:
     assert len({case.case_id for case in CASES}) == len(CASES)
     for scenario in SCENARIO_REGISTRY.values():
+        recipe = scenario.fixture_recipe
         dimensions = {
             case.dimension for case in CASES if case.scenario_name == scenario.name
         }
         assert {
             RecipeContractDimension.OWNERSHIP,
             RecipeContractDimension.FRESH_DEFAULT,
+            RecipeContractDimension.MANIFEST,
+            RecipeContractDimension.RESPONSIBILITY,
+        } <= dimensions
+        if recipe.supports_cache:
+            assert {
+                RecipeContractDimension.CACHE_COLD,
+                RecipeContractDimension.VALIDATED_HIT,
+                RecipeContractDimension.INVALIDATION,
+                RecipeContractDimension.IMMUTABILITY,
+            } <= dimensions
+            assert RecipeContractDimension.CACHE_UNSUPPORTED not in dimensions
+        else:
+            assert RecipeContractDimension.CACHE_UNSUPPORTED in dimensions
+            assert not dimensions.intersection(
+                {
+                    RecipeContractDimension.CACHE_COLD,
+                    RecipeContractDimension.VALIDATED_HIT,
+                    RecipeContractDimension.INVALIDATION,
+                    RecipeContractDimension.IMMUTABILITY,
+                }
+            )
+
+
+def test_search_and_query_have_complete_cache_contracts() -> None:
+    for scenario_name in ("search-all-open-notebooks", "query-metadata-scopes"):
+        dimensions = {
+            case.dimension for case in CASES if case.scenario_name == scenario_name
+        }
+        assert {
             RecipeContractDimension.CACHE_COLD,
             RecipeContractDimension.VALIDATED_HIT,
             RecipeContractDimension.INVALIDATION,
             RecipeContractDimension.IMMUTABILITY,
-            RecipeContractDimension.MANIFEST,
-            RecipeContractDimension.RESPONSIBILITY,
         } <= dimensions
+        assert RecipeContractDimension.CACHE_UNSUPPORTED not in dimensions
 
 
 def test_pinned_cache_recipe_versions_match_the_central_catalog() -> None:

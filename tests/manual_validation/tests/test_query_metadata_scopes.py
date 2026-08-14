@@ -1,22 +1,36 @@
 from __future__ import annotations
 
+import argparse
+from copy import deepcopy
 import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tests.manual_validation.runner import main
-from tests.manual_validation.runtime import RuntimeOptions
+from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
+from tests.manual_validation.scenarios.common.fixture_models import FixtureBuildResult
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
+from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
+    FixtureBundleObservation,
+    FixtureRoleObservation,
+)
+from tests.manual_validation.scenarios.fixture_recipes.query_metadata_scopes import (
+    _preflight_query_fixture_paths,
+    compact_query_token,
+)
 
 
-def test_query_metadata_scope_recipe_has_two_complete_fresh_roles() -> None:
+def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
     scenario = SCENARIO_REGISTRY.get("query-metadata-scopes")
     recipe = scenario.fixture_recipe
     spec = scenario.spec
 
-    assert scenario.included_in_all is False
+    assert scenario.included_in_all is True
+    assert scenario.requires_index_activation_checkpoint is False
     assert scenario.requires_lifecycle_wrappers is True
-    assert recipe.supports_cache is False
+    assert recipe.supports_cache is True
     assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
         "query-b",
         "source",
@@ -60,6 +74,41 @@ def test_query_metadata_scope_recipe_has_two_complete_fresh_roles() -> None:
     assert spec.policy.raw_xml_enabled is False
 
 
+def test_query_physical_token_is_compact_deterministic_and_not_the_uuid() -> None:
+    source = "0a829c2d-bb96-4a89-af22-76d4328073c2"
+
+    first = compact_query_token(source)
+    second = compact_query_token(source)
+
+    assert first == second
+    assert len(first) == 16
+    assert set(first) <= set("0123456789abcdef")
+    assert source not in first
+
+
+def test_query_deep_physical_path_is_budgeted_before_role_mutation(tmp_path) -> None:
+    context = SimpleNamespace(
+        notebook_path=Path("C:/") / ("n" * 220),
+        options=SimpleNamespace(run_dir=tmp_path),
+        role="query-b",
+    )
+
+    with pytest.raises(InvariantFailure, match="before role mutation"):
+        _preflight_query_fixture_paths(
+            context,
+            outer_name="Q-short-BOuter",
+            inner_name="Q-short-BInner",
+            deep_name="Q-short-BDeep",
+            root_name="Q-short-BRoot",
+        )
+
+    evidence = json.loads(
+        (tmp_path / "fixture-path-budget-query-b.json").read_text(encoding="utf-8")
+    )
+    assert evidence["error_type"] == "path_budget_exceeded"
+    assert evidence["mutation_started"] is False
+
+
 def test_query_metadata_scope_dry_run_is_human_gated_and_least_privilege(capsys) -> None:
     assert main(["query-metadata-scopes", "--dry-run", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -69,8 +118,8 @@ def test_query_metadata_scope_dry_run_is_human_gated_and_least_privilege(capsys)
     assert payload["expected_mcp_process_starts"] == 1
     assert payload["cache"]["cache_access_performed"] is False
     assert payload["scenario_spec"]["execution_contract"] == {
-        "fresh_only": True,
-        "included_in_all": False,
+        "cache_supported": True,
+        "included_in_all": True,
         "lifecycle_close_probe_role": "query-b",
         "pagination": {"consistency": "live_hierarchy", "page_size": 2},
         "query_kind": "hierarchy_metadata",
@@ -87,6 +136,18 @@ def test_query_metadata_scope_dry_run_is_human_gated_and_least_privilege(capsys)
         "move_containers_enabled": False,
         "raw_xml_enabled": False,
     }
+
+
+def test_query_metadata_use_cache_plans_normal_materialization(capsys) -> None:
+    assert main(
+        ["query-metadata-scopes", "--use-cache", "--dry-run", "--json"]
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["cache"]["decision"] == "runtime_lookup_not_performed_in_dry_run"
+    assert payload["cache"]["enabled"] is True
+    assert payload["expected_mcp_process_starts"] == 1
+    assert payload["ordered_steps"][0]["step"] == "resolve-fixture-bundle"
 
 
 def _runtime_manifest() -> dict:
@@ -166,11 +227,78 @@ def _runtime_manifest() -> dict:
     }
 
 
+def _query_fixture_observation() -> FixtureBundleObservation:
+    scenario = SCENARIO_REGISTRY.get("query-metadata-scopes")
+    recipe = scenario.fixture_recipe
+    manifest = _runtime_manifest()
+    roles = {}
+    for role in ("query-b", "source"):
+        structure = {
+            key: deepcopy(manifest["structure"][key])
+            for key in recipe.manifest_keys_for_role(role)
+        }
+        page_ids = {
+            str(item["id"])
+            for item in structure.values()
+            if item["resource_type"] == "page"
+        }
+        roles[role] = FixtureRoleObservation(
+            role=role,
+            args=argparse.Namespace(),
+            notebook=manifest["notebooks"][role],
+            notebook_path=f"C:/run/{role}",
+            snapshot={
+                "notebook_id": manifest["notebooks"][role]["id"],
+                "items": list(structure.values()),
+                "page_hashes": {page_id: f"hash-{page_id}" for page_id in page_ids},
+            },
+            build=FixtureBuildResult(structure, {}),
+        )
+    return FixtureBundleObservation(roles=roles)
+
+
+def test_query_recipe_uses_role_aware_complete_bundle_validation() -> None:
+    recipe = SCENARIO_REGISTRY.get("query-metadata-scopes").fixture_recipe
+    observation = _query_fixture_observation()
+
+    report = recipe.validate_live(observation)
+
+    assert report.passed is True
+    assert "every typed Query Page was read once during fixture snapshot validation" in (
+        report.role_checks["query-b"]
+    )
+    assert "both typed Query roles share one non-empty run token" in report.bundle_checks
+
+
+def test_query_recipe_rejects_cross_role_token_drift() -> None:
+    recipe = SCENARIO_REGISTRY.get("query-metadata-scopes").fixture_recipe
+    observation = _query_fixture_observation()
+    query_b = observation.roles["query-b"]
+    structure = deepcopy(dict(query_b.build.structure))
+    structure["query_b_parent_page"]["title"] = "Q-other-token-BParent"
+    broken = FixtureBundleObservation(
+        roles={
+            **observation.roles,
+            "query-b": FixtureRoleObservation(
+                role=query_b.role,
+                args=query_b.args,
+                notebook=query_b.notebook,
+                notebook_path=query_b.notebook_path,
+                snapshot=query_b.snapshot,
+                build=FixtureBuildResult(structure, {}),
+            ),
+        }
+    )
+
+    with pytest.raises(InvariantFailure, match="share one run-unique token"):
+        recipe.validate_live(broken)
+
+
 class _FakeQueryClient:
     def __init__(self, run_dir: Path, manifest: dict) -> None:
         self.run_dir = run_dir
         self.manifest = manifest
-        self.open_count = 2
+        self.open_count = 4
         self.catalog = {
             item["id"]: item
             for item in [*manifest["notebooks"].values(), *manifest["structure"].values()]
@@ -194,6 +322,14 @@ class _FakeQueryClient:
     async def call_tool(self, name, arguments, retry_read=False):
         if name == "get_tree":
             return {"tree": self._tree(str(arguments["root_id"]))}
+        if name == "list_notebooks":
+            fixture = list(self.manifest["notebooks"].values())
+            unrelated = [
+                {"id": f"unrelated-{index}", "resource_type": "notebook"}
+                for index in range(self.open_count - len(fixture))
+            ]
+            notebooks = [*fixture, *unrelated]
+            return {"notebooks": notebooks, "count": len(notebooks)}
 
         scope = arguments.get("scope", {"mode": "root"})
         self._append_audit(1 if scope["mode"] == "root" else 2)
@@ -269,10 +405,20 @@ class _FakeCloseWrapper:
 
     def close_exact_notebook(self):
         self.closed = True
-        self.client.open_count = 1
+        self.client.open_count -= 1
         with (self.client.run_dir / "bridge-calls.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps({"operation": "close_notebook"}) + "\n")
         return {"closed": True, "source_notebook_id": "nb"}
+
+
+class _CollisionQueryClient(_FakeQueryClient):
+    async def call_tool(self, name, arguments, retry_read=False):
+        result = await super().call_tool(name, arguments, retry_read=retry_read)
+        if name == "query_notebook" and "name_equals" not in arguments:
+            result["items"].append({"id": "retained-working-copy"})
+            result["count"] += 1
+            result["total_matches"] += 1
+        return result
 
 
 def test_query_metadata_runtime_records_independent_expected_and_exact_bridge_calls(tmp_path) -> None:
@@ -310,3 +456,55 @@ def test_query_metadata_runtime_records_independent_expected_and_exact_bridge_ca
     assert set(expected["items"]) == set(manifest["structure"])
     assert (evidence_dir / "typed-hierarchy-source.json").exists()
     assert (evidence_dir / "typed-hierarchy-query-b.json").exists()
+    baseline = json.loads(
+        (evidence_dir / "open-notebook-baseline.json").read_text(encoding="utf-8")
+    )
+    assert baseline == {
+        "schema_version": 1,
+        "open_notebook_count": 4,
+        "fixture_notebook_count": 2,
+        "all_fixture_notebooks_present": True,
+        "unrelated_notebook_identity_persisted": False,
+    }
+    assert all(
+        request["response"]["scope"]["notebook_count"] == (
+            3 if request["label"].startswith("closed-") else 4
+        )
+        for request in requests["requests"]
+        if request["response"]["scope"]["mode"] == "root"
+    )
+
+
+def test_query_cache_warns_only_when_reused_token_produces_extra_hits(tmp_path) -> None:
+    import asyncio
+
+    run_dir = tmp_path / "run"
+    (run_dir / "scenarios" / "query-metadata-scopes").mkdir(parents=True)
+    manifest = _runtime_manifest()
+    client = _CollisionQueryClient(run_dir, manifest)
+    wrapper = _FakeCloseWrapper(client)
+    scenario = SCENARIO_REGISTRY.get("query-metadata-scopes")
+
+    with pytest.raises(InvariantFailure, match="cache_query_collision"):
+        asyncio.run(
+            scenario.execute_with_lifecycle(
+                SimpleNamespace(),
+                RuntimeOptions(run_dir, 300, True, False, use_cache=True),
+                manifest,
+                client=client,
+                fixture_result={"status": "prepared"},
+                wrappers={"query-b": wrapper},
+            )
+        )
+
+    warning = json.loads(
+        (
+            run_dir
+            / "scenarios"
+            / "query-metadata-scopes"
+            / "cache-query-collision-warning.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert warning["extra_hit_ids"] == ["retained-working-copy"]
+    assert warning["query_text_persisted"] is False
+    assert wrapper.closed is False

@@ -11,7 +11,7 @@ from importlib.metadata import PackageNotFoundError, version as package_version
 import json
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable, Mapping
 import uuid
 import xml.etree.ElementTree as ET
 
@@ -551,7 +551,12 @@ def mathml_oe_adjacency_projection(xml: str) -> dict[str, Any]:
     }
 
 
-async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str, Any]:
+async def capture_snapshot(
+    client: MCPStdioClient,
+    notebook_id: str,
+    *,
+    page_xml_observer: Callable[[Mapping[str, Any], str], None] | None = None,
+) -> dict[str, Any]:
     consume_handoff = getattr(client, "consume_scenario_before_snapshot", None)
     if callable(consume_handoff):
         handed_off = consume_handoff(notebook_id)
@@ -575,6 +580,8 @@ async def capture_snapshot(client: MCPStdioClient, notebook_id: str) -> dict[str
         page_id = str(page["id"])
         xml_result = await client.call_tool("get_page_xml", {"page_id": page_id, "page_info": "all"})
         xml = str(xml_result["xml"])
+        if page_xml_observer is not None:
+            page_xml_observer(page, xml)
         page_hashes[page_id] = page_content_hash(xml)
         page_canonical_hashes[page_id] = canonical_page_digest(xml)
         page_reparent_hashes[page_id] = page_reparent_content_hash(xml)

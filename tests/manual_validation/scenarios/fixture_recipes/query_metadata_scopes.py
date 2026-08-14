@@ -1,16 +1,78 @@
-"""Fresh two-Notebook fixture for typed hierarchy metadata Query validation."""
+"""Cache-capable two-Notebook fixture for typed hierarchy metadata Query validation."""
 
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+from pathlib import Path
 
-from ...runtime import InvariantFailure
+from ...path_budget import preflight_paths
+from ...runtime import InvariantFailure, PathBudgetFailure
+from ...test_utils import write_json
 from ..common.fixture_builders import (
     enforce_page_position,
     ensure_group,
     ensure_page,
     ensure_section,
 )
+
+
+def compact_query_token(token: str) -> str:
+    """Keep physical hierarchy names unique without repeating a full UUID per level."""
+
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _preflight_query_fixture_paths(
+    context: FixtureContext,
+    *,
+    outer_name: str,
+    inner_name: str,
+    deep_name: str,
+    root_name: str,
+) -> None:
+    notebook_path = Path(context.notebook_path)
+    targets = (
+        (
+            notebook_path / outer_name / inner_name / f"{deep_name}.one",
+            "opaque_query_deep_section",
+            f"{outer_name}/{inner_name}/{deep_name}.one",
+        ),
+        (
+            notebook_path / f"{root_name}.one",
+            "opaque_query_root_section",
+            f"{root_name}.one",
+        ),
+    )
+    evidence_path = (
+        context.options.run_dir / f"fixture-path-budget-{context.role}.json"
+    )
+    try:
+        evidence = preflight_paths(
+            targets,
+            phase="typed_query_fixture_path_preflight",
+        )
+    except PathBudgetFailure as exc:
+        exc.filesystem_changes_started = True
+        exc.onenote_opened = True
+        exc.mutation_started = context.role != "query-b"
+        failure = exc.as_error_dict()
+        failure.update(
+            scenario="query-metadata-scopes",
+            role=context.role,
+            physical_names_use_compact_token=True,
+        )
+        write_json(evidence_path, failure)
+        raise InvariantFailure(
+            "Typed Query fixture physical path exceeds the managed 240-unit budget "
+            f"before role mutation: {exc.actual_utf16}/{exc.limit_utf16}."
+        ) from exc
+    evidence.update(
+        scenario="query-metadata-scopes",
+        role=context.role,
+        physical_names_use_compact_token=True,
+    )
+    write_json(evidence_path, evidence)
 from ..common.fixture_models import (
     FixtureBuildResult,
     FixtureContext,
@@ -18,15 +80,19 @@ from ..common.fixture_models import (
     resolve_active_structure,
 )
 from ..common.specs import get_scenario_spec
-from .recipe_base import NotebookRoleSpec, RecipeBase
+from .recipe_base import (
+    FixtureBundleObservation,
+    FixtureValidationReport,
+    NotebookRoleSpec,
+    RecipeBase,
+)
 
 
 class QueryMetadataScopesFixtureRecipe(RecipeBase):
-    recipe_version = 1
-    supports_cache = False
+    recipe_version = 3
     bundle_invariants = (
         "source and query-b Notebook IDs and paths are unique",
-        "both fresh Notebook roles remain open until the explicit close probe",
+        "both working Notebook roles remain open until the explicit close probe",
         "all query target names contain the run-unique fixture token",
     )
 
@@ -68,24 +134,36 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
         )
 
     async def build(self, context: FixtureContext) -> FixtureBuildResult:
-        token = context.token
+        token = compact_query_token(context.token)
         recorder = context.recorder
+        role_suffix = "B" if context.role == "query-b" else ""
+        outer_name = f"Q-{token}-{role_suffix}Outer"
+        inner_name = f"Q-{token}-{role_suffix}Inner"
+        deep_name = f"Q-{token}-{role_suffix}Deep"
+        root_name = f"Q-{token}-{role_suffix}Root"
+        _preflight_query_fixture_paths(
+            context,
+            outer_name=outer_name,
+            inner_name=inner_name,
+            deep_name=deep_name,
+            root_name=root_name,
+        )
         if context.role == "source":
             outer = recorder.record_structure(
                 "query_outer_group",
-                await ensure_group(context.client, context.notebook_id, f"Q-{token}-Outer"),
+                await ensure_group(context.client, context.notebook_id, outer_name),
             )
             inner = recorder.record_structure(
                 "query_inner_group",
-                await ensure_group(context.client, str(outer["id"]), f"Q-{token}-Inner"),
+                await ensure_group(context.client, str(outer["id"]), inner_name),
             )
             deep = recorder.record_structure(
                 "query_deep_section",
-                await ensure_section(context.client, str(inner["id"]), f"Q-{token}-Deep"),
+                await ensure_section(context.client, str(inner["id"]), deep_name),
             )
             root = recorder.record_structure(
                 "query_root_section",
-                await ensure_section(context.client, context.notebook_id, f"Q-{token}-Root"),
+                await ensure_section(context.client, context.notebook_id, root_name),
             )
             parent = recorder.record_structure(
                 "query_parent_page",
@@ -113,19 +191,19 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
         elif context.role == "query-b":
             outer = recorder.record_structure(
                 "query_b_outer_group",
-                await ensure_group(context.client, context.notebook_id, f"Q-{token}-BOuter"),
+                await ensure_group(context.client, context.notebook_id, outer_name),
             )
             inner = recorder.record_structure(
                 "query_b_inner_group",
-                await ensure_group(context.client, str(outer["id"]), f"Q-{token}-BInner"),
+                await ensure_group(context.client, str(outer["id"]), inner_name),
             )
             deep = recorder.record_structure(
                 "query_b_deep_section",
-                await ensure_section(context.client, str(inner["id"]), f"Q-{token}-BDeep"),
+                await ensure_section(context.client, str(inner["id"]), deep_name),
             )
             root = recorder.record_structure(
                 "query_b_root_section",
-                await ensure_section(context.client, context.notebook_id, f"Q-{token}-BRoot"),
+                await ensure_section(context.client, context.notebook_id, root_name),
             )
             parent = recorder.record_structure(
                 "query_b_parent_page",
@@ -166,55 +244,144 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
     def validate(
         self, context: FixtureValidationContext, build: FixtureBuildResult
     ) -> tuple[str, ...]:
+        expected_keys = self.manifest_keys_for_role(context.role, context.args)
+        if set(build.structure) != set(expected_keys):
+            raise InvariantFailure(
+                f"Typed Query fixture role {context.role} received another role's structure."
+            )
         resolved, _by_id, checks = resolve_active_structure(context.snapshot, build.structure)
-        if "query_outer_group" in resolved:
+        notebook_id = str(context.snapshot.get("notebook_id", ""))
+        if context.role == "source":
             outer = resolved["query_outer_group"]
             inner = resolved["query_inner_group"]
             deep = resolved["query_deep_section"]
+            root = resolved["query_root_section"]
             parent = resolved["query_parent_page"]
             child = resolved["query_child_page"]
             sibling = resolved["query_sibling_page"]
+            root_page = resolved["query_root_page"]
             checks.require(
-                inner.get("parent_id") == outer.get("id") and deep.get("parent_id") == inner.get("id"),
+                outer.get("resource_type") == "section_group"
+                and outer.get("parent_id") == notebook_id
+                and inner.get("resource_type") == "section_group"
+                and inner.get("parent_id") == outer.get("id")
+                and deep.get("resource_type") == "section"
+                and deep.get("parent_id") == inner.get("id")
+                and root.get("resource_type") == "section"
+                and root.get("parent_id") == notebook_id,
                 "Typed Query nested container topology is invalid.",
-                "Notebook/SectionGroup/Section start-node chain is exact",
+                "source Notebook/SectionGroup/Section start-node chains are exact",
             )
             checks.require(
-                child.get("section_id") == deep.get("id")
+                all(
+                    page.get("resource_type") == "page"
+                    for page in (parent, child, sibling, root_page)
+                )
+                and parent.get("section_id") == deep.get("id")
+                and parent.get("parent_page_id") in {None, ""}
+                and int(parent.get("page_level", 0)) == 1
+                and child.get("section_id") == deep.get("id")
                 and child.get("parent_page_id") == parent.get("id")
                 and int(child.get("page_level", 0)) == 2
-                and sibling.get("parent_page_id") in {None, ""},
+                and sibling.get("parent_page_id") in {None, ""}
+                and sibling.get("section_id") == deep.get("id")
+                and int(sibling.get("page_level", 0)) == 1
+                and root_page.get("section_id") == root.get("id")
+                and root_page.get("parent_page_id") in {None, ""}
+                and int(root_page.get("page_level", 0)) == 1,
                 "Typed Query Page indentation topology is invalid.",
-                "Page direct Section and indentation parent are independently proven",
+                "source Page Sections, root levels, and indentation parent are exact",
             )
-        else:
+            pages = (parent, child, sibling, root_page)
+        elif context.role == "query-b":
             outer = resolved["query_b_outer_group"]
             inner = resolved["query_b_inner_group"]
             deep = resolved["query_b_deep_section"]
             root = resolved["query_b_root_section"]
             parent = resolved["query_b_parent_page"]
             child = resolved["query_b_child_page"]
+            root_page = resolved["query_b_root_page"]
             checks.require(
-                outer.get("parent_id") == context.snapshot.get("notebook_id")
+                outer.get("resource_type") == "section_group"
+                and outer.get("parent_id") == notebook_id
+                and inner.get("resource_type") == "section_group"
                 and inner.get("parent_id") == outer.get("id")
+                and deep.get("resource_type") == "section"
                 and deep.get("parent_id") == inner.get("id")
-                and root.get("parent_id") == context.snapshot.get("notebook_id"),
+                and root.get("resource_type") == "section"
+                and root.get("parent_id") == notebook_id,
                 "Typed Query secondary Notebook topology is invalid.",
                 "secondary Notebook has nested Groups plus direct Notebook/Group Sections",
             )
             checks.require(
-                parent.get("section_id") == deep.get("id")
+                all(
+                    page.get("resource_type") == "page"
+                    for page in (parent, child, root_page)
+                )
+                and parent.get("section_id") == deep.get("id")
+                and parent.get("parent_page_id") in {None, ""}
                 and child.get("section_id") == deep.get("id")
                 and child.get("parent_page_id") == parent.get("id")
                 and int(parent.get("page_level", 0)) == 1
                 and int(child.get("page_level", 0)) == 2
-                and resolved["query_b_root_page"].get("section_id") == root.get("id"),
+                and root_page.get("section_id") == root.get("id")
+                and root_page.get("parent_page_id") in {None, ""}
+                and int(root_page.get("page_level", 0)) == 1,
                 "Typed Query secondary Notebook Page topology is invalid.",
                 "secondary Notebook has root and indented Pages with exact Sections",
             )
+            pages = (parent, child, root_page)
+        else:
+            raise InvariantFailure(
+                f"Unsupported typed Query validation role: {context.role}"
+            )
+        page_hashes = context.snapshot.get("page_hashes", {})
+        checks.require(
+            isinstance(page_hashes, dict)
+            and all(str(page["id"]) in page_hashes for page in pages),
+            "Typed Query fixture snapshot lacks complete Page content evidence.",
+            "every typed Query Page was read once during fixture snapshot validation",
+        )
         return tuple(checks.checks)
+
+    def validate_live(
+        self,
+        observation: FixtureBundleObservation,
+    ) -> FixtureValidationReport:
+        report = super().validate_live(observation)
+        source_title = str(
+            observation.roles["source"].build.structure["query_parent_page"].get(
+                "title", ""
+            )
+        )
+        query_b_title = str(
+            observation.roles["query-b"].build.structure[
+                "query_b_parent_page"
+            ].get("title", "")
+        )
+        source_suffix = "-Parent"
+        query_b_suffix = "-BParent"
+        if not (
+            source_title.startswith("Q-")
+            and source_title.endswith(source_suffix)
+            and query_b_title.startswith("Q-")
+            and query_b_title.endswith(query_b_suffix)
+        ):
+            raise InvariantFailure("Typed Query fixture titles lack the shared token shape.")
+        source_token = source_title[2 : -len(source_suffix)]
+        query_b_token = query_b_title[2 : -len(query_b_suffix)]
+        if not source_token or source_token != query_b_token:
+            raise InvariantFailure(
+                "Typed Query fixture roles do not share one run-unique token."
+            )
+        return FixtureValidationReport(
+            passed=report.passed,
+            role_checks=report.role_checks,
+            bundle_checks=report.bundle_checks
+            + ("both typed Query roles share one non-empty run token",),
+        )
 
 
 RECIPE = QueryMetadataScopesFixtureRecipe()
 
-__all__ = ["QueryMetadataScopesFixtureRecipe", "RECIPE"]
+__all__ = ["QueryMetadataScopesFixtureRecipe", "RECIPE", "compact_query_token"]

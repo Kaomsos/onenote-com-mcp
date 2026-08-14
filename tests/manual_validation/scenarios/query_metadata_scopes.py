@@ -19,7 +19,7 @@ from .fixture_recipes.query_metadata_scopes import RECIPE
 class QueryMetadataScopesScenario(Scenario):
     name = "query-metadata-scopes"
     fixture_recipe = RECIPE
-    included_in_all = False
+    included_in_all = True
     timeout_default = 300
     requires_lifecycle_wrappers = True
     help_text = (
@@ -63,8 +63,6 @@ class QueryMetadataScopesScenario(Scenario):
     ) -> dict[str, Any]:
         if client is None:
             raise RunnerFailure("Typed Query scenario requires its active scenario MCP client.")
-        if options.use_cache:
-            raise RunnerFailure("Typed Query scenario is fresh-only and forbids --use-cache.")
         out = scenario_dir(options.run_dir, self.name)
         structure = {key: dict(value) for key, value in manifest["structure"].items()}
         notebooks = manifest["notebooks"]
@@ -93,6 +91,35 @@ class QueryMetadataScopesScenario(Scenario):
             for item in items
             if item.get("id")
         }
+        open_catalog = await client.call_tool("list_notebooks", {}, retry_read=False)
+        open_notebooks = open_catalog.get("notebooks", [])
+        open_ids = {
+            str(item.get("id", ""))
+            for item in open_notebooks
+            if isinstance(item, dict) and item.get("id")
+        }
+        fixture_notebook_ids = {
+            str(notebooks["source"]["id"]),
+            str(notebooks["query-b"]["id"]),
+        }
+        baseline_notebook_count = int(open_catalog.get("count", len(open_notebooks)))
+        if (
+            baseline_notebook_count != len(open_notebooks)
+            or not fixture_notebook_ids.issubset(open_ids)
+        ):
+            raise InvariantFailure(
+                "Typed Query open-Notebook baseline does not contain both fixture roles."
+            )
+        write_json(
+            out / "open-notebook-baseline.json",
+            {
+                "schema_version": 1,
+                "open_notebook_count": baseline_notebook_count,
+                "fixture_notebook_count": len(fixture_notebook_ids),
+                "all_fixture_notebooks_present": True,
+                "unrelated_notebook_identity_persisted": False,
+            },
+        )
         independent_expected: dict[str, dict[str, Any]] = {}
         for key, manifest_item in structure.items():
             object_id = str(manifest_item.get("id", ""))
@@ -168,7 +195,7 @@ class QueryMetadataScopesScenario(Scenario):
                 raise InvariantFailure(f"{label} response scope mode differs from its request.")
             if requested_scope.get("mode") == "root":
                 if response_scope.get("notebook_count") != expected.get(
-                    "notebook_count", 2
+                    "notebook_count", baseline_notebook_count
                 ):
                     raise InvariantFailure(
                         f"{label} root scope has an incorrect open Notebook count."
@@ -201,6 +228,25 @@ class QueryMetadataScopesScenario(Scenario):
                     and len(actual_ids) == len(expected_ids)
                 )
                 if not matches:
+                    actual_set = set(actual_ids)
+                    expected_set = {str(value) for value in expected_ids}
+                    if options.use_cache and expected_set < actual_set:
+                        warning = {
+                            "schema_version": 1,
+                            "label": label,
+                            "use_cache": True,
+                            "expected_ids": sorted(expected_set),
+                            "extra_hit_ids": sorted(actual_set - expected_set),
+                            "warning": (
+                                "A reused Query fixture token matched another open working copy."
+                            ),
+                            "query_text_persisted": False,
+                        }
+                        write_json(out / "cache-query-collision-warning.json", warning)
+                        raise InvariantFailure(
+                            f"{label} cache_query_collision: another open working copy "
+                            "matched the reused fixture token."
+                        )
                     raise InvariantFailure(
                         f"{label} result IDs differ from independent hierarchy evidence."
                     )
@@ -240,7 +286,12 @@ class QueryMetadataScopesScenario(Scenario):
             "query_notebook",
             {"name_contains": common_name, "page_size": 200},
             "notebook-root",
-            expected={"ids": sorted([source_id, query_b_id]), "count": 2, "total_matches": 2},
+            expected={
+                "ids": sorted([source_id, query_b_id]),
+                "count": 2,
+                "total_matches": 2,
+                "notebook_count": baseline_notebook_count,
+            },
             get_hierarchy_calls=1,
         )
 
@@ -434,8 +485,7 @@ class QueryMetadataScopesScenario(Scenario):
                 "ordered": True,
                 "count": 0,
                 "total_matches": 0,
-                # query-b is now closed; only source remains in the open root catalog.
-                "notebook_count": 1,
+                "notebook_count": baseline_notebook_count - 1,
             },
             get_hierarchy_calls=1,
         )
@@ -448,7 +498,7 @@ class QueryMetadataScopesScenario(Scenario):
                 "ordered": True,
                 "count": 0,
                 "total_matches": 0,
-                "notebook_count": 1,
+                "notebook_count": baseline_notebook_count - 1,
             },
             get_hierarchy_calls=1,
         )

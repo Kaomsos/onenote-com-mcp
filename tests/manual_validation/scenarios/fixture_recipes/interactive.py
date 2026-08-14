@@ -1479,7 +1479,11 @@ class UserAuthoredRecipe(InteractiveFixtureRecipe):
     ):
         role = observation.roles["source"]
         checks = self.validate(
-            FixtureValidationContext(args=role.args, snapshot=role.snapshot),
+            FixtureValidationContext(
+                args=role.args,
+                snapshot=role.snapshot,
+                role="source",
+            ),
             role.build,
         )
         report = dict(report or self.authored_content_report(observation))

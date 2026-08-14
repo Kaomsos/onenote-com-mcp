@@ -69,8 +69,6 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "interactive-copy-media-file",
         "interactive-copy-ui-shape",
         "interactive-copy-inline-equation",
-        "search-all-open-notebooks",
-        "query-metadata-scopes",
         "onenote-convergence",
     }
     assert excluded <= covered
@@ -163,11 +161,20 @@ def test_registered_named_case_round_trips_through_guarded_cli(
         assert payload["cache"]["cache_mode"] == "representation_discovery"
         assert payload["cache"]["enabled"] is False
         assert payload["cache"]["templates_opened"] is False
-    if case.case_id == f"{scenario.name}.default" and not consumer_cache_required:
-        expected_steps = [
-            "create-notebook-bundle" if multi_role else "create-source-notebook",
-            scenario.name,
-        ]
+        if case.case_id == f"{scenario.name}.default" and not consumer_cache_required:
+            expected_steps = [
+                "create-notebook-bundle" if multi_role else "create-source-notebook",
+            ]
+            if getattr(scenario, "requires_index_activation_checkpoint", False):
+                expected_steps.extend(
+                    [
+                        "prepare-search-fixture",
+                        "activate-search-index-fixture",
+                        scenario.name,
+                    ]
+                )
+            else:
+                expected_steps.append(scenario.name)
         if scenario.name.startswith("bootstrap-"):
             expected_steps.extend(
                 [

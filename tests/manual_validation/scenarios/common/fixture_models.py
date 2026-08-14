@@ -51,6 +51,7 @@ class FixtureContext:
 class FixtureValidationContext:
     args: argparse.Namespace
     snapshot: Mapping[str, Any]
+    role: str = "source"
 
 
 class FixtureRecorder:
@@ -74,6 +75,7 @@ class FixtureRecorder:
         self.role = role
         self.structure: dict[str, dict[str, Any]] = {}
         self.evidence: dict[str, Any] = {}
+        self._checkpoint_rebound = False
 
     def record_structure(self, key: str, item: Mapping[str, Any]) -> dict[str, Any]:
         if key not in self.allowed_keys:
@@ -107,6 +109,31 @@ class FixtureRecorder:
         if key in self.evidence:
             raise InvariantFailure(f"Duplicate fixture evidence key: {key}")
         self.evidence[key] = value
+        self.persist("pending")
+
+    def rebind_after_index_checkpoint(
+        self,
+        notebook: Mapping[str, Any],
+        structure: Mapping[str, Mapping[str, Any]],
+    ) -> None:
+        """Replace live IDs once after the Search-only close/reopen checkpoint."""
+
+        if self._checkpoint_rebound:
+            raise InvariantFailure("Fixture recorder checkpoint IDs were already rebound.")
+        if set(structure) != set(self.structure):
+            raise InvariantFailure("Checkpoint rebind changed the declared fixture key set.")
+        for key, live in structure.items():
+            declared = self.structure[key]
+            if (
+                not live.get("id")
+                or live.get("resource_type") != declared.get("resource_type")
+            ):
+                raise InvariantFailure(
+                    f"Checkpoint rebind changed the typed fixture identity for {key}."
+                )
+        self.notebook = dict(notebook)
+        self.structure = {key: dict(value) for key, value in structure.items()}
+        self._checkpoint_rebound = True
         self.persist("pending")
 
     def manifest(self, status: str, *, error: str | None = None) -> dict[str, Any]:

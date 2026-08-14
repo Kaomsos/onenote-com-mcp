@@ -1,20 +1,24 @@
 # 030：Manual Validation Cache 层级激活批处理与证据复用
 
 > ID：030
-> 状态：进行中
+> 状态：已完成
 > 优先级：P2
 > 类型：Manual Validation 性能 / Fixture Cache 激活
 > 更新日期：2026-08-14
 
 ## 背景
 
-Fixture cache 的 opaque byte copy 通常只需约 `0.1s`，cache hit 的主要耗时并不在文件复制，而在 OneNote 将新的 run-local working path 重新导入为独立 Notebook、重建 live ID 并逐步加载 hierarchy。当前 lifecycle 为证明 SectionGroup/Section 已在正确 parent 下激活，会逐对象调用 `OpenHierarchy`、global/exact-self `GetHierarchy` 和 parent 回读；每个 bridge 调用又会启动新的 PowerShell 进程并创建新的 `OneNote.Application` COM 对象。复杂 fixture 因而可能产生数十次乃至约 90 次 hierarchy 调用，放大 OneNote 的异步加载窗口和进程初始化成本。
+Fixture cache 的 opaque byte copy 通常只需约 `0.1s`，cache hit 的主要耗时并不在文件复制，而在 OneNote 将新的 run-local working path 重新导入为独立 Notebook、重建 live ID 并逐步加载 hierarchy。优化前的 lifecycle 为证明 SectionGroup/Section 已在正确 parent 下激活，会逐对象调用 `OpenHierarchy`、global/exact-self `GetHierarchy` 和 parent 回读；每个 bridge 调用又会启动新的 PowerShell 进程并创建新的 `OneNote.Application` COM 对象。复杂 fixture 因而可能产生数十次乃至约 90 次 hierarchy 调用，放大 OneNote 的异步加载窗口和进程初始化成本。
 
 TODO 016 已在完整 Page 内容取证前增加 manifest-aware 双稳定门，并消除同一 Page XML 的重复读取，但它不优化更早的 Notebook lifecycle 激活。本 TODO 专门降低 cache materialization 的 hierarchy 打开和证明成本，同时保持每次 run 的新 working copy、live ID 重绑定和 fail-closed 安全边界。
 
 ## 当前进展与最新证据（2026-08-14）
 
-> 最新纠偏：用户完成的稳定对照确认，先前大面积 fixture failure 与 scenario 开始前 OneNote Desktop GUI 未启动强相关，而不是由 `CloseNotebook(false)` 动作或缺少 persistence checkpoint 导致。加入 check-only GUI preflight 后，最新 `all` 的 15 个场景全部通过。当前实现因此保留 exact-parent batch、typed relative-address rebind、两次 hierarchy 稳定、每 Page 单次完整读取、scenario-before snapshot handoff、failure isolation 与 cache origin metrics；移除 materialized import/close/reopen、fresh persistence checkpoint、activation close/reopen recovery 及其 evidence。Create 升到 v5 并移除 persistence sentinel Page；Copy SectionGroup/Delete 的 sentinel Section 仍作为空 Group 物理形状约束保留。清理后的真实 validation 尚待用户复验，所以本 TODO 仍为“进行中”。
+> 完成确认：用户完成的稳定对照确认，先前大面积 fixture failure 与 scenario 开始前 OneNote Desktop GUI 未启动强相关，而不是由 `CloseNotebook(false)` 动作或缺少 persistence checkpoint 导致。加入 check-only GUI preflight 后，当前实现保留 exact-parent batch、typed relative-address rebind、两次 hierarchy 稳定、每 Page 单次完整读取、scenario-before snapshot handoff、failure isolation 与 cache origin metrics；移除 materialized import/close/reopen、fresh persistence checkpoint、activation close/reopen recovery 及其 evidence。当前版本的完整 `all --use-cache` 已由用户确认 `15 passed, 0 failed`。
+
+最终单项回归 `run-2026-08-14-14-33-13` 以 `decision/cache_origin=validated_hit` 完成 `reparent-page-with-level`：cache opaque copy/verify 为 `0.005947s`、materialization 总计 `0.010411s`，声明层级在 `1.345978s` 内连续稳定两次，唯一一次 `scenario before` 完整取证为 `6.140156s` 并被 mutation 单次消费；root-only 与 full-subtree 两个 case 均通过，template 未打开且 inventory unchanged，working Notebook 最终为 `closed_preserved`。多 role 证据 `run-2026-08-14-11-26-12` 的 destination/source 也分别连续稳定两次，唯一 before snapshots 被消费，`copy-section-group`、template immutability 与双 Notebook 关闭全部通过。
+
+范围在完成时收敛为已经证明有效的机制。未继续实现“把 lifecycle 最后一次轻量 hierarchy observation 充当 Fixture 双稳定第一次观察”：它最多节省一次轻量 `get_tree`，却会增加跨阶段身份、签名与时序耦合；当前保留两次独立 hierarchy observation。也未增加持续缺失 Page 时自动 reactivation owning Section：GUI preflight 已消除此前的共性触发条件，自动重激活会扩大状态机和误归因面；当前有界观察耗尽后继续 fail closed。两项均作为不采用的探索方案保留在下文历史设计中，不属于最终完成范围。
 
 以下 2/15、12/15 与 checkpoint 记录保留为排障历史，不再代表当前推荐流程；它们说明中间方案为何一度显得有效，也说明未控制 GUI 初始状态时不能作因果判断。
 
@@ -29,31 +33,31 @@ TODO 016 已在完整 Page 内容取证前增加 manifest-aware 双稳定门，�
 
 已从本 TODO 提取并实现当前直接相关部分：lifecycle 在任何 child COM 调用前完成全部路径预算、containment、reparse 与 typed-parent 校验并冻结请求；新增非公开 `open_hierarchy_batch`，在一个 PowerShell/`OneNote.Application` session 中按 parent-before-child 打开精确 SectionGroup/Section，并在同一 session 末尾尝试取得一次 pages hierarchy snapshot。回归修正后，只有逐项 `OpenHierarchy` error 才最多重试该失败项一次；成功返回 ID 的容器即使暂未出现在同会话 snapshot 中也不会立即重开，而是交给既有 Fixture 双稳定 observer。末尾 `GetHierarchy` 失败现在作为 typed batch evidence 返回，不再吞掉逐项成功结果。Batch 中已可见的确定性类型、parent、path、回收站或唯一性冲突仍立即 fail closed；生产 MCP 的公开 tool/schema/response 未变化。
 
-当前又将所有 materialized working role 统一为两阶段 lifecycle：第一次 import identity 完成 exact-parent batch 后必须 `CloseNotebook(force=false)` 并证明 exact ID/path 已关闭；随后从同一个 working path 只重开 Notebook shell，第二次 identity 才进入完整 hierarchy 枚举、typed relative-address ID 重绑、连续两次稳定与每 Page 单次内容验证。该实现覆盖 validated hit、programmatic cold-build publish 后 materialize、interactive cache consumer 以及单/多 role bundle；不提升 cache schema/fingerprint，因为 template bytes/identity 未改变，只改变每个 run 的 working lifecycle。真实复验尚未完成，因此 TODO 保持“进行中”。
+中间方案曾将所有 materialized working role 统一为两阶段 lifecycle：第一次 import identity 完成 exact-parent batch 后 `CloseNotebook(force=false)`，随后从同一个 working path 重开 Notebook shell。该方案一度覆盖 validated hit、programmatic cold-build publish 后 materialize、interactive cache consumer 以及单/多 role bundle，但后续 GUI 初始状态对照证明 checkpoint 不是共性修复，因此最终实现已移除该流程。
 
 用户随后完成的新一轮 `all --use-cache` 已从上一轮的 2/15 提升到 12/15；统一 import/close/reopen checkpoint、异常隔离和继续执行合同均按预期工作。剩余三项形成了更窄且彼此独立的失败：Create cold-build 的旧 full preset 在 checkpoint 后只丢失 `Disposable-Page`；Copy SectionGroup cold-build 在发布 inventory 中缺少原本为空的 `99-Group-Anchor-B`；Move SectionGroup 已完成 verified/lossless Copy 和一次非永久源根删除，却因目标 `modified` 后台推进被完整 digest 误判为目标变化。它们不再支持“cache 全面不可用”的判断。
 
-针对该证据，Create recipe 已升到 v3，只保留业务真正需要的 `Duplicate-Title-Target` Section并声明 publish 前 persistence checkpoint；Copy SectionGroup recipe 升到 v5，四个空 anchor Group 各增加一个无 Page 的 typed sentinel Section并声明同一 checkpoint；旧 fingerprint 自动 miss。生产 Move 的源计划重验证继续严格包含 `modified`，只把源删除后的目标复核改成排除 `modified`、仍包含完整拓扑和稳定 Page 内容 hash 的 protected semantic digest，时间戳单独漂移只产生 warning，语义变化仍为 partial failure。三项均已有纯合同覆盖，尚待下一次用户真实运行。
+针对当时证据，Create recipe 曾升到 v3 并声明 publish 前 persistence checkpoint；Copy SectionGroup recipe 升到 v5，为四个空 anchor Group 增加无 Page 的 typed sentinel Section。生产 Move 的源计划重验证继续严格包含 `modified`，只把源删除后的目标复核改成排除 `modified`、仍包含完整拓扑和稳定 Page 内容 hash 的 protected semantic digest，时间戳单独漂移只产生 warning，语义变化仍为 partial failure。后续真实运行已完成这些分支的验证；Create 的 persistence checkpoint 与 sentinel Page 又在最终纠偏中移除。
 
 阶段诊断也已细化：`cache-materialization.json` 同时记录 legacy materialize decision、真正的 `cache_origin` 以及 preflight/copy/publish 耗时；`cache-working-import-checkpoint.json` 记录 import-open/import-close/reopen 耗时；`cache-hierarchy-convergence.json` 记录逐 role hierarchy/content 耗时。这样 cold-build 后 materialize 不再伪装成普通 validated hit，后续真实 run 可直接定位慢点。
 
 Delete recipe 同时提升到 v2，在 `Disposable-Group` 内创建 `Disposable-Section` sentinel，使目标 Group 具有持久化 `.one` 形状；旧 fingerprint 自动 miss，不要求清理合法 cache。
 
-TODO 016 的“层级连续稳定两次后才读完整 Page 内容、每个 snapshot 同一 Page XML 只读一次”已经完成并取得真实 Copy Page 证据。本 TODO 已完成当前三层关键耗时指标，但尚未完成跨阶段 observation handoff 和上述三项修复后的真实复验，因此保持“进行中”。如果后续仍出现持续 `missing_page`，下一步只对其精确 owning Section 做一次有界 reactivation并重新取得 Notebook snapshot；仍缺失则 fail closed，不能放宽结构双稳定门。
+TODO 016 的“层级连续稳定两次后才读完整 Page 内容、每个 snapshot 同一 Page XML 只读一次”已经完成并取得真实 Copy Page 证据。持续 `missing_page` 的历史备选方案曾计划对精确 owning Section 做一次有界 reactivation；最终实现没有采用该方案，而是在 GUI preflight 后保留有界只读观察与耗尽即 fail-closed 的更小状态机。
 
-当前进一步完成了内容证据的跨阶段复用：cache build 保持权威模板内容验证；working copy import/close/reopen 只承担轻量 hierarchy/identity checkpoint；reopen 后的唯一一次完整 `scenario before` snapshot 同时用于 materialized live Recipe 真实性复核和 scenario mutation 基线。Snapshot 按 exact role set、唯一 Notebook ID 与 SHA-256 digest 单次 handoff，scenario 的首个 `capture_snapshot()` 直接消费而不再调用 hierarchy/Page read；任一 role 尚未消费时首次 mutation 在 MCP 调用前 fail closed。终端阶段名相应改为 `scenario before`，证据写入 `scenario-before-snapshot-handoff.json`。这消除了当前最明显的一整轮重复 Page 与 hierarchy 读取，但不等同于本 TODO 目标 3 所述的轻量 hierarchy observation handoff，后者仍待实现与真实量化。
+当前进一步完成了内容证据的跨阶段复用：cache build 保持权威模板内容验证；materialized working copy 打开后先承担 exact-parent batch 与轻量 hierarchy/identity 收敛；随后唯一一次完整 `scenario before` snapshot 同时用于 materialized live Recipe 真实性复核和 scenario mutation 基线。Snapshot 按 exact role set、唯一 Notebook ID 与 SHA-256 digest 单次 handoff，scenario 的首个 `capture_snapshot()` 直接消费而不再调用 hierarchy/Page read；任一 role 尚未消费时首次 mutation 在 MCP 调用前 fail closed。终端阶段名相应为 `scenario before`，证据写入 `scenario-before-snapshot-handoff.json`。
 
-最新 `all --use-cache` 的 `run-2026-08-14-07-47-48` 又证明 fresh persistence 不能把 build 后的第一次 reopen 同时当作 mutation identity：Create 的 sentinel `.one` 已持久化且 import `OpenHierarchy` 返回新 Section ID，但 Notebook snapshot 仍暂不可见。Fresh persistence 因此也统一为 build close → import open/batch activation → exact import close → shell-only mutation reopen → typed 双稳定 → 完整内容验证；不使用 sleep、不重放 mutation。随后同一批次的双 role `copy-section-group` 在 `run-2026-08-14-07-57-45` 对 destination/source 均完成三套互异 Notebook identity、exact import close、两次稳定、内容验证和全部 ID remap，并完整通过 Copy/cleanup/close。`run-2026-08-14-08-12-05` 的 Create 也通过，但其 `cache_origin=validated_hit` 且没有 fresh persistence 三份 evidence，因此只证明 materialized cache consumer 路径；Create fresh/cold-build checkpoint 仍需用户用不带 `--use-cache` 的单项运行复验。
+后续历史批次 `run-2026-08-14-07-47-48` 曾显示 fresh persistence 不能把 build 后的第一次 reopen 同时当作 mutation identity：Create 的 sentinel `.one` 已持久化且 import `OpenHierarchy` 返回新 Section ID，但 Notebook snapshot 仍暂不可见。当时的实现因此临时采用 build close → import open/batch activation → exact import close → shell-only mutation reopen → typed 双稳定 → 完整内容验证；不使用 sleep、不重放 mutation。随后同一批次的双 role `copy-section-group` 在 `run-2026-08-14-07-57-45` 对 destination/source 均完成三套互异 Notebook identity、exact import close、两次稳定、内容验证和全部 ID remap，并完整通过 Copy/cleanup/close。`run-2026-08-14-08-12-05` 的 Create 也通过，但当时只证明 materialized cache consumer 路径；该 checkpoint 后来因 GUI 初始状态纠偏而移除。
 
 同一批次继续运行到结束，`move-page`、`move-section`、`move-section-group` 均通过；唯一新增失败是 `run-2026-08-14-08-00-40` 的 `copy-notebook`。其 cache 内容与 live hierarchy 已通过，失败发生在 mutation 前：模板 manifest 的 `notebook_copy_root` 仍指向发布模板的旧 run，而 materialized manifest 只更新了 working Notebook path。当前实现改为先证明 cached `notebook_copy_root`、各 role Notebook path 与 lifecycle lease 全部属于同一旧 run，再逐字段重绑到当前 run，并写 `cache-run-local-path-remap.json`；关系不一致立即 fail closed，模板保持不变。用户复验 `run-2026-08-14-08-17-56` 已以 `validated_hit` 完整通过：remap evidence 明确绑定旧 run `03-12-04` 到当前 run，唯一 scenario-before snapshot 被消费，三个 Page 分别通过 strict/semantic/strict 保真比较，源与目标 Notebook 均精确关闭，template immutability 通过。
 
 ## 目标
 
-在不修改生产 MCP 公开 tool/response、不打开 immutable template、不复用跨 run 可变 Notebook 的前提下，实现以下四项优化：
+在不修改生产 MCP 公开 tool/response、不打开 immutable template、不复用跨 run 可变 Notebook 的前提下，最终交付以下四项优化：
 
 1. 在 manual-validation 内部用单次 PowerShell/COM 会话批量激活一个 role 的精确 SectionGroup/Section 路径，并在同一会话末尾读取一次 Notebook hierarchy。
-2. 将激活收敛从逐对象轮询改为 Notebook 级观察：一次 snapshot 同时判断全部 manifest-bound 对象，只对仍缺失的物理容器继续执行有界激活。
-3. 将 Notebook 阶段最后一次完整 hierarchy observation 传给 Fixture 阶段，作为双稳定门的第一次候选观察，避免跨阶段无条件重读；第二次观察仍必须独立取得且签名一致。
+2. 将激活收敛从逐对象轮询改为 Notebook 级观察：一次 snapshot 同时判断全部 manifest-bound 对象；batch 只重试上一轮失败的精确容器，成功返回 ID 的容器交给 Fixture 有界双稳定观察。
+3. 将 materialized live Recipe 真实性复核产生的唯一完整 `scenario before` snapshot 按 exact role、Notebook ID 与 digest 单次交给 scenario，避免再次读取 hierarchy 和 Page 内容。
 4. 根据当前 hierarchy 与 manifest 计算精确缺失集合，只对尚未出现的 SectionGroup/Section 调用 `OpenHierarchy`；Page 不逐个打开，只通过 Notebook 级 hierarchy convergence 证明就绪。
 
 ## 不可削弱的安全门
@@ -62,7 +66,7 @@ TODO 016 的“层级连续稳定两次后才读完整 Page 内容、每个 snap
 - 批量接口只能接收 recipe/manifest 声明并已完成路径预算、root containment 和 typed parent 约束的精确路径；不得接受任意 raw XML、任意路径、名称搜索或无界扫描。
 - Notebook 直属 child 与 SectionGroup 嵌套 child 继续遵守现有 absolute-path/relative-ID 组合规则，禁止 absolute path 与非空 parent ID 混用。
 - `OpenHierarchy` 返回 ID、请求成功或单次 snapshot 都不能单独放行。进入 Page 内容验证前，全部声明对象仍必须按 Notebook-relative typed address 唯一存在，并连续两次保持相同的 ID、类型、parent、section、page level、parent Page 和 sibling order。
-- 从 Notebook 阶段传入的 observation 只有在绑定精确 working Notebook ID/path、结构完整、无异常且签名 schema 一致时，才能成为第一次稳定观察；否则 Fixture 阶段必须自行重新观察。
+- `scenario before` snapshot handoff 必须绑定精确 role set、working Notebook ID 与 digest，并且只能消费一次；未完整消费全部 role 时 mutation 必须在 MCP 调用前 fail closed。
 - 确定性类型/parent/path 冲突立即 fail closed；瞬态 COM/readiness 问题只能在有界观察窗口内重试读取和缺失容器激活，不能重放业务 mutation。
 - 失败 evidence、run-local lifecycle lease、默认精确关闭和显式 keep 行为保持不变。优化不得把 working activation 失败错误归因于 immutable template 内容损坏。
 - 不解析或修改 `.one`/`.onetoc2`，不引入云 API、遥测、后台 watcher、warm mutable Notebook pool 或跨 run COM session。
@@ -87,21 +91,21 @@ TODO 016 的“层级连续稳定两次后才读完整 Page 内容、每个 snap
 
 - `present_and_valid`：类型、相对地址和 parent 均正确；
 - `missing_container`：声明的 SectionGroup/Section 尚未出现，可进入下一轮精确 batch；
-- `missing_page`：首次缺失只等待下一轮 observation；若在有界窗口内持续缺失，只允许对 manifest 已绑定的精确 owning Section 做一次 reactivation，再重新取得 Notebook snapshot，不按 Page 名称打开或无界重试；
+- `missing_page`：只等待后续有界 Notebook observation；持续缺失时 fail closed，不按 Page 名称打开、不自动重激活 Section，也不无界重试；
 - `deterministic_conflict`：类型、parent、路径或唯一性冲突，立即失败。
 
 每轮只把 `missing_container` 传给下一次 batch。全部对象出现后开始计算稳定签名，不再重复打开已经成功出现的容器。
 
-### 3. 跨阶段 observation handoff
+### 3. `scenario before` snapshot handoff
 
-Notebook 阶段将最后一次结构完整的 observation 作为 run-local、content-free evidence 传给 Fixture runtime，至少绑定：
+Fixture runtime 在双稳定后取得唯一一次完整 `scenario before` snapshot，同时完成 cache 内容真实性复核与 mutation 基线取证，并把 run-local handoff 至少绑定到：
 
 - working Notebook ID 与 canonical working path；
-- role、manifest fingerprint/instance 和结构签名 schema；
-- capture 时间、对象计数、typed-address→live-ID 映射和稳定签名；
-- batch/observation 次数以及尚未完成的稳定次数。
+- exact role set 与各 role 的唯一 Notebook ID；
+- capture 时间、对象计数与 snapshot SHA-256 digest；
+- handoff 的 pending/consumed 状态。
 
-Fixture runtime 验证 handoff 后，将其作为第一次候选观察，并独立读取第二次 hierarchy。两次不一致时重置稳定计数，不得继续完整 Page 内容验证。
+Scenario 的第一次 before capture 只能单次消费匹配的 snapshot，不再读取 hierarchy/Page 内容。role、Notebook ID、digest 或消费状态不匹配时立即拒绝；全部 role 未消费完成时不得执行 mutation。
 
 ### 4. Evidence 与 progress
 
@@ -112,7 +116,7 @@ Fixture runtime 验证 handoff 后，将其作为第一次候选观察，并独�
 - `hierarchy_batch_activation_seconds`；
 - `hierarchy_observation_seconds`；
 - batch 数、`OpenHierarchy` 请求数、snapshot 数和 PowerShell/COM session 数；
-- Fixture 阶段是否接受 handoff、节省的 observation 数以及最终双稳定结果。
+- scenario 是否消费 snapshot handoff、避免的重复 hierarchy/Page 读取以及最终双稳定结果。
 
 终端 progress 保持 content-free，至少区分 `cache open`、`cache hierarchy` 和 `scenario before`，长 batch 必须有有界 heartbeat，不能让用户误以为 runner 卡死。
 
@@ -120,31 +124,20 @@ Fixture runtime 验证 handoff 后，将其作为第一次候选观察，并独�
 
 - Batch 输入只能来自已验证的精确 managed working path 和 typed parent；任意路径、template path、absolute+parent 混用、重复 role 或越界路径均在启动 PowerShell 前拒绝。
 - 多个 SectionGroup/Section 在一次 batch 中只创建一个 PowerShell/COM session；调用次数测试冻结该上界。
-- 同会话 snapshot 暂不可见或末尾 hierarchy read 出现 typed transient error 时，成功返回 ID 的容器不被重复激活；全部打开请求成功后由统一 close/reopen checkpoint 建立第二次 identity，再交给 Fixture 双稳定门。逐项 activation error 最多只重试失败集合一次。
+- 同会话 snapshot 暂不可见或末尾 hierarchy read 出现 typed transient error 时，成功返回 ID 的容器不被重复激活，而是交给 Fixture 的独立双稳定门；逐项 activation error 最多只重试失败集合一次。
 - Notebook 级 observer 用一次 snapshot 同时识别全部 present/missing/conflict 项，不再为每个对象重新读取 global hierarchy。
-- 已出现的容器不会在后续轮次再次 `OpenHierarchy`；Page 缺失只触发 hierarchy observation，不触发 Page/Section 打开。
+- 已出现或已成功返回 ID 的容器不会在后续 batch 再次 `OpenHierarchy`；Page 缺失只触发 hierarchy observation，不触发 Page/Section 打开。
 - 缺失 Page 后出现并连续两次稳定可以通过；ID/parent/order 震荡、回退、歧义或确定性冲突必须失败。
-- 有效 handoff 可作为第一次稳定观察；Notebook ID/path、fingerprint、schema 或签名不匹配时拒绝 handoff并重新观察。
+- 有效 `scenario before` handoff 必须按 role、Notebook ID 与 digest 单次消费；任一绑定不匹配时拒绝，且不得回退到 mutation 后补证。
 - 完整 Page 内容读取只在双稳定完成后发生；失败路径证明业务 mutation 调用次数为零。
 - 单 role、多 role、cold-build 重新 materialize 和 validated-hit 路径均覆盖；现有默认关闭、keep 模式与 failure finalization 合同不变。
 - 运行 manual-validation 纯测试、完整 `pytest -q`、相关 `--use-cache --dry-run --json` 和 `git diff --check`。
 
-## 真实验证与度量
+## 真实验证与度量（已完成）
 
-只有用户可以运行真实 scenario。完成前至少选择一个单 role 和一个多 role cache consumer，例如：
+真实 scenario 均由用户在交互式前台启动。单 role 最终证据为 `run-2026-08-14-14-33-13`，多 role 证据为 `run-2026-08-14-11-26-12`；当前版本完整 `all --use-cache` 从 `run-2026-08-14-11-17-56` 至 `run-2026-08-14-11-29-54`，结果为 `15 passed, 0 failed`。这些 run 覆盖 `validated_hit`、old→live ID/path remap、双稳定、单次完整 snapshot handoff、mutation/restore 或显式非恢复结果、template inventory unchanged 与默认精确关闭。
 
-1. `reparent-page --use-cache`；
-2. `copy-page --use-cache`；
-3. 在单项稳定后运行 `all --use-cache`，确认 cache 异常不会跨 scenario 扩散。
-
-真实 evidence 至少比较优化前后：
-
-- opaque copy、Notebook shell open、hierarchy activation、Fixture convergence 和完整内容验证耗时；
-- PowerShell/COM session 数、`OpenHierarchy` 数和 hierarchy snapshot 数；
-- cache decision、old→live ID remap、template inventory unchanged；
-- mutation/restore/cleanup/default close 或显式 keep 的最终状态。
-
-耗时受 OneNote 与机器状态影响，不设置牺牲正确性的硬阈值；但若调用/session 数未显著下降，必须解释剩余调用来源，不能仅以偶然耗时下降关闭本 TODO。
+优化前复杂 fixture 曾产生数十次乃至约 90 次 hierarchy 调用；最终 batch 将一个 role 的 exact-parent `OpenHierarchy` 合并到单 PowerShell/COM session，并只对失败集合做至多一次重试。耗时仍受 OneNote 状态影响，因此不设置牺牲正确性的硬阈值；最新单 role 证据明确区分了约 `0.01s` 的 cache materialization、`1.35s` 的轻量 hierarchy 双稳定与 `6.14s` 的唯一完整内容取证，证明剩余主要成本已不在 opaque copy 或重复 Page 读取。
 
 ## 非目标
 
@@ -164,8 +157,8 @@ Fixture runtime 验证 handoff 后，将其作为第一次候选观察，并独�
 
 ## 完成定义
 
-- 四项目标全部实现，单 role 与多 role cache materialization 共用 Notebook 级批量激活/观察机制。
-- 自动化证明每轮至多一个 PowerShell/COM session、只处理缺失容器、Page 不被逐个打开、跨阶段 handoff 不削弱双稳定门。
+- 四项最终交付目标全部实现，单 role 与多 role cache materialization 共用 Notebook 级批量激活/观察机制。
+- 自动化证明每个 batch 至多一个 PowerShell/COM session、只重试失败容器、Page 不被逐个打开、完整 snapshot handoff 不削弱双稳定门。
 - 完整纯测试、dry-run、文档和差异检查通过，生产公开 tool/response 未意外变化。
 - 用户真实运行至少一个单 role、一个多 role及后续 `all --use-cache`，确认业务验证和失败隔离仍正确。
 - 真实 evidence 记录优化前后阶段耗时与调用分类，并证明 cache template 未打开、未修改，working bundle lifecycle 正常收尾。

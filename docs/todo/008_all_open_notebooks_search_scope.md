@@ -1,10 +1,10 @@
 # 008：全部已打开 Notebook 的全局 Page 搜索
 
 > ID：008
-> 状态：进行中
+> 状态：已完成
 > 优先级：P1
 > 类型：公开工具契约 / Search 能力
-> 更新日期：2026-08-13
+> 更新日期：2026-08-14
 
 ## 背景与当前状态
 
@@ -17,7 +17,11 @@
 - scope 只表达 COM `FindPages.bstrStartNodeID` 原生支持的一个起点：root、Notebook、SectionGroup 或 Section；
 - 不支持多个离散 Notebook、多个子节点、混合节点集合或服务端合并多次 `FindPages` 结果。
 
-当前剩余工作是由用户显式执行具名真实场景并确认 OneNote index readiness 和真实 COM 结果；dry-run 与 mock 合同不能替代这项证据。因此 TODO 仍保持“进行中”。
+公开契约、自动化与真实后端证据均已完成。用户已经确认 fresh 与 validated cache hit 两条路径的 OneNote index readiness、真实 COM scope、分页和预算行为，场景现已通过 `included_in_all=true` 纳入显式 human-gated 批处理。
+
+2026-08-14 已按当前 scenario-owned fixture bundle 框架重新审计该旧场景：两个 role 由验证上下文显式绑定，不再通过 manifest key 猜测 role；构建验证覆盖完整 role key set、typed parent、Page Section/root level、每 Page 单次内容 snapshot 和 bundle ID/path 唯一性，并证明 raw probe 未写入 fixture JSON evidence。Recipe 现支持 cache；materialized working copy 在既有唯一一次 Page XML snapshot 中把模板 probe 仅重建到进程内存，不重复读 Page。固定 probe 的碰撞风险不再预防性拖慢所有运行，只有查询稳定返回预期 ID 严格超集时才写 content-free warning 并 fail closed。
+
+同日首次真实运行证明 fixture 本身通过，但 `FindPages` 在 20 次有界 readiness 观察中始终返回零命中。针对 index activation，场景现在只在 fresh 模式的全部 Page 写入后执行一次 Search 专用的 `CloseNotebook(force=false) → exact-path reopen → typed relative-address rebind → 两次 hierarchy 稳定 → 每 Page 一次完整 snapshot`；不把 checkpoint 扩展到普通 fresh fixture、typed Query 或 cache working copy。Search execute 直接使用 Recipe 内存中的 probe，移除 snapshot 后重复的五次 `get_page_text`。用户随后确认 `run-2026-08-14-16-12-17` 与 `run-2026-08-14-17-05-06` 的 fresh Search 均通过，并确认 `run-2026-08-14-17-07-11` 的 validated cache hit 通过；三次均完成默认 lifecycle 关闭且未打开 immutable template。
 
 ## 最终公开 Tool 契约
 
@@ -184,9 +188,9 @@ pagination_consistency, scope, search_backend, scan_budget
 - 用户显式运行具名真实场景并确认 root 下双 Notebook 命中、单起点范围、结果归属、预算证据和 index readiness 行为；
 - 聚焦测试与完整纯测试集通过，canonical 设计文档、README、TODO 索引和实现一致。
 
-## 下一步：用户执行真实验证
+## 完成证据
 
-TODO 状态保持“进行中”。公开参数、index budget、分页和具名多 role 场景均已实现；下一步只能由用户显式运行真实场景，确认空 root 起点、四层范围、索引 readiness、分页稳定性和预算错误。
+公开参数、index budget、分页和具名多 role 场景均已实现；用户真实运行已经确认空 root 起点、四层范围、索引 readiness、分页稳定性和预算错误。聚焦及全仓纯测试通过，Search 场景进入 `all`。
 
 该场景最低要求：
 
@@ -196,7 +200,7 @@ TODO 状态保持“进行中”。公开参数、index budget、分页和具名
 - 验证 `page_size=2` 的两页结果、越界 offset 无法规避候选页数预算、snippet hydration 预算、无 backend 参数和 index 错误无 fallback；
 - 对 index readiness 使用有界只读轮询并保存每次尝试；超时只能报告 `index_not_ready_or_failed`；
 - 保存 fixture manifest、lifecycle lease、调用参数、脱敏命中归属、scope、固定 backend、budget 和错误证据；默认精确关闭 fixture Notebook，不删除本地 Notebook 文件；
-- 初始 `included_in_all=false`，在索引时序和双 role finalize 稳定前不进入批量真实场景。
+- `included_in_all=true`；fresh 与 validated cache hit 的索引时序和双 role finalize 均已有用户真实通过证据。
 
 真实 scenario 只能由用户显式启动；Agent、pytest、CI、hook、timer 和 watcher 只能运行 dry-run 或纯合同测试。
 
@@ -207,3 +211,4 @@ TODO 状态保持“进行中”。公开参数、index budget、分页和具名
 - 2026-08-12：曾评估用判别联合表达多个指定 Notebook；该方案随后取消，不进入最终合同。
 - 2026-08-12：最终决定公开 Search 固定使用 OneNote index，删除 backend 选择；scope 只映射 COM 的 root 或一个 `start_node_id`，不支持多个离散子节点。`local_scan` 代码保留但不公开，SearchBudget 继续完整约束 index 路径。
 - 2026-08-13：完成 index-only Tool、严格 scope union、无状态分页、1000 默认候选预算、bridge 剩余时间 timeout、自动化合同和 fresh-only 双 Notebook 场景实现；真实场景尚未由用户执行，TODO 保持进行中。
+- 2026-08-14：用户确认 fresh 与 validated cache hit Search 均通过，默认 lifecycle 精确关闭；场景纳入 `all`，TODO 标记完成。

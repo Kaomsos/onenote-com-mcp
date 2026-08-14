@@ -6,7 +6,6 @@ import asyncio
 from datetime import datetime, timezone
 import hashlib
 import json
-import re
 from typing import Any
 
 from ..mcp_stdio_client import ClientFailure, MCPStdioClient
@@ -15,11 +14,6 @@ from ..test_utils import scenario_dir, write_json
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
 from .fixture_recipes.search_all_open_notebooks import RECIPE
-
-
-PROBE_PATTERN = re.compile(r"SEARCH_PROBE:([A-Za-z0-9]{15}-[A-Za-z0-9]{16})")
-BUDGET_PATTERN = re.compile(r"BUDGET_MARKER:([A-Za-z0-9]{24})")
-LONG_TEXT_PATTERN = re.compile(r"LONG_TEXT_MARKER:([A-Za-z0-9]{24})")
 
 
 def _utc_now() -> str:
@@ -80,7 +74,8 @@ def _safe_page_rows(result: dict[str, Any]) -> list[dict[str, Any]]:
 class SearchAllOpenNotebooksScenario(Scenario):
     name = "search-all-open-notebooks"
     fixture_recipe = RECIPE
-    included_in_all = False
+    included_in_all = True
+    requires_index_activation_checkpoint = True
     timeout_default = 300
     help_text = (
         "HUMAN-GATED: validate index-only Search at root, Notebook, SectionGroup, "
@@ -147,6 +142,7 @@ class SearchAllOpenNotebooksScenario(Scenario):
         expected_ids: set[str],
         out,
         *,
+        use_cache: bool,
         max_attempts: int = 20,
     ) -> list[dict[str, Any]]:
         attempts: list[dict[str, Any]] = []
@@ -177,6 +173,29 @@ class SearchAllOpenNotebooksScenario(Scenario):
             write_json(out / "readiness-attempts.json", {"attempts": attempts})
             if stable_count >= 2:
                 return attempts
+            if (
+                previous is not None
+                and expected_ids < previous
+                and len(attempts) >= 2
+                and attempts[-2].get("hit_ids") == attempt.get("hit_ids")
+            ):
+                write_json(
+                    out / "probe-collision-warning.json",
+                    {
+                        "schema_version": 1,
+                        "use_cache": use_cache,
+                        "expected_ids": sorted(expected_ids),
+                        "extra_hit_ids": sorted(previous - expected_ids),
+                        "warning": (
+                            "The Search probe matched another open working copy."
+                        ),
+                        "query_text_persisted": False,
+                    },
+                )
+                raise RunnerFailure(
+                    "search_probe_collision: another open working copy matched the "
+                    "fixture probe; close the retained copy before retrying."
+                )
             await asyncio.sleep(1)
         raise RunnerFailure("index_not_ready_or_failed: root Search never stabilized at four exact IDs.")
 
@@ -191,31 +210,12 @@ class SearchAllOpenNotebooksScenario(Scenario):
     ) -> dict[str, Any]:
         if client is None:
             raise RunnerFailure("Search scenario requires its single active scenario MCP client.")
-        if options.use_cache:
-            raise RunnerFailure("Search scenario is fresh-only and forbids --use-cache.")
         out = scenario_dir(options.run_dir, self.name)
         structure = {key: dict(value) for key, value in manifest["structure"].items()}
 
         a_pages = ["probe_page_a1", "probe_page_a2", "probe_page_a3"]
         primary_keys = [*a_pages, "probe_page_b1"]
-        page_texts: dict[str, str] = {}
-        for key in [*primary_keys, "budget_page_b2"]:
-            page_texts[key] = str(
-                (
-                    await client.call_tool(
-                        "get_page_text", {"page_id": structure[key]["id"]}, retry_read=False
-                    )
-                )["text"]
-            )
-        probes = []
-        for key in primary_keys:
-            match = PROBE_PATTERN.search(page_texts[key])
-            if match is None:
-                raise InvariantFailure(f"Fresh probe is missing from exact fixture Page {key}.")
-            probes.append(match.group(1))
-        if len(set(probes)) != 1:
-            raise InvariantFailure("Primary fixture Pages do not contain one identical probe.")
-        probe = probes[0]
+        probe = self.fixture_recipe.probe
         probe_evidence = _probe_evidence(probe)
         if not all(
             probe_evidence[field]
@@ -224,16 +224,8 @@ class SearchAllOpenNotebooksScenario(Scenario):
             probe_evidence["right_classes"].values()
         ) or probe_evidence["length"] != 32:
             raise InvariantFailure("Generated Search probe violates its 32-character contract.")
-        budget_values = [
-            match.group(1)
-            for text in page_texts.values()
-            if (match := BUDGET_PATTERN.search(text)) is not None
-        ]
-        long_match = LONG_TEXT_PATTERN.search(page_texts["budget_page_b2"])
-        if len(budget_values) != 5 or len(set(budget_values)) != 1 or long_match is None:
-            raise InvariantFailure("Budget probe markers are missing or inconsistent.")
-        budget_marker = budget_values[0]
-        long_text_marker = long_match.group(1)
+        budget_marker = self.fixture_recipe.budget_marker
+        long_text_marker = self.fixture_recipe.long_text_marker
         query = f"{probe[:15]} AND {probe[16:]}"
         expected_items = {
             str(structure[key]["id"]): structure[key] for key in primary_keys
@@ -247,7 +239,13 @@ class SearchAllOpenNotebooksScenario(Scenario):
             },
             "section": {str(structure["probe_page_a1"]["id"])},
         }
-        await self._wait_for_stable_root(client, query, expected["root"], out)
+        await self._wait_for_stable_root(
+            client,
+            query,
+            expected["root"],
+            out,
+            use_cache=options.use_cache,
+        )
 
         scope_cases = (
             ("root", {"mode": "root"}, "root", None),

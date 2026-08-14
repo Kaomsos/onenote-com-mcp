@@ -233,6 +233,8 @@ def test_all_membership_and_reviewed_capabilities_are_exact() -> None:
         "move-page",
         "move-section",
         "move-section-group",
+        "search-all-open-notebooks",
+        "query-metadata-scopes",
     )
 
     section_group_reorder = SCENARIO_REGISTRY.get("reorder-section-group")
@@ -284,11 +286,13 @@ def test_all_runs_every_scenario_serially_and_is_quiet_by_default(capsys) -> Non
 
     assert [command[2] for command in commands] == list(registered)
     output = capsys.readouterr().out
-    assert "[1/16] create ..." in output
+    assert "[1/18] create ..." in output
     assert "PASS move-page" in output
     assert "PASS move-section" in output
     assert "PASS move-section-group" in output
-    assert "Completed 16 scenarios: 16 passed, 0 failed" in output
+    assert "PASS search-all-open-notebooks" in output
+    assert "PASS query-metadata-scopes" in output
+    assert "Completed 18 scenarios: 18 passed, 0 failed" in output
     assert "result for" not in output
 
 

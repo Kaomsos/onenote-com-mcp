@@ -156,6 +156,38 @@ def build_isolated_dry_run_plan(
     )
     discovery_cache_rejected = representation_discovery and use_cache
     fresh_only_cache_rejected = use_cache and not getattr(recipe, "supports_cache", True)
+    if (
+        getattr(args, "scenario", "") == "search-all-open-notebooks"
+        and not use_cache
+    ):
+        build_step = _step(
+                args.scenario,
+                spec.policy,
+                set(spec.tool_allowlist),
+                f"build fixture profile {spec.fixture.name}",
+            )
+        build_step["step"] = "prepare-search-fixture"
+        steps[1:2] = [
+            build_step,
+            {
+                "step": "activate-search-index-fixture",
+                "trust_boundary": "exact lifecycle leases plus typed fixture observer",
+                "allowed_operations": [
+                    "CloseNotebook(force=false)",
+                    "reopen exact working paths",
+                    "typed relative-address ID rebind",
+                    "two stable hierarchy observations",
+                    "one full read per declared Page",
+                ],
+                "target": "fresh Search fixture bundle only",
+            },
+            _step(
+                args.scenario,
+                spec.policy,
+                set(spec.tool_allowlist),
+                "index-only Search against checkpointed rebound live IDs",
+            ),
+        ]
     if use_cache and not interactive_bootstrap:
         cache_operations = (
             [
@@ -243,7 +275,7 @@ def build_isolated_dry_run_plan(
                 "trust_boundary": "static fresh-only Recipe contract",
                 "allowed_operations": [],
                 "target": "reject before lifecycle, MCP, cache, or mutation",
-                "reason": "this Recipe generates fresh in-memory search probes",
+                "reason": recipe.fresh_only_reason,
             }
         ]
     if consumer_cache_required:
@@ -401,8 +433,8 @@ def build_isolated_dry_run_plan(
             if recipe.consumer_scenario and use_cache
             else
             [
-                "validated-hit: lock, inventory, materialize, import-close-reopen, live validate",
-                "cold-miss: build fresh, live validate, close all, stage, inventory, publish, materialize, import-close-reopen",
+                "validated-hit: lock, inventory, materialize, batch open hierarchy, live validate",
+                "cold-miss: build fresh, live validate, close all, stage, inventory, publish, materialize, batch open hierarchy, live validate",
                 (
                     "invalid: exact safe cleanup then interactive bootstrap"
                     if interactive_bootstrap

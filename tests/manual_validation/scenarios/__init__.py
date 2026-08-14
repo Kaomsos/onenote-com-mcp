@@ -206,6 +206,7 @@ __all__ = [
     "MoveSectionGroupScenario",
     "OneNoteConvergenceScenario",
     "SearchAllOpenNotebooksScenario",
+    "QueryMetadataScopesScenario",
     "BootstrapInsertedFileFixtureScenario",
     "BootstrapInkDrawingFixtureScenario",
     "BootstrapMediaFileFixtureScenario",

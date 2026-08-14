@@ -4,15 +4,19 @@
 > 状态：阻塞
 > 优先级：P1
 > 类型：公开工具契约 / Query 能力 / Tool 收敛 / Agent 可发现性
-> 更新日期：2026-08-13
+> 更新日期：2026-08-14
 
-## 当前进度（2026-08-13）
+## 当前进度（2026-08-14）
 
-当前阻塞原因：仓库规则禁止 Agent 启动真实 `query-metadata-scopes`，且 `.local-validation/` 中尚无该场景的真实 result/failure artifact。阶段 A 实现、自动化、完整模拟 runtime、文档和 dry-run 已完成；只有用户本人前台运行并确认真实证据后，才能审查 List 覆盖并请求独立退役批准。该批准取得前，阶段 B 不得开始。
+当前阻塞原因已经收敛为阶段 B 的独立 List 退役批准。用户确认 `run-2026-08-14-16-49-13` 的 `query-metadata-scopes --use-cache` cold build 完整通过：root、三类 start node、关闭 Notebook 排除、Page 缩进父级、分页和动态打开 Notebook 基线均通过，默认 lifecycle 已关闭且 immutable template 未打开。Query 场景现以 `included_in_all=true` 纳入批处理；在用户另行明确批准删除五个 List 工具前，阶段 B 仍不得开始，因此本 TODO 保持“阻塞”。
 
 阶段 A 已落地：默认 profile 注册四个 fixed-type Query，删除公开 `query_hierarchy` 且未新增 `global_query`；service 使用 root/最浅 scope 或 root `hsSections` catalog 加一个精确 native start call，实施 open-only、严格关系/时间、回收站和 `offset/page_size` live pagination。health、README 与 canonical tool contract 已同步。五个 List 按批准门继续保留。
 
-自动化聚焦合同通过；完成审计后又补齐原生起点矩阵、空 root、XML fail-closed、schema ID/mode description、完整模拟 scenario runtime 与精确 pre-closed lifecycle receipt 合同，最终完整纯测试基线为 `974 passed`。新增 fresh-only、`included_in_all=false` 的 `query-metadata-scopes` 双 Notebook scenario；两个 role 现在各自具备嵌套 Group、Notebook/Group 直属 Section、根页和缩进页，并持久化独立 typed tree、expected 投影、每个请求/响应与 bridge operation，覆盖末页和越界页。其 `--dry-run --json` 已零副作用通过，静态权限仅包含 fixture Writes 和读工具，Delete/Copy/Move/Permanent Delete/Raw XML 均关闭。Agent 未运行真实场景。
+自动化聚焦合同通过；完成审计后又补齐原生起点矩阵、空 root、XML fail-closed、schema ID/mode description、完整模拟 scenario runtime 与精确 pre-closed lifecycle receipt 合同，当时完整纯测试基线为 `974 passed`。`query-metadata-scopes` 最初以 fresh-only、`included_in_all=false` 的双 Notebook scenario 加入；两个 role 现在各自具备嵌套 Group、Notebook/Group 直属 Section、根页和缩进页，并持久化独立 typed tree、expected 投影、每个请求/响应与 bridge operation，覆盖末页和越界页。其 cache 策略的后续变更见下方 2026-08-14 记录。静态权限仅包含 fixture Writes 和读工具，Delete/Copy/Move/Permanent Delete/Raw XML 均关闭。
+
+2026-08-14 又将该旧场景对齐到当前 scenario-owned fixture bundle validation：验证上下文显式携带 role，逐 role fail-closed 校验完整 key set、对象类型、两条 container chain、Page Section/root level/indentation parent 和每 Page 单次内容 snapshot；bundle 层另证明 source/query-b 共享同一个非空 token。Recipe 现支持 cache，并沿用 materialized fixture 的 batch-open、typed rebind、两次层级稳定和单次内容 snapshot；Query 不执行 Search 专用 close/reopen。固定 title token 只有在真实产生预期 ID 严格超集时才写 content-free collision warning 并 fail closed，不再预防性拒绝 cache。
+
+同日首次真实运行在 `query-b` 的 Outer/Inner 已创建后，于 Deep Section 返回 `onenote_file_unavailable`。失败目标的绝对路径为 283 字符，确认旧 Recipe 在三层物理名称中重复完整 UUID、且未预算最深 `.one` 路径。现已改为由完整 token 派生 16 位紧凑物理 token，并在每个 role 的首个 fixture mutation 前对最深 Section 路径执行 240 UTF-16 units preflight。该 Query 场景不依赖正文 index，因此明确不采用 Search 专用 close/reopen checkpoint。随后又修复 root `notebook_count` 的固定值误报；用户最终确认 cache cold build 真实场景通过。当前纯测试基线为 manual-validation `560 passed`、全仓 `944 passed`。
 
 List→Query 迁移审查清单已经固化在本文件的覆盖矩阵；当前默认 schema diff 为：删除 `query_hierarchy(resource_type,...,limit)`，新增四个固定资源类型入口；必填 discriminated `scope` 只用于后三者；`limit/truncated` 改为与 Search 同形的 `offset/page_size/has_more/next_offset`；Page 的重载 `parent_id` 拆为 `section_id/parent_page_id`；统一增加 `resource_type/query_kind/scope/pagination_consistency`。待用户真实运行并确认场景证据后，仍须取得单独的 List 退役批准，才可执行阶段 B。
 
@@ -375,7 +379,7 @@ List 退役必须取得用户在 Query 实现和验证证据完成后的明确�
 
 ## 真实后端验证场景
 
-新增 human-gated 场景 `query-metadata-scopes`，默认 `included_in_all=false`。查询本身只读，但 fixture 使用本次 run 创建的 disposable Notebook，因此真实运行仍只能由用户显式启动；Agent 只运行纯测试和 `--dry-run`。
+human-gated 场景 `query-metadata-scopes` 已经真实验收并设置 `included_in_all=true`。查询本身只读，但 fixture 使用本次 run 创建的 disposable Notebook，因此真实运行仍只能由用户显式启动；Agent 只运行纯测试和 `--dry-run`。
 
 场景至少准备两个同时打开的 Notebook，每个包含嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 和缩进 Page，并使用 run-unique 名称和修改时间证据。验证：
 

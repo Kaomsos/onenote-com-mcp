@@ -7,7 +7,7 @@ import asyncio
 from copy import deepcopy
 from pathlib import Path
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, MutableMapping
 import uuid
 
 from ...mcp_stdio_client import MCPStdioClient
@@ -21,6 +21,20 @@ from .fixture_models import (
     FixtureValidationContext,
 )
 from .specs import ScenarioSpec
+
+
+async def _capture_snapshot_with_observer(
+    client: MCPStdioClient,
+    notebook_id: str,
+    observer: Callable[[Mapping[str, Any], str], None] | None,
+) -> dict[str, Any]:
+    if observer is None:
+        return await capture_snapshot(client, notebook_id)
+    return await capture_snapshot(
+        client,
+        notebook_id,
+        page_xml_observer=observer,
+    )
 from .fixture_cache import CacheHit, MaterializedBundle
 from ..fixture_recipes.recipe_base import (
     BuildMode,
@@ -302,7 +316,7 @@ async def prepare_fixture(
         )
         write_json(options.run_dir / "fixture-result.json", pending_result)
         checks = recipe.validate(
-            FixtureValidationContext(args=args, snapshot=snapshot),
+            FixtureValidationContext(args=args, snapshot=snapshot, role="source"),
             FixtureBuildResult(recorder.structure, recorder.evidence),
         )
     except Exception as exc:
@@ -360,9 +374,11 @@ async def prepare_fixture_bundle(
     args: argparse.Namespace,
     options: RuntimeOptions,
     client: MCPStdioClient,
-    notebooks: Mapping[str, dict[str, Any]],
+    notebooks: MutableMapping[str, dict[str, Any]],
     notebook_paths: Mapping[str, str],
     spec: ScenarioSpec,
+    *,
+    post_build_index_checkpoint: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build and validate every declared Notebook role as one atomic fixture bundle."""
 
@@ -374,7 +390,34 @@ async def prepare_fixture_bundle(
     builds: dict[str, FixtureBuildResult] = {}
     snapshots: dict[str, Mapping[str, Any]] = {}
     observations: dict[str, FixtureRoleObservation] = {}
+    checkpoint_required = bool(
+        getattr(scenario, "requires_index_activation_checkpoint", False)
+        and not options.use_cache
+    )
+    if checkpoint_required and (
+        "search_pages" not in spec.tool_allowlist
+        or post_build_index_checkpoint is None
+    ):
+        raise InvariantFailure(
+            "Index activation checkpoint is restricted to an explicit fresh Search scenario."
+        )
+    if not checkpoint_required and post_build_index_checkpoint is not None:
+        raise InvariantFailure(
+            "A non-Search fixture received an index activation checkpoint callback."
+        )
+    source_notebooks = {role: dict(notebooks[role]) for role in roles}
+    checkpoint_evidence: Mapping[str, Any] | None = None
+    checkpoint_convergence: dict[str, Any] = {}
     token = str(uuid.uuid4())
+    begin_content_validation = getattr(
+        recipe, "begin_snapshot_content_validation", None
+    )
+    page_observer = getattr(recipe, "snapshot_page_observer", None)
+    complete_content_validation = getattr(
+        recipe, "complete_snapshot_content_validation", None
+    )
+    if callable(begin_content_validation):
+        begin_content_validation()
     try:
         for role in roles:
             recorder = FixtureRecorder(
@@ -416,18 +459,136 @@ async def prepare_fixture_bundle(
                     f"missing={sorted(expected_keys - set(recorder.structure))}, "
                     f"extra={sorted(set(recorder.structure) - expected_keys)}."
                 )
-            snapshot = await capture_snapshot(client, str(notebooks[role]["id"]))
-            snapshots[role] = snapshot
             builds[role] = build
-            observations[role] = FixtureRoleObservation(
-                role=role,
-                args=args,
-                notebook=notebooks[role],
-                notebook_path=notebook_paths[role],
-                snapshot=snapshot,
-                build=build,
+            if not checkpoint_required:
+                snapshot = await _capture_snapshot_with_observer(
+                    client,
+                    str(notebooks[role]["id"]),
+                    (
+                        page_observer(role, build) if callable(page_observer) else None
+                    ),
+                )
+                snapshots[role] = snapshot
+                observations[role] = FixtureRoleObservation(
+                    role=role,
+                    args=args,
+                    notebook=notebooks[role],
+                    notebook_path=notebook_paths[role],
+                    snapshot=snapshot,
+                    build=build,
+                )
+                write_json(_role_snapshot_path(options.run_dir, role), snapshot)
+        if checkpoint_required:
+            assert post_build_index_checkpoint is not None
+            checkpoint_evidence = post_build_index_checkpoint()
+            for role in roles:
+                build = builds[role]
+                if build.evidence:
+                    raise InvariantFailure(
+                        "Search index checkpoint cannot carry schema-specific ID evidence."
+                    )
+                (
+                    _light_snapshot,
+                    stable_structure,
+                    stable_remap,
+                    convergence,
+                ) = await _await_materialized_structure_convergence(
+                    client,
+                    role=role,
+                    structure=build.structure,
+                    source_notebook=source_notebooks[role],
+                    working_notebook=notebooks[role],
+                )
+                if convergence.get("passed") is not True:
+                    checkpoint_convergence[role] = convergence
+                    write_json(
+                        options.run_dir / "fresh-index-hierarchy-convergence.json",
+                        {
+                            "schema_version": 1,
+                            "scenario": scenario.name,
+                            "passed": False,
+                            "roles": checkpoint_convergence,
+                        },
+                    )
+                    raise InvariantFailure(
+                        "Fresh Search hierarchy did not stabilize after its index checkpoint: "
+                        f"{role}={convergence.get('error', 'unknown failure')}."
+                    )
+                snapshot = await _capture_snapshot_with_observer(
+                    client,
+                    str(notebooks[role]["id"]),
+                    (
+                        page_observer(role, build) if callable(page_observer) else None
+                    ),
+                )
+                rebound, snapshot_remap = _rebind_materialized_structure(
+                    dict(build.structure),
+                    source_notebook=source_notebooks[role],
+                    working_notebook=notebooks[role],
+                    snapshot=snapshot,
+                )
+                hierarchy_changed = (
+                    snapshot_remap.get("passed") is True
+                    and _materialized_structure_signature(rebound)
+                    != _materialized_structure_signature(stable_structure)
+                )
+                if snapshot_remap.get("passed") is not True or hierarchy_changed:
+                    convergence.update(
+                        passed=False,
+                        phase="scenario_before_snapshot",
+                        error=(
+                            "declared hierarchy changed during the one full snapshot"
+                            if hierarchy_changed
+                            else "full snapshot could not rebind every declared object"
+                        ),
+                    )
+                    checkpoint_convergence[role] = convergence
+                    write_json(
+                        options.run_dir / "fresh-index-structure-remap.json",
+                        {"schema_version": 1, "role": role, **snapshot_remap},
+                    )
+                    raise InvariantFailure(
+                        "Fresh Search scenario-before snapshot did not preserve the stable hierarchy."
+                    )
+                convergence.update(
+                    passed=True,
+                    phase="scenario_before_snapshot",
+                    scenario_before_snapshot_completed=True,
+                    content_truth_validation_completed=True,
+                )
+                checkpoint_convergence[role] = convergence
+                snapshot_remap["hierarchy_convergence"] = convergence
+                write_json(
+                    options.run_dir / f"fresh-index-structure-remap-{role}.json",
+                    snapshot_remap,
+                )
+                rebound_build = FixtureBuildResult(rebound, build.evidence)
+                builds[role] = rebound_build
+                recorders[role].rebind_after_index_checkpoint(
+                    notebooks[role],
+                    rebound,
+                )
+                snapshots[role] = snapshot
+                observations[role] = FixtureRoleObservation(
+                    role=role,
+                    args=args,
+                    notebook=notebooks[role],
+                    notebook_path=notebook_paths[role],
+                    snapshot=snapshot,
+                    build=rebound_build,
+                )
+                write_json(_role_snapshot_path(options.run_dir, role), snapshot)
+            write_json(
+                options.run_dir / "fresh-index-hierarchy-convergence.json",
+                {
+                    "schema_version": 1,
+                    "scenario": scenario.name,
+                    "passed": True,
+                    "roles": checkpoint_convergence,
+                },
             )
-            write_json(_role_snapshot_path(options.run_dir, role), snapshot)
+        if callable(complete_content_validation):
+            complete_content_validation()
         report = recipe.validate_live(FixtureBundleObservation(roles=observations))
     except Exception as exc:
         for role, recorder in recorders.items():
@@ -493,6 +654,17 @@ async def prepare_fixture_bundle(
             "bundle_checks": list(report.bundle_checks),
         },
     )
+    if checkpoint_evidence is not None:
+        manifest["index_activation_checkpoint"] = {
+            "status": checkpoint_evidence.get("status"),
+            "evidence": str(
+                (options.run_dir / "fresh-index-activation-checkpoint.json").resolve()
+            ),
+            "hierarchy_convergence": str(
+                (options.run_dir / "fresh-index-hierarchy-convergence.json").resolve()
+            ),
+            "full_snapshot_per_role": 1,
+        }
     manifest["disposable_targets"].update(
         {
             f"{role}_notebook_path": str(Path(notebook_paths[role]).resolve())
@@ -530,6 +702,10 @@ async def prepare_fixture_bundle(
             "bundle_checks": list(report.bundle_checks),
         },
     }
+    if checkpoint_evidence is not None:
+        result["index_activation_checkpoint"] = dict(
+            manifest["index_activation_checkpoint"]
+        )
     write_json(options.run_dir / "prepared.json", snapshots["source"])
     write_json(options.run_dir / "fixture-snapshot.json", snapshots["source"])
     write_json(options.run_dir / "page-hashes.json", snapshots["source"].get("page_hashes", {}))
@@ -551,6 +727,7 @@ async def prepare_materialized_fixture(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Re-observe and revalidate a materialized working copy before mutation."""
 
+    recipe = scenario.fixture_recipe
     if tuple(hit.entry.get("roles", ())) != ("source",):
         raise InvariantFailure("Single-Notebook scenario received a non-source cache bundle.")
     artifact_root = hit.entry_path / "notebooks" / "source"
@@ -566,6 +743,15 @@ async def prepare_materialized_fixture(
     }
     source_structure = structure
     validation_started = time.monotonic()
+    begin_content_validation = getattr(
+        recipe, "begin_snapshot_content_validation", None
+    )
+    page_observer = getattr(recipe, "snapshot_page_observer", None)
+    complete_content_validation = getattr(
+        recipe, "complete_snapshot_content_validation", None
+    )
+    if callable(begin_content_validation):
+        begin_content_validation()
     options.progress.unit_started("cache hierarchy", "source")
     hierarchy_started = time.monotonic()
     (
@@ -633,7 +819,15 @@ async def prepare_materialized_fixture(
     convergence["scenario_before_snapshot_started"] = True
     persist_convergence()
     try:
-        snapshot = await capture_snapshot(client, str(notebook["id"]))
+        snapshot = await _capture_snapshot_with_observer(
+            client,
+            str(notebook["id"]),
+            (
+                page_observer("source", FixtureBuildResult(converged_structure, evidence))
+                if callable(page_observer)
+                else None
+            ),
+        )
     except Exception as exc:
         convergence.update(
             passed=False,
@@ -698,8 +892,10 @@ async def prepare_materialized_fixture(
     remap["passed"] = evidence_remap["passed"] is True
     write_json(options.run_dir / "cache-structure-remap.json", remap)
     build = FixtureBuildResult(structure, evidence)
-    checks = scenario.fixture_recipe.validate(
-        FixtureValidationContext(args=args, snapshot=snapshot),
+    if callable(complete_content_validation):
+        complete_content_validation()
+    checks = recipe.validate(
+        FixtureValidationContext(args=args, snapshot=snapshot, role="source"),
         build,
     )
     interactive_validation: dict[str, Any] | None = None
@@ -969,6 +1165,15 @@ async def prepare_materialized_fixture_bundle(
     cached_results: dict[str, Mapping[str, Any]] = {}
     convergence_path = options.run_dir / "cache-hierarchy-convergence.json"
     validation_started = time.monotonic()
+    begin_content_validation = getattr(
+        recipe, "begin_snapshot_content_validation", None
+    )
+    page_observer = getattr(recipe, "snapshot_page_observer", None)
+    complete_content_validation = getattr(
+        recipe, "complete_snapshot_content_validation", None
+    )
+    if callable(begin_content_validation):
+        begin_content_validation()
 
     def persist_convergence() -> None:
         write_json(
@@ -1065,7 +1270,18 @@ async def prepare_materialized_fixture_bundle(
         convergence["scenario_before_snapshot_started"] = True
         persist_convergence()
         try:
-            snapshot = await capture_snapshot(client, str(notebooks[role]["id"]))
+            snapshot = await _capture_snapshot_with_observer(
+                client,
+                str(notebooks[role]["id"]),
+                (
+                    page_observer(
+                        role,
+                        FixtureBuildResult(converged_rebound, evidence),
+                    )
+                    if callable(page_observer)
+                    else None
+                ),
+            )
         except Exception as exc:
             convergence.update(
                 passed=False,
@@ -1158,6 +1374,8 @@ async def prepare_materialized_fixture_bundle(
             "roles": remaps,
         },
     )
+    if callable(complete_content_validation):
+        complete_content_validation()
     report = recipe.validate_live(FixtureBundleObservation(roles=observations))
     interactive_validation: dict[str, Any] | None = None
     if recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED:

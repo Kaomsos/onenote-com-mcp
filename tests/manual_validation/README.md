@@ -253,18 +253,24 @@ Delete-Sandbox
 
 Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前后各捕获一次当前 Notebook ID/实际目录 snapshot；全部历史 run-local lease 只与 snapshot 做内存比较，历史 run 数量不得放大 COM 调用次数。Snapshot 获取失败按 MCP/lifecycle failure fail closed，并保留本次 working 现场。
 
-`search-all-open-notebooks` 是 fresh-only、`included_in_all=false` 的双 Notebook Search 场景。它构建 Source 中的 Probe Group/两个 Section/三个 Page，以及第二个 `search-b` Notebook 中的两个 Page。每次 fresh run 在内存生成严格 32 字符的 `<15 位字母数字>-<16 位字母数字>` 探针，查询使用左右两段的 `AND`；root、Notebook、SectionGroup、Section 起点必须分别精确命中 `4 → 3 → 2 → 1` 个 Page。Readiness 必须连续两次得到相同四 ID 集合；分页以 `page_size=2` 验证两页并在前后检查 index 稳定性。静态 `max_pages=4` 的独立五 Page marker 必须在分页前失败，长正文 marker 必须触发 `max_total_chars=512`，同时 Probe Section 1 证明正常 snippet hydration。
+`search-all-open-notebooks` 是支持 fresh/cache、`included_in_all=true` 的双 Notebook Search 场景。它构建 Source 中的 Probe Group/两个 Section/三个 Page，以及第二个 `search-b` Notebook 中的两个 Page。由于该场景验证的是 `include_unindexed=false` 的 OneNote index，只有 fresh 模式会在全部 Page 写入后执行一次 `CloseNotebook(force=false)` checkpoint：精确关闭两个 role、从同一 working path reopen、按 typed relative address 重绑全部 live ID，并连续两次确认 hierarchy 稳定。cache working copy 使用普通 batch-open 和层级收敛，不增加 close/reopen。随后唯一一次完整 snapshot 同时完成内容真实性复核；cache hit 会从这次既有 Page XML 读取中把模板 probe 重建到进程内存，不额外读取 Page，也不把 raw probe 写入 fixture JSON evidence。只有实际查询出现稳定的额外命中时才输出 probe collision warning 并 fail closed。用户已确认 fresh 与 validated cache hit 真实运行通过，因此该场景进入 `all`。
+
+Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 manifest key set、typed container parent、Page Section/root level 和每 Page 单次内容 snapshot。每次 fresh run 在内存生成严格 32 字符的 `<15 位字母数字>-<16 位字母数字>` 探针，查询使用左右两段的 `AND`；root、Notebook、SectionGroup、Section 起点必须分别精确命中 `4 → 3 → 2 → 1` 个 Page。Readiness 必须连续两次得到相同四 ID 集合；分页以 `page_size=2` 验证两页并在前后检查 index 稳定性。静态 `max_pages=4` 的独立五 Page marker 必须在分页前失败，长正文 marker 必须触发 `max_total_chars=512`，同时 Probe Section 1 证明正常 snippet hydration。
 
 场景的 MCP audit 会统一 hash/长度脱敏 `query/content/text/snippet`。普通 evidence 只保存探针 SHA-256、长度、字符类别、命中 ID 和无正文 metadata，不保存原始 query、正文或 snippet。Recipe 明确拒绝 `--use-cache`，以保证每次运行都生成新探针；它只有 fixture 所需 Writes，没有 Delete、Copy、Move、Permanent Delete 或 Raw XML。Agent 只能运行下面的 dry-run；真实命令必须由用户本人在前台显式启动：
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks
+.venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks --use-cache
 ```
 
-`query-metadata-scopes` 是 fresh-only、`included_in_all=false` 的双 Notebook typed metadata Query 场景。两个 role 各自创建 run-unique 的嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 与缩进 Page。场景保存两份独立 typed hierarchy tree、逐 fixture item 的 expected 投影、每个请求/响应及对应 bridge operation；验证四个 root Query、Notebook/SectionGroup/Section 原生起点、Page `section_id/parent_page_id`、RFC 3339 严格时间、`page_size=2` 的全部页/末页/越界页，以及每次调用恰好产生规定的一个或两个 `GetHierarchy` 且不读取 Page 正文。随后由 lifecycle wrapper 精确关闭 `query-b` role，并证明 `include_recycle_bin=true` 也不能把已关闭 Notebook 或后代重新引入。场景只授予 fixture Writes；Delete、Copy、Move、Permanent Delete 与 Raw XML 均关闭。真实运行只能由用户本人前台启动：
+`query-metadata-scopes` 是支持 fresh/cache、`included_in_all=true` 的双 Notebook typed metadata Query 场景。两个 role 各自创建带共享 token 的嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 与缩进 Page。物理 Group/Section 名称使用由完整 token 派生的 16 位紧凑 token；每个 role 在首个 fixture mutation 前预算最深 `.one` 路径，超过 240 UTF-16 units 时明确 fail closed。根 scope 的 `notebook_count` 以 scenario 开始前的一次打开目录为基线，因此用户原本打开的无关 Notebook 不会造成误报；关闭 `query-b` 后验证基线减一。cache token 只有在真实产生额外结果时才输出无查询内容的 collision warning。Query 不需要 index，因此 fresh 和 cache 都不会执行 Search 专用的 close/reopen checkpoint。用户已确认 cache cold build 真实运行通过，因此该场景进入 `all`。
+
+Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 manifest key set、对象类型、两条 container chain、Page Section/root level/indentation parent 和每 Page 单次内容 snapshot，并在 bundle 层证明两个 role 共用同一个非空 run token。场景保存两份独立 typed hierarchy tree、逐 fixture item 的 expected 投影、每个请求/响应及对应 bridge operation；验证四个 root Query、Notebook/SectionGroup/Section 原生起点、Page `section_id/parent_page_id`、RFC 3339 严格时间、`page_size=2` 的全部页/末页/越界页，以及每次调用恰好产生规定的一个或两个 `GetHierarchy` 且不读取 Page 正文。随后由 lifecycle wrapper 精确关闭 `query-b` role，并证明 `include_recycle_bin=true` 也不能把已关闭 Notebook 或后代重新引入。场景只授予 fixture Writes；Delete、Copy、Move、Permanent Delete 与 Raw XML 均关闭。真实运行只能由用户本人前台启动：
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes
+.venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes --use-cache
 ```
 
 ## 安全审查与执行

@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, MutableMapping
 
 from local_onenote_mcp.desktop import require_onenote_desktop
 from local_onenote_mcp.onenote_errors import OneNoteError
@@ -29,6 +29,7 @@ from ...test_utils import (
     read_json,
     resolve_manifest_item,
     scenario_dir,
+    stable_item,
     utc_now,
     write_json,
 )
@@ -530,7 +531,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     scenario = SCENARIO_REGISTRY.get(args.scenario)
     if options.use_cache and not getattr(scenario.fixture_recipe, "supports_cache", True):
         raise RunnerFailure(
-            "This Scenario is fresh-only because it generates in-memory search probes; "
+            f"This Scenario is fresh-only: {scenario.fixture_recipe.fresh_only_reason}; "
             "remove --use-cache."
         )
     if (
@@ -768,6 +769,22 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     )
                     raise
             else:
+                prepare_kwargs: dict[str, Any] = {}
+                if getattr(
+                    scenario,
+                    "requires_index_activation_checkpoint",
+                    False,
+                ) and not options.use_cache:
+                    prepare_kwargs["post_build_index_checkpoint"] = lambda: (
+                        _checkpoint_fresh_search_bundle(
+                            scenario_name=scenario.name,
+                            wrappers=wrappers,
+                            roles=roles,
+                            notebooks=notebooks,
+                            leases=leases,
+                            run_dir=options.run_dir,
+                        )
+                    )
                 manifest, fixture_result = await prepare_fixture_bundle(
                     scenario,
                     args,
@@ -779,7 +796,9 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                         for role in roles
                     },
                     spec,
+                    **prepare_kwargs,
                 )
+                notebook, lease = notebooks["source"], leases["source"]
                 if options.use_cache and scenario.fixture_recipe.build_mode == BuildMode.PROGRAMMATIC:
                     if cache_store is None:
                         raise RunnerFailure("Fixture cache runtime was not initialized.")
@@ -1673,6 +1692,109 @@ def _open_materialized_bundle(
                 actual_path=Path(str(leases[role]["actual_local_path"])),
             )
     return notebooks, leases
+
+
+def _checkpoint_fresh_search_bundle(
+    *,
+    scenario_name: str,
+    wrappers: Mapping[str, NotebookLifecycleWrapper],
+    roles: tuple[str, ...],
+    notebooks: MutableMapping[str, dict[str, Any]],
+    leases: MutableMapping[str, dict[str, Any]],
+    run_dir: Path,
+) -> dict[str, Any]:
+    """Persist and reopen only the fresh bundle used by index-dependent Search."""
+
+    if scenario_name != "search-all-open-notebooks":
+        raise RunnerFailure(
+            "Fresh close/reopen index activation is restricted to search-all-open-notebooks."
+        )
+    if set(wrappers) != set(roles) or set(notebooks) != set(roles) or set(leases) != set(roles):
+        raise RunnerFailure("Search index checkpoint did not receive the exact role bundle.")
+    evidence_path = run_dir / "fresh-index-activation-checkpoint.json"
+    original_notebooks = {role: dict(notebooks[role]) for role in roles}
+    working_paths = {
+        role: Path(str(leases[role]["expected_local_path"])).resolve()
+        for role in roles
+    }
+    evidence: dict[str, Any] = {
+        "schema_version": 1,
+        "scenario": scenario_name,
+        "reason": "activate OneNote index for newly written fresh Pages",
+        "force": False,
+        "roles": {},
+        "status": "running",
+        "filesystem_deleted": False,
+        "templates_opened": False,
+    }
+    write_json(evidence_path, evidence)
+    try:
+        closed = _close_bundle(wrappers, roles)
+        reopened_notebooks: dict[str, dict[str, Any]] = {}
+        reopened_leases: dict[str, dict[str, Any]] = {}
+        with wrappers["source"].working_notebook_open_lock():
+            before_open = wrappers["source"].snapshot_open_notebooks()
+            wrappers["source"].assert_no_active_working_conflict(
+                notebook_ids=None,
+                working_paths=working_paths,
+                open_notebooks=before_open,
+            )
+            for role in roles:
+                kwargs = {} if role == "source" else {"role": role}
+                reopened_notebooks[role], reopened_leases[role] = wrappers[
+                    role
+                ].open_working_notebook(
+                    working_paths[role].name,
+                    working_paths[role],
+                    template_paths=(),
+                    lease_archive_kind="index-checkpoint",
+                    **kwargs,
+                )
+            after_open = wrappers["source"].snapshot_open_notebooks()
+            wrappers["source"].assert_no_active_working_conflict(
+                notebook_ids={
+                    role: str(reopened_notebooks[role]["id"])
+                    for role in roles
+                },
+                working_paths=working_paths,
+                open_notebooks=after_open,
+            )
+        notebooks.clear()
+        notebooks.update(reopened_notebooks)
+        leases.clear()
+        leases.update(reopened_leases)
+        evidence["roles"] = {
+            role: {
+                "working_path": str(working_paths[role]),
+                "source_notebook_id": str(original_notebooks[role]["id"]),
+                "working_notebook_id": str(reopened_notebooks[role]["id"]),
+                "id_changed": str(original_notebooks[role]["id"])
+                != str(reopened_notebooks[role]["id"]),
+                "close": closed[role],
+                "reopen": {
+                    "notebook": stable_item(reopened_notebooks[role]),
+                    "actual_local_path": reopened_leases[role].get(
+                        "actual_local_path"
+                    ),
+                    "hierarchy_open_status": reopened_leases[role].get(
+                        "hierarchy_open_status"
+                    ),
+                },
+            }
+            for role in roles
+        }
+        evidence["status"] = "passed"
+        evidence["completed_at"] = utc_now()
+        write_json(evidence_path, evidence)
+        return evidence
+    except Exception as exc:
+        evidence.update(
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}",
+            failed_at=utc_now(),
+        )
+        write_json(evidence_path, evidence)
+        raise
 
 
 def _close_bundle(

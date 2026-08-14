@@ -211,6 +211,32 @@ def test_open_working_copy_proves_actual_path_is_not_template(tmp_path) -> None:
     assert lease["template_paths"] == [str(template.resolve())]
 
 
+def test_index_checkpoint_reopen_uses_its_own_closed_lease_archive(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    working = wrapper.notebook_root / "fresh-search"
+    working.mkdir(parents=True)
+    bridge.reported_path = str(working.resolve())
+    write_json(
+        wrapper.lease_path,
+        {
+            "schema_version": 1,
+            "state": "closed",
+            "notebook_id": "old-notebook-id",
+            "expected_local_path": str(working.resolve()),
+        },
+    )
+
+    wrapper.open_working_notebook(
+        "__ISOLATED__",
+        working,
+        template_paths=(),
+        lease_archive_kind="index-checkpoint",
+    )
+
+    assert (wrapper.run_dir / "lifecycle-index-checkpoint-lease.json").is_file()
+    assert not (wrapper.run_dir / "lifecycle-cold-build-lease.json").exists()
+
+
 def test_materialized_batch_freezes_paths_before_one_parent_first_com_session(
     tmp_path,
 ) -> None:
