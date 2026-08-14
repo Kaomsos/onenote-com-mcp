@@ -27,7 +27,6 @@ OneNote COM 没有提供只读的 `CanUpdateHierarchy`、flush-complete token �
 | 状态 | 可证明内容 | 不可推导内容 |
 | --- | --- | --- |
 | `logical_ready` | 精确 typed ID、类型、活动态、parent、同 Notebook、confirmation、scope、内容基线与 hierarchy bookend 均通过 | 底层源文件已经提交；下一次 native mutation 一定成功 |
-| `persistence_checkpointed` | 经显式 `CloseNotebook(false)`、exact-path reopen、ID rebind 和完整 live validation 后，关闭产生的持久化结构可重新使用 | 后续 mutation 必然成功；任意用户 Notebook 可被工具自动关闭 |
 | `execute_attempted` | mutation 调用已经发出一次 | COM 返回异常等于未应用；COM 返回成功等于 postcondition 已成立 |
 | `applied` | 完整 operation-specific postcondition 和 invariant 已由 live evidence 证明 | 后端调用过程没有抛错 |
 | `not_applied` | 完整 frozen pre-state 保持不变，且没有 fresh/removed/remapped/partial 对象 | 可以无条件重试 |
@@ -40,15 +39,9 @@ OneNote COM 没有提供只读的 `CanUpdateHierarchy`、flush-complete token �
 logical_ready
   → execute once
   → applied | not_applied | partially_applied | indeterminate
-
-disposable or explicitly authorized lifecycle only:
-logical_ready
-  → persistence_checkpointed
-  → execute once
-  → applied | not_applied | partially_applied | indeterminate
 ```
 
-`persistence_checkpointed` 是比 `logical_ready` 更强的来源持久化证据，但仍不是绝对的 mutation-ready 保证。最终结果只能由 execute 后的 live reconciliation 与 invariant validation 确定。
+GUI preflight、稳定 hierarchy 与完整内容基线都只属于 `logical_ready` 的证据，不能升级为绝对的 mutation-ready 保证。最终结果只能由 execute 后的 live reconciliation 与 invariant validation 确定。
 
 ## 3. 生产 mutation 的正确调用设计
 
@@ -101,7 +94,7 @@ Manual-validation 只操作本次新建的 disposable Notebook，因此 Recipe �
 
 ## 6. 当前实现与目标实现边界
 
-当前已经成立的合同包括：typed confirmation、进程内写协调、连续稳定 read-back、Reparent 两阶段 hierarchy/full-evidence 验证、最内层 HRESULT 诊断，以及生产 Reparent 不依赖 `SyncHierarchy` 或自动 close/reopen。Disposable `reparent-page` Recipe 已使用持久化 checkpoint，并有用户运行的 fresh/cache 成功证据。
+当前已经成立的合同包括：typed confirmation、进程内写协调、连续稳定 read-back、Reparent 两阶段 hierarchy/full-evidence 验证、最内层 HRESULT 诊断，以及生产 Reparent 不依赖 `SyncHierarchy` 或自动 close/reopen。Manual validation 已移除基于旧归因加入的 disposable persistence checkpoint；`reparent-page` fresh/cache 现在共用 OneNote Desktop preflight、首次 live identity 和相同的 typed 验证边界。
 
 尚未完成、由 [TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 跟踪的生产加固包括：
 

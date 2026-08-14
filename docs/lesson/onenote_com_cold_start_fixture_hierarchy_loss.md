@@ -11,7 +11,7 @@
 
 在当前观察环境中，manual-validation scenario 启动前 OneNote Desktop 是否已经运行，与 fixture hierarchy 能否跨独立 PowerShell/COM 调用保持可见具有稳定相关性：OneNote 已运行时，相同类型的 cache working copy 可以完成连续两次 hierarchy 稳定观察；OneNote 未运行时，fixture 准备会稳定停在 mutation 前，表现为 Notebook shell 长时间只有空 `children`，少数运行还会在首次完整观察后丢失整个 Notebook live ID。
 
-这不是 `CloseNotebook(force=false)` 动作本身导致的失败。成功与失败路径都可以执行相同的 import → exact close → same-path reopen checkpoint；决定性对照变量是 scenario 开始前是否已有 OneNote 进程。Checkpoint 是问题常被观察到的身份交接边界，但不能据此倒置因果关系。
+这不是 `CloseNotebook(force=false)` 动作本身导致的失败。历史成功与失败路径都执行过相同的 import → exact close → same-path reopen checkpoint；决定性对照变量是 scenario 开始前是否已有 OneNote 进程。该 checkpoint 曾是问题常被观察到的身份交接边界，但不能据此倒置因果关系，当前实现已将它移除。
 
 当前工程推断是：`OneNote.Application` 由 `ONENOTE.EXE` 进程外 COM server 承载，而项目的每次 bridge 调用都会创建一个新的非交互 PowerShell client 和一个新的 COM 对象，调用结束后该 client 进程退出。如果 scenario 需要由第一条调用冷启动 OneNote，就没有一个跨调用持有的 COM 引用或既有 Desktop 会话为刚导入的 live hierarchy 提供稳定存活锚点。后续调用可能重新取得 Notebook shell，却没有前一会话激活的 child hierarchy；更激进时，前一 live identity 整体消失。这个机制解释现有对照，但项目尚未直接测量 COM 引用计数或 OneNote 内部退出条件，因此应保留为工程推断，而不是 Microsoft OneNote 的通用平台保证。
 
@@ -40,7 +40,7 @@
 
 ### 不是 `CloseNotebook(false)` 单独造成
 
-GUI 已预启动的通过运行与未启动的失败运行执行相同 checkpoint。Close/reopen 仍有持久化和 identity 分离价值，但它不能独自保证由冷启动、短命 client 建立的第二次 live identity在后续 client 中保持完整。
+GUI 已预启动的通过运行与未启动的失败运行执行过相同 checkpoint。现有证据没有证明 close/reopen 对当前 manual runner 具有独立必要价值，因此它已从 fresh 和 materialized 路径移除；历史结果只保留为诊断对照。
 
 ### 不是延长 hierarchy polling 可以解决
 

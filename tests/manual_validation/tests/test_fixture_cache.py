@@ -38,7 +38,6 @@ from tests.manual_validation.scenarios.common.fixture_runtime import (
     _rebind_materialized_structure,
     prepare_materialized_fixture,
     prepare_materialized_fixture_bundle,
-    prepare_reopened_fixture_bundle,
 )
 from tests.manual_validation.scenarios.common import orchestrator as validation
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
@@ -269,7 +268,7 @@ def test_materialized_run_local_paths_fail_closed_on_inconsistent_copy_root(
     )
 
 
-def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
+def test_materialized_bundle_opens_each_role_once_before_live_validation(
     tmp_path,
 ) -> None:
     run_dir = tmp_path / "run"
@@ -322,15 +321,10 @@ def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
                 (
                     "open",
                     self.role,
-                    {
-                        "count": self.open_count,
-                        "activate_hierarchy": kwargs.get("activate_hierarchy", True),
-                        "archive": kwargs.get("lease_archive_reason", "cold-build"),
-                    },
+                    {"count": self.open_count},
                 )
             )
-            identity = "import" if self.open_count == 1 else "mutation"
-            notebook_id = f"{self.role}-{identity}-id"
+            notebook_id = f"{self.role}-live-id"
             return (
                 {"id": notebook_id, "name": working_paths[self.role].name},
                 {
@@ -339,15 +333,6 @@ def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
                     "opened_hierarchy": [{"object_id": "section-id"}],
                 },
             )
-
-        def close_exact_notebook(self):
-            notebook_id = f"{self.role}-import-id"
-            calls.append(("close", self.role, notebook_id))
-            return {
-                "closed": True,
-                "source_notebook_id": notebook_id,
-                "close_before": {"id": notebook_id},
-            }
 
     wrappers = {role: FakeWrapper(role) for role in ("source", "destination")}
     notebooks, leases = validation._open_materialized_bundle(
@@ -365,159 +350,22 @@ def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
     assert lifecycle_calls == [
         ("open", "source"),
         ("open", "destination"),
-        ("close", "source"),
-        ("close", "destination"),
-        ("open", "source"),
-        ("open", "destination"),
     ]
     open_calls = [value for name, _role, value in calls if name == "open"]
     assert open_calls == [
-        {"count": 1, "activate_hierarchy": True, "archive": "cold-build"},
-        {"count": 1, "activate_hierarchy": True, "archive": "cold-build"},
-        {
-            "count": 2,
-            "activate_hierarchy": False,
-            "archive": "materialized-import-checkpoint",
-        },
-        {
-            "count": 2,
-            "activate_hierarchy": False,
-            "archive": "materialized-import-checkpoint",
-        },
+        {"count": 1},
+        {"count": 1},
     ]
-    assert notebooks["source"]["id"] == "source-mutation-id"
-    assert notebooks["destination"]["id"] == "destination-mutation-id"
+    assert notebooks["source"]["id"] == "source-live-id"
+    assert notebooks["destination"]["id"] == "destination-live-id"
     assert leases["source"]["actual_local_path"] == str(
         working_paths["source"].resolve()
     )
     assert calls[-2:] == [
-        ("record", "source", "source-mutation-id"),
-        ("record", "destination", "destination-mutation-id"),
+        ("record", "source", "source-live-id"),
+        ("record", "destination", "destination-live-id"),
     ]
-    checkpoint = read_json(run_dir / "cache-working-import-checkpoint.json")
-    assert checkpoint["status"] == "passed"
-    assert checkpoint["close_force"] is False
-    assert checkpoint["roles"]["source"]["exact_import_identity_closed"] is True
-    assert checkpoint["roles"]["destination"]["exact_import_identity_closed"] is True
-    assert checkpoint["roles"]["source"]["import_notebook_id"] == "source-import-id"
-    assert checkpoint["roles"]["source"]["mutation_notebook_id"] == (
-        "source-mutation-id"
-    )
-    assert checkpoint["roles"]["source"]["mutation_hierarchy_source"] == (
-        "post_reopen_fixture_convergence"
-    )
-    assert set(checkpoint["phases_seconds"]) == {
-        "import_open",
-        "import_close",
-        "mutation_identity_reopen",
-        "total",
-    }
-    assert all(value >= 0 for value in checkpoint["phases_seconds"].values())
-
-
-def test_fresh_persistence_checkpoint_uses_import_then_mutation_identity(tmp_path) -> None:
-    run_dir = tmp_path / "run"
-    working = run_dir / "notebooks" / "fresh-working"
-    working.mkdir(parents=True)
-    calls: list[tuple[str, object]] = []
-
-    class FakeWrapper:
-        role = "source"
-        lease_path = run_dir / "lifecycle-lease.json"
-
-        def __init__(self) -> None:
-            self.run_dir = run_dir
-            self.open_count = 0
-
-        def working_notebook_open_lock(self):
-            from contextlib import nullcontext
-
-            return nullcontext()
-
-        def snapshot_open_notebooks(self):
-            calls.append(("snapshot", self.open_count))
-            return {}
-
-        def assert_no_active_working_conflict(self, **kwargs):
-            calls.append(("conflict", kwargs.get("notebook_ids")))
-
-        def open_working_notebook(self, _name, path, **kwargs):
-            self.open_count += 1
-            identity = "import" if self.open_count == 1 else "mutation"
-            notebook_id = f"source-{identity}-id"
-            calls.append(
-                (
-                    "open",
-                    {
-                        "identity": identity,
-                        "archive": kwargs["lease_archive_reason"],
-                        "activate_hierarchy": kwargs.get("activate_hierarchy", True),
-                    },
-                )
-            )
-            return (
-                {"id": notebook_id, "name": working.name},
-                {
-                    "actual_local_path": str(Path(path).resolve()),
-                    "hierarchy_open_status": (
-                        "passed"
-                        if kwargs.get("activate_hierarchy", True)
-                        else "deferred_to_fixture_convergence"
-                    ),
-                    "opened_hierarchy": (
-                        [{"object_id": "section-id"}]
-                        if kwargs.get("activate_hierarchy", True)
-                        else []
-                    ),
-                },
-            )
-
-        def close_exact_notebook(self):
-            calls.append(("close", "source-import-id"))
-            return {
-                "closed": True,
-                "source_notebook_id": "source-import-id",
-                "close_before": {"id": "source-import-id"},
-            }
-
-    wrapper = FakeWrapper()
-    notebooks, leases = validation._reopen_persisted_bundle(
-        {"source": wrapper},
-        ("source",),
-        {"source": working},
-        {
-            "source": {
-                "closed": True,
-                "source_notebook_id": "source-build-id",
-                "close_before": {"id": "source-build-id"},
-            }
-        },
-    )
-
-    assert [value for name, value in calls if name in {"open", "close"}] == [
-        {
-            "identity": "import",
-            "archive": "persistence-checkpoint",
-            "activate_hierarchy": True,
-        },
-        "source-import-id",
-        {
-            "identity": "mutation",
-            "archive": "persistence-import-checkpoint",
-            "activate_hierarchy": False,
-        },
-    ]
-    assert notebooks["source"]["id"] == "source-mutation-id"
-    assert leases["source"]["hierarchy_open_status"] == (
-        "deferred_to_fixture_convergence"
-    )
-    checkpoint = read_json(run_dir / "fixture-persistence-import-checkpoint.json")
-    assert checkpoint["status"] == "passed"
-    assert checkpoint["roles"]["source"]["import_notebook_id"] == "source-import-id"
-    assert checkpoint["roles"]["source"]["exact_import_identity_closed"] is True
-    assert checkpoint["roles"]["source"]["mutation_notebook_id"] == (
-        "source-mutation-id"
-    )
+    assert not (run_dir / "cache-working-import-checkpoint.json").exists()
 
 
 def _publish(tmp_path: Path):
@@ -1150,7 +998,7 @@ def test_failed_live_validation_quarantines_without_deleting_template(tmp_path) 
     assert read_json(hit.entry_path / "bundle-entry.json")["state"] == "invalid"
 
 
-def test_run_local_materialized_open_failure_does_not_quarantine_template(tmp_path) -> None:
+def test_run_local_materialized_failure_does_not_quarantine_template(tmp_path) -> None:
     recipe, store, _source_path, hit = _publish(tmp_path)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -1162,12 +1010,12 @@ def test_run_local_materialized_open_failure_does_not_quarantine_template(tmp_pa
         RuntimeOptions(run_dir, 180, False, False, use_cache=True),
         RunnerFailure("injected activation timeout"),
         phase="cold-materialized-open",
-        quarantine=False,
     )
 
     evidence = read_json(run_dir / "cache-live-validation-failure.json")
     assert evidence["cache_entry_matchable"] is True
-    assert evidence["retryable_after_working_notebook_close"] is True
+    assert evidence["template_integrity_not_implicated"] is True
+    assert evidence["retryable_with_same_template"] is True
     assert evidence["quarantine"] is None
     assert store.exact_entry_state(recipe, recipe.default_template_instance_id) == "ready"
     assert not store.quarantine_path.exists()
@@ -1732,167 +1580,6 @@ def test_reparent_page_materialization_persists_rebound_run_local_evidence(
     )
 
 
-@pytest.mark.parametrize("validator_fails", [False, True])
-def test_reparent_page_persistence_checkpoint_rebinds_and_revalidates(
-    monkeypatch,
-    tmp_path,
-    validator_fails,
-) -> None:
-    scenario = SCENARIO_REGISTRY.get("reparent-page")
-    source_notebook = {
-        "id": "source-notebook",
-        "name": "Fresh",
-        "path": "Fresh",
-    }
-    source_structure = {
-        "source_section": {
-            "id": "source-section",
-            "resource_type": "section",
-            "path": "Fresh/01-Source-Section",
-        },
-        "reparent_page": {
-            "id": "source-page",
-            "resource_type": "page",
-            "path": "Fresh/01-Source-Section/01-Reparent-Page",
-            "order": 0,
-            "page_level": 1,
-        },
-    }
-    rich = {
-        "page_id": "source-page",
-        "list_tag": {"page_id": "source-page"},
-    }
-    prior_manifest = {
-        "notebook": source_notebook,
-        "notebooks": {"source": source_notebook},
-        "structure": source_structure,
-        "role_structures": {"source": source_structure},
-        "reparent_page_fixture": rich,
-        "disposable_targets": {},
-    }
-    prior_result = {
-        "notebook": source_notebook,
-        "roles": {"source": {"validation": {"passed": True}}},
-    }
-    snapshot = {
-        "items": [
-            {
-                "id": "working-section",
-                "resource_type": "section",
-                "path": "Fresh/01-Source-Section",
-                "parent_id": "working-notebook",
-            },
-            {
-                "id": "working-page",
-                "resource_type": "page",
-                "path": "Fresh/01-Source-Section/01-Reparent-Page",
-                "section_id": "working-section",
-                "parent_id": "working-section",
-                "order": 0,
-                "page_level": 1,
-            },
-        ],
-        "page_hashes": {"working-page": "hash"},
-    }
-
-    async def fake_snapshot(_client, notebook_id):
-        assert notebook_id == "working-notebook"
-        return snapshot
-
-    monkeypatch.setattr(
-        "tests.manual_validation.scenarios.common.fixture_runtime.capture_snapshot",
-        fake_snapshot,
-    )
-
-    async def fake_convergence(*_args, **_kwargs):
-        rebound, remap = _rebind_materialized_structure(
-            source_structure,
-            source_notebook=source_notebook,
-            working_notebook={
-                "id": "working-notebook",
-                "name": "Fresh",
-                "path": "Fresh",
-            },
-            snapshot=snapshot,
-        )
-        return snapshot, rebound, remap, {
-            "schema_version": 1,
-            "role": "source",
-            "phase": "hierarchy_convergence",
-            "passed": True,
-            "attempts": 2,
-            "stable_observations": 2,
-            "persistence_content_validation_started": False,
-            "persistence_content_validation_completed": False,
-        }
-
-    monkeypatch.setattr(
-        "tests.manual_validation.scenarios.common.fixture_runtime._await_materialized_structure_convergence",
-        fake_convergence,
-    )
-
-    def validate_live(_observation):
-        if validator_fails:
-            raise InvariantFailure("injected post-reopen mismatch")
-        return argparse.Namespace(
-            passed=True,
-            role_checks={"source": ("checkpoint live validation",)},
-            bundle_checks=("bundle identity",),
-        )
-
-    monkeypatch.setattr(scenario.fixture_recipe, "validate_live", validate_live)
-    working_path = tmp_path / "run" / "notebooks" / "Fresh"
-    working_path.mkdir(parents=True)
-
-    invocation = prepare_reopened_fixture_bundle(
-        scenario,
-        argparse.Namespace(),
-        RuntimeOptions(tmp_path / "run", 180, False, False),
-        object(),
-        {
-            "source": {
-                "id": "working-notebook",
-                "name": "Fresh",
-                "path": "Fresh",
-            }
-        },
-        {"source": str(working_path)},
-        prior_manifest,
-        prior_result,
-        {"source": {"closed": True, "source_notebook_id": "source-notebook"}},
-    )
-    if validator_fails:
-        with pytest.raises(InvariantFailure, match="post-reopen mismatch"):
-            asyncio.run(invocation)
-        failure = read_json(
-            tmp_path / "run" / "fixture-persistence-checkpoint-failure.json"
-        )
-        assert failure["phase"] == "post_reopen_live_validation"
-        assert failure["mutation_attempted"] is False
-        assert failure["bundle_preserved"] is True
-        return
-
-    manifest, result = asyncio.run(invocation)
-
-    assert manifest["structure"]["reparent_page"]["id"] == "working-page"
-    assert manifest["reparent_page_fixture"]["page_id"] == "working-page"
-    assert manifest["reparent_page_fixture"]["list_tag"]["page_id"] == "working-page"
-    assert manifest["fixture_persistence_checkpoint"]["status"] == "passed"
-    assert manifest["fixture_persistence_checkpoint"]["close_force"] is False
-    assert manifest["fixture_validation"]["post_close_reopen_revalidation"] is True
-    assert (
-        manifest["fixture_persistence_checkpoint"]["hierarchy_convergence_evidence"]
-        == str(
-            (tmp_path / "run" / "fixture-persistence-hierarchy-convergence.json").resolve()
-        )
-    )
-    assert result["structure_ids"]["reparent_page"] == "working-page"
-    remap = read_json(tmp_path / "run" / "fixture-persistence-remap.json")
-    assert remap["passed"] is True
-    assert len(remap["roles"]["source"]["evidence_rebinding"]["mappings"]) == 2
-    assert prior_manifest["reparent_page_fixture"]["page_id"] == "source-page"
-
-
 def test_inserted_file_copy_live_validates_rebound_cached_structure(
     monkeypatch,
     tmp_path,
@@ -2191,24 +1878,14 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
             working_path,
             *,
             template_paths,
-            lease_archive_reason="cold-build",
-            activate_hierarchy=True,
-            _allow_activation_retry=True,
         ):
             assert expected_name == working_name
             assert working_path.name == working_name
             assert working_path not in template_paths
             self.materialized_open_count += 1
-            if self.materialized_open_count == 1:
-                assert lease_archive_reason == "cold-build"
-                assert activate_hierarchy is True
-                assert _allow_activation_retry is False
-            else:
-                assert lease_archive_reason == "materialized-import-checkpoint"
-                assert activate_hierarchy is False
-                assert _allow_activation_retry is False
+            assert self.materialized_open_count == 1
             notebook = {
-                "id": f"working-id-{self.materialized_open_count}",
+                "id": "working-id",
                 "name": working_name,
                 "path": working_name,
             }
@@ -2217,12 +1894,8 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
                 "expected_name": working_name,
                 "expected_local_path": str(working_path.resolve()),
                 "actual_local_path": str(working_path.resolve()),
-                "hierarchy_open_status": (
-                    "passed"
-                    if activate_hierarchy
-                    else "deferred_to_fixture_convergence"
-                ),
-                "opened_hierarchy": [] if not activate_hierarchy else [{}],
+                "hierarchy_open_status": "passed",
+                "opened_hierarchy": [{}],
             }
             self.current_notebook = notebook
             write_json(self.lease_path, {"schema_version": 1, **lease})

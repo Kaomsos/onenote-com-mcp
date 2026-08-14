@@ -45,20 +45,9 @@ def _validate_fixture_snapshot(name, snapshot, structure, content_fixture):
     )
 
 
-def test_reparent_page_recipe_requires_versioned_persistence_checkpoint() -> None:
+def test_reparent_page_recipe_keeps_validated_v3_cache_identity() -> None:
     recipe = SCENARIO_REGISTRY.get("reparent-page").fixture_recipe
     assert recipe.recipe_version == 3
-    assert recipe.requires_persistence_checkpoint is True
-    assert (
-        SCENARIO_REGISTRY.get("reparent-section").fixture_recipe.requires_persistence_checkpoint
-        is False
-    )
-    assert (
-        SCENARIO_REGISTRY.get(
-            "reparent-section-group"
-        ).fixture_recipe.requires_persistence_checkpoint
-        is False
-    )
 
 
 class FakeClient:

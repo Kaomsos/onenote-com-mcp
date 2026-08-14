@@ -35,7 +35,7 @@
 - [x] 更新 registry/`all` 纯合同与人工验证文档。
 - [x] 根据 2026-08-13 用户真实单项 run 修复 materialized hierarchy 就绪轮询：初次全局 snapshot 不可见且 exact-self 返回 `0x80131501` 时，在原有有界窗口内同时重查两条严格证明路径，不接受裸 object ID 或 parent probe。
 - [x] 根据 `run-2026-08-13-21-09-17` 与 `run-2026-08-13-21-12-37` 撤回两个无效的 `SyncHierarchy` 屏障；请求虽被接受，但 fresh fixture 仍未完整落盘，旧 cache working copy 仍无法激活首个 Section。
-- [x] 将 `reparent-page` recipe 提升到 v3，并在 fresh/cold-build 首次 mutation 或 template publish 前增加 `CloseNotebook(false) → exact-path reopen → typed ID/evidence rebind → full live validation` 持久化检查点；旧 v2 fingerprint 不再命中。
+- [x] 将 `reparent-page` recipe 提升到 v3；当时增加的 close/reopen persistence checkpoint 已在 2026-08-14 确认受 GUI 初始状态混杂后移除，v3 cache identity、typed ID/evidence rebind 和 full live validation 继续保留。
 - [x] bridge failure audit 读取最内层异常 HRESULT，同时保留 PowerShell wrapper HRESULT、异常深度和最内层异常类型，避免后续只看到包装层 `0x80131501`。
 - [x] 由用户本人运行当前版本的真实 `all`，确认新增的两个批处理成员以及既有 `reparent-section` 均通过。
 

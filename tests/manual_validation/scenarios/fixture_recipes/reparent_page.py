@@ -27,10 +27,7 @@ Image 二进制和内容对象类型不变；所有无关对象的 ID、关系�
 
 
 class ReparentPageFixtureRecipe(RecipeBase):
-    # v3 templates are published only after a CloseNotebook(false) persistence
-    # checkpoint, exact-path reopen, ID rebind, and full live validation.
     recipe_version = 3
-    requires_persistence_checkpoint = True
 
     def __init__(self) -> None:
         super().__init__("reparent-page")

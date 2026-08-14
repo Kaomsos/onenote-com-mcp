@@ -20,7 +20,6 @@ from .recipe_base import (
 
 class CopySectionGroupFixtureRecipe(LayeredCopyFixtureRecipe):
     recipe_version = 5
-    requires_persistence_checkpoint = True
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "same-Notebook and cross-Notebook roots belong to their declared roles",

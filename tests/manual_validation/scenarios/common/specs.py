@@ -144,13 +144,13 @@ SCENARIO_SPECS = {
         _profile(
             "minimal-create-target",
             (
-                "Duplicate-Title-Target/Fixture-Persistence-Sentinel",
+                "Duplicate-Title-Target Section",
                 "scenario same-title Pages are absent before execution",
             ),
-            ("duplicate_title_section", "persistence_sentinel_page"),
+            ("duplicate_title_section",),
             CREATE_SCENARIO_TOOLS,
             checks=(
-                "the exact target Section and sentinel Page resolve under the disposable Notebook",
+                "the exact target Section resolves under the disposable Notebook",
             ),
         ),
         DELETE_SCENARIO_POLICY,

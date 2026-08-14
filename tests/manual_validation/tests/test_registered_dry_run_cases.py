@@ -151,15 +151,15 @@ def test_registered_named_case_round_trips_through_guarded_cli(
             "--use-cache" in case.scenario_args
             and payload["cache"]["cache_mode"] != "interactive_bootstrap"
         ):
-            assert [step["step"] for step in payload["ordered_steps"]][1:3] == [
-                "cache-working-import-checkpoint",
-                "prepare-materialized-fixture",
-            ]
-            checkpoint = payload["ordered_steps"][1]
-            assert checkpoint["allowed_operations"] == [
+            assert payload["ordered_steps"][1]["step"] == (
+                "prepare-materialized-fixture"
+            )
+            preparation = payload["ordered_steps"][1]
+            assert preparation["allowed_operations"] == [
                 "batch OpenHierarchy(exact parent)",
-                "close_exact_notebook(force=false)",
-                "reopen exact working path",
+                "typed relative-address ID rebind",
+                "two stable hierarchy observations",
+                "one full read per declared Page",
             ]
     if getattr(scenario.fixture_recipe, "representation_discovery_only", False):
         assert payload["cache"]["cache_mode"] == "representation_discovery"

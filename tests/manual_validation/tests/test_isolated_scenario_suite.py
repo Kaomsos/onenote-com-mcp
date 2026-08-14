@@ -136,14 +136,6 @@ def test_each_dry_run_declares_one_process_and_scenario_fixture(
         "create-notebook-bundle" if multi_role else "create-source-notebook",
         scenario,
     ]
-    if SCENARIO_REGISTRY.get(
-        scenario
-    ).fixture_recipe.requires_persistence_checkpoint:
-        expected_steps[1:2] = [
-            "prepare-fixture",
-            "fixture-persistence-checkpoint",
-            scenario,
-        ]
     if scenario.startswith("bootstrap-"):
         expected_steps.extend(
             [
@@ -1092,20 +1084,10 @@ class FakeLifecycle:
         *,
         template_paths,
         role="source",
-        lease_archive_reason="cold-build",
-        activate_hierarchy=True,
-        _allow_activation_retry=True,
     ):
         assert role == self.role
-        assert template_paths == ()
         self.open_count += 1
-        assert lease_archive_reason == (
-            "persistence-checkpoint"
-            if self.open_count == 1
-            else "persistence-import-checkpoint"
-        )
-        assert activate_hierarchy is (self.open_count == 1)
-        assert _allow_activation_retry is False
+        assert self.open_count == 1
         self.closed = False
         notebook_id = (
             f"reopened-{self.open_count}-notebook-id"
@@ -1117,10 +1099,8 @@ class FakeLifecycle:
             "expected_name": name,
             "expected_local_path": str(Path(working_path).resolve()),
             "actual_local_path": str(Path(working_path).resolve()),
-            "hierarchy_open_status": (
-                "passed" if activate_hierarchy else "deferred_to_fixture_convergence"
-            ),
-            "opened_hierarchy": ([{"object_id": "section"}] if activate_hierarchy else []),
+            "hierarchy_open_status": "passed",
+            "opened_hierarchy": [{"object_id": "section"}],
         }
         test_utils.write_json(self.lease_path, {"schema_version": 1, **lease})
         return {"id": notebook_id, "name": name}, lease
@@ -1171,39 +1151,11 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
         test_utils.write_json(options.run_dir / "manifest.json", manifest)
         return manifest, {"profile": spec.fixture.name}
 
-    async def fake_reopened_fixture_bundle(
-        scenario,
-        args,
-        options,
-        client,
-        notebooks,
-        paths,
-        prior_manifest,
-        prior_result,
-        close_results,
-    ):
-        assert client is FakeMCP.active
-        assert scenario.fixture_recipe.requires_persistence_checkpoint is True
-        assert set(close_results) == set(notebooks) == set(paths)
-        calls.append("persistence-checkpoint")
-        manifest = dict(prior_manifest)
-        manifest["notebook"] = dict(notebooks["source"])
-        manifest["notebooks"] = {
-            role: dict(value) for role, value in notebooks.items()
-        }
-        test_utils.write_json(options.run_dir / "manifest.json", manifest)
-        return manifest, dict(prior_result)
-
     def fake_report(run_dir):
         calls.append("report")
         return run_dir / "report.md"
 
     monkeypatch.setattr(validation, "prepare_fixture_bundle", fake_fixture_bundle)
-    monkeypatch.setattr(
-        validation,
-        "prepare_reopened_fixture_bundle",
-        fake_reopened_fixture_bundle,
-    )
     monkeypatch.setattr(validation, "render_report", fake_report)
 
 
@@ -1272,11 +1224,7 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
 
     assert FakeMCP.starts == 1
     assert calls[0] == "fixture"
-    expected_calls = (
-        ["fixture", "persistence-checkpoint", scenario]
-        if SCENARIO_REGISTRY.get(scenario).fixture_recipe.requires_persistence_checkpoint
-        else ["fixture", scenario]
-    )
+    expected_calls = ["fixture", scenario]
     assert calls[: len(expected_calls)] == expected_calls
     assert FakeLifecycle.instances[0].closed is True
     assert result["metrics"]["observed_mcp_process_starts"] == 1

@@ -177,63 +177,21 @@ def build_isolated_dry_run_plan(
         }
         steps[1:2] = [
             {
-                "step": "cache-working-import-checkpoint",
-                "trust_boundary": "narrow lifecycle wrapper",
-                "allowed_operations": [
-                    "batch OpenHierarchy(exact parent)",
-                    "close_exact_notebook(force=false)",
-                    "reopen exact working path",
-                ],
-                "target": (
-                    "first identity imports every materialized role; second identity is the "
-                    "only source for fixture validation and mutation"
-                ),
-            },
-            {
                 "step": "prepare-materialized-fixture",
                 "trust_boundary": "typed fixture observer and validator",
                 "allowed_operations": [
-                    "enumerate complete post-reopen hierarchy",
+                    "batch OpenHierarchy(exact parent)",
                     "typed relative-address ID rebind",
                     "two stable hierarchy observations",
                     "one full read per declared Page",
                 ],
-                "target": "post-checkpoint live identities for every materialized role",
+                "target": "the first exact live identity for every materialized role",
             },
             _step(
                 args.scenario,
                 spec.policy,
                 set(spec.tool_allowlist),
-                "selected mutation against only post-checkpoint rebound live IDs",
-            ),
-        ]
-    if recipe.requires_persistence_checkpoint and not use_cache:
-        steps[1:2] = [
-            _step(
-                "prepare-fixture",
-                spec.policy,
-                set(spec.tool_allowlist),
-                f"build or live-validate fixture profile {spec.fixture.name}",
-            ),
-            {
-                "step": "fixture-persistence-checkpoint",
-                "trust_boundary": "narrow lifecycle wrapper plus typed fixture validator",
-                "allowed_operations": [
-                    "close_exact_notebook(force=false)",
-                    "open_working_notebook(exact-path)",
-                    "typed ID rebind",
-                    "full live fixture validation",
-                ],
-                "target": (
-                    "fresh/cold-build disposable fixture only; validated cache hits "
-                    "already carry this recipe-version checkpoint"
-                ),
-            },
-            _step(
-                args.scenario,
-                spec.policy,
-                set(spec.tool_allowlist),
-                "selected mutation against the rebound persisted fixture IDs",
+                "selected mutation against only stable rebound live IDs",
             ),
         ]
     if interactive_bootstrap:

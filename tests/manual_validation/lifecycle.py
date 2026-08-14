@@ -26,7 +26,6 @@ from .test_utils import read_json, stable_item, utc_now, write_json
 MAX_MATERIALIZED_HIERARCHY_ENTRIES = 256
 MATERIALIZED_HIERARCHY_RETRIES = 8
 MATERIALIZED_HIERARCHY_DELAY_SECONDS = 0.75
-MATERIALIZED_ACTIVATION_RETRY_HRESULT = "0x8004201D"
 
 
 def _is_reparse_point(path: Path) -> bool:
@@ -257,9 +256,6 @@ class NotebookLifecycleWrapper:
         *,
         template_paths: tuple[Path, ...],
         role: str = "source",
-        lease_archive_reason: str = "cold-build",
-        activate_hierarchy: bool = True,
-        _allow_activation_retry: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Open one materialized working directory and prove no template was opened."""
 
@@ -274,29 +270,14 @@ class NotebookLifecycleWrapper:
         templates = tuple(path.resolve(strict=True) for path in template_paths)
         if working_path in templates:
             raise RunnerFailure("Lifecycle refuses to open a cache template path.")
-        if lease_archive_reason not in {
-            "activation-retry",
-            "cold-build",
-            "materialized-import-checkpoint",
-            "persistence-import-checkpoint",
-            "persistence-checkpoint",
-        }:
-            raise RunnerFailure("Lifecycle lease archive reason is not allowlisted.")
-        if not activate_hierarchy and lease_archive_reason not in {
-            "materialized-import-checkpoint",
-            "persistence-import-checkpoint",
-        }:
-            raise RunnerFailure(
-                "Hierarchy activation may only be deferred for an import checkpoint."
-            )
         if self.lease_path.exists():
             previous = self._read_lease()
             if previous.get("state") != "closed":
                 raise RunnerFailure("Lifecycle lease is active; refusing a second Notebook open.")
             archived = self.run_dir / (
-                f"lifecycle-{lease_archive_reason}-lease.json"
+                "lifecycle-cold-build-lease.json"
                 if self.role == "source"
-                else f"lifecycle-{lease_archive_reason}-lease-{self.role}.json"
+                else f"lifecycle-cold-build-lease-{self.role}.json"
             )
             if archived.exists():
                 raise RunnerFailure("Lifecycle lease archive already exists.")
@@ -334,20 +315,6 @@ class NotebookLifecycleWrapper:
             "filesystem_deleted": False,
         }
         write_json(self.lease_path, lease)
-        if not activate_hierarchy:
-            lease.update(
-                hierarchy_open_status="deferred_to_fixture_convergence",
-                hierarchy_opened_at=utc_now(),
-            )
-            write_json(self.lease_path, lease)
-            self.progress.unit_completed(
-                "lifecycle",
-                f"{self.role} reopen working copy",
-                1,
-                1,
-                elapsed_seconds=time.perf_counter() - opened_started,
-            )
-            return notebook, lease
         try:
             opened_hierarchy = self._open_materialized_hierarchy(
                 working_path,
@@ -361,14 +328,6 @@ class NotebookLifecycleWrapper:
                 hierarchy_open_failed_at=utc_now(),
             )
             write_json(self.lease_path, lease)
-            if _allow_activation_retry and self._materialized_activation_is_retryable():
-                return self._retry_materialized_activation(
-                    name=name,
-                    working_path=working_path,
-                    templates=templates,
-                    role=role,
-                    first_error=exc,
-                )
             raise
         lease.update(
             opened_hierarchy=opened_hierarchy,
@@ -382,111 +341,6 @@ class NotebookLifecycleWrapper:
             1,
             1,
             elapsed_seconds=time.perf_counter() - opened_started,
-        )
-        return notebook, lease
-
-    def _materialized_activation_is_retryable(self) -> bool:
-        """Accept only a pure, parent-bound OneNote synchronization lag."""
-
-        try:
-            evidence = read_json(self.materialized_evidence_path)
-        except Exception:
-            return False
-        attempts = evidence.get("attempts")
-        if evidence.get("status") != "failed" or not isinstance(attempts, list):
-            return False
-        pending = [
-            attempt
-            for attempt in attempts
-            if isinstance(attempt, dict) and attempt.get("activated") is not True
-        ]
-        return bool(pending) and all(
-            attempt.get("returned_object_id")
-            and attempt.get("observed_parent_id") == attempt.get("requested_parent_id")
-            and attempt.get("exact_object_probe_hresult")
-            == MATERIALIZED_ACTIVATION_RETRY_HRESULT
-            and not attempt.get("exact_object_probe_mismatch")
-            and not attempt.get("bridge_error_type")
-            for attempt in pending
-        )
-
-    def _retry_materialized_activation(
-        self,
-        *,
-        name: str,
-        working_path: Path,
-        templates: tuple[Path, ...],
-        role: str,
-        first_error: Exception,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Close and reopen the same working copy once; never replay a mutation."""
-
-        suffix = "" if self.role == "source" else f"-{self.role}"
-        initial_evidence_path = (
-            self.run_dir / f"materialized-hierarchy-open-initial{suffix}.json"
-        )
-        recovery_path = self.run_dir / f"materialized-activation-recovery{suffix}.json"
-        initial_evidence = read_json(self.materialized_evidence_path)
-        write_json(initial_evidence_path, initial_evidence)
-        recovery: dict[str, Any] = {
-            "schema_version": 1,
-            "status": "running",
-            "reason": "onenote_not_yet_synchronized",
-            "mutation_started": False,
-            "working_path": str(working_path),
-            "initial_evidence": str(initial_evidence_path),
-            "started_at": utc_now(),
-        }
-        write_json(recovery_path, recovery)
-        self.progress.unit_started(
-            "cache recovery",
-            f"{self.role} close/reopen working copy",
-            1,
-            1,
-        )
-        try:
-            close_result = self.close_exact_notebook()
-            notebook, lease = self.open_working_notebook(
-                name,
-                working_path,
-                template_paths=templates,
-                role=role,
-                lease_archive_reason="activation-retry",
-                _allow_activation_retry=False,
-            )
-        except Exception as retry_exc:
-            recovery.update(
-                status="failed",
-                failed_at=utc_now(),
-                first_error_type=type(first_error).__name__,
-                retry_error_type=type(retry_exc).__name__,
-                retry_error=str(retry_exc),
-            )
-            write_json(recovery_path, recovery)
-            raise RunnerFailure(
-                "Materialized hierarchy activation remained unavailable after one exact "
-                "working-copy close/reopen recovery; mutation was not started. "
-                "Close older preserved validation Notebooks in OneNote, then retry."
-            ) from retry_exc
-        recovery.update(
-            status="passed",
-            completed_at=utc_now(),
-            close_result=close_result,
-            reopened_notebook_id=str(notebook.get("id", "")),
-        )
-        write_json(recovery_path, recovery)
-        lease["activation_recovery"] = {
-            "attempted": True,
-            "passed": True,
-            "reason": recovery["reason"],
-            "evidence": str(recovery_path),
-        }
-        write_json(self.lease_path, lease)
-        self.progress.unit_completed(
-            "cache recovery",
-            f"{self.role} close/reopen working copy",
-            1,
-            1,
         )
         return notebook, lease
 

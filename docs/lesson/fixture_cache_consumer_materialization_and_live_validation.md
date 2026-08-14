@@ -9,7 +9,7 @@
 
 ## 结论
 
-关闭并验证过的 OneNote fixture cache 只能证明 template bytes 和发布时证据可信，不能证明新 materialized working copy 已经具备可直接使用的 Notebook hierarchy、对象 ID 或实时内容状态。2026-08-14 的失败矩阵与 2026-08-13 `reparent-page` close/reopen 成功对照共同支持当前工程决策：把每次 materialization 分成两次职责不同的 live identity。第一次只打开 working copy并按精确 parent 激活 SectionGroup/Section，随后 `CloseNotebook(force=false)` 形成持久化 checkpoint；第二次从同一路径重开，按稳定的类型化结构地址把 template identity 重绑定到新的 live ID，再以连续稳定的当前 COM hierarchy 和完整内容 snapshot 运行 Recipe validator。只有第二次 identity 可以进入 mutation。新一轮真实 `all --use-cache` 已由此前 2/15 提升到 12/15，证明统一 checkpoint 明显缩小了失败面，但剩余 Create/Copy SectionGroup/Move SectionGroup 修复尚待复验，不能由纯测试结果写成跨 OneNote 版本保证。
+关闭并验证过的 OneNote fixture cache 只能证明 template bytes 和发布时证据可信，不能证明新 materialized working copy 已经具备可直接使用的 Notebook hierarchy、对象 ID 或实时内容状态。Materialized working copy 因而仍须在当前 run 中打开、按精确 parent 批量激活、按稳定的类型化结构地址重绑 live ID，并以连续两次 hierarchy 稳定和唯一一次完整内容 snapshot 运行 Recipe validator。2026-08-14 后续对照确认，先前大面积 fixture failure 与 scenario 启动前 OneNote Desktop 未运行稳定相关；close/reopen 的 2/15→12/15 改善是受进程状态混杂的中间结果，不能支持“两套 live identity 是必要条件”的结论。当前实现已改为 GUI preflight 后只打开一次 working copy。
 
 这次排障还证明，consumer 的失败必须按归因分层。working copy 的临时打开或激活失败不能反向证明 immutable template 损坏；结构重绑定缺失、歧义或实时 validator 失败才提供 template 不应继续命中的证据。working lease 同样必须尽早绑定实际 Notebook ID 和路径，否则失败发生在 hierarchy 激活中途时，后续运行无法可靠区分“Notebook 仍打开”和“遗留 lease 已过期”。同时，传给 COM 的物理 working 路径本身也是兼容性输入；完整显示 identity 应保留在 evidence，不应无界地堆入 Notebook 目录名。
 
@@ -28,11 +28,10 @@
 9. 2026-08-13 两个用户运行的 cache consumer 在首个 materialized Section 上都得到 `OpenHierarchy` ID 和正确 parent，但初次全局 snapshot 尚不可见，之后 exact-self 连续返回未分类的 `0x80131501`；同批第三个独立 consumer 则完整激活并通过三项业务 mutation、取证和恢复。这组对照不证明该 HRESULT 普遍可重试，但证明“初次全局读取一次失败后只轮询 exact-self”会遗漏另一条可能随后收敛的严格证明路径。当前设计因而在同一有界窗口内重查全局与 exact-self，仍要求其中一条完整证明类型、身份、非回收站状态和精确 parent，不能降级接受裸返回 ID。
 10. 随后的 `run-2026-08-13-21-09-17` 与 `run-2026-08-13-21-12-37` 又推翻了“先请求 `SyncHierarchy` 足以消除落盘/激活窗口”的判断。fresh run 中同步请求成功后，完整 COM baseline 仍可见，但首次 Page `UpdateHierarchy` 失败，磁盘缺少 destination Section 文件；cache run 中同步请求同样成功，但首个 copied Section 仍无法通过 global/exact-self 激活证明。请求接受不能作为 source file 已提交或 working hierarchy 已就绪的证据。
 11. 2026-08-14 在修正 batch 立即误判后，用户运行的完整 `all --use-cache` 中只有 2/15 场景通过；其余 13 个场景在第一次 batch 请求均成功后，后续 16 次独立 hierarchy observation 保持同一缺失集合，并全部停在 mutation 前。失败包括刚 cold-build、关闭发布并立即 materialize 的模板，排除了旧 cache bytes 污染与短暂 sleep 不足。全部失败 working lease 都精确关闭，批处理仍继续到底；同批 `reparent-section-group` 完成三次 mutation、三次恢复和最终关闭，证明问题不是 cache 全面不可用，而是第一次导入身份没有稳定成为后续 COM session 的 mutation identity。
-12. 统一 import/close/reopen 后，用户运行的新一轮完整批次通过 12/15，全部失败仍被精确关闭且没有跨场景扩散。Create 只在旧 full preset 中持续缺少 `Disposable-Page`；Copy SectionGroup 的发布 inventory 已经没有原本为空的 `99-Group-Anchor-B` 物理目录；Move SectionGroup 则完成 Copy、内容/拓扑验证和一次源根非永久删除后，仅因目标 `modified` 继续推进而被完整摘要误判。这组证据把问题进一步分成“recipe 过宽”“空 Group 没有持久化形状”和“后台时钟不是语义变化”三类，而不是统一扩大 cache timeout。
+12. 统一 import/close/reopen 后，用户运行的新一轮完整批次通过 12/15，全部失败仍被精确关闭且没有跨场景扩散。Create 只在旧 full preset 中持续缺少 `Disposable-Page`；Copy SectionGroup 的发布 inventory 已经没有原本为空的 `99-Group-Anchor-B` 物理目录；Move SectionGroup 则完成 Copy、内容/拓扑验证和一次源根非永久删除后，仅因目标 `modified` 继续推进而被完整摘要误判。这组证据当时缩小了失败面，但尚未控制 OneNote Desktop 初始进程状态。
+13. 用户随后做了稳定对照：OneNote GUI 已启动时当前 manual validation 全绿；GUI 未启动时多个 use-cache fixture 在 mutation 前稳定失败。加入 check-only GUI preflight 后，最新完整 `all` 的 15 个场景全部通过。该变量比 close/reopen、Recipe 类型或 cache hit/cold build 更能解释先前矩阵，因此当前实现撤销统一 checkpoint，并保留批量激活、typed remap、双稳定和单次内容取证。
 
-基于 2026-08-13 的真实成功证据，`reparent-page` recipe 已使用版本化 close/reopen 持久化检查点：fresh/cold-build 在首次业务 mutation 或 template publish 前调用 `CloseNotebook(force=false)`，从同一 exact path 重开，重绑所有 typed structure/evidence ID，再运行完整 live validator；用户执行的 fresh 与 `--use-cache` cold-build 均通过 checkpoint、业务 mutation、read-back、恢复和关闭。2026-08-14 的跨 Recipe 失败矩阵据此推动当前实现把相同职责分离统一应用到所有 materialized working copy，随后真实 `all --use-cache` 已通过 12/15。该结果支持 checkpoint 的当前价值，但剩余三项修复仍需新一轮真实复验；这不把 close/reopen 推广为 OneNote 平台的普遍保证。
-
-最新 12/15 批次支持继续使用统一 materialization checkpoint，但也表明 cold-build template 的可持久化形状仍由 Recipe 负责。当前决策是让 Create v3 只构建一个必要 Section，并让 Copy SectionGroup v5 用 typed sentinel Section 固化每个空 anchor Group；两者以版本化 `requires_persistence_checkpoint` 在 publish 前复核第二次 identity。对应代码和纯测试不能替代真实复验。证据还将 materialize 动作与 `validated_hit|cold_build|interactive_bootstrap` origin 分开，并分别记录字节复制、identity checkpoint、hierarchy 收敛和内容读取耗时，避免把 cold-build 后的立即 materialize 错读为普通 cache hit。
+`reparent-page` close/reopen 的历史成功仍是有效观察，但不再被解释为持久化窗口的因果证明。当前保留其 v3 cache identity 和 typed structure/evidence remap；Create v5 移除了只为该假设加入的 sentinel Page。Copy SectionGroup v5 与 Delete v2 的 typed sentinel Section继续承担“空 Group 需要物理子树”的独立 shape 约束。证据仍将 materialize 动作与 `validated_hit|cold_build|interactive_bootstrap` origin 分开，并分别记录字节复制、hierarchy 收敛和内容读取耗时。
 
 上述成功只证明当前 OneNote/Office/Windows 环境中的这一个 InsertedFile Recipe consumer 链路。连续的失败/成功对照支持“较短物理名称解决了当前环境的打开回归”，但同时改变了路径长度和时间戳字符集，因而不能推导出 OneNote 的通用长度上限，也不能把 184 解释为所有版本的固定阈值。环境版本和附件表示范围记录在相关 [`kind`/附件表示 Lesson](onenote_page_object_kind_and_file_attachment_representation.md#观察环境) 中。pytest 和 `--dry-run` 只证明编排与状态机合同，不被当作真实 OneNote 行为证据。本文不记录 Page 正文、附件名称、Notebook 名称、对象 ID、用户路径或二进制内容。
 
@@ -64,7 +63,7 @@ Notebook folder 的打开还表明，Windows 文件系统能看到 `.one`/`.onet
 
 - working Notebook 打开、Section 激活或本次 COM 环境失败，只能证明当前 working run 未通过；保留 run、Notebook、lease 和 content-free 诊断，但不能据此修改 immutable template 的可信结论；
 - template identity、byte inventory 或 Recipe compatibility 不成立，说明 cache entry 本身不兼容；
-- live typed-address remap 缺失/歧义，或 live Recipe validator 失败，说明 consumer 无法证明该 entry 能在当前实现下安全使用，应继续 fail closed；
+- live typed-address remap 缺失/歧义，或 live Recipe validator 失败，说明本次 working run 无法证明可安全使用，应继续 fail closed并保留证据；除非错误能确定回溯到 template identity、inventory 或缓存证据完整性，否则不自动改变 entry matchability；
 - consumer 自身后续业务动作失败，不自动证明输入 template 损坏，必须单独记录 mutation/restore 结果。
 
 这里的关键不是放宽失败条件，而是让失败影响正确的状态域：run-local failure 终止本次运行，template failure 才改变 cache matchability。
@@ -85,9 +84,7 @@ consumer 在打开 Notebook folder 并证明 `actual_path == working_path` 后�
 validated cache lookup
 → new working materialization
 → exact working-path proof
-→ import identity bounded hierarchy activation
-→ CloseNotebook(false) exact checkpoint
-→ exact-path mutation identity reopen
+→ first live identity bounded hierarchy activation
 → stable hierarchy and live ID remap
 → live Recipe validation
 → consumer result

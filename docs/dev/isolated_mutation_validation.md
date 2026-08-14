@@ -23,9 +23,9 @@ Working identity 冲突扫描在短时 open lock 内于打开前后各捕获一�
 
 以下 parent-aware 规则细化并取代上文对所有节点统一“absolute 优先”的概括。
 
-Lifecycle 在第一次 child COM 调用前预收集并校验 exact working tree 内全部 SectionGroup/`.one` 请求，然后用第一次 import identity 在一个内部 PowerShell/COM session 中按 parent-before-child 批量激活并尝试读取一次 pages hierarchy。Notebook 直属 child 使用 absolute working path/空 relative ID；SectionGroup 下的嵌套 child 只使用文件名和同批精确 parent ID。只有逐项 `OpenHierarchy` 错误才最多重试该失败项一次，确定性冲突立即失败。请求全部成功后精确 `CloseNotebook(force=false)`，确认第一次 ID/path 已关闭，再从同一个 working path 重开 Notebook shell。第二次 identity 不调用 child `OpenHierarchy`；完整 manifest 层级必须从新的完整枚举中按 typed relative address 重绑并连续稳定两次，每个 Page 随后只完整读取一次。只有第二次 identity 的结构与内容证据可以进入 mutation。
+Lifecycle 在第一次 child COM 调用前预收集并校验 exact working tree 内全部 SectionGroup/`.one` 请求，然后在一个内部 PowerShell/COM session 中按 parent-before-child 批量激活并尝试读取一次 pages hierarchy。Notebook 直属 child 使用 absolute working path/空 relative ID；SectionGroup 下的嵌套 child 只使用文件名和同批精确 parent ID。只有逐项 `OpenHierarchy` 错误才最多重试该失败项一次，确定性冲突立即失败。请求成功后不再 close/reopen；完整 manifest 层级必须在同一 live identity 上从新的完整枚举中按 typed relative address 重绑并连续稳定两次，每个 Page 随后只完整读取一次。只有这套稳定结构与内容证据可以进入 mutation。
 
-统一 import checkpoint 不复制第二份 working bundle，不修改、重建或打开模板，也不重放 mutation。关闭、重开、第二次 identity 重绑、双稳定或内容验证任一步失败都会保留 working files、checkpoint、lease 和诊断并在 mutation 前 fail closed；通用 failure finalizer 默认精确关闭第二次 Notebook，显式 keep 模式才保持打开。
+单次打开流程不复制第二份 working bundle，不修改、重建或打开模板，也不重放 mutation。首次打开、ID 重绑、双稳定或内容验证任一步失败都会保留 working files、lease 和诊断并在 mutation 前 fail closed；通用 failure finalizer 默认精确关闭当前 Notebook，显式 keep 模式才保持打开。
 
 具名 scenario 的失败收尾默认关闭本次 run 的每个 exact leased working Notebook，并把逐 role close、稳定关闭证明、`filesystem_deleted=false` 和 `cache_modified=false` 写入 `failure-finalization.json`；`copy-notebook` 已创建的额外目标在原 scenario MCP 退出前以 plan/result 的 exact ID/path binding 单独关闭，绑定或证明不足同样使隔离失败。单独运行与 `all` child 使用同一策略。`--keep-notebook` 或 `--keep-worksite` 才显式保持打开。真实 `all` 在某个 child 失败后，只有收到与 durable evidence 一致的内部 isolation handshake 才继续；close 失败、握手缺失或异常退出立即 fail-fast，避免一次 materialized activation 问题扩散为连续 `0x8004201D` 或 ID rebind 失败。失败文件和 validated cache templates 都保留复用，不做自动删除或重建。`all --dry-run` 没有真实现场，继续遍历全部注册计划。
 
@@ -231,7 +231,7 @@ Notebook 父级：
 
 目标 Page 本身包含 Rich Text、Table、三个混合 List/Tag 项和 Image；不是另建一个只读旁证页。fixture 构建使用普通 Page 写工具，正向 reparent 只调用一次 `reparent_page`。场景 policy 不启用 Copy、Delete 或 Raw XML，因此不会调用 `copy_page`、`UpdatePageContent` 重建目标、`DeleteHierarchy` 或任意 XML mutation 工具。
 
-2026-08-13 的真实 run 证明 `SyncHierarchy` 请求成功并不能保证这些刚创建对象已经提交到本地 `.one` 文件：fresh fixture 的完整 COM snapshot 可通过，但首次 `UpdateHierarchy` 仍失败；旧 cache template 的 working copy也可能在 Section 激活前失败。当前 `reparent-page` recipe v3 因而在 fresh/cold-build 首次 mutation 或 template publish 前执行 `CloseNotebook(false) → exact-path reopen → typed structure/evidence ID rebind → full live validation`。检查点任一步失败都停在 fixture 阶段并保留 `fixture-persistence-remap.json`；recipe version 生成新 fingerprint，旧 v2 cache 不再命中。用户随后运行的 fresh 与 `--use-cache` cold-build 均通过检查点、正向 mutation、完整 read-back、默认恢复和最终关闭；cache run 还证明 template 未打开且 byte inventory 不变。该结果只覆盖当前环境与这两个执行分支。
+2026-08-13 的真实 run 曾让实现把 `SyncHierarchy` 后失败归因为 fixture 尚未持久化，并为 `reparent-page` v3 加入 close/reopen checkpoint。2026-08-14 的稳定对照随后确认，共性变量是 scenario 启动前 OneNote Desktop GUI 是否已存在，而不是 `CloseNotebook(false)` 动作；GUI preflight 落地后当前 manual validation 全绿。因此该 checkpoint、fresh persistence 分支及其 evidence 已移除。保留的 v3 cache identity、typed structure/evidence ID rebind、完整 read-back、默认恢复、template inventory 和精确最终关闭仍分别承担原有安全职责。
 
 三个生产 Reparent 共用两阶段 mutation 后验证：先用不读取 Page XML 的 bounded hierarchy observer 连续两次观察相同的目标、父级、ID remap 与完整关系/同级顺序签名；随后只做一次完整 Page evidence capture，并以 capture 前后的 hierarchy 签名证明取证期间结构未变化。只有瞬态读取错误或该 bookend 不一致时才允许再读取一次，绝不重放 Reparent mutation；确定性内容、scope 或 topology invariant 失败立即返回带 `readback_phase` 的 partial failure。通用 4 秒 convergence deadline 保持不变，但不再包围可能超过该时限的完整 Page XML 取证。
 

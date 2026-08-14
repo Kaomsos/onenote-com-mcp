@@ -14,6 +14,10 @@ TODO 016 已在完整 Page 内容取证前增加 manifest-aware 双稳定门，�
 
 ## 当前进展与最新证据（2026-08-14）
 
+> 最新纠偏：用户完成的稳定对照确认，先前大面积 fixture failure 与 scenario 开始前 OneNote Desktop GUI 未启动强相关，而不是由 `CloseNotebook(false)` 动作或缺少 persistence checkpoint 导致。加入 check-only GUI preflight 后，最新 `all` 的 15 个场景全部通过。当前实现因此保留 exact-parent batch、typed relative-address rebind、两次 hierarchy 稳定、每 Page 单次完整读取、scenario-before snapshot handoff、failure isolation 与 cache origin metrics；移除 materialized import/close/reopen、fresh persistence checkpoint、activation close/reopen recovery 及其 evidence。Create 升到 v5 并移除 persistence sentinel Page；Copy SectionGroup/Delete 的 sentinel Section 仍作为空 Group 物理形状约束保留。清理后的真实 validation 尚待用户复验，所以本 TODO 仍为“进行中”。
+
+以下 2/15、12/15 与 checkpoint 记录保留为排障历史，不再代表当前推荐流程；它们说明中间方案为何一度显得有效，也说明未控制 GUI 初始状态时不能作因果判断。
+
 用户启动的首轮 `all --use-cache` 证明问题不在 opaque copy 本身，而集中在 working Notebook 激活边界：
 
 - `run-2026-08-14-00-29-31` 在打开 Group-B 后，尚未校验的同级 `99-Section-Anchor-B.one` 已被 OneNote 接管，旧 Python loop 再次 `resolve(strict=True)` 时把路径变化误判为 fixture 损坏；

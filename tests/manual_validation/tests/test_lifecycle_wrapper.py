@@ -274,102 +274,6 @@ def test_open_working_copy_proves_actual_path_is_not_template(tmp_path) -> None:
     assert lease["template_paths"] == [str(template.resolve())]
 
 
-def test_persistence_checkpoint_uses_distinct_closed_lease_archive(tmp_path) -> None:
-    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
-    working = wrapper.notebook_root / "fresh-fixture"
-    working.mkdir(parents=True)
-    bridge.reported_path = str(working.resolve())
-    write_json(
-        wrapper.lease_path,
-        {
-            "schema_version": 2,
-            "role": "source",
-            "notebook_id": "old-notebook-id",
-            "expected_name": "fresh-fixture",
-            "expected_local_path": str(working.resolve()),
-            "state": "closed",
-        },
-    )
-
-    wrapper.open_working_notebook(
-        "__ISOLATED__",
-        working,
-        template_paths=(),
-        lease_archive_reason="persistence-checkpoint",
-    )
-
-    archived = wrapper.run_dir / "lifecycle-persistence-checkpoint-lease.json"
-    assert archived.exists()
-    assert read_json(archived)["notebook_id"] == "old-notebook-id"
-    assert read_json(wrapper.lease_path)["state"] == "active"
-
-
-def test_materialized_import_checkpoint_reopen_defers_child_activation(tmp_path) -> None:
-    bridge = BatchFakeBridge()
-    hierarchy = FakeHierarchy()
-    bridge.hierarchy = hierarchy
-    bridge.reported_path = ""
-    wrapper = NotebookLifecycleWrapper(
-        tmp_path / "run", timeout_seconds=10, bridge=bridge
-    )
-    wrapper._hierarchy = hierarchy
-    working = wrapper.notebook_root / "source-working-copy"
-    template = tmp_path / "cache" / "template-notebook"
-    working.mkdir(parents=True)
-    template.mkdir(parents=True)
-    (working / "Root.one").write_bytes(b"root")
-    bridge.reported_path = str(working.resolve())
-    write_json(
-        wrapper.lease_path,
-        {
-            "schema_version": 2,
-            "role": "source",
-            "notebook_id": "import-notebook-id",
-            "expected_name": "source-working-copy",
-            "expected_local_path": str(working.resolve()),
-            "state": "closed",
-        },
-    )
-
-    notebook, lease = wrapper.open_working_notebook(
-        "source-working-copy",
-        working,
-        template_paths=(template,),
-        lease_archive_reason="materialized-import-checkpoint",
-        activate_hierarchy=False,
-        _allow_activation_retry=False,
-    )
-
-    assert notebook["id"] == "notebook-id"
-    assert lease["opened_hierarchy"] == []
-    assert lease["hierarchy_open_status"] == "deferred_to_fixture_convergence"
-    assert not any(name == "open_hierarchy_batch" for name, _kwargs in bridge.calls)
-    archived = wrapper.run_dir / "lifecycle-materialized-import-checkpoint-lease.json"
-    assert read_json(archived)["notebook_id"] == "import-notebook-id"
-
-
-def test_deferred_child_activation_is_restricted_to_materialized_checkpoint(
-    tmp_path,
-) -> None:
-    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
-    working = wrapper.notebook_root / "source-working-copy"
-    template = tmp_path / "cache" / "template-notebook"
-    working.mkdir(parents=True)
-    template.mkdir(parents=True)
-    bridge.reported_path = str(working.resolve())
-
-    with pytest.raises(RunnerFailure, match="may only be deferred"):
-        wrapper.open_working_notebook(
-            "source-working-copy",
-            working,
-            template_paths=(template,),
-            activate_hierarchy=False,
-        )
-
-    assert bridge.calls == []
-    assert not wrapper.lease_path.exists()
-
-
 def test_open_working_copy_explicitly_opens_bounded_sections_and_groups(tmp_path) -> None:
     wrapper, bridge, _hierarchy = _wrapper(tmp_path)
     working = wrapper.notebook_root / "source-working-copy"
@@ -692,46 +596,7 @@ def test_open_working_copy_fails_closed_when_neither_activation_proof_converges(
     assert all(attempt["exact_object_probe_hresult"] == "0x80131501" for attempt in attempts)
 
 
-def test_open_working_copy_recovers_once_from_pure_not_yet_synchronized_failure(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    monkeypatch.setattr(
-        "tests.manual_validation.lifecycle.MATERIALIZED_HIERARCHY_DELAY_SECONDS",
-        0,
-    )
-    wrapper, bridge, hierarchy = _wrapper(tmp_path)
-    working = wrapper.notebook_root / "source-working-copy"
-    template = tmp_path / "cache" / "template-notebook"
-    working.mkdir(parents=True)
-    template.mkdir(parents=True)
-    (working / "Root.one").write_bytes(b"root")
-    bridge.reported_path = str(working.resolve())
-    bridge.exact_child_hierarchy = True
-    bridge.exact_child_failures = 16
-    bridge.exact_child_failure_hresult = 0x8004201D
-    bridge.exact_child_failures_after_reopen = 0
-    hierarchy.hide_children_from_global = True
-
-    notebook, lease = wrapper.open_working_notebook(
-        "__ISOLATED__",
-        working,
-        template_paths=(template,),
-    )
-
-    assert notebook["id"] == "notebook-id"
-    assert lease["activation_recovery"]["passed"] is True
-    assert read_json(
-        wrapper.run_dir / "materialized-hierarchy-open-initial.json"
-    )["status"] == "failed"
-    assert read_json(
-        wrapper.run_dir / "materialized-activation-recovery.json"
-    )["status"] == "passed"
-    assert (wrapper.run_dir / "lifecycle-activation-retry-lease.json").exists()
-    assert [name for name, _kwargs in bridge.calls].count("close_notebook") == 1
-
-
-def test_open_working_copy_does_not_loop_or_discard_final_scene_when_recovery_fails(
+def test_open_working_copy_does_not_close_reopen_on_activation_failure(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -748,23 +613,20 @@ def test_open_working_copy_does_not_loop_or_discard_final_scene_when_recovery_fa
     bridge.reported_path = str(working.resolve())
     bridge.exact_child_failures = 16
     bridge.exact_child_failure_hresult = 0x8004201D
-    bridge.exact_child_failures_after_reopen = 16
     hierarchy.hide_children_from_global = True
 
-    with pytest.raises(RunnerFailure, match="after one exact working-copy close/reopen"):
+    with pytest.raises(RunnerFailure, match="did not become active"):
         wrapper.open_working_notebook(
             "__ISOLATED__",
             working,
             template_paths=(template,),
         )
 
-    assert [name for name, _kwargs in bridge.calls].count("close_notebook") == 1
-    assert read_json(
-        wrapper.run_dir / "materialized-activation-recovery.json"
-    )["status"] == "failed"
-    final_lease = read_json(wrapper.lease_path)
-    assert final_lease["state"] == "active"
-    assert final_lease["hierarchy_open_status"] == "failed"
+    assert [name for name, _kwargs in bridge.calls].count("close_notebook") == 0
+    assert not (wrapper.run_dir / "materialized-activation-recovery.json").exists()
+    lease = read_json(wrapper.lease_path)
+    assert lease["state"] == "active"
+    assert lease["hierarchy_open_status"] == "failed"
 
 
 def test_open_working_copy_rejects_exact_parent_when_object_type_is_wrong(tmp_path) -> None:

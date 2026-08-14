@@ -137,19 +137,11 @@ def test_container_copy_recipes_partition_two_notebook_roles(
         | recipe.manifest_keys_for_role("source")
         == recipe.manifest_keys
     )
-    if scenario_name == "copy-section-group":
-        assert recipe.requires_persistence_checkpoint is True
-
-
-def test_create_recipe_is_minimal_and_requires_persistence_checkpoint() -> None:
+def test_create_recipe_is_minimal() -> None:
     recipe = SCENARIO_REGISTRY.get("create").fixture_recipe
 
-    assert recipe.recipe_version == 4
-    assert recipe.manifest_keys == {
-        "duplicate_title_section",
-        "persistence_sentinel_page",
-    }
-    assert recipe.requires_persistence_checkpoint is True
+    assert recipe.recipe_version == 5
+    assert recipe.manifest_keys == {"duplicate_title_section"}
 
 
 def test_copy_notebook_recipe_declares_nested_section_group_subtree() -> None:
