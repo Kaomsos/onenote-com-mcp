@@ -91,20 +91,67 @@ class QueryMetadataScopesScenario(Scenario):
             for item in items
             if item.get("id")
         }
-        open_catalog = await client.call_tool("list_notebooks", {}, retry_read=False)
-        open_notebooks = open_catalog.get("notebooks", [])
-        open_ids = {
-            str(item.get("id", ""))
-            for item in open_notebooks
-            if isinstance(item, dict) and item.get("id")
-        }
+        open_ids: set[str] = set()
+        baseline_notebook_count: int | None = None
+        baseline_total_matches: int | None = None
+        offset = 0
+        while True:
+            open_catalog = await client.call_tool(
+                "query_notebook",
+                {"offset": offset, "page_size": 200},
+                retry_read=False,
+            )
+            items = open_catalog.get("items", [])
+            response_scope = open_catalog.get("scope", {})
+            page_count = int(open_catalog.get("count", -1))
+            total_matches = int(open_catalog.get("total_matches", -1))
+            notebook_count = int(response_scope.get("notebook_count", -1))
+            if (
+                open_catalog.get("resource_type") != "notebook"
+                or open_catalog.get("query_kind") != "hierarchy_metadata"
+                or response_scope.get("mode") != "root"
+                or page_count != len(items)
+                or total_matches != notebook_count
+            ):
+                raise InvariantFailure(
+                    "Typed Query open-Notebook baseline returned an invalid envelope."
+                )
+            if baseline_notebook_count is None:
+                baseline_notebook_count = notebook_count
+                baseline_total_matches = total_matches
+            elif (
+                notebook_count != baseline_notebook_count
+                or total_matches != baseline_total_matches
+            ):
+                raise InvariantFailure(
+                    "Typed Query open-Notebook baseline changed during pagination."
+                )
+            page_ids = {
+                str(item.get("id", ""))
+                for item in items
+                if isinstance(item, dict) and item.get("id")
+            }
+            if len(page_ids) != len(items) or open_ids.intersection(page_ids):
+                raise InvariantFailure(
+                    "Typed Query open-Notebook baseline contains missing or duplicate IDs."
+                )
+            open_ids.update(page_ids)
+            if not open_catalog.get("has_more"):
+                break
+            next_offset = open_catalog.get("next_offset")
+            if not isinstance(next_offset, int) or next_offset <= offset:
+                raise InvariantFailure(
+                    "Typed Query open-Notebook baseline returned invalid pagination."
+                )
+            offset = next_offset
         fixture_notebook_ids = {
             str(notebooks["source"]["id"]),
             str(notebooks["query-b"]["id"]),
         }
-        baseline_notebook_count = int(open_catalog.get("count", len(open_notebooks)))
+        if baseline_notebook_count is None:
+            raise InvariantFailure("Typed Query open-Notebook baseline is missing.")
         if (
-            baseline_notebook_count != len(open_notebooks)
+            baseline_notebook_count != len(open_ids)
             or not fixture_notebook_ids.issubset(open_ids)
         ):
             raise InvariantFailure(
@@ -302,69 +349,95 @@ class QueryMetadataScopesScenario(Scenario):
 
         source_groups = {
             str(structure["query_outer_group"]["id"]),
+            str(structure["query_outer_group_sibling"]["id"]),
             str(structure["query_inner_group"]["id"]),
+            str(structure["query_inner_group_sibling"]["id"]),
         }
         expected_groups = source_groups | {
             str(structure["query_b_outer_group"]["id"]),
+            str(structure["query_b_outer_group_sibling"]["id"]),
             str(structure["query_b_inner_group"]["id"]),
+            str(structure["query_b_inner_group_sibling"]["id"]),
         }
         root_groups = await call(
             "query_section_group",
             {"scope": {"mode": "root"}, "name_contains": title_probe, "page_size": 200},
             "groups-root",
-            expected={"ids": sorted(expected_groups), "count": 4, "total_matches": 4},
+            expected={"ids": sorted(expected_groups), "count": 8, "total_matches": 8},
             get_hierarchy_calls=1,
         )
         group_result = await call(
             "query_section_group",
             {"scope": {"mode": "start_node", "start_node_id": source_id}, "page_size": 200},
             "groups-from-notebook",
-            expected={"ids": sorted(source_groups), "count": 2, "total_matches": 2},
+            expected={"ids": sorted(source_groups), "count": 4, "total_matches": 4},
             get_hierarchy_calls=2,
         )
         nested = await call(
             "query_section_group",
             {"scope": {"mode": "start_node", "start_node_id": str(structure["query_outer_group"]["id"])}, "page_size": 200},
             "groups-from-group",
-            expected={"ids": [str(structure["query_inner_group"]["id"])], "ordered": True},
+            expected={
+                "ids": sorted(
+                    [
+                        str(structure["query_inner_group"]["id"]),
+                        str(structure["query_inner_group_sibling"]["id"]),
+                    ]
+                ),
+                "count": 2,
+                "total_matches": 2,
+            },
             get_hierarchy_calls=2,
         )
 
         deep_id = str(structure["query_deep_section"]["id"])
         expected_sections = {
             deep_id,
+            str(structure["query_deep_section_sibling"]["id"]),
             str(structure["query_root_section"]["id"]),
+            str(structure["query_root_section_sibling"]["id"]),
             str(structure["query_b_deep_section"]["id"]),
+            str(structure["query_b_deep_section_sibling"]["id"]),
             str(structure["query_b_root_section"]["id"]),
+            str(structure["query_b_root_section_sibling"]["id"]),
         }
         root_sections = await call(
             "query_section",
             {"scope": {"mode": "root"}, "name_contains": title_probe, "page_size": 200},
             "sections-root",
-            expected={"ids": sorted(expected_sections), "count": 4, "total_matches": 4},
+            expected={"ids": sorted(expected_sections), "count": 8, "total_matches": 8},
             get_hierarchy_calls=1,
         )
         sections = await call(
             "query_section",
             {"scope": {"mode": "start_node", "start_node_id": str(structure["query_outer_group"]["id"])}, "page_size": 200},
             "sections-from-group",
-            expected={"ids": [deep_id], "ordered": True},
+            expected={
+                "ids": sorted(
+                    [deep_id, str(structure["query_deep_section_sibling"]["id"])]
+                ),
+                "count": 2,
+                "total_matches": 2,
+            },
             get_hierarchy_calls=2,
         )
 
         parent_id = str(structure["query_parent_page"]["id"])
         child_id = str(structure["query_child_page"]["id"])
+        child_sibling_id = str(structure["query_child_page_sibling"]["id"])
         source_page_ids = {
             parent_id,
             child_id,
+            child_sibling_id,
             str(structure["query_sibling_page"]["id"]),
             str(structure["query_root_page"]["id"]),
+            str(structure["query_root_page_sibling"]["id"]),
         }
         notebook_pages = await call(
             "query_page",
             {"scope": {"mode": "start_node", "start_node_id": source_id}, "title_contains": title_probe},
             "pages-from-notebook",
-            expected={"ids": sorted(source_page_ids), "count": 4, "total_matches": 4},
+            expected={"ids": sorted(source_page_ids), "count": 6, "total_matches": 6},
             get_hierarchy_calls=2,
         )
         group_pages = await call(
@@ -372,29 +445,40 @@ class QueryMetadataScopesScenario(Scenario):
             {"scope": {"mode": "start_node", "start_node_id": str(structure["query_outer_group"]["id"])}, "title_contains": title_probe},
             "pages-from-group",
             expected={
-                "ids": sorted(source_page_ids - {str(structure["query_root_page"]["id"])}),
-                "count": 3,
-                "total_matches": 3,
+                "ids": sorted(
+                    source_page_ids
+                    - {
+                        str(structure["query_root_page"]["id"]),
+                        str(structure["query_root_page_sibling"]["id"]),
+                    }
+                ),
+                "count": 4,
+                "total_matches": 4,
             },
             get_hierarchy_calls=2,
         )
         expected_deep_pages = {
             parent_id,
             child_id,
+            child_sibling_id,
             str(structure["query_sibling_page"]["id"]),
         }
         pages = await call(
             "query_page",
             {"scope": {"mode": "start_node", "start_node_id": deep_id}, "section_id": deep_id, "page_size": 200},
             "pages-from-section",
-            expected={"ids": sorted(expected_deep_pages), "count": 3, "total_matches": 3},
+            expected={"ids": sorted(expected_deep_pages), "count": 4, "total_matches": 4},
             get_hierarchy_calls=2,
         )
         child = await call(
             "query_page",
             {"scope": {"mode": "start_node", "start_node_id": deep_id}, "section_id": deep_id, "parent_page_id": parent_id},
             "page-indentation-parent",
-            expected={"ids": [child_id], "ordered": True, "count": 1, "total_matches": 1},
+            expected={
+                "ids": sorted([child_id, child_sibling_id]),
+                "count": 2,
+                "total_matches": 2,
+            },
             get_hierarchy_calls=2,
         )
 
@@ -418,8 +502,11 @@ class QueryMetadataScopesScenario(Scenario):
             str(structure[key]["id"])
             for key in (
                 "query_parent_page", "query_child_page", "query_sibling_page",
-                "query_root_page", "query_b_parent_page", "query_b_child_page",
-                "query_b_root_page",
+                "query_child_page_sibling", "query_root_page",
+                "query_root_page_sibling", "query_b_parent_page",
+                "query_b_child_page", "query_b_sibling_page",
+                "query_b_child_page_sibling",
+                "query_b_root_page", "query_b_root_page_sibling",
             )
         }
         total_pages = len(all_page_ids)

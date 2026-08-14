@@ -876,39 +876,124 @@ _TYPED_QUERY_FIXTURE_TOOLS = {
     "create_page",
     "reorder_page",
 }
+_TYPED_QUERY_READ_TOOLS = {
+    "health_check",
+    "get_tree",
+    "get_page_xml",
+    "query_notebook",
+    "query_section_group",
+    "query_section",
+    "query_page",
+}
 SCENARIO_SPECS["query-metadata-scopes"] = ScenarioSpec(
     "query-metadata-scopes",
     _profile(
         "cacheable-typed-query-scopes",
         (
-            "source:Outer/Inner/Deep/{Parent,Child(level 2),Sibling}",
-            "source:Root/RootPage",
-            "query-b:BOuter/BInner/BDeep/{BParent,BChild(level 2)}",
-            "query-b:BRoot/BRootPage",
+            "source:{Outer,OuterSibling}",
+            "source:Outer/{Inner,InnerSibling}",
+            "source:Outer/Inner/{Deep,DeepSibling}",
+            "source:Outer/Inner/Deep/{Parent/{Child,ChildSibling}(level 2),Sibling}",
+            "source:{Root/RootPage,RootSibling/RootPageSibling}",
+            "query-b:{BOuter,BOuterSibling}",
+            "query-b:BOuter/{BInner,BInnerSibling}",
+            "query-b:BOuter/BInner/{BDeep,BDeepSibling}",
+            "query-b:BOuter/BInner/BDeep/BParent/{BChild,BChildSibling}(level 2)",
+            "query-b:{BRoot/BRootPage,BRootSibling/BRootPageSibling}",
         ),
         (
-            "query_outer_group", "query_inner_group", "query_deep_section",
-            "query_root_section", "query_parent_page", "query_child_page",
-            "query_sibling_page", "query_root_page", "query_b_outer_group",
-            "query_b_inner_group", "query_b_deep_section", "query_b_root_section",
-            "query_b_parent_page", "query_b_child_page", "query_b_root_page",
+            "query_outer_group", "query_outer_group_sibling",
+            "query_inner_group", "query_inner_group_sibling",
+            "query_deep_section", "query_deep_section_sibling",
+            "query_root_section", "query_root_section_sibling",
+            "query_parent_page", "query_child_page",
+            "query_child_page_sibling", "query_sibling_page", "query_root_page",
+            "query_root_page_sibling", "query_b_outer_group",
+            "query_b_outer_group_sibling", "query_b_inner_group",
+            "query_b_inner_group_sibling", "query_b_deep_section",
+            "query_b_deep_section_sibling", "query_b_root_section",
+            "query_b_root_section_sibling",
+            "query_b_parent_page", "query_b_child_page",
+            "query_b_child_page_sibling", "query_b_sibling_page",
+            "query_b_root_page", "query_b_root_page_sibling",
         ),
         _TYPED_QUERY_FIXTURE_TOOLS,
         content=("hierarchy metadata only", "Page indentation"),
         checks=(
             "two open role Notebooks have unique IDs and paths",
-            "Notebook/SectionGroup/Section native start-node chain is exact",
-            "Page Section and direct indentation-parent relationships are proven",
+            "each typed hierarchy scope returns at least two fixture-owned Query items",
+            "Page Section and two direct indentation children are proven",
         ),
     ),
     WRITE_POLICY,
-    frozenset(READ_TOOLS | _TYPED_QUERY_FIXTURE_TOOLS),
+    frozenset(_TYPED_QUERY_READ_TOOLS | _TYPED_QUERY_FIXTURE_TOOLS),
     {
         "cache_supported": True,
         "included_in_all": True,
         "query_kind": "hierarchy_metadata",
         "pagination": {"page_size": 2, "consistency": "live_hierarchy"},
         "lifecycle_close_probe_role": "query-b",
+    },
+)
+
+_HIERARCHY_NAVIGATION_FIXTURE_TOOLS = {
+    "create_section_group",
+    "create_section",
+    "create_page",
+    "reorder_page",
+}
+SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
+    "hierarchy-navigation",
+    _profile(
+        "cacheable-hierarchy-navigation",
+        (
+            "Navigation-Group/{Navigation-Section,Navigation-Section-Sibling}",
+            (
+                "Navigation-Section/Navigation-Parent/"
+                "{Navigation-Child/Navigation-Grandchild,Navigation-Child-Sibling}"
+            ),
+            "Navigation-Section/Navigation-Root-Sibling",
+        ),
+        (
+            "navigation_group",
+            "navigation_section",
+            "navigation_section_sibling",
+            "navigation_parent_page",
+            "navigation_child_page",
+            "navigation_grandchild_page",
+            "navigation_child_page_sibling",
+            "navigation_root_page_sibling",
+        ),
+        _HIERARCHY_NAVIGATION_FIXTURE_TOOLS,
+        content=("container ancestry", "Page indentation levels 1/2/3"),
+        checks=(
+            "get_parent returns COM container ancestry, including Section for a Page",
+            "get_path contains only the exact Notebook/SectionGroup/Section chain",
+            "get_tree projects parent_page_id/page_level as a branched Page tree",
+            "get_tree max_depth truncates below direct Page children",
+        ),
+    ),
+    WRITE_POLICY,
+    frozenset(
+        _HIERARCHY_NAVIGATION_FIXTURE_TOOLS
+        | {
+            "health_check",
+            "get_tree",
+            "get_page_xml",
+            "get_parent",
+            "get_path",
+            "query_section_group",
+            "query_section",
+            "query_page",
+        }
+    ),
+    {
+        "cache_supported": True,
+        "included_in_all": False,
+        "page_parent_semantics": {
+            "get_parent_and_get_path": "container",
+            "get_tree": "derived_indentation",
+        },
     },
 )
 

@@ -53,6 +53,7 @@ SCENARIO_MODULES = {
     "onenote_convergence": "OneNoteConvergenceScenario",
     "search_all_open_notebooks": "SearchAllOpenNotebooksScenario",
     "query_metadata_scopes": "QueryMetadataScopesScenario",
+    "hierarchy_navigation": "HierarchyNavigationScenario",
     "bootstrap_inserted_file_fixture": "BootstrapInsertedFileFixtureScenario",
     "bootstrap_ink_drawing_fixture": "BootstrapInkDrawingFixtureScenario",
     "bootstrap_media_file_fixture": "BootstrapMediaFileFixtureScenario",

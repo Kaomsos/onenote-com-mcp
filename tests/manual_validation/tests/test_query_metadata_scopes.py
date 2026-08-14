@@ -10,7 +10,17 @@ import pytest
 
 from tests.manual_validation.runner import main
 from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
-from tests.manual_validation.scenarios.common.fixture_models import FixtureBuildResult
+from tests.manual_validation.scenarios.common.fixture_models import (
+    FixtureBuildResult,
+    FixtureContext,
+    FixtureRecorder,
+)
+from tests.manual_validation.scenarios.common.fixture_builders import (
+    enforce_page_position_with_query,
+    ensure_group_with_query,
+    ensure_page_with_query,
+    ensure_section_with_query,
+)
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
     FixtureBundleObservation,
@@ -30,6 +40,7 @@ def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
     assert scenario.included_in_all is True
     assert scenario.requires_index_activation_checkpoint is False
     assert scenario.requires_lifecycle_wrappers is True
+    assert recipe.recipe_version == 5
     assert recipe.supports_cache is True
     assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
         "query-b",
@@ -38,24 +49,37 @@ def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
     assert recipe.manifest_keys_for_role("source") == frozenset(
         {
             "query_outer_group",
+            "query_outer_group_sibling",
             "query_inner_group",
+            "query_inner_group_sibling",
             "query_deep_section",
+            "query_deep_section_sibling",
             "query_root_section",
+            "query_root_section_sibling",
             "query_parent_page",
             "query_child_page",
+            "query_child_page_sibling",
             "query_sibling_page",
             "query_root_page",
+            "query_root_page_sibling",
         }
     )
     assert recipe.manifest_keys_for_role("query-b") == frozenset(
         {
             "query_b_outer_group",
+            "query_b_outer_group_sibling",
             "query_b_inner_group",
+            "query_b_inner_group_sibling",
             "query_b_deep_section",
+            "query_b_deep_section_sibling",
             "query_b_root_section",
+            "query_b_root_section_sibling",
             "query_b_parent_page",
             "query_b_child_page",
+            "query_b_child_page_sibling",
+            "query_b_sibling_page",
             "query_b_root_page",
+            "query_b_root_page_sibling",
         }
     )
     assert {
@@ -64,6 +88,7 @@ def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
         "query_section",
         "query_page",
     } <= spec.tool_allowlist
+    assert not any(tool.startswith("list_") for tool in spec.tool_allowlist)
     assert spec.policy.writes_enabled is True
     assert spec.policy.deletes_enabled is False
     assert spec.policy.permanent_deletes_enabled is False
@@ -99,7 +124,9 @@ def test_query_deep_physical_path_is_budgeted_before_role_mutation(tmp_path) -> 
             outer_name="Q-short-BOuter",
             inner_name="Q-short-BInner",
             deep_name="Q-short-BDeep",
+            deep_sibling_name="Q-short-BDeepSibling",
             root_name="Q-short-BRoot",
+            root_sibling_name="Q-short-BRootSibling",
         )
 
     evidence = json.loads(
@@ -204,20 +231,33 @@ def _runtime_manifest() -> dict:
     structure = dict(
         [
             group("query_outer_group", "go", token + "Outer", "Source/Outer", "ns", "ns"),
+            group("query_outer_group_sibling", "gos", token + "OuterSibling", "Source/OuterSibling", "ns", "ns"),
             group("query_inner_group", "gi", token + "Inner", "Source/Outer/Inner", "go", "ns"),
+            group("query_inner_group_sibling", "gis", token + "InnerSibling", "Source/Outer/InnerSibling", "go", "ns"),
             section("query_deep_section", "sd", token + "Deep", "Source/Outer/Inner/Deep", "gi", "ns"),
+            section("query_deep_section_sibling", "sds", token + "DeepSibling", "Source/Outer/Inner/DeepSibling", "gi", "ns"),
             section("query_root_section", "sr", token + "Root", "Source/Root", "ns", "ns"),
+            section("query_root_section_sibling", "srs", token + "RootSibling", "Source/RootSibling", "ns", "ns"),
             page("query_parent_page", "pp", token + "Parent", "Source/Outer/Inner/Deep/Parent", "sd", "ns"),
             page("query_child_page", "pc", token + "Child", "Source/Outer/Inner/Deep/Child", "sd", "ns", 2, "pp"),
+            page("query_child_page_sibling", "pcs", token + "ChildSibling", "Source/Outer/Inner/Deep/ChildSibling", "sd", "ns", 2, "pp"),
             page("query_sibling_page", "ps", token + "Sibling", "Source/Outer/Inner/Deep/Sibling", "sd", "ns"),
             page("query_root_page", "pr", token + "RootPage", "Source/Root/RootPage", "sr", "ns"),
+            page("query_root_page_sibling", "prs", token + "RootPageSibling", "Source/RootSibling/RootPageSibling", "srs", "ns"),
             group("query_b_outer_group", "bgo", token + "BOuter", "QueryB/BOuter", "nb", "nb"),
+            group("query_b_outer_group_sibling", "bgos", token + "BOuterSibling", "QueryB/BOuterSibling", "nb", "nb"),
             group("query_b_inner_group", "bgi", token + "BInner", "QueryB/BOuter/BInner", "bgo", "nb"),
+            group("query_b_inner_group_sibling", "bgis", token + "BInnerSibling", "QueryB/BOuter/BInnerSibling", "bgo", "nb"),
             section("query_b_deep_section", "bsd", token + "BDeep", "QueryB/BOuter/BInner/BDeep", "bgi", "nb"),
+            section("query_b_deep_section_sibling", "bsds", token + "BDeepSibling", "QueryB/BOuter/BInner/BDeepSibling", "bgi", "nb"),
             section("query_b_root_section", "bsr", token + "BRoot", "QueryB/BRoot", "nb", "nb"),
+            section("query_b_root_section_sibling", "bsrs", token + "BRootSibling", "QueryB/BRootSibling", "nb", "nb"),
             page("query_b_parent_page", "bpp", token + "BParent", "QueryB/BOuter/BInner/BDeep/BParent", "bsd", "nb"),
             page("query_b_child_page", "bpc", token + "BChild", "QueryB/BOuter/BInner/BDeep/BChild", "bsd", "nb", 2, "bpp"),
+            page("query_b_child_page_sibling", "bpcs", token + "BChildSibling", "QueryB/BOuter/BInner/BDeep/BChildSibling", "bsd", "nb", 2, "bpp"),
+            page("query_b_sibling_page", "bps", token + "BSibling", "QueryB/BOuter/BInner/BDeep/BSibling", "bsd", "nb"),
             page("query_b_root_page", "bpr", token + "BRootPage", "QueryB/BRoot/BRootPage", "bsr", "nb"),
+            page("query_b_root_page_sibling", "bprs", token + "BRootPageSibling", "QueryB/BRootSibling/BRootPageSibling", "bsrs", "nb"),
         ]
     )
     return {
@@ -225,6 +265,205 @@ def _runtime_manifest() -> dict:
         "notebooks": {"source": source, "query-b": query_b},
         "structure": structure,
     }
+
+
+def test_query_fixture_has_two_direct_items_at_every_exercised_hierarchy_level() -> None:
+    manifest = _runtime_manifest()
+    structure = manifest["structure"]
+
+    def ids(*, resource_type, parent_id=None, section_id=None, parent_page_id=None):
+        return {
+            item["id"]
+            for item in structure.values()
+            if item["resource_type"] == resource_type
+            and (parent_id is None or item.get("parent_id") == parent_id)
+            and (section_id is None or item.get("section_id") == section_id)
+            and (
+                parent_page_id is None
+                or item.get("parent_page_id") == parent_page_id
+            )
+        }
+
+    for role in ("source", "query-b"):
+        suffix = "" if role == "source" else "_b"
+        notebook_id = manifest["notebooks"][role]["id"]
+        outer_id = structure[f"query{suffix}_outer_group"]["id"]
+        inner_id = structure[f"query{suffix}_inner_group"]["id"]
+        deep_id = structure[f"query{suffix}_deep_section"]["id"]
+        parent_id = structure[f"query{suffix}_parent_page"]["id"]
+
+        assert len(ids(resource_type="section_group", parent_id=notebook_id)) == 2
+        assert len(ids(resource_type="section_group", parent_id=outer_id)) == 2
+        assert len(ids(resource_type="section", parent_id=notebook_id)) == 2
+        assert len(ids(resource_type="section", parent_id=inner_id)) == 2
+        assert len(
+            {
+                item["id"]
+                for item in structure.values()
+                if item["resource_type"] == "page"
+                and item.get("section_id") == deep_id
+                and item.get("parent_page_id") is None
+            }
+        ) == 2
+        assert len(
+            ids(
+                resource_type="page",
+                section_id=deep_id,
+                parent_page_id=parent_id,
+            )
+        ) == 2
+
+
+def test_query_fixture_helpers_only_read_through_typed_query() -> None:
+    import asyncio
+
+    class QueryOnlyClient:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def call_tool(self, name, arguments, retry_read=False):
+            self.calls.append(name)
+            if name == "query_section_group":
+                return {"items": [{"id": "group", "name": "Group"}]}
+            if name == "query_section":
+                return {"items": [{"id": "section", "name": "Section"}]}
+            if name == "query_page" and "title_equals" in arguments:
+                return {"items": [{"id": "page", "title": "Page"}]}
+            if name == "query_page":
+                return {
+                    "items": [
+                        {
+                            "id": "page",
+                            "title": "Page",
+                            "order": 0,
+                            "page_level": 1,
+                        }
+                    ],
+                    "has_more": False,
+                }
+            raise AssertionError(f"Unexpected tool: {name}")
+
+    async def exercise(client: QueryOnlyClient) -> None:
+        await ensure_group_with_query(client, "notebook", "Group")
+        await ensure_section_with_query(client, "group", "Section")
+        await ensure_page_with_query(client, "section", "Page", "body")
+        await enforce_page_position_with_query(client, "section", "page", "", 1)
+
+    client = QueryOnlyClient()
+    asyncio.run(exercise(client))
+
+    assert client.calls == [
+        "query_section_group",
+        "query_section",
+        "query_page",
+        "query_page",
+    ]
+
+
+def test_query_recipe_places_second_direct_child_after_first_child(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    import asyncio
+    from tests.manual_validation.scenarios.fixture_recipes import (
+        query_metadata_scopes as recipe_module,
+    )
+
+    page_titles: dict[str, str] = {}
+    requests: list[tuple[str, str, int]] = []
+
+    def item(resource_type: str, parent_id: str, name: str) -> dict:
+        object_id = f"{resource_type}:{name}"
+        value = {
+            "id": object_id,
+            "resource_type": resource_type,
+            "name": name,
+            "parent_id": parent_id,
+        }
+        if resource_type == "page":
+            value.update(
+                title=name,
+                section_id=parent_id,
+                page_level=1,
+                parent_page_id=None,
+            )
+            page_titles[object_id] = name
+        return value
+
+    async def ensure_group(_client, parent_id, name):
+        return item("section_group", parent_id, name)
+
+    async def ensure_section(_client, parent_id, name):
+        return item("section", parent_id, name)
+
+    async def ensure_page(_client, section_id, title, _content):
+        return item("page", section_id, title)
+
+    async def enforce(_client, section_id, page_id, after_page_id, page_level):
+        requests.append((page_id, after_page_id, page_level))
+        return {
+            **item("page", section_id, page_titles[page_id]),
+            "id": page_id,
+            "page_level": page_level,
+        }
+
+    monkeypatch.setattr(recipe_module, "ensure_group", ensure_group)
+    monkeypatch.setattr(recipe_module, "ensure_section", ensure_section)
+    monkeypatch.setattr(recipe_module, "ensure_page", ensure_page)
+    monkeypatch.setattr(recipe_module, "enforce_page_position", enforce)
+
+    recipe = SCENARIO_REGISTRY.get("query-metadata-scopes").fixture_recipe
+    spec = SCENARIO_REGISTRY.get("query-metadata-scopes").spec
+    for role in ("source", "query-b"):
+        run_dir = tmp_path / role
+        run_dir.mkdir()
+        notebook = {"id": f"notebook-{role}", "name": role}
+        notebook_path = str(run_dir / "notebook")
+        recorder = FixtureRecorder(
+            run_dir=run_dir,
+            notebook=notebook,
+            notebook_path=notebook_path,
+            spec=spec,
+            allowed_keys=recipe.manifest_keys_for_role(role),
+            role=role,
+        )
+        asyncio.run(
+            recipe.build(
+                FixtureContext(
+                    args=argparse.Namespace(),
+                    options=RuntimeOptions(run_dir, 300, False, False),
+                    client=object(),
+                    notebook=notebook,
+                    notebook_path=notebook_path,
+                    spec=spec,
+                    token="query-token",
+                    recorder=recorder,
+                    role=role,
+                )
+            )
+        )
+
+    token = compact_query_token("query-token")
+    by_page_title = {
+        page_titles[page_id]: (page_titles[after_page_id], level)
+        for page_id, after_page_id, level in requests
+    }
+    assert by_page_title[f"Q-{token}-Child"] == (
+        f"Q-{token}-Parent",
+        2,
+    )
+    assert by_page_title[f"Q-{token}-ChildSibling"] == (
+        f"Q-{token}-Child",
+        2,
+    )
+    assert by_page_title[f"Q-{token}-BChild"] == (
+        f"Q-{token}-BParent",
+        2,
+    )
+    assert by_page_title[f"Q-{token}-BChildSibling"] == (
+        f"Q-{token}-BChild",
+        2,
+    )
 
 
 def _query_fixture_observation() -> FixtureBundleObservation:
@@ -322,35 +561,40 @@ class _FakeQueryClient:
     async def call_tool(self, name, arguments, retry_read=False):
         if name == "get_tree":
             return {"tree": self._tree(str(arguments["root_id"]))}
-        if name == "list_notebooks":
-            fixture = list(self.manifest["notebooks"].values())
-            unrelated = [
-                {"id": f"unrelated-{index}", "resource_type": "notebook"}
-                for index in range(self.open_count - len(fixture))
-            ]
-            notebooks = [*fixture, *unrelated]
-            return {"notebooks": notebooks, "count": len(notebooks)}
 
         scope = arguments.get("scope", {"mode": "root"})
         self._append_audit(1 if scope["mode"] == "root" else 2)
         structure = self.manifest["structure"]
-        source_pages = ["pp", "pc", "ps", "pr"]
-        deep_pages = ["pp", "pc", "ps"]
-        all_pages = ["pp", "pc", "ps", "pr", "bpp", "bpc", "bpr"]
+        source_pages = ["pp", "pc", "pcs", "ps", "pr", "prs"]
+        deep_pages = ["pp", "pc", "pcs", "ps"]
+        all_pages = [
+            "pp", "pc", "pcs", "ps", "pr", "prs",
+            "bpp", "bpc", "bpcs", "bps", "bpr", "bprs",
+        ]
         if name == "query_notebook":
-            ids = [] if "name_equals" in arguments else ["ns", "nb"]
+            if "name_equals" in arguments:
+                ids = []
+            elif "name_contains" in arguments:
+                ids = ["ns", "nb"]
+            else:
+                ids = ["ns", "nb"] + [
+                    f"unrelated-{index}"
+                    for index in range(self.open_count - 2)
+                ]
             resource_type = "notebook"
         elif name == "query_section_group":
             resource_type = "section_group"
             if scope["mode"] == "root":
-                ids = ["go", "gi", "bgo", "bgi"]
+                ids = ["go", "gos", "gi", "gis", "bgo", "bgos", "bgi", "bgis"]
             elif scope["start_node_id"] == "ns":
-                ids = ["go", "gi"]
+                ids = ["go", "gos", "gi", "gis"]
             else:
-                ids = ["gi"]
+                ids = ["gi", "gis"]
         elif name == "query_section":
             resource_type = "section"
-            ids = ["sd", "sr", "bsd", "bsr"] if scope["mode"] == "root" else ["sd"]
+            ids = [
+                "sd", "sds", "sr", "srs", "bsd", "bsds", "bsr", "bsrs"
+            ] if scope["mode"] == "root" else ["sd", "sds"]
         else:
             resource_type = "page"
             if scope["mode"] == "root" and "title_equals" in arguments:
@@ -361,7 +605,9 @@ class _FakeQueryClient:
                 ids = source_pages
             elif scope["start_node_id"] == "go":
                 ids = deep_pages
-            elif "parent_page_id" in arguments or "title_equals" in arguments:
+            elif "parent_page_id" in arguments:
+                ids = ["pc", "pcs"]
+            elif "title_equals" in arguments:
                 ids = ["pc"]
             else:
                 ids = deep_pages
@@ -414,7 +660,7 @@ class _FakeCloseWrapper:
 class _CollisionQueryClient(_FakeQueryClient):
     async def call_tool(self, name, arguments, retry_read=False):
         result = await super().call_tool(name, arguments, retry_read=retry_read)
-        if name == "query_notebook" and "name_equals" not in arguments:
+        if name == "query_notebook" and "name_contains" in arguments:
             result["items"].append({"id": "retained-working-copy"})
             result["count"] += 1
             result["total_matches"] += 1
@@ -446,9 +692,9 @@ def test_query_metadata_runtime_records_independent_expected_and_exact_bridge_ca
     requests = json.loads((evidence_dir / "requests-and-responses.json").read_text(encoding="utf-8"))
     expected = json.loads((evidence_dir / "expected-results.json").read_text(encoding="utf-8"))
     assert result["status"] == "passed"
-    assert result["requests_recorded"] == 18
+    assert result["requests_recorded"] == 20
     assert wrapper.closed is True
-    assert len(requests["requests"]) == 18
+    assert len(requests["requests"]) == 20
     assert all(
         set(record["bridge_operations"]) == {"get_hierarchy"}
         for record in requests["requests"]
@@ -472,6 +718,26 @@ def test_query_metadata_runtime_records_independent_expected_and_exact_bridge_ca
         )
         for request in requests["requests"]
         if request["response"]["scope"]["mode"] == "root"
+    )
+    multi_item_query_labels = {
+        "notebook-root",
+        "groups-root",
+        "groups-from-notebook",
+        "groups-from-group",
+        "sections-root",
+        "sections-from-group",
+        "pages-from-notebook",
+        "pages-from-group",
+        "pages-from-section",
+        "page-indentation-parent",
+    }
+    multi_item_queries = {
+        request["label"]: request for request in requests["requests"]
+        if request["label"] in multi_item_query_labels
+    }
+    assert set(multi_item_queries) == multi_item_query_labels
+    assert all(
+        case["response"]["count"] >= 2 for case in multi_item_queries.values()
     )
 
 

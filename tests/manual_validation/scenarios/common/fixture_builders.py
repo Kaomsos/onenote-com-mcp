@@ -169,6 +169,130 @@ async def ensure_page(
         )
     )["page"]
 
+
+async def ensure_group_with_query(
+    client: MCPStdioClient,
+    parent_id: str,
+    name: str,
+) -> dict[str, Any]:
+    queried = await client.call_tool(
+        "query_section_group",
+        {
+            "scope": {"mode": "start_node", "start_node_id": parent_id},
+            "name_equals": name,
+            "parent_id": parent_id,
+            "page_size": 2,
+        },
+    )
+    existing = exactly_one(queried.get("items", []), name, "section group")
+    if existing:
+        return existing
+    return (
+        await client.call_tool(
+            "create_section_group",
+            {"parent_id": parent_id, "group_name": name},
+        )
+    )["section_group"]
+
+
+async def ensure_section_with_query(
+    client: MCPStdioClient,
+    parent_id: str,
+    name: str,
+) -> dict[str, Any]:
+    queried = await client.call_tool(
+        "query_section",
+        {
+            "scope": {"mode": "start_node", "start_node_id": parent_id},
+            "name_equals": name,
+            "parent_id": parent_id,
+            "page_size": 2,
+        },
+    )
+    existing = exactly_one(queried.get("items", []), name, "section")
+    if existing:
+        return existing
+    return (
+        await client.call_tool(
+            "create_section",
+            {"parent_id": parent_id, "section_name": name},
+        )
+    )["section"]
+
+
+async def ensure_page_with_query(
+    client: MCPStdioClient,
+    section_id: str,
+    title: str,
+    content: str,
+) -> dict[str, Any]:
+    queried = await client.call_tool(
+        "query_page",
+        {
+            "scope": {"mode": "start_node", "start_node_id": section_id},
+            "title_equals": title,
+            "section_id": section_id,
+            "page_size": 2,
+        },
+    )
+    existing = exactly_one(queried.get("items", []), title, "page")
+    if existing:
+        return existing
+    return (
+        await client.call_tool(
+            "create_page",
+            {
+                "section_id": section_id,
+                "title": title,
+                "content": content,
+                "content_format": "plain",
+                "new_page_style": "blank_with_title",
+            },
+        )
+    )["page"]
+
+
+async def enforce_page_position_with_query(
+    client: MCPStdioClient,
+    section_id: str,
+    page_id: str,
+    after_page_id: str,
+    page_level: int,
+) -> dict[str, Any]:
+    queried = await client.call_tool(
+        "query_page",
+        {
+            "scope": {"mode": "start_node", "start_node_id": section_id},
+            "section_id": section_id,
+            "page_size": 200,
+        },
+    )
+    if queried.get("has_more") is True:
+        raise RunnerFailure(
+            "Prepared fixture Section exceeds the bounded 200-Page Query window.",
+            EXIT_MCP,
+        )
+    pages = sorted(queried.get("items", []), key=lambda item: int(item["order"]))
+    page = next((item for item in pages if item.get("id") == page_id), None)
+    if page is None:
+        raise RunnerFailure(f"Prepared page disappeared: {page_id}", EXIT_MCP)
+    index = pages.index(page)
+    actual_after = "" if index == 0 else str(pages[index - 1]["id"])
+    if actual_after == after_page_id and int(page["page_level"]) == page_level:
+        return page
+    result = await client.call_tool(
+        "reorder_page",
+        {
+            "page_id": page_id,
+            "expected_title": display_name(page),
+            "expected_section_id": section_id,
+            "after_page_id": after_page_id,
+            "page_level": page_level,
+            "expected_modified": page.get("modified"),
+        },
+    )
+    return result["item"]
+
 async def enforce_page_position(
     client: MCPStdioClient,
     section_id: str,

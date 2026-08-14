@@ -10,10 +10,10 @@ from ...path_budget import preflight_paths
 from ...runtime import InvariantFailure, PathBudgetFailure
 from ...test_utils import write_json
 from ..common.fixture_builders import (
-    enforce_page_position,
-    ensure_group,
-    ensure_page,
-    ensure_section,
+    enforce_page_position_with_query as enforce_page_position,
+    ensure_group_with_query as ensure_group,
+    ensure_page_with_query as ensure_page,
+    ensure_section_with_query as ensure_section,
 )
 
 
@@ -29,7 +29,9 @@ def _preflight_query_fixture_paths(
     outer_name: str,
     inner_name: str,
     deep_name: str,
+    deep_sibling_name: str,
     root_name: str,
+    root_sibling_name: str,
 ) -> None:
     notebook_path = Path(context.notebook_path)
     targets = (
@@ -39,9 +41,22 @@ def _preflight_query_fixture_paths(
             f"{outer_name}/{inner_name}/{deep_name}.one",
         ),
         (
+            notebook_path
+            / outer_name
+            / inner_name
+            / f"{deep_sibling_name}.one",
+            "opaque_query_deep_sibling_section",
+            f"{outer_name}/{inner_name}/{deep_sibling_name}.one",
+        ),
+        (
             notebook_path / f"{root_name}.one",
             "opaque_query_root_section",
             f"{root_name}.one",
+        ),
+        (
+            notebook_path / f"{root_sibling_name}.one",
+            "opaque_query_root_sibling_section",
+            f"{root_sibling_name}.one",
         ),
     )
     evidence_path = (
@@ -89,7 +104,7 @@ from .recipe_base import (
 
 
 class QueryMetadataScopesFixtureRecipe(RecipeBase):
-    recipe_version = 3
+    recipe_version = 5
     bundle_invariants = (
         "source and query-b Notebook IDs and paths are unique",
         "both working Notebook roles remain open until the explicit close probe",
@@ -100,22 +115,35 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
         profile = get_scenario_spec("query-metadata-scopes").fixture
         source_keys = (
             "query_outer_group",
+            "query_outer_group_sibling",
             "query_inner_group",
+            "query_inner_group_sibling",
             "query_deep_section",
+            "query_deep_section_sibling",
             "query_root_section",
+            "query_root_section_sibling",
             "query_parent_page",
             "query_child_page",
+            "query_child_page_sibling",
             "query_sibling_page",
             "query_root_page",
+            "query_root_page_sibling",
         )
         query_b_keys = (
             "query_b_outer_group",
+            "query_b_outer_group_sibling",
             "query_b_inner_group",
+            "query_b_inner_group_sibling",
             "query_b_deep_section",
+            "query_b_deep_section_sibling",
             "query_b_root_section",
+            "query_b_root_section_sibling",
             "query_b_parent_page",
             "query_b_child_page",
+            "query_b_child_page_sibling",
+            "query_b_sibling_page",
             "query_b_root_page",
+            "query_b_root_page_sibling",
         )
         super().__init__(
             "query-metadata-scopes",
@@ -141,29 +169,63 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
         inner_name = f"Q-{token}-{role_suffix}Inner"
         deep_name = f"Q-{token}-{role_suffix}Deep"
         root_name = f"Q-{token}-{role_suffix}Root"
+        deep_sibling_name = f"Q-{token}-{role_suffix}DeepSibling"
+        root_sibling_name = f"Q-{token}-{role_suffix}RootSibling"
         _preflight_query_fixture_paths(
             context,
             outer_name=outer_name,
             inner_name=inner_name,
             deep_name=deep_name,
+            deep_sibling_name=deep_sibling_name,
             root_name=root_name,
+            root_sibling_name=root_sibling_name,
         )
         if context.role == "source":
             outer = recorder.record_structure(
                 "query_outer_group",
                 await ensure_group(context.client, context.notebook_id, outer_name),
             )
+            recorder.record_structure(
+                "query_outer_group_sibling",
+                await ensure_group(
+                    context.client,
+                    context.notebook_id,
+                    f"Q-{token}-OuterSibling",
+                ),
+            )
             inner = recorder.record_structure(
                 "query_inner_group",
                 await ensure_group(context.client, str(outer["id"]), inner_name),
+            )
+            recorder.record_structure(
+                "query_inner_group_sibling",
+                await ensure_group(
+                    context.client,
+                    str(outer["id"]),
+                    f"Q-{token}-InnerSibling",
+                ),
             )
             deep = recorder.record_structure(
                 "query_deep_section",
                 await ensure_section(context.client, str(inner["id"]), deep_name),
             )
+            recorder.record_structure(
+                "query_deep_section_sibling",
+                await ensure_section(
+                    context.client,
+                    str(inner["id"]),
+                    deep_sibling_name,
+                ),
+            )
             root = recorder.record_structure(
                 "query_root_section",
                 await ensure_section(context.client, context.notebook_id, root_name),
+            )
+            root_sibling = recorder.record_structure(
+                "query_root_section_sibling",
+                await ensure_section(
+                    context.client, context.notebook_id, root_sibling_name
+                ),
             )
             parent = recorder.record_structure(
                 "query_parent_page",
@@ -180,6 +242,20 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
                 2,
             )
             recorder.record_structure("query_child_page", child)
+            child_sibling = await ensure_page(
+                context.client,
+                str(deep["id"]),
+                f"Q-{token}-ChildSibling",
+                "metadata query child sibling",
+            )
+            child_sibling = await enforce_page_position(
+                context.client,
+                str(deep["id"]),
+                str(child_sibling["id"]),
+                str(child["id"]),
+                2,
+            )
+            recorder.record_structure("query_child_page_sibling", child_sibling)
             recorder.record_structure(
                 "query_sibling_page",
                 await ensure_page(context.client, str(deep["id"]), f"Q-{token}-Sibling", "metadata query sibling"),
@@ -188,22 +264,61 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
                 "query_root_page",
                 await ensure_page(context.client, str(root["id"]), f"Q-{token}-RootPage", "metadata query root"),
             )
+            recorder.record_structure(
+                "query_root_page_sibling",
+                await ensure_page(
+                    context.client,
+                    str(root_sibling["id"]),
+                    f"Q-{token}-RootPageSibling",
+                    "metadata query root sibling",
+                ),
+            )
         elif context.role == "query-b":
             outer = recorder.record_structure(
                 "query_b_outer_group",
                 await ensure_group(context.client, context.notebook_id, outer_name),
             )
+            recorder.record_structure(
+                "query_b_outer_group_sibling",
+                await ensure_group(
+                    context.client,
+                    context.notebook_id,
+                    f"Q-{token}-BOuterSibling",
+                ),
+            )
             inner = recorder.record_structure(
                 "query_b_inner_group",
                 await ensure_group(context.client, str(outer["id"]), inner_name),
+            )
+            recorder.record_structure(
+                "query_b_inner_group_sibling",
+                await ensure_group(
+                    context.client,
+                    str(outer["id"]),
+                    f"Q-{token}-BInnerSibling",
+                ),
             )
             deep = recorder.record_structure(
                 "query_b_deep_section",
                 await ensure_section(context.client, str(inner["id"]), deep_name),
             )
+            recorder.record_structure(
+                "query_b_deep_section_sibling",
+                await ensure_section(
+                    context.client,
+                    str(inner["id"]),
+                    deep_sibling_name,
+                ),
+            )
             root = recorder.record_structure(
                 "query_b_root_section",
                 await ensure_section(context.client, context.notebook_id, root_name),
+            )
+            root_sibling = recorder.record_structure(
+                "query_b_root_section_sibling",
+                await ensure_section(
+                    context.client, context.notebook_id, root_sibling_name
+                ),
             )
             parent = recorder.record_structure(
                 "query_b_parent_page",
@@ -228,6 +343,31 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
                 2,
             )
             recorder.record_structure("query_b_child_page", child)
+            child_sibling = await ensure_page(
+                context.client,
+                str(deep["id"]),
+                f"Q-{token}-BChildSibling",
+                "metadata query b child sibling",
+            )
+            child_sibling = await enforce_page_position(
+                context.client,
+                str(deep["id"]),
+                str(child_sibling["id"]),
+                str(child["id"]),
+                2,
+            )
+            recorder.record_structure(
+                "query_b_child_page_sibling", child_sibling
+            )
+            recorder.record_structure(
+                "query_b_sibling_page",
+                await ensure_page(
+                    context.client,
+                    str(deep["id"]),
+                    f"Q-{token}-BSibling",
+                    "metadata query b sibling",
+                ),
+            )
             recorder.record_structure(
                 "query_b_root_page",
                 await ensure_page(
@@ -235,6 +375,15 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
                     str(root["id"]),
                     f"Q-{token}-BRootPage",
                     "metadata query b root",
+                ),
+            )
+            recorder.record_structure(
+                "query_b_root_page_sibling",
+                await ensure_page(
+                    context.client,
+                    str(root_sibling["id"]),
+                    f"Q-{token}-BRootPageSibling",
+                    "metadata query b root sibling",
                 ),
             )
         else:
@@ -253,29 +402,50 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
         notebook_id = str(context.snapshot.get("notebook_id", ""))
         if context.role == "source":
             outer = resolved["query_outer_group"]
+            outer_sibling = resolved["query_outer_group_sibling"]
             inner = resolved["query_inner_group"]
+            inner_sibling = resolved["query_inner_group_sibling"]
             deep = resolved["query_deep_section"]
+            deep_sibling = resolved["query_deep_section_sibling"]
             root = resolved["query_root_section"]
+            root_sibling = resolved["query_root_section_sibling"]
             parent = resolved["query_parent_page"]
             child = resolved["query_child_page"]
+            child_sibling = resolved["query_child_page_sibling"]
             sibling = resolved["query_sibling_page"]
             root_page = resolved["query_root_page"]
+            root_page_sibling = resolved["query_root_page_sibling"]
             checks.require(
                 outer.get("resource_type") == "section_group"
                 and outer.get("parent_id") == notebook_id
+                and outer_sibling.get("resource_type") == "section_group"
+                and outer_sibling.get("parent_id") == notebook_id
                 and inner.get("resource_type") == "section_group"
                 and inner.get("parent_id") == outer.get("id")
+                and inner_sibling.get("resource_type") == "section_group"
+                and inner_sibling.get("parent_id") == outer.get("id")
                 and deep.get("resource_type") == "section"
                 and deep.get("parent_id") == inner.get("id")
+                and deep_sibling.get("resource_type") == "section"
+                and deep_sibling.get("parent_id") == inner.get("id")
                 and root.get("resource_type") == "section"
-                and root.get("parent_id") == notebook_id,
+                and root.get("parent_id") == notebook_id
+                and root_sibling.get("resource_type") == "section"
+                and root_sibling.get("parent_id") == notebook_id,
                 "Typed Query nested container topology is invalid.",
                 "source Notebook/SectionGroup/Section start-node chains are exact",
             )
             checks.require(
                 all(
                     page.get("resource_type") == "page"
-                    for page in (parent, child, sibling, root_page)
+                    for page in (
+                        parent,
+                        child,
+                        child_sibling,
+                        sibling,
+                        root_page,
+                        root_page_sibling,
+                    )
                 )
                 and parent.get("section_id") == deep.get("id")
                 and parent.get("parent_page_id") in {None, ""}
@@ -283,54 +453,105 @@ class QueryMetadataScopesFixtureRecipe(RecipeBase):
                 and child.get("section_id") == deep.get("id")
                 and child.get("parent_page_id") == parent.get("id")
                 and int(child.get("page_level", 0)) == 2
+                and child_sibling.get("section_id") == deep.get("id")
+                and child_sibling.get("parent_page_id") == parent.get("id")
+                and int(child_sibling.get("page_level", 0)) == 2
                 and sibling.get("parent_page_id") in {None, ""}
                 and sibling.get("section_id") == deep.get("id")
                 and int(sibling.get("page_level", 0)) == 1
                 and root_page.get("section_id") == root.get("id")
                 and root_page.get("parent_page_id") in {None, ""}
-                and int(root_page.get("page_level", 0)) == 1,
+                and int(root_page.get("page_level", 0)) == 1
+                and root_page_sibling.get("section_id") == root_sibling.get("id")
+                and root_page_sibling.get("parent_page_id") in {None, ""}
+                and int(root_page_sibling.get("page_level", 0)) == 1,
                 "Typed Query Page indentation topology is invalid.",
                 "source Page Sections, root levels, and indentation parent are exact",
             )
-            pages = (parent, child, sibling, root_page)
+            pages = (
+                parent,
+                child,
+                child_sibling,
+                sibling,
+                root_page,
+                root_page_sibling,
+            )
         elif context.role == "query-b":
             outer = resolved["query_b_outer_group"]
+            outer_sibling = resolved["query_b_outer_group_sibling"]
             inner = resolved["query_b_inner_group"]
+            inner_sibling = resolved["query_b_inner_group_sibling"]
             deep = resolved["query_b_deep_section"]
+            deep_sibling = resolved["query_b_deep_section_sibling"]
             root = resolved["query_b_root_section"]
+            root_sibling = resolved["query_b_root_section_sibling"]
             parent = resolved["query_b_parent_page"]
             child = resolved["query_b_child_page"]
+            child_sibling = resolved["query_b_child_page_sibling"]
+            sibling = resolved["query_b_sibling_page"]
             root_page = resolved["query_b_root_page"]
+            root_page_sibling = resolved["query_b_root_page_sibling"]
             checks.require(
                 outer.get("resource_type") == "section_group"
                 and outer.get("parent_id") == notebook_id
+                and outer_sibling.get("resource_type") == "section_group"
+                and outer_sibling.get("parent_id") == notebook_id
                 and inner.get("resource_type") == "section_group"
                 and inner.get("parent_id") == outer.get("id")
+                and inner_sibling.get("resource_type") == "section_group"
+                and inner_sibling.get("parent_id") == outer.get("id")
                 and deep.get("resource_type") == "section"
                 and deep.get("parent_id") == inner.get("id")
+                and deep_sibling.get("resource_type") == "section"
+                and deep_sibling.get("parent_id") == inner.get("id")
                 and root.get("resource_type") == "section"
-                and root.get("parent_id") == notebook_id,
+                and root.get("parent_id") == notebook_id
+                and root_sibling.get("resource_type") == "section"
+                and root_sibling.get("parent_id") == notebook_id,
                 "Typed Query secondary Notebook topology is invalid.",
                 "secondary Notebook has nested Groups plus direct Notebook/Group Sections",
             )
             checks.require(
                 all(
                     page.get("resource_type") == "page"
-                    for page in (parent, child, root_page)
+                    for page in (
+                        parent,
+                        child,
+                        child_sibling,
+                        sibling,
+                        root_page,
+                        root_page_sibling,
+                    )
                 )
                 and parent.get("section_id") == deep.get("id")
                 and parent.get("parent_page_id") in {None, ""}
                 and child.get("section_id") == deep.get("id")
                 and child.get("parent_page_id") == parent.get("id")
+                and child_sibling.get("section_id") == deep.get("id")
+                and child_sibling.get("parent_page_id") == parent.get("id")
                 and int(parent.get("page_level", 0)) == 1
                 and int(child.get("page_level", 0)) == 2
+                and int(child_sibling.get("page_level", 0)) == 2
+                and sibling.get("section_id") == deep.get("id")
+                and sibling.get("parent_page_id") in {None, ""}
+                and int(sibling.get("page_level", 0)) == 1
                 and root_page.get("section_id") == root.get("id")
                 and root_page.get("parent_page_id") in {None, ""}
-                and int(root_page.get("page_level", 0)) == 1,
+                and int(root_page.get("page_level", 0)) == 1
+                and root_page_sibling.get("section_id") == root_sibling.get("id")
+                and root_page_sibling.get("parent_page_id") in {None, ""}
+                and int(root_page_sibling.get("page_level", 0)) == 1,
                 "Typed Query secondary Notebook Page topology is invalid.",
                 "secondary Notebook has root and indented Pages with exact Sections",
             )
-            pages = (parent, child, root_page)
+            pages = (
+                parent,
+                child,
+                child_sibling,
+                sibling,
+                root_page,
+                root_page_sibling,
+            )
         else:
             raise InvariantFailure(
                 f"Unsupported typed Query validation role: {context.role}"

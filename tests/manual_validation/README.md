@@ -27,6 +27,7 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section-group
 .venv\Scripts\python.exe tests\manual_validation\run.py onenote-convergence
 .venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes
+.venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation
 ```
 
 历史验证 artifact 与 fixture cache 只通过独立的 `clear` maintenance 分组维护。它不是 Scenario，不进入 registry 或 `all`，不会启动 scenario MCP、修改或关闭 OneNote，也不接受任意路径或强制绕过参数：
@@ -264,13 +265,20 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 .venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks --use-cache
 ```
 
-`query-metadata-scopes` 是支持 fresh/cache、`included_in_all=true` 的双 Notebook typed metadata Query 场景。两个 role 各自创建带共享 token 的嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 与缩进 Page。物理 Group/Section 名称使用由完整 token 派生的 16 位紧凑 token；每个 role 在首个 fixture mutation 前预算最深 `.one` 路径，超过 240 UTF-16 units 时明确 fail closed。根 scope 的 `notebook_count` 以 scenario 开始前的一次打开目录为基线，因此用户原本打开的无关 Notebook 不会造成误报；关闭 `query-b` 后验证基线减一。cache token 只有在真实产生额外结果时才输出无查询内容的 collision warning。Query 不需要 index，因此 fresh 和 cache 都不会执行 Search 专用的 close/reopen checkpoint。用户已确认 cache cold build 真实运行通过，因此该场景进入 `all`。
+`query-metadata-scopes` 是支持 fresh/cache、`included_in_all=true` 的双 Notebook typed metadata Query 场景。两个 role 各自创建带共享 token 的嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 与缩进 Page；Notebook root、Outer、Inner 和 Parent Page 等受测 scope 都至少包含两个 fixture-owned 同类型对象，确保多项 Query 的 scope、过滤和分页行为均由真实集合验证。fixture 构建与打开 Notebook 基线枚举同样只调用 typed Query，不依赖预备退役的旧枚举工具。Recipe v5 将第二个直接缩进 child 明确放在第一个 child 之后，避免两个 reorder 竞争同一个 predecessor；cache cold build 在 `CloseNotebook(force=false)` 前还通过 lifecycle wrapper 对每个 exact Notebook 请求一次 `SyncHierarchy`，使已验证 live hierarchy 先写回源文件。该 checkpoint 只服务 cache publish，不 reopen Notebook，也不扩大 scenario tool allowlist。物理 Group/Section 名称使用由完整 token 派生的 16 位紧凑 token；每个 role 在首个 fixture mutation 前预算最深 `.one` 路径，超过 240 UTF-16 units 时明确 fail closed。根 scope 的 `notebook_count` 以 scenario 开始前的一次无过滤 `query_notebook` 逐页取尽结果为基线，因此用户原本打开的无关 Notebook 不会造成误报；关闭 `query-b` 后验证基线减一。cache token 只有在真实产生额外结果时才输出无查询内容的 collision warning。Query 不需要 index，因此 fresh 和 cache 都不会执行 Search 专用的 close/reopen checkpoint。先前结构的用户真实证据仍保留；v5 使用新 fingerprint，旧的不可消费模板不会再次命中。
 
-Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 manifest key set、对象类型、两条 container chain、Page Section/root level/indentation parent 和每 Page 单次内容 snapshot，并在 bundle 层证明两个 role 共用同一个非空 run token。场景保存两份独立 typed hierarchy tree、逐 fixture item 的 expected 投影、每个请求/响应及对应 bridge operation；验证四个 root Query、Notebook/SectionGroup/Section 原生起点、Page `section_id/parent_page_id`、RFC 3339 严格时间、`page_size=2` 的全部页/末页/越界页，以及每次调用恰好产生规定的一个或两个 `GetHierarchy` 且不读取 Page 正文。随后由 lifecycle wrapper 精确关闭 `query-b` role，并证明 `include_recycle_bin=true` 也不能把已关闭 Notebook 或后代重新引入。场景只授予 fixture Writes；Delete、Copy、Move、Permanent Delete 与 Raw XML 均关闭。真实运行只能由用户本人前台启动：
+Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 manifest key set、对象类型、同父级双 Group/双 Section、Page Section/root level/双 indentation child 和每 Page 单次内容 snapshot，并在 bundle 层证明两个 role 共用同一个非空 run token。场景保存两份独立 typed hierarchy tree、逐 fixture item 的 expected 投影、每个请求/响应及对应 bridge operation；验证四个 root Query、Notebook/SectionGroup/Section 原生起点、Page `section_id/parent_page_id`、RFC 3339 严格时间、`page_size=2` 的全部页/末页/越界页，以及每次调用恰好产生规定的一个或两个 `GetHierarchy` 且不读取 Page 正文。随后由 lifecycle wrapper 精确关闭 `query-b` role，并证明 `include_recycle_bin=true` 也不能把已关闭 Notebook 或后代重新引入。场景只授予 fixture Writes；Delete、Copy、Move、Permanent Delete 与 Raw XML 均关闭。真实运行只能由用户本人前台启动：
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes
 .venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes --use-cache
+```
+
+`hierarchy-navigation` 是支持 fresh/cache、默认 `included_in_all=false` 的只读工具语义场景；fixture 构建仍使用受限 Write。它以同一份 level 1/2/3 分支 Page 结构对照验证：`get_parent` 与 `get_path` 保持 COM 容器关系，缩进 Page 的容器父级仍为 Section；`get_tree` 则优先使用派生的 `parent_page_id`，把两个 level-2 sibling 和一个 level-3 grandchild 投影到 Page 树，并验证 `max_depth=1` 截断。设计与完成条件由 [`TODO 032`](../../docs/todo/032_hierarchy_navigation_manual_validation.md) 跟踪。真实运行只能由用户本人前台启动：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation
+.venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation --use-cache
 ```
 
 ## 安全审查与执行
@@ -377,6 +385,11 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 <!-- dry-run-case: query-metadata-scopes.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes --dry-run --json
+```
+
+<!-- dry-run-case: hierarchy-navigation.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation --dry-run --json
 ```
 
 <!-- dry-run-case: bootstrap-inserted-file-fixture.default -->
