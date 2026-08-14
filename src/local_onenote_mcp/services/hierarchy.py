@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import re
 import time
 from typing import Any, Callable
 import xml.etree.ElementTree as ET
@@ -25,6 +27,45 @@ from .convergence import ConvergenceConfig, ConvergenceResult, converge
 
 IDENTIFIER_RESOLUTION_ORDER = ["id", "exact_path", "unique_name"]
 RESOURCE_TYPES = {"notebook", "section_group", "section", "page"}
+METADATA_QUERY_TOOLS = (
+    "query_notebook",
+    "query_section_group",
+    "query_section",
+    "query_page",
+)
+METADATA_QUERY_SCOPE_MODES = ("root", "start_node")
+METADATA_QUERY_KIND = "hierarchy_metadata"
+METADATA_QUERY_PAGINATION_CONSISTENCY = "live_hierarchy"
+DEFAULT_METADATA_QUERY_PAGE_SIZE = 200
+MAX_METADATA_QUERY_PAGE_SIZE = 200
+_QUERY_START_TYPES = {
+    "section_group": {"notebook", "section_group"},
+    "section": {"notebook", "section_group"},
+    "page": {"notebook", "section_group", "section"},
+}
+_QUERY_SCOPES = {
+    "notebook": "notebooks",
+    "section_group": "sections",
+    "section": "sections",
+    "page": "pages",
+}
+_RFC3339 = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+)
+
+
+def _parse_rfc3339(value: str, field: str) -> datetime:
+    if not _RFC3339.fullmatch(value):
+        raise ValueError(f"{field} must be an RFC 3339 timestamp with an explicit offset or Z.")
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value[-1] in "Zz" else value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field} must be an RFC 3339 timestamp with an explicit offset or Z."
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field} must include an explicit offset or Z.")
+    return parsed.astimezone(timezone.utc)
 
 
 class HierarchyService(BaseService):
@@ -320,46 +361,321 @@ class HierarchyService(BaseService):
         ]
         return {"section": section, "pages": pages, "count": len(pages)}
 
-    def query(
+    @staticmethod
+    def _open_notebook_ids(items: list[dict[str, Any]]) -> set[str]:
+        return {
+            str(item["id"])
+            for item in items
+            if item.get("resource_type") == "notebook"
+            and item.get("is_open") is not False
+            and item.get("is_in_recycle_bin") is not True
+        }
+
+    @staticmethod
+    def _notebook_id(item: dict[str, Any]) -> str:
+        return (
+            str(item.get("id", ""))
+            if item.get("resource_type") == "notebook"
+            else str(item.get("notebook_id", ""))
+        )
+
+    @staticmethod
+    def _is_descendant_or_self(
+        object_id: str,
+        start_node_id: str,
+        by_id: dict[str, dict[str, Any]],
+    ) -> bool:
+        current_id = object_id
+        visited: set[str] = set()
+        while current_id and current_id not in visited:
+            if current_id == start_node_id:
+                return True
+            visited.add(current_id)
+            current = by_id.get(current_id)
+            current_id = str(current.get("parent_id", "")) if current else ""
+        return False
+
+    @staticmethod
+    def _scope_response(start_node: dict[str, Any] | None, notebook_count: int) -> dict[str, Any]:
+        if start_node is None:
+            return {"mode": "root", "notebook_count": notebook_count}
+        resource_type = str(start_node["resource_type"])
+        return {
+            "mode": "start_node",
+            "resource_type": resource_type,
+            "id": str(start_node["id"]),
+            "path": str(start_node.get("path", "")),
+            "notebook_id": (
+                str(start_node["id"])
+                if resource_type == "notebook"
+                else str(start_node.get("notebook_id", ""))
+            ),
+        }
+
+    @staticmethod
+    def _align_start_fragment(
+        raw_items: list[dict[str, Any]],
+        catalog: list[dict[str, Any]],
+        start_node: dict[str, Any],
+        resource_type: str,
+        open_notebook_ids: set[str],
+    ) -> list[dict[str, Any]]:
+        """Align a native start-node fragment to the root container catalog.
+
+        Container records must already exist in the hsSections catalog. Page
+        records are accepted only when the fragment binds them to a catalogued
+        Section below the exact start node; their stable container fields are
+        then rebased to that catalog entry.
+        """
+
+        by_id = {str(item["id"]): item for item in catalog if item.get("id")}
+        start_id = str(start_node["id"])
+        raw_pages = {
+            str(item["id"]): item
+            for item in raw_items
+            if item.get("resource_type") == "page" and item.get("id")
+        }
+        aligned: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in raw_items:
+            object_id = str(raw.get("id", ""))
+            if not object_id or object_id in seen or object_id == start_id:
+                continue
+            candidate_type = str(raw.get("resource_type", ""))
+            if candidate_type != resource_type:
+                continue
+            if candidate_type != "page":
+                catalog_item = by_id.get(object_id)
+                if (
+                    catalog_item is None
+                    or catalog_item.get("resource_type") != candidate_type
+                    or not HierarchyService._is_descendant_or_self(
+                        object_id, start_id, by_id
+                    )
+                    or HierarchyService._notebook_id(catalog_item) not in open_notebook_ids
+                ):
+                    continue
+                candidate = dict(catalog_item)
+            else:
+                section_id = str(raw.get("section_id", ""))
+                section = by_id.get(section_id)
+                if (
+                    section is None
+                    or section.get("resource_type") != "section"
+                    or not HierarchyService._is_descendant_or_self(
+                        section_id, start_id, by_id
+                    )
+                    or HierarchyService._notebook_id(section) not in open_notebook_ids
+                ):
+                    continue
+                parent_page_id = raw.get("parent_page_id")
+                if parent_page_id:
+                    parent_page = raw_pages.get(str(parent_page_id))
+                    if parent_page is None or str(parent_page.get("section_id", "")) != section_id:
+                        continue
+                candidate = dict(raw)
+                candidate["section_id"] = section_id
+                candidate["parent_id"] = section_id
+                candidate["notebook_id"] = HierarchyService._notebook_id(section)
+                candidate["path"] = f"{section.get('path', '')}/{display_name(candidate)}"
+                candidate["depth"] = int(section.get("depth", 0)) + 1
+                candidate["is_in_recycle_bin"] = (
+                    candidate.get("is_in_recycle_bin") is True
+                    or section.get("is_in_recycle_bin") is True
+                )
+            seen.add(object_id)
+            aligned.append(candidate)
+        return aligned
+
+    def metadata_query(
         self,
         resource_type: str,
+        scope_request: dict[str, Any] | None = None,
+        *,
         name_equals: str = "",
         name_contains: str = "",
         parent_id: str = "",
+        section_id: str = "",
+        parent_page_id: str = "",
         modified_after: str = "",
         modified_before: str = "",
         include_recycle_bin: bool = False,
-        limit: int = 100,
+        offset: int = 0,
+        page_size: int = DEFAULT_METADATA_QUERY_PAGE_SIZE,
     ) -> dict[str, Any]:
-        normalized_type = resource_type.strip().casefold()
-        if normalized_type not in RESOURCE_TYPES:
-            raise ValueError("resource_type must be one of: notebook, section_group, section, page.")
-        items = filter_resources(self.resources(include_recycle_bin), normalized_type)
+        """Query one fixed hierarchy resource type through its native COM scope."""
+
+        if resource_type not in RESOURCE_TYPES:
+            raise ValueError("Unsupported fixed metadata query resource type.")
+        if offset < 0:
+            raise ValueError("offset must be greater than or equal to 0.")
+        if page_size < 1 or page_size > MAX_METADATA_QUERY_PAGE_SIZE:
+            raise ValueError(
+                f"page_size must be between 1 and {MAX_METADATA_QUERY_PAGE_SIZE}."
+            )
+        after = _parse_rfc3339(modified_after, "modified_after") if modified_after else None
+        before = _parse_rfc3339(modified_before, "modified_before") if modified_before else None
+        if after is not None and before is not None and after >= before:
+            raise ValueError("modified_after must be earlier than modified_before.")
+
+        if resource_type == "notebook":
+            if scope_request is not None:
+                raise ValueError("query_notebook has a fixed root scope and does not accept scope.")
+            catalog = parse_hierarchy(self.hierarchy_xml("", _QUERY_SCOPES[resource_type]))
+            open_notebook_ids = self._open_notebook_ids(catalog)
+            start_node = None
+            items = [
+                item
+                for item in catalog
+                if item.get("resource_type") == "notebook"
+                and str(item.get("id", "")) in open_notebook_ids
+            ]
+        else:
+            if not isinstance(scope_request, dict):
+                raise ValueError("scope is required and must be an object.")
+            mode = str(scope_request.get("mode", "")).strip().casefold()
+            if mode not in METADATA_QUERY_SCOPE_MODES:
+                raise ValueError("scope.mode must be one of: root, start_node.")
+            if mode == "root":
+                if set(scope_request) != {"mode"}:
+                    raise ValueError("root scope does not accept additional fields.")
+                catalog = parse_hierarchy(self.hierarchy_xml("", _QUERY_SCOPES[resource_type]))
+                open_notebook_ids = self._open_notebook_ids(catalog)
+                start_node = None
+                items = [
+                    item
+                    for item in catalog
+                    if item.get("resource_type") == resource_type
+                    and self._notebook_id(item) in open_notebook_ids
+                ]
+            else:
+                if set(scope_request) != {"mode", "start_node_id"}:
+                    raise ValueError(
+                        "start_node scope requires only mode and start_node_id."
+                    )
+                start_node_id = str(scope_request.get("start_node_id", "")).strip()
+                if not start_node_id:
+                    raise ValueError("scope.start_node_id is required for start_node scope.")
+                catalog = parse_hierarchy(self.hierarchy_xml("", "sections"))
+                by_id = {str(item["id"]): item for item in catalog if item.get("id")}
+                open_notebook_ids = self._open_notebook_ids(catalog)
+                start_node = by_id.get(start_node_id)
+                if start_node is None:
+                    raise ValueError(f"No hierarchy object found for ID '{start_node_id}'.")
+                if start_node.get("resource_type") not in _QUERY_START_TYPES[resource_type]:
+                    allowed = ", ".join(sorted(_QUERY_START_TYPES[resource_type]))
+                    raise ValueError(
+                        f"scope.start_node_id for query_{resource_type} must identify: {allowed}."
+                    )
+                if self._notebook_id(start_node) not in open_notebook_ids:
+                    raise ValueError("scope.start_node_id must belong to an open Notebook.")
+                if start_node.get("is_in_recycle_bin") is True:
+                    raise ValueError("scope.start_node_id cannot be in the recycle bin.")
+                fragment = parse_hierarchy(
+                    self.hierarchy_xml(start_node_id, _QUERY_SCOPES[resource_type])
+                )
+                items = self._align_start_fragment(
+                    fragment,
+                    catalog,
+                    start_node,
+                    resource_type,
+                    open_notebook_ids,
+                )
+
+        notebook_count = len(open_notebook_ids)
+        if not include_recycle_bin:
+            items = self.without_recycle_bin(items)
+        scope = self._scope_response(start_node, notebook_count)
+        scope_by_id = {str(item["id"]): item for item in catalog if item.get("id")}
+        relationship_items = list(items)
+
         if name_equals:
             target = name_equals.casefold()
             items = [item for item in items if display_name(item).casefold() == target]
         if name_contains:
             target = name_contains.casefold()
             items = [item for item in items if target in display_name(item).casefold()]
+
         if parent_id:
-            if normalized_type == "page":
-                items = [
-                    item
-                    for item in items
-                    if item["section_id"] == parent_id or item["parent_page_id"] == parent_id
-                ]
-            else:
-                items = [item for item in items if item["parent_id"] == parent_id]
-        if modified_after:
-            items = [item for item in items if item.get("modified") and item["modified"] > modified_after]
-        if modified_before:
-            items = [item for item in items if item.get("modified") and item["modified"] < modified_before]
-        bounded = items[: max(1, min(limit, 1000))]
+            parent = scope_by_id.get(parent_id)
+            if (
+                parent is None
+                or parent.get("resource_type") not in {"notebook", "section_group"}
+                or self._notebook_id(parent) not in open_notebook_ids
+                or (not include_recycle_bin and parent.get("is_in_recycle_bin") is True)
+                or (
+                    start_node is not None
+                    and not self._is_descendant_or_self(
+                        parent_id, str(start_node["id"]), scope_by_id
+                    )
+                )
+            ):
+                raise ValueError(
+                    "parent_id must identify a Notebook or SectionGroup within the verified scope."
+                )
+            items = [item for item in items if item.get("parent_id") == parent_id]
+
+        if section_id:
+            section = scope_by_id.get(section_id)
+            if (
+                section is None
+                or section.get("resource_type") != "section"
+                or self._notebook_id(section) not in open_notebook_ids
+                or (not include_recycle_bin and section.get("is_in_recycle_bin") is True)
+                or (
+                    start_node is not None
+                    and not self._is_descendant_or_self(
+                        section_id, str(start_node["id"]), scope_by_id
+                    )
+                )
+            ):
+                raise ValueError("section_id must identify a Section within the verified scope.")
+            items = [item for item in items if item.get("section_id") == section_id]
+
+        if parent_page_id:
+            page_by_id = {
+                str(item["id"]): item
+                for item in relationship_items
+                if item.get("id")
+            }
+            parent_page = page_by_id.get(parent_page_id)
+            if parent_page is None:
+                raise ValueError(
+                    "parent_page_id must identify a Page within the verified scope."
+                )
+            if section_id and parent_page.get("section_id") != section_id:
+                raise ValueError("parent_page_id must belong to section_id when both are provided.")
+            items = [item for item in items if item.get("parent_page_id") == parent_page_id]
+
+        if after is not None or before is not None:
+            filtered: list[dict[str, Any]] = []
+            for item in items:
+                modified = item.get("modified")
+                if not modified:
+                    continue
+                instant = _parse_rfc3339(str(modified), "hierarchy modified time")
+                if after is not None and instant <= after:
+                    continue
+                if before is not None and instant >= before:
+                    continue
+                filtered.append(item)
+            items = filtered
+
+        total_matches = len(items)
+        page = items[offset : offset + page_size]
+        has_more = offset + len(page) < total_matches
         return {
-            "items": bounded,
-            "count": len(bounded),
-            "total_matches": len(items),
-            "truncated": len(bounded) < len(items),
+            "items": page,
+            "count": len(page),
+            "total_matches": total_matches,
+            "offset": offset,
+            "page_size": page_size,
+            "has_more": has_more,
+            "next_offset": offset + len(page) if has_more else None,
+            "pagination_consistency": METADATA_QUERY_PAGINATION_CONSISTENCY,
+            "resource_type": resource_type,
+            "query_kind": METADATA_QUERY_KIND,
+            "scope": scope,
         }
 
     def path(self, object_id: str) -> dict[str, Any]:

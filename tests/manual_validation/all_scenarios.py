@@ -3,24 +3,30 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 from pathlib import Path
+from queue import Queue
 import shlex
 import subprocess
 import sys
+from threading import Thread
 import time
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
-from .progress import VERBOSITY_LEVELS, bounded_terminal_text
-from .runtime import EXIT_MCP
+from local_onenote_mcp.desktop import require_onenote_desktop
+from local_onenote_mcp.onenote_errors import OneNoteError
+
+from .progress import VERBOSITY_LEVELS, bounded_terminal_text, safe_error_text
+from .runtime import ALL_CHILD_ISOLATION_PREFIX, EXIT_MCP
 
 
 def register_all_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "all",
         help=(
-            "GATED: serially launch every explicitly registered test scenario suite; "
-            "each child keeps its own default Notebook and run directory."
+            "GATED: serially launch explicitly registered test scenario suites; "
+            "after a failure, continue only when exact Notebook isolation is proven."
         ),
     )
     parser.add_argument(
@@ -52,8 +58,9 @@ def register_all_parser(subparsers: argparse._SubParsersAction) -> None:
         choices=VERBOSITY_LEVELS,
         default="quiet",
         help=(
-            "Output detail: quiet shows progress and failures (default), normal also "
-            "shows scenario results, verbose additionally shows child commands/stderr."
+            "Output detail: quiet streams each child's major phases and failures "
+            "(default), normal also streams case/mutation progress and results, "
+            "verbose additionally streams child commands, timing, and stderr."
         ),
     )
 
@@ -68,8 +75,26 @@ def _child_command(args: argparse.Namespace, scenario: str) -> list[str]:
         command.append("--json")
     if bool(getattr(args, "use_cache", False)):
         command.append("--use-cache")
+    if not args.dry_run:
+        command.append("--all-child")
     command.extend(["--verbosity", args.verbosity])
     return command
+
+
+def _extract_isolation_marker(stderr: str) -> tuple[str, bool | None]:
+    passed: bool | None = None
+    retained: list[str] = []
+    for line in stderr.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith(ALL_CHILD_ISOLATION_PREFIX):
+            try:
+                payload = json.loads(stripped[len(ALL_CHILD_ISOLATION_PREFIX) :])
+                passed = payload.get("passed") is True
+            except (json.JSONDecodeError, AttributeError):
+                passed = False
+            continue
+        retained.append(line)
+    return "".join(retained), passed
 
 
 def _parse_child_json(stdout: str) -> Any:
@@ -111,6 +136,12 @@ class ProgressReporter:
                 f"(exit {fields['exit_code']}, {fields['elapsed_seconds']:.2f}s)",
                 flush=True,
             )
+        elif event == "failure-isolated":
+            print(
+                f"  isolated {fields['scenario']}: exact run Notebook bundle closed; "
+                "continuing.",
+                flush=True,
+            )
         elif event == "scenario-command":
             print(f"  command: {fields['command']}", flush=True)
         elif event == "scenario-output":
@@ -120,11 +151,32 @@ class ProgressReporter:
                 for line in text.splitlines():
                     print(f"  {stream}: {line}", flush=True)
         elif event == "all-completed":
-            print(
-                f"Completed {fields['total']} scenarios: {fields['passed']} passed, "
-                f"{fields['failed']} failed ({fields['elapsed_seconds']:.2f}s).",
-                flush=True,
-            )
+            if fields["skipped"]:
+                print(
+                    f"Stopped after {fields['attempted']}/{fields['total']} scenarios: "
+                    f"{fields['passed']} passed, {fields['failed']} failed, "
+                    f"{fields['skipped']} not started ({fields['elapsed_seconds']:.2f}s).",
+                    flush=True,
+                )
+                print(
+                    "Stopped because exact failure isolation could not be proven. Review "
+                    "failure-finalization.json before starting another real scenario; "
+                    "validated cache templates remain reusable.",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"Completed {fields['total']} scenarios: {fields['passed']} passed, "
+                    f"{fields['failed']} failed ({fields['elapsed_seconds']:.2f}s).",
+                    flush=True,
+                )
+
+    def child_line(self, *, scenario: str, stream: str, line: str) -> None:
+        """Forward one already content-free child line with unambiguous context."""
+
+        text = safe_error_text(line.rstrip("\r\n"))
+        if text:
+            print(f"  {scenario} | {text}", flush=True)
 
     def child_output(
         self,
@@ -161,16 +213,117 @@ class ProgressReporter:
             )
 
 
+def _stream_child(
+    command: list[str],
+    *,
+    reporter: ProgressReporter,
+    scenario: str,
+    start_child: Any,
+) -> tuple[int, str, str, bool | None]:
+    """Stream a text child without allowing either pipe to block the other."""
+
+    process = start_child(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    if process.stdout is None or process.stderr is None:
+        raise OSError("Scenario child did not expose both output pipes.")
+
+    events: Queue[tuple[str, str | None]] = Queue()
+    stderr_tail: deque[str] = deque(maxlen=400)
+    isolation_passed: bool | None = None
+
+    def read_stream(stream_name: str, stream: Any) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                events.put((stream_name, line))
+        except (OSError, UnicodeError) as exc:
+            events.put(
+                (
+                    "stderr",
+                    f"child {stream_name} reader failed: {type(exc).__name__}\n",
+                )
+            )
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                pass
+            events.put((stream_name, None))
+
+    readers = [
+        Thread(
+            target=read_stream,
+            args=(stream_name, stream),
+            daemon=True,
+            name=f"manual-validation-{scenario}-{stream_name}",
+        )
+        for stream_name, stream in (
+            ("stdout", process.stdout),
+            ("stderr", process.stderr),
+        )
+    ]
+    for reader in readers:
+        reader.start()
+
+    completed_streams = 0
+    while completed_streams < len(readers):
+        stream_name, line = events.get()
+        if line is None:
+            completed_streams += 1
+            continue
+        if stream_name == "stdout":
+            reporter.child_line(scenario=scenario, stream=stream_name, line=line)
+            continue
+        cleaned, marker = _extract_isolation_marker(line)
+        if marker is not None:
+            isolation_passed = marker
+        if not cleaned:
+            continue
+        stderr_tail.append(cleaned)
+        if reporter.verbosity == "verbose":
+            reporter.child_line(scenario=scenario, stream=stream_name, line=cleaned)
+
+    exit_code = int(process.wait())
+    for reader in readers:
+        reader.join(timeout=1)
+    return (
+        exit_code,
+        "",
+        "" if reporter.verbosity == "verbose" else "".join(stderr_tail),
+        isolation_passed,
+    )
+
+
 def run_all(
     args: argparse.Namespace,
     *,
     scenarios: Sequence[str],
-    run_child: Any = subprocess.run,
+    run_child: Any | None = None,
+    start_child: Any | None = None,
+    desktop_preflight: Callable[[], Any] | None = None,
 ) -> int:
-    """Run the supplied registered test scenarios and return the first non-zero exit code."""
+    """Run suites serially, continuing only across proven-isolated failures."""
 
     if args.timeout is not None and args.timeout < 1:
         raise ValueError("--timeout must be at least 1 second.")
+
+    if not args.dry_run:
+        preflight = desktop_preflight
+        if preflight is None:
+            preflight = require_onenote_desktop
+        try:
+            preflight()
+        except OneNoteError as exc:
+            if args.json_output:
+                print(json.dumps({"ok": False, **exc.public_details(), "code": exc.code, "error": str(exc)}, ensure_ascii=False, sort_keys=True))
+            else:
+                print(f"ERROR: {exc}", flush=True)
+                print("No scenario was started.", flush=True)
+            return EXIT_MCP
 
     reporter = ProgressReporter(
         json_output=bool(args.json_output),
@@ -180,7 +333,9 @@ def run_all(
     failures: list[dict[str, Any]] = []
     total = len(scenarios)
 
+    attempted = 0
     for index, scenario in enumerate(scenarios, start=1):
+        attempted = index
         command = _child_command(args, scenario)
         reporter.emit("scenario-started", index=index, total=total, scenario=scenario)
         if args.verbosity == "verbose":
@@ -191,19 +346,30 @@ def run_all(
             )
         scenario_started = time.perf_counter()
         try:
-            completed = run_child(
-                command,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            exit_code = int(completed.returncode)
-            stdout = completed.stdout or ""
-            stderr = completed.stderr or ""
+            if args.json_output or run_child is not None:
+                completed = (run_child or subprocess.run)(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                exit_code = int(completed.returncode)
+                stdout = completed.stdout or ""
+                stderr, isolation_passed = _extract_isolation_marker(
+                    completed.stderr or ""
+                )
+            else:
+                exit_code, stdout, stderr, isolation_passed = _stream_child(
+                    command,
+                    reporter=reporter,
+                    scenario=scenario,
+                    start_child=start_child or subprocess.Popen,
+                )
         except OSError as exc:
             exit_code = EXIT_MCP
             stdout = ""
             stderr = str(exc)
+            isolation_passed = True
 
         elapsed = time.perf_counter() - scenario_started
         passed = exit_code == 0
@@ -222,12 +388,24 @@ def run_all(
             stderr=stderr,
         )
         if not passed:
-            failures.append({"scenario": scenario, "exit_code": exit_code})
+            failures.append(
+                {
+                    "scenario": scenario,
+                    "exit_code": exit_code,
+                    "isolation_passed": isolation_passed,
+                }
+            )
+            if not args.dry_run:
+                if isolation_passed is not True:
+                    break
+                reporter.emit("failure-isolated", scenario=scenario)
 
     reporter.emit(
         "all-completed",
         total=total,
-        passed=total - len(failures),
+        attempted=attempted,
+        skipped=total - attempted,
+        passed=attempted - len(failures),
         failed=len(failures),
         failures=failures,
         elapsed_seconds=round(time.perf_counter() - started, 6),

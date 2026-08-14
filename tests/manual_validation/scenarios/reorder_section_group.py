@@ -52,8 +52,8 @@ class ReorderSectionGroupScenario(Scenario):
             id_parameter="section_group_id",
             after_parameter="after_section_group_id",
             plans=(
-                ("root_group_c", "root_group_a"),
-                ("nested_group_c", "nested_group_a"),
+                ("notebook-parent", "root_group_c", "root_group_a"),
+                ("section-group-parent", "nested_group_c", "nested_group_a"),
             ),
             policy=REORDER_SECTION_GROUP_POLICY,
             allowed_tools=REORDER_SECTION_GROUP_TOOLS,

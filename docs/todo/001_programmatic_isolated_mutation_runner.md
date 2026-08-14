@@ -4,14 +4,14 @@
 > 状态：已完成
 > 优先级：P1
 > 类型：开发基础设施
-> 更新日期：2026-08-10
+> 更新日期：2026-08-13
 > 触发边界：只能由用户在终端显式运行，不进入 CI、hook、自动化或默认测试
 
 ## 目标
 
 通过唯一入口 `tests/manual_validation/run.py` 自动完成真实 OneNote mutation 的隔离准备、最小权限 MCP 调用、精确 ID/确认字段、before/after/restore 证据和报告。
 
-每个扁平的 `run.py <scenario>` 自身就是一次完整 suite：创建全新 disposable Notebook、准备 fixture、只运行所选 scenario、生成报告，然后默认关闭源 Notebook或按 `--keep-notebook` 保持打开。`create` 是正式的 fixture-only scenario；`validate` 和诊断辅助 action 均不公开。特殊 `run.py all` 只负责串行启动显式注册的稳定测试 scenario，不拥有共享 run-dir、Notebook、MCP、权限或 lifecycle；未来新增的探索性/验证性 scenario 默认不注册，用户仍可单独启动。
+每个扁平的 `run.py <scenario>` 自身就是一次完整 suite：创建全新 disposable Notebook、准备 fixture、只运行所选 scenario、生成报告，然后无论成功或失败都默认关闭 exact leased Notebook bundle；只有显式 `--keep-notebook` 或 `--keep-worksite` 才保持打开。`create` 是正式的 fixture-only scenario；`validate` 和诊断辅助 action 均不公开。特殊 `run.py all` 只负责串行启动显式注册的稳定测试 scenario，不拥有共享 run-dir、Notebook、MCP、权限或 lifecycle；失败 child 只有在 durable evidence 证明本次 bundle 已精确关闭后才允许批次继续。未来新增的探索性/验证性 scenario 默认不注册，用户仍可单独启动。
 
 Runner 不使用 Codex、LLM 或远程服务，但会执行真实 OneNote COM mutation，因此 Agent、pytest、CI、hook、timer、watcher 和后台任务不得运行真实命令。Agent 只能修改实现、运行纯合同测试并把命令交给用户。
 
@@ -49,7 +49,7 @@ tests/manual_validation/
   [--json]
 ```
 
-当前成功能力验收 scenario：`create`、`rename`、`reorder-page`、`reorder-section`、`reparent-page`、`reparent-section`、`reparent-section-group`、`delete`、`copy-page`、`copy-section`、`copy-section-group`、`copy-notebook`、`move-page`。三类 Reparent 都只允许同一 Notebook；Page 和 SectionGroup 场景仍不进入 `all`。`reorder-section-group` 保留可单独调用的诊断实现，但明确标记为功能受限、真实验证失败，并显式设置 `included_in_all=False`；后端仅维持按名称固定升序，产品契约拒绝该操作。
+当前成功能力验收 scenario：`create`、`rename`、`reorder-page`、`reorder-section`、`reparent-page`、`reparent-section`、`reparent-section-group`、`delete`、`copy-page`、`copy-section`、`copy-section-group`、`copy-notebook`、`move-page`。三类 Reparent 都只允许同一 Notebook；本 TODO 完成时 Page 和 SectionGroup 尚未进入 `all`，后续稳定性与权限审查及纳入记录见 [TODO 027](027_reparent_manual_validation_all_coverage.md)。`reorder-section-group` 保留可单独调用的诊断实现，但明确标记为功能受限、真实验证失败，并显式设置 `included_in_all=False`；后端仅维持按名称固定升序，产品契约拒绝该操作。
 
 特殊批量入口：`run.py all [--timeout <seconds>] [--dry-run] [--json] [--verbosity quiet|normal|verbose]`。它只读取 `SCENARIO_REGISTRY` 中 `included_in_all=True` 的类实例，不支持 `--run-dir`，默认 quiet，仅输出进度、错误和失败。
 
@@ -60,7 +60,7 @@ tests/manual_validation/
 - `delete` 自动选择本次 manifest 中的 `disposable_group`，不接受外部目标 ID。
 - 默认 close 只关闭 Notebook；源与 Copy 文件夹始终保留，不实现自动文件删除。
 - `--keep-worksite` 适用于全部具名 scenario：成功 after/read-back 后保留该 action 的现场、记录 `worksite.json`、精确目标 ID 和人工清理说明，并隐含保持源 Notebook 打开；可恢复 action 默认仍 restore/cleanup，`all` 不接受也不透传该参数。
-- 任一步失败立即停止，源 Notebook 保持打开；close 失败作为恢复失败处理。
+- 任一步业务流程失败立即停止后续 mutation/read-back/restore，随后进入 failure finalization：默认精确关闭本次全部 leased Notebook，保留 working files/evidence/cache；显式 `--keep-notebook` 或 `--keep-worksite` 才保持打开。`all` 只有在 close 证明通过后继续下一个 child，证明缺失或 close 失败立即停止批次。
 - `move-page` 始终严格运行。空保真 allowlist 导致的 `copy_only`、源未删除或保真门失败必须非零退出，不得跳过或降级。
 
 ## 权限与证据要求

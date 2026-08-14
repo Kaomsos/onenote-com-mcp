@@ -54,11 +54,8 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         assert f"{scenario.name}.keep-worksite" in {case.case_id for case in scenario_cases}
     excluded = set(SCENARIO_REGISTRY.public_names) - set(get_all_scenario_names())
     assert excluded == {
-        "reorder-section",
         "reorder-section-group",
-        "reparent-page",
         "reparent-page-scope",
-        "reparent-section-group",
         "bootstrap-inserted-file-fixture",
         "bootstrap-ink-drawing-fixture",
         "bootstrap-media-file-fixture",
@@ -74,6 +71,7 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "interactive-copy-ui-shape",
         "interactive-copy-inline-equation",
         "search-all-open-notebooks",
+        "query-metadata-scopes",
         "onenote-convergence",
     }
     assert excluded <= covered
@@ -143,7 +141,26 @@ def test_registered_named_case_round_trips_through_guarded_cli(
                 else "create-source-notebook"
             )
         )
-        assert payload["ordered_steps"][1]["tool_allowlist"] == sorted(spec.tool_allowlist)
+        mutation_step = next(
+            step
+            for step in payload["ordered_steps"]
+            if step["step"] == case.scenario_name
+        )
+        assert mutation_step["tool_allowlist"] == sorted(spec.tool_allowlist)
+        if (
+            "--use-cache" in case.scenario_args
+            and payload["cache"]["cache_mode"] != "interactive_bootstrap"
+        ):
+            assert payload["ordered_steps"][1]["step"] == (
+                "prepare-materialized-fixture"
+            )
+            preparation = payload["ordered_steps"][1]
+            assert preparation["allowed_operations"] == [
+                "batch OpenHierarchy(exact parent)",
+                "typed relative-address ID rebind",
+                "two stable hierarchy observations",
+                "one full read per declared Page",
+            ]
     if getattr(scenario.fixture_recipe, "representation_discovery_only", False):
         assert payload["cache"]["cache_mode"] == "representation_discovery"
         assert payload["cache"]["enabled"] is False

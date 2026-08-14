@@ -183,9 +183,10 @@ LOCAL_ONENOTE_MARKDIG_DLL = "C:\\path\\to\\Markdig.Signed.dll"
 The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental tools. The complete parameter and return contract is in [`docs/design/tool_contracts.md`](docs/design/tool_contracts.md); the static fields are in [`docs/design/object_model.md`](docs/design/object_model.md).
 
 ### 1. Discovery & Content Inspection
-* `health_check`: Get server version, python location, and active features.
-* Symmetric `list_*` / `get_*` tools for notebooks, section groups, sections, and pages.
-* `query_hierarchy` / `get_path` / `get_tree`: Query typed metadata and rebuild Page indentation trees.
+* `health_check`: Fail closed before any COM hierarchy read unless an existing OneNote Desktop process has a visible GUI window; on success, return content-free Desktop readiness, server/Python locations, and active features. It never starts OneNote implicitly.
+* Symmetric `list_*` / `get_*` tools for notebooks, section groups, sections, and pages. The five `list_*` tools remain available during the reviewed migration window; no removal is implied until the separate user approval gate is satisfied.
+* `query_notebook` / `query_section_group` / `query_section` / `query_page`: Query one fixed hierarchy metadata type. Notebook Query is fixed to all currently open Notebooks; the other three require strict `scope={"mode":"root"}` or one exact allowed native start-node ID. `offset` / `page_size` paginate the filtered live hierarchy (default/max 200) and do not reduce `GetHierarchy` retrieval or metadata scanning. Page title Query never reads body text; use `search_pages` for content.
+* `get_path` / `get_tree`: Read stable ancestry and rebuild Page indentation trees.
 * `get_page` returns metadata only; `get_page_text` / `get_page_xml` read content explicitly.
 * `get_page_objects` / `get_binary_content`: Query and extract sub-elements (like tables, images, ink, or file attachment payloads).
 * `search_pages`: Search the OneNote index with required `scope={"mode":"root"}` or `scope={"mode":"start_node","start_node_id":"..."}`. A start node must be one exact open Notebook, SectionGroup, or Section ID. `offset` and `page_size` provide live-index pagination (default/max 200); the filtered candidate set is capped before slicing, and there is no local-scan fallback or public backend selector.
@@ -278,17 +279,28 @@ uv run python scripts\smoke_mcp.py
 # validation scenarios are excluded until registered; all owns no shared run-dir:
 .venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run --verbosity normal
 
-# The user may remove --dry-run to run every isolated scenario serially. Each
-# child creates its own Notebook/run-dir; move-page remains strict.
+# The user may remove --dry-run to run isolated scenarios serially. Each child
+# creates its own Notebook/run-dir; a failed child closes its exact leased
+# Notebook bundle, and all continues only after that isolation is proven.
 ```
 
 Named scenarios default to `--verbosity normal`; use `quiet` for phase-only output or
 `verbose` for content-free mutation timing, convergence scalars, batched read counts,
-policy/allowlist counts, and phase timings. Human-readable modes always end with a
+policy/allowlist counts, and phase timings. Non-JSON `all` streams each serial child's
+progress immediately with a scenario prefix; it no longer waits for a child to finish
+before displaying that child's phases. Human-readable modes always end with a
 compact result and artifact paths rather than the complete nested run result. `--json`
 overrides verbosity and remains the only mode that prints the complete payload (one JSON
 document for a named scenario, JSON Lines for `all`). Progress never prints tool
 arguments, OneNote IDs, Page content, XML, binary data, queries, or full responses.
+Named scenarios close every exact leased working Notebook after failure by default,
+including when run alone. `--keep-notebook` or `--keep-worksite` explicitly preserves it
+open; neither flag is accepted by `all`. A real `all` continues after a failed child only
+when durable failure-finalization evidence proves the complete child bundle closed; a
+missing proof or close failure stops the batch. Working files, evidence, and validated
+cache templates remain preserved. Dry-run still checks the complete registry. A pure
+cache activation `0x8004201D` gets one pre-mutation
+close/reopen of the same working copy; cache templates are neither rebuilt nor discarded.
 
 ---
 

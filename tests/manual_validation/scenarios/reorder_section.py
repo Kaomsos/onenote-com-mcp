@@ -18,7 +18,7 @@ from .fixture_recipes.reorder_section import RECIPE
 class ReorderSectionScenario(Scenario):
     name = "reorder-section"
     fixture_recipe = RECIPE
-    included_in_all = False
+    included_in_all = True
     worksite_dry_run_action = "preserve-reordered-sections"
     help_text = "GATED: reorder and restore Sections under Notebook and SectionGroup parents."
 
@@ -40,7 +40,10 @@ class ReorderSectionScenario(Scenario):
             tool_name="reorder_section",
             id_parameter="section_id",
             after_parameter="after_section_id",
-            plans=(("root_section_c", "root_section_a"), ("group_section_c", "group_section_a")),
+            plans=(
+                ("notebook-parent", "root_section_c", "root_section_a"),
+                ("section-group-parent", "group_section_c", "group_section_a"),
+            ),
             policy=REORDER_SECTION_POLICY,
             allowed_tools=REORDER_SECTION_TOOLS,
             client=client,

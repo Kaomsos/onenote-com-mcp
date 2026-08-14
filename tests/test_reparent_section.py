@@ -538,7 +538,11 @@ def test_reparent_page_reports_structured_partial_after_promotion_when_reparent_
         lambda *_args: (before, {"promoted": True, "preserved_descendant_ids": ["child", "grandchild"]}),
     )
     monkeypatch.setattr(server.services.hierarchy, "reparent_page_scope_xml", lambda *_args, **_kwargs: "<typed />")
-    monkeypatch.setattr(server.services.mutations, "call", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("COM failed")))
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("COM failed")),
+    )
 
     with pytest.raises(PartialFailure) as caught:
         server.services.mutations.reparent_page(
@@ -581,7 +585,7 @@ def test_reparent_page_reports_promotion_failure_before_reparent(
 
     def call(operation: str, **_kwargs) -> dict:
         calls.append(operation)
-        if failure_stage == "promotion_call":
+        if operation == "update_hierarchy" and failure_stage == "promotion_call":
             raise RuntimeError("promotion call failed")
         return {}
 
@@ -624,7 +628,7 @@ def test_reparent_page_reports_promotion_failure_before_reparent(
 
 
 @pytest.mark.write_contract
-def test_reparent_page_rejects_snapshot_change_before_first_mutation(monkeypatch) -> None:
+def test_reparent_page_rejects_semantic_snapshot_change_before_first_mutation(monkeypatch) -> None:
     items = _page_scope_before()["items"]
     target = next(item for item in items if item["id"] == "selected")
     target["modified"] = "modified"
@@ -632,7 +636,7 @@ def test_reparent_page_rejects_snapshot_change_before_first_mutation(monkeypatch
     changed_target = next(
         item for item in changed["items"] if item["id"] == "selected"
     )
-    changed_target["modified"] = "changed-after-confirmation"
+    changed_target["title"] = "Changed After Confirmation"
     calls: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
@@ -658,6 +662,54 @@ def test_reparent_page_rejects_snapshot_change_before_first_mutation(monkeypatch
         )
 
     assert calls == []
+
+
+@pytest.mark.write_contract
+def test_reparent_page_allows_modified_clock_drift_before_first_mutation(monkeypatch) -> None:
+    items = _page_scope_before()["items"]
+    target = next(item for item in items if item["id"] == "selected")
+    target["modified"] = "modified"
+    changed = _page_scope_before()
+    changed_target = next(
+        item for item in changed["items"] if item["id"] == "selected"
+    )
+    changed_target["modified"] = "one-note-clock-drift"
+    destination = next(
+        item for item in changed["items"] if item["id"] == "destination-section"
+    )
+    destination["modified"] = "destination-clock-drift"
+    calls: list[str] = []
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_snapshot",
+        lambda _notebook_id: changed,
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "reparent_page_scope_xml",
+        lambda *_args, **_kwargs: "<typed-page-scope />",
+    )
+
+    def stop_after_mutation(operation, **_kwargs):
+        calls.append(operation)
+        raise RuntimeError("stop after first mutation")
+
+    monkeypatch.setattr(server.services.mutations, "call", stop_after_mutation)
+
+    with pytest.raises(RuntimeError, match="stop after first mutation"):
+        server.services.mutations.reparent_page(
+            "selected",
+            "destination-section",
+            "Selected",
+            "source-section",
+            "modified",
+            True,
+        )
+
+    assert calls == ["update_hierarchy"]
 
 
 @pytest.mark.write_contract
@@ -695,13 +747,18 @@ def test_reparent_page_partial_reports_observed_root_when_subtree_is_incomplete(
             ),
         },
     }
-    captures = iter([before, *[candidate] * 16])
+    captures = iter([before, candidate])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",
         lambda **_kwargs: before["items"],
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_hierarchy",
+        lambda _notebook_id: candidate["items"],
     )
     monkeypatch.setattr(
         server.services.mutations,
@@ -745,6 +802,20 @@ def test_reparent_page_readback_unavailable_reports_stable_partial_reason(
     before = _page_scope_before()
     target = next(item for item in before["items"] if item["id"] == "source-after")
     target["modified"] = "modified"
+    after_items = [
+        dict(item) for item in before["items"] if item["id"] != "source-after"
+    ]
+    after_items.append(
+        {
+            **target,
+            "id": "source-after-new",
+            "parent_id": "destination-section",
+            "section_id": "destination-section",
+            "page_level": 1,
+            "parent_page_id": None,
+            "order": 1,
+        }
+    )
     captures = 0
 
     def capture(_notebook_id: str) -> dict:
@@ -758,6 +829,11 @@ def test_reparent_page_readback_unavailable_reports_stable_partial_reason(
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before["items"]
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_hierarchy",
+        lambda _notebook_id: after_items,
     )
     monkeypatch.setattr(server.services.mutations, "_capture_reparent_snapshot", capture)
     monkeypatch.setattr(
@@ -779,15 +855,18 @@ def test_reparent_page_readback_unavailable_reports_stable_partial_reason(
             "modified",
         )
 
-    assert captures == 17
+    assert captures == 3
     assert caught.value.details["outcome"] == "reparent_subtree_incomplete"
+    assert caught.value.details["readback_phase"] == "full_evidence_capture"
+    assert caught.value.details["capture_attempts"] == 2
+    assert caught.value.details["mutation_replayed"] is False
     assert caught.value.details["active_source_ids"] == []
-    assert caught.value.details["observed_destination_ids"] == []
-    assert caught.value.details["destination_position"] == {
-        "status": "unavailable",
-        "resource_type": "page",
-        "reason": "destination_snapshot_unavailable",
-    }
+    assert caught.value.details["observed_destination_ids"] == ["source-after-new"]
+    assert_destination_position_contract(
+        {"destination_position": caught.value.details["destination_position"]},
+        after_items,
+        "source-after-new",
+    )
 
 
 @pytest.mark.write_contract
@@ -815,11 +894,14 @@ def test_reparent_fails_closed_when_com_succeeds_without_state_change(monkeypatc
     )
     monkeypatch.setattr("local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None)
 
-    with pytest.raises(RuntimeError, match="requested parent was not observed"):
+    with pytest.raises(PartialFailure, match="hierarchy convergence") as caught:
         server.services.mutations.reparent_section(
             "section-id", "destination-group-id", "Section", "source-group-id", "modified"
         )
     assert calls == ["update_hierarchy"]
+    assert caught.value.details["readback_phase"] == "hierarchy_convergence"
+    assert caught.value.details["readback_error"]
+    assert caught.value.details["mutation_replayed"] is False
 
 
 @pytest.mark.write_contract
@@ -894,7 +976,6 @@ def test_reparent_container_service_returns_observed_destination_position(
         [
             {"items": before_items, "page_xml": {}},
             {"items": after_items, "page_xml": {}},
-            {"items": after_items, "page_xml": {}},
         ]
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
@@ -903,6 +984,11 @@ def test_reparent_container_service_returns_observed_destination_position(
         server.services.hierarchy,
         "resources",
         lambda **_kwargs: before_items,
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_hierarchy",
+        lambda _notebook_id: after_items,
     )
     monkeypatch.setattr(
         server.services.mutations,
@@ -973,13 +1059,18 @@ def test_reparent_page_service_returns_only_normalized_root_position(monkeypatch
             ),
         },
     }
-    snapshots = iter([before, after, after])
+    snapshots = iter([before, after])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",
         lambda **_kwargs: before["items"],
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_hierarchy",
+        lambda _notebook_id: after_items,
     )
     monkeypatch.setattr(
         server.services.mutations,
@@ -1048,12 +1139,17 @@ def test_reparent_page_without_descendants_skips_promotion_and_false_is_equivale
             ),
         },
     }
-    snapshots = iter([before, after, after])
+    snapshots = iter([before, after])
     calls: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before["items"]
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_hierarchy",
+        lambda _notebook_id: after_items,
     )
     monkeypatch.setattr(
         server.services.mutations,
@@ -1089,3 +1185,287 @@ def test_reparent_page_without_descendants_skips_promotion_and_false_is_equivale
         "preserved_descendant_ids": [],
     }
     assert_destination_position_contract(result, after_items, "selected-new")
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize("resource_type", ["section", "section_group", "page"])
+def test_reparent_full_evidence_capture_may_exceed_convergence_deadline(
+    monkeypatch,
+    resource_type: str,
+) -> None:
+    items = _container_items()
+    items.append(
+        {
+            "resource_type": "section",
+            "id": "destination-section",
+            "name": "Destination Section",
+            "parent_id": "destination-group-id",
+            "notebook_id": "notebook-id",
+            "is_in_recycle_bin": False,
+        }
+    )
+    if resource_type == "section":
+        target_id = "section-id"
+        destination_id = "destination-group-id"
+        expected_name = "Section"
+        source_parent_id = "source-group-id"
+        invoke = server.services.mutations.reparent_section
+    elif resource_type == "section_group":
+        target_id = "target-group-id"
+        destination_id = "destination-group-id"
+        expected_name = "Target Group"
+        source_parent_id = "source-group-id"
+        items.append(
+            {
+                "resource_type": "section_group",
+                "id": target_id,
+                "name": expected_name,
+                "parent_id": source_parent_id,
+                "notebook_id": "notebook-id",
+                "modified": "modified",
+                "is_in_recycle_bin": False,
+            }
+        )
+        invoke = server.services.mutations.reparent_section_group
+    else:
+        target_id = "page-id"
+        destination_id = "destination-section"
+        expected_name = "Page"
+        source_parent_id = "section-id"
+        items.append(
+            {
+                "resource_type": "page",
+                "id": target_id,
+                "title": expected_name,
+                "parent_id": source_parent_id,
+                "section_id": source_parent_id,
+                "notebook_id": "notebook-id",
+                "page_level": 1,
+                "parent_page_id": None,
+                "order": 0,
+                "modified": "modified",
+                "is_in_recycle_bin": False,
+            }
+        )
+        invoke = server.services.mutations.reparent_page
+
+    target = next(item for item in items if item["id"] == target_id)
+    target["modified"] = "modified"
+    moved = dict(target)
+    if resource_type == "page":
+        moved.update(parent_id=destination_id, section_id=destination_id)
+    else:
+        moved["parent_id"] = destination_id
+    after_items = [dict(item) for item in items if item["id"] != target_id]
+    after_items.append(moved)
+    before = {"items": items, "page_xml": {}}
+    after = {"items": after_items, "page_xml": {}}
+    now = [0.0]
+    captures = 0
+    calls: list[str] = []
+
+    def capture(_notebook_id: str) -> dict:
+        nonlocal captures
+        captures += 1
+        if captures == 1:
+            return before
+        now[0] += 5.0
+        return after
+
+    def capture_topology(_notebook_id: str) -> list[dict]:
+        now[0] += 0.1
+        return after_items
+
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
+    monkeypatch.setattr(server.services.mutations, "_capture_reparent_snapshot", capture)
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_hierarchy",
+        capture_topology,
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "reparent_xml",
+        lambda *_args, **_kwargs: "<typed-container />",
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "reparent_page_scope_xml",
+        lambda *_args, **_kwargs: "<typed-page />",
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_validate_reparent_snapshots",
+        lambda *_args, **_kwargs: (moved, {target_id: target_id}, {"verified": True}),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_validate_reparent_page_scope",
+        lambda *_args, **_kwargs: (moved, {target_id: target_id}, {"verified": True}),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda operation, **_kwargs: calls.append(operation) or {},
+    )
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.mutations.time.monotonic", lambda: now[0]
+    )
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.mutations.time.sleep",
+        lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    result = invoke(
+        target_id,
+        destination_id,
+        expected_name,
+        source_parent_id,
+        "modified",
+    )
+
+    assert result["item"]["id"] == target_id
+    assert result["convergence"]["stable_observations"] == 2
+    assert now[0] > 4.0
+    assert captures == 2
+    assert calls == ["update_hierarchy"]
+
+
+@pytest.mark.write_contract
+def test_reparent_retries_full_capture_once_without_replaying_mutation(monkeypatch) -> None:
+    before_items = _container_items()
+    moved = {
+        **next(item for item in before_items if item["id"] == "section-id"),
+        "parent_id": "destination-group-id",
+    }
+    after_items = [
+        dict(item) for item in before_items if item["id"] != "section-id"
+    ] + [moved]
+    before = {"items": before_items, "page_xml": {}}
+    after = {"items": after_items, "page_xml": {}}
+    captures = 0
+    calls: list[str] = []
+
+    def capture(_notebook_id: str) -> dict:
+        nonlocal captures
+        captures += 1
+        if captures == 1:
+            return before
+        if captures == 2:
+            raise RuntimeError("hierarchy changed during evidence capture")
+        return after
+
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setattr(
+        server.services.hierarchy, "resources", lambda **_kwargs: before_items
+    )
+    monkeypatch.setattr(server.services.mutations, "_capture_reparent_snapshot", capture)
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_hierarchy",
+        lambda _notebook_id: after_items,
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "reparent_xml",
+        lambda *_args, **_kwargs: "<typed-container />",
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda operation, **_kwargs: calls.append(operation) or {},
+    )
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None
+    )
+
+    result = server.services.mutations.reparent_section(
+        "section-id",
+        "destination-group-id",
+        "Section",
+        "source-group-id",
+        "modified",
+    )
+
+    assert result["item"]["parent_id"] == "destination-group-id"
+    assert captures == 3
+    assert calls == ["update_hierarchy"]
+
+
+def test_reparent_snapshot_rejects_same_ids_with_changed_sibling_order(monkeypatch) -> None:
+    initial = _container_items()
+    refreshed = [initial[0], initial[2], initial[1], initial[3]]
+    observations = iter([initial, refreshed])
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_hierarchy",
+        lambda _notebook_id: next(observations),
+    )
+
+    with pytest.raises(RuntimeError, match="hierarchy changed"):
+        server.services.mutations._capture_reparent_snapshot("notebook-id")
+
+
+@pytest.mark.write_contract
+def test_reparent_hierarchy_deadline_reports_stable_count_instead_of_none(
+    monkeypatch,
+) -> None:
+    before_items = _container_items()
+    moved = {
+        **next(item for item in before_items if item["id"] == "section-id"),
+        "parent_id": "destination-group-id",
+    }
+    after_items = [
+        dict(item) for item in before_items if item["id"] != "section-id"
+    ] + [moved]
+    now = [0.0]
+    calls: list[str] = []
+
+    def slow_topology(_notebook_id: str) -> list[dict]:
+        now[0] += 5.0
+        return after_items
+
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setattr(
+        server.services.hierarchy, "resources", lambda **_kwargs: before_items
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "_capture_reparent_snapshot",
+        lambda _notebook_id: {"items": before_items, "page_xml": {}},
+    )
+    monkeypatch.setattr(
+        server.services.mutations, "_capture_reparent_hierarchy", slow_topology
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "reparent_xml",
+        lambda *_args, **_kwargs: "<typed-container />",
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda operation, **_kwargs: calls.append(operation) or {},
+    )
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.mutations.time.monotonic", lambda: now[0]
+    )
+
+    with pytest.raises(PartialFailure, match="1/2 stable observations") as caught:
+        server.services.mutations.reparent_section(
+            "section-id",
+            "destination-group-id",
+            "Section",
+            "source-group-id",
+            "modified",
+        )
+
+    assert caught.value.details["readback_phase"] == "hierarchy_convergence"
+    assert caught.value.details["readback_error"] == (
+        "deadline exceeded after 1/2 stable observations"
+    )
+    assert calls == ["update_hierarchy"]

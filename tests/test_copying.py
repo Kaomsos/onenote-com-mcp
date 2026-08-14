@@ -1231,6 +1231,23 @@ def test_plan_copy_still_changes_digest_when_authored_content_changes(monkeypatc
     assert first["source_snapshot_digest"] != second["source_snapshot_digest"]
 
 
+def test_plan_copy_ignores_modified_clock_drift_but_preserves_observation(monkeypatch):
+    state = install_plan_fakes(monkeypatch)
+
+    first = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    for item in state["items"]:
+        item["modified"] = "one-note-clock-drift"
+    second = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+
+    assert first["plan_digest"] == second["plan_digest"]
+    assert first["source_snapshot_digest"] == second["source_snapshot_digest"]
+    assert (
+        first["snapshots"]["source"]["resources"]
+        != second["snapshots"]["source"]["resources"]
+    )
+    assert first["destination"] != second["destination"]
+
+
 def test_plan_copy_explicitly_includes_complete_page_subtree_and_changes_digest(monkeypatch):
     install_plan_fakes(monkeypatch)
 
@@ -1517,6 +1534,58 @@ def test_copy_rejects_stale_plan_before_create(monkeypatch):
 
     assert result["ok"] is False
     assert "stale" in result["error"]
+
+
+@pytest.mark.write_contract
+def test_copy_notebook_allows_modified_clock_drift_when_semantic_plan_matches(monkeypatch):
+    confirmations: list[tuple] = []
+    executions: list[str] = []
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setattr(
+        server.services.copying,
+        "_confirm_source",
+        lambda *args: confirmations.append(args),
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_build_plan",
+        lambda *args, **kwargs: {
+            "plan_digest": "semantic-plan",
+            "source": {
+                "id": "source-notebook",
+                "resource_type": "notebook",
+                "name": "Source Notebook",
+                "parent_id": None,
+                "modified": "one-note-clock-drift",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_execute_copy",
+        lambda plan: executions.append(plan["plan_digest"])
+        or {"item": {"id": "copied-notebook"}, "warnings": []},
+    )
+
+    result = server.services.copying.copy_resource(
+        "source-notebook",
+        "notebook",
+        "",
+        "Notebook Copy",
+        "C:/validation",
+        "Source Notebook",
+        None,
+        "planned-clock",
+        "semantic-plan",
+    )
+
+    assert confirmations == [
+        ("source-notebook", "notebook", "Source Notebook", None, None)
+    ]
+    assert executions == ["semantic-plan"]
+    assert result["item"]["id"] == "copied-notebook"
+    assert any("modified timestamps" in warning for warning in result["warnings"])
 
 
 @pytest.mark.write_contract
@@ -2803,6 +2872,9 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
         "parent", "destination-section", "Moved Parent", True
     )
     def execute_copy(_value):
+        for item in state["items"]:
+            if item.get("id") in {"parent", "child"}:
+                item["modified"] = f"drifted-{item['id']}"
         state["items"].extend(
             [
                 {
@@ -2843,10 +2915,12 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
 
     monkeypatch.setattr(server.services.copying, "_execute_copy", execute_copy)
     deleted = []
+    delete_confirmations = {}
 
     def delete_page(page_id, expected_title, expected_section_id, expected_modified, permanently):
         assert permanently is False
         deleted.append(page_id)
+        delete_confirmations[page_id] = expected_modified
         return {"deleted": True, "final_state": {"id": page_id, "is_in_recycle_bin": True}}
 
     monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
@@ -2862,11 +2936,16 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     )
 
     assert deleted == ["child", "parent"]
+    assert delete_confirmations == {
+        "child": "drifted-child",
+        "parent": "drifted-parent",
+    }
     assert result["source_deleted"] is True
     assert result["source_deleted_nonpermanently"] is True
     assert result["source_deleted_to_recycle_bin"] is True
     assert result["recycle_bin_verification"] == "verified"
     assert result["outcome"] == "moved"
+    assert any("source modified timestamps" in warning for warning in result["warnings"])
     assert result["destination_position"]["status"] == "observed"
 
 
@@ -3123,6 +3202,7 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
         "operation": f"move_{resource_type}",
         "plan_digest": "move-digest",
         "source_digest": "source-digest",
+        "protected_digest": "source-protected",
         "source": {
             "resource_type": resource_type,
             "id": source_id,
@@ -3156,9 +3236,14 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
     }
     captures = iter(
         [
-            {"source_digest": "source-digest"},
-            {"source_digest": "target-digest"},
-            {"source_digest": "target-digest"},
+            {
+                "source_digest": "source-digest",
+                "protected_digest": "source-protected",
+                "source": {"modified": "m1"},
+                "resources": [],
+            },
+            {"source_digest": "target-digest", "protected_digest": "target-protected"},
+            {"source_digest": "target-digest", "protected_digest": "target-protected"},
         ]
     )
     delete_calls = []
@@ -3256,6 +3341,115 @@ def test_container_move_uses_shared_copy_contract_without_lossless_gate(monkeypa
 
 
 @pytest.mark.write_contract
+def test_container_move_accepts_destination_modified_clock_drift(monkeypatch):
+    source_id, _child_id, _copied, delete_calls, _final_items = (
+        install_container_move_execution_fakes(monkeypatch, "section_group")
+    )
+    captures = iter(
+        [
+            {"source_digest": "source-digest", "protected_digest": "source-protected"},
+            {"source_digest": "target-before", "protected_digest": "target-protected"},
+            {"source_digest": "target-after", "protected_digest": "target-protected"},
+        ]
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_capture_source",
+        lambda *args, **kwargs: next(captures),
+    )
+
+    result = server.services.copying.move_section_group(
+        source_id,
+        "destination-notebook",
+        "Source",
+        "source-notebook",
+        "move-digest",
+        "m1",
+        "Moved",
+    )
+
+    assert result["outcome"] == "moved"
+    assert len(delete_calls) == 1
+    assert any("modified timestamps" in warning for warning in result["warnings"])
+
+
+@pytest.mark.write_contract
+def test_container_move_accepts_source_modified_clock_drift_and_rebinds_delete(monkeypatch):
+    source_id, _child_id, _copied, delete_calls, _final_items = (
+        install_container_move_execution_fakes(monkeypatch, "section_group")
+    )
+    captures = iter(
+        [
+            {
+                "source_digest": "source-clock-drift",
+                "protected_digest": "source-protected",
+                "source": {"modified": "m2"},
+                "resources": [],
+            },
+            {"source_digest": "target", "protected_digest": "target-protected"},
+            {"source_digest": "target", "protected_digest": "target-protected"},
+        ]
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_capture_source",
+        lambda *args, **kwargs: next(captures),
+    )
+
+    result = server.services.copying.move_section_group(
+        source_id,
+        "destination-notebook",
+        "Source",
+        "source-notebook",
+        "move-digest",
+        "m1",
+        "Moved",
+    )
+
+    assert result["outcome"] == "moved"
+    assert len(delete_calls) == 1
+    assert delete_calls[0][4] == "m2"
+    assert any("source modified timestamps" in warning for warning in result["warnings"])
+
+
+@pytest.mark.write_contract
+def test_container_move_reports_destination_semantic_drift_after_source_delete(monkeypatch):
+    source_id, _child_id, _copied, delete_calls, _final_items = (
+        install_container_move_execution_fakes(monkeypatch, "section_group")
+    )
+    captures = iter(
+        [
+            {"source_digest": "source-digest", "protected_digest": "source-protected"},
+            {"source_digest": "target-before", "protected_digest": "target-protected-before"},
+            {"source_digest": "target-after", "protected_digest": "target-protected-after"},
+        ]
+    )
+    monkeypatch.setattr(
+        server.services.copying,
+        "_capture_source",
+        lambda *args, **kwargs: next(captures),
+    )
+
+    with pytest.raises(PartialFailure) as raised:
+        server.services.copying.move_section_group(
+            source_id,
+            "destination-notebook",
+            "Source",
+            "source-notebook",
+            "move-digest",
+            "m1",
+            "Moved",
+        )
+
+    assert len(delete_calls) == 1
+    assert raised.value.details["outcome"] == "source_removed_destination_revalidation_failed"
+    assert raised.value.details["source_deleted"] is True
+    assert "protected topology or content changed" in raised.value.details[
+        "destination_revalidation_error"
+    ]
+
+
+@pytest.mark.write_contract
 def test_container_move_does_not_delete_when_source_revalidation_changes(monkeypatch):
     source_id, _child_id, _copied, delete_calls, final_items = install_container_move_execution_fakes(
         monkeypatch, "section"
@@ -3263,7 +3457,10 @@ def test_container_move_does_not_delete_when_source_revalidation_changes(monkeyp
     monkeypatch.setattr(
         server.services.copying,
         "_capture_source",
-        lambda *args, **kwargs: {"source_digest": "changed-source"},
+        lambda *args, **kwargs: {
+            "source_digest": "changed-source",
+            "protected_digest": "changed-protected-source",
+        },
     )
 
     with pytest.raises(PartialFailure) as raised:

@@ -8,12 +8,16 @@ import re
 import time
 from typing import Any, Callable, Mapping
 
+from local_onenote_mcp.desktop import require_onenote_desktop
+from local_onenote_mcp.onenote_errors import OneNoteError
+
 from ...mcp_stdio_client import (
     COPY_BUDGET_ENV,
     MCPStdioClient,
 )
 from ...lifecycle import NotebookLifecycleWrapper
 from ...runtime import (
+    EXIT_MCP,
     EXIT_RESTORE,
     PathBudgetFailure,
     RestoreFailure,
@@ -93,12 +97,14 @@ def _materialize_with_budget_context(
     *,
     working_names: Mapping[str, str] | None,
     cache_entry_published: bool,
+    cache_origin: str,
 ) -> MaterializedBundle:
     try:
         return cache_store.materialize(
             hit,
             run_dir,
             working_names=working_names,
+            cache_origin=cache_origin,
         )
     except PathBudgetFailure as exc:
         exc.cache_entry_published = cache_entry_published
@@ -260,7 +266,7 @@ def _record_materialized_failure(
     exc: Exception,
     *,
     phase: str,
-    quarantine: bool = True,
+    quarantine: bool = False,
 ) -> None:
     reason = f"{phase} failed: {type(exc).__name__}: {exc}"
     evidence: dict[str, Any] = {
@@ -289,7 +295,8 @@ def _record_materialized_failure(
             )
     else:
         evidence["quarantine"] = None
-        evidence["retryable_after_working_notebook_close"] = True
+        evidence["template_integrity_not_implicated"] = True
+        evidence["retryable_with_same_template"] = True
     write_json(options.run_dir / "cache-live-validation-failure.json", evidence)
 
 
@@ -417,6 +424,23 @@ async def finalize_notebook(
         "status": "running",
     }
     write_json(lifecycle_path, lifecycle)
+    if lease.get("state") == "closed":
+        closed = lease.get("close_result")
+        if (
+            not isinstance(closed, dict)
+            or closed.get("closed") is not True
+            or str(closed.get("source_notebook_id", "")) != notebook_id
+        ):
+            raise RestoreFailure("Pre-closed lifecycle lease lacks exact close evidence.")
+        lifecycle.update(
+            closed=True,
+            close_before=closed.get("close_before"),
+            close_result=closed,
+            status="closed_preserved",
+            completed_at=utc_now(),
+        )
+        write_json(lifecycle_path, lifecycle)
+        return lifecycle
     if _keep_source_notebook(args):
         current = wrapper.get_exact_notebook(lease)
         preserved = {
@@ -517,6 +541,10 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
             "Representation discovery never reads or publishes fixture cache; "
             "remove --use-cache."
         )
+    try:
+        require_onenote_desktop()
+    except OneNoteError as exc:
+        raise RunnerFailure(str(exc), EXIT_MCP) from exc
     _assert_fresh_run_dir(options.run_dir)
     _assert_no_legacy_validation_payload(options.run_dir, options.cache_root)
     progress = options.progress
@@ -616,6 +644,11 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     options.run_dir,
                     working_names=_cached_working_names(args, scenario),
                     cache_entry_published=False,
+                    cache_origin=(
+                        "recovered_retryable_open_failure"
+                        if cache_decision == "recovered_retryable_open_failure"
+                        else "validated_hit"
+                    ),
                 )
                 if cache_decision != "recovered_retryable_open_failure":
                     cache_decision = "validated_hit"
@@ -810,6 +843,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                             options.run_dir,
                             working_names=_cached_working_names(args, scenario),
                             cache_entry_published=True,
+                            cache_origin="cold_build",
                         )
                     try:
                         notebooks, leases = _open_materialized_bundle(
@@ -880,14 +914,47 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 elapsed_seconds=time.perf_counter() - fixture_progress_started,
             )
             progress.phase_started("scenario", 3, 5)
+            if materialized is not None:
+                if not hasattr(client, "stage_scenario_before_snapshots"):
+                    raise RunnerFailure(
+                        "Scenario MCP client cannot accept the materialized before-snapshot handoff."
+                    )
+                role_snapshots = {
+                    role: read_json(
+                        (
+                            options.run_dir / f"fixture-snapshot-{role}.json"
+                            if (options.run_dir / f"fixture-snapshot-{role}.json").exists()
+                            else options.run_dir / "fixture-snapshot.json"
+                        )
+                    )
+                    for role in roles
+                }
+                client.stage_scenario_before_snapshots(
+                    role_snapshots,
+                    {
+                        role: str(notebooks[role]["id"])
+                        for role in roles
+                    },
+                    options.run_dir / "scenario-before-snapshot-handoff.json",
+                )
             scenario.prepare_arguments(args, manifest)
-            scenario_result = await scenario.execute(
-                args,
-                options,
-                manifest,
-                client=client,
-                fixture_result=fixture_result,
-            )
+            if getattr(scenario, "requires_lifecycle_wrappers", False):
+                scenario_result = await scenario.execute_with_lifecycle(
+                    args,
+                    options,
+                    manifest,
+                    client=client,
+                    fixture_result=fixture_result,
+                    wrappers=wrappers,
+                )
+            else:
+                scenario_result = await scenario.execute(
+                    args,
+                    options,
+                    manifest,
+                    client=client,
+                    fixture_result=fixture_result,
+                )
             if interactive_bootstrap and scenario_result.get("interactive_bootstrap") is True:
                 if bool(getattr(args, "keep_worksite", False)):
                     scenario_result["template_published"] = False
@@ -956,6 +1023,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                             options.run_dir,
                             working_names=_cached_working_names(args, scenario),
                             cache_entry_published=True,
+                            cache_origin="interactive_bootstrap",
                         )
                     try:
                         notebooks, leases = _open_materialized_bundle(
@@ -1130,10 +1198,187 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     return result
 
 
+def _failure_finalization(
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Close this run's exact leased Notebook bundle after a failure by default."""
+
+    run_dir = Path(args.run_dir)
+    keep_open = _keep_source_notebook(args)
+    scenario = SCENARIO_REGISTRY.get(args.scenario)
+    roles = tuple(
+        role.role for role in scenario.fixture_recipe.cache_identity.notebook_roles
+    )
+    result: dict[str, Any] = {
+        "schema_version": 1,
+        "mode": "keep" if keep_open else "close",
+        "status": "running",
+        "isolation_passed": False,
+        "closed": False,
+        "roles": {},
+        "filesystem_deleted": False,
+        "cache_modified": False,
+        "started_at": utc_now(),
+    }
+    evidence_path = run_dir / "failure-finalization.json"
+    if not run_dir.is_dir() or (
+        not (run_dir / "run-state.json").is_file()
+        and not any(run_dir.glob("lifecycle-lease*.json"))
+    ):
+        return {
+            **result,
+            "status": "not_started",
+            "isolation_passed": True,
+            "closed": True,
+            "completed_at": utc_now(),
+        }
+    write_json(evidence_path, result)
+    wrappers = _role_wrappers(
+        run_dir,
+        int(getattr(args, "timeout", 180)),
+        roles,
+        progress=getattr(args, "progress", None),
+    )
+
+    for role in roles:
+        wrapper = wrappers[role]
+        if not wrapper.lease_path.exists():
+            result["roles"][role] = {
+                "status": "not_opened",
+                "closed": True,
+                "lease_present": False,
+            }
+            write_json(evidence_path, result)
+            continue
+        try:
+            lease = read_json(wrapper.lease_path)
+            if keep_open:
+                current = wrapper.get_exact_notebook(lease)
+                result["roles"][role] = {
+                    "status": "preserved_open",
+                    "closed": False,
+                    "lease_present": True,
+                    "notebook_id": str(current["id"]),
+                }
+            elif lease.get("state") == "closed":
+                close_result = lease.get("close_result")
+                if not isinstance(close_result, dict) or close_result.get("closed") is not True:
+                    raise RestoreFailure(
+                        f"Closed failure lease for role {role} lacks exact close evidence."
+                    )
+                result["roles"][role] = {
+                    "status": "already_closed",
+                    "closed": True,
+                    "lease_present": True,
+                    "close_result": close_result,
+                }
+            else:
+                close_result = wrapper.close_exact_notebook()
+                if close_result.get("closed") is not True:
+                    raise RestoreFailure(
+                        f"Failure finalization did not close Notebook role {role} precisely."
+                    )
+                result["roles"][role] = {
+                    "status": "closed",
+                    "closed": True,
+                    "lease_present": True,
+                    "close_result": close_result,
+                }
+        except Exception as exc:
+            result["roles"][role] = {
+                "status": "close_failed" if not keep_open else "preserve_failed",
+                "closed": False,
+                "lease_present": True,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        write_json(evidence_path, result)
+
+    if args.scenario == "copy-notebook":
+        copy_out = scenario_dir(run_dir, "copy-notebook")
+        auxiliary_path = copy_out / "copy-target-failure-finalization.json"
+        restored_path = copy_out / "restored.json"
+        copy_result_path = copy_out / "copy-result.json"
+        worksite_path = copy_out / "worksite.json"
+        if auxiliary_path.is_file():
+            auxiliary = read_json(auxiliary_path)
+        elif restored_path.is_file():
+            restored = read_json(restored_path)
+            close_result = restored.get("close_result")
+            auxiliary = {
+                "status": "already_closed",
+                "closed": bool(
+                    isinstance(close_result, dict)
+                    and close_result.get("closed") is True
+                ),
+                "isolation_passed": bool(
+                    isinstance(close_result, dict)
+                    and close_result.get("closed") is True
+                ),
+                "target_path": restored.get("target_path"),
+                "close_result": close_result,
+                "filesystem_deleted": False,
+            }
+        elif worksite_path.is_file() and keep_open:
+            worksite = read_json(worksite_path)
+            auxiliary = {
+                "status": "preserved_open",
+                "closed": False,
+                "isolation_passed": False,
+                "target_id": worksite.get("target_id"),
+                "target_path": worksite.get("target_path"),
+                "filesystem_deleted": False,
+            }
+        elif copy_result_path.is_file():
+            copy_result = read_json(copy_result_path)
+            possibly_created = bool(copy_result.get("created_ids")) or isinstance(
+                copy_result.get("item"), dict
+            )
+            auxiliary = {
+                "status": "close_unproven" if possibly_created else "not_created",
+                "closed": not possibly_created,
+                "isolation_passed": not possibly_created,
+                "filesystem_deleted": False,
+            }
+        else:
+            auxiliary = {
+                "status": "not_created",
+                "closed": True,
+                "isolation_passed": True,
+                "filesystem_deleted": False,
+            }
+        result["roles"]["copy-target"] = auxiliary
+        write_json(evidence_path, result)
+
+    if keep_open:
+        preserved = all(
+            value.get("status") in {"not_opened", "preserved_open"}
+            for value in result["roles"].values()
+        )
+        result.update(
+            status="preserved_open" if preserved else "preserve_failed",
+            closed=False,
+            isolation_passed=False,
+            completed_at=utc_now(),
+        )
+    else:
+        closed = all(
+            value.get("closed") is True for value in result["roles"].values()
+        )
+        result.update(
+            status="closed" if closed else "close_failed",
+            closed=closed,
+            isolation_passed=closed,
+            completed_at=utc_now(),
+        )
+    write_json(evidence_path, result)
+    return result
+
+
 def _record_run_failure(
     args: argparse.Namespace,
     error: str | RunnerFailure,
     exit_code: int,
+    failure_finalization: Mapping[str, Any],
 ) -> bool:
     run_dir = Path(args.run_dir)
     state_path = run_dir / "run-state.json"
@@ -1146,11 +1391,12 @@ def _record_run_failure(
         error.onenote_opened = any(run_dir.glob("lifecycle-lease*.json"))
     lifecycle_path = run_dir / "lifecycle.json"
     lifecycle = read_json(lifecycle_path) if lifecycle_path.exists() else None
-    failure_status = (
-        "finalization_failed"
-        if state.get("finalization_started")
-        else "failed_preserved_open"
-    )
+    if failure_finalization.get("status") == "closed":
+        failure_status = "failed_closed"
+    elif failure_finalization.get("status") == "preserved_open":
+        failure_status = "failed_preserved_open"
+    else:
+        failure_status = "failure_finalization_failed"
     failed_step = state.get("current_step", "preflight")
     failure = {
         "command": args.scenario,
@@ -1162,13 +1408,18 @@ def _record_run_failure(
         "completed_steps": state.get("completed_steps", []),
         "finalization_attempted": bool(state.get("finalization_started")),
         "lifecycle_result": lifecycle,
+        "failure_finalization": dict(failure_finalization),
         "notebook_name": getattr(args, "notebook_name", None),
         "filesystem_deleted": False,
         "failed_at": utc_now(),
         "remaining_state": (
-            "Inspect lifecycle.json; all local Notebook paths remain preserved."
-            if state.get("finalization_started")
-            else "The fresh Notebook remains open and all evidence is preserved for inspection."
+            "Every exact leased Notebook was closed; local working files and evidence remain preserved."
+            if failure_finalization.get("status") == "closed"
+            else (
+                "Explicit keep mode preserved the exact leased Notebook bundle open with all evidence."
+                if failure_finalization.get("status") == "preserved_open"
+                else "Failure finalization could not prove every exact leased Notebook closed; stop batch execution."
+            )
         ),
     }
     if isinstance(error, PathBudgetFailure):
@@ -1197,25 +1448,49 @@ def record_failure(
     args: argparse.Namespace,
     error: str | RunnerFailure,
     exit_code: int,
-) -> None:
+) -> dict[str, Any]:
     """Persist run-level and scenario-level failure handoffs."""
 
+    failure_finalization: dict[str, Any] = {
+        "status": "not_started",
+        "closed": True,
+        "isolation_passed": True,
+        "filesystem_deleted": False,
+        "cache_modified": False,
+    }
+    if (
+        getattr(args, "command", None) not in PUBLIC_SCENARIOS
+        or not getattr(args, "run_dir", None)
+    ):
+        return failure_finalization
     try:
-        if (
-            getattr(args, "command", None) not in PUBLIC_SCENARIOS
-            or not getattr(args, "run_dir", None)
-        ):
-            return
-        _record_run_failure(args, error, exit_code)
+        failure_finalization = _failure_finalization(args)
+    except Exception as exc:
+        failure_finalization = {
+            **failure_finalization,
+            "status": "close_failed",
+            "closed": False,
+            "isolation_passed": False,
+            "finalization_error": f"{type(exc).__name__}: {exc}",
+        }
+        try:
+            run_dir = Path(args.run_dir)
+            if run_dir.is_dir():
+                write_json(run_dir / "failure-finalization.json", failure_finalization)
+        except Exception:
+            pass
+
+    try:
+        _record_run_failure(args, error, exit_code, failure_finalization)
         message = str(error)
         run_dir = Path(args.run_dir)
         state_path = run_dir / "run-state.json"
         if state_path.exists() and read_json(state_path).get("current_step") != args.scenario:
             if (run_dir / "manifest.json").exists():
                 render_report(run_dir)
-            return
+            return failure_finalization
         if not (run_dir / "manifest.json").exists():
-            return
+            return failure_finalization
         out = scenario_dir(run_dir, args.scenario)
         completed_artifacts = [
             name
@@ -1253,13 +1528,15 @@ def record_failure(
         }
         if args.scenario == "delete":
             target_id = getattr(args, "delete_target_id", "")
-        else:
+        elif args.scenario in target_keys:
             target_key = target_keys[args.scenario]
             target_id = (
                 manifest.get("notebook", {}).get("id", "")
                 if target_key is None
                 else manifest.get("structure", {}).get(target_key, {}).get("id", "")
             )
+        else:
+            target_id = ""
         notebook_id = manifest.get("notebook", {}).get("id", "")
         last_step = "preflight"
         if "before.json" in completed_artifacts:
@@ -1296,8 +1573,18 @@ def record_failure(
         }
         write_json(out / "failure.json", failure)
         render_report(run_dir)
-    except Exception:
-        pass
+    except Exception as exc:
+        failure_finalization = {
+            **failure_finalization,
+            "handoff_recording_error": f"{type(exc).__name__}: {exc}",
+        }
+        try:
+            run_dir = Path(getattr(args, "run_dir", "."))
+            if run_dir.is_dir():
+                write_json(run_dir / "failure-finalization.json", failure_finalization)
+        except Exception:
+            pass
+    return failure_finalization
 
 
 def _role_wrappers(
@@ -1314,7 +1601,8 @@ def _role_wrappers(
             timeout_seconds=timeout_seconds,
             **({} if role == "source" else {"role": role}),
         )
-        wrapper.progress = progress
+        if progress is not None:
+            wrapper.progress = progress
         wrappers[role] = wrapper
     return wrappers
 
@@ -1351,6 +1639,8 @@ def _open_materialized_bundle(
     wrappers: Mapping[str, NotebookLifecycleWrapper],
     roles: tuple[str, ...],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Open one materialized bundle and activate its bounded hierarchy once."""
+
     notebooks: dict[str, dict[str, Any]] = {}
     leases: dict[str, dict[str, Any]] = {}
     with wrappers["source"].working_notebook_open_lock():

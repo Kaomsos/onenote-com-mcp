@@ -27,7 +27,7 @@ Image 二进制和内容对象类型不变；所有无关对象的 ID、关系�
 
 
 class ReparentPageFixtureRecipe(RecipeBase):
-    recipe_version = 2
+    recipe_version = 3
 
     def __init__(self) -> None:
         super().__init__("reparent-page")

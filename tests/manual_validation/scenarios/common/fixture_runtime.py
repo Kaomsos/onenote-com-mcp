@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+from copy import deepcopy
 from pathlib import Path
+import time
 from typing import Any, Mapping
 import uuid
 
@@ -25,6 +28,11 @@ from ..fixture_recipes.recipe_base import (
     FixtureRoleObservation,
 )
 from ..fixture_recipes.interactive import UserAuthoredRecipe
+
+
+MATERIALIZED_STRUCTURE_MAX_OBSERVATIONS = 16
+MATERIALIZED_STRUCTURE_STABLE_OBSERVATIONS = 2
+MATERIALIZED_STRUCTURE_OBSERVATION_DELAY_SECONDS = 0.75
 
 
 def _assert_authored_cache_identity(hit: CacheHit, frozen: Any) -> None:
@@ -52,6 +60,133 @@ def _record_run_identity(manifest: dict[str, Any], args: argparse.Namespace) -> 
             "fresh": dict(fresh_names),
             "cached": dict(cached_names),
         }
+
+
+def _rebind_materialized_run_local_paths(
+    manifest: dict[str, Any],
+    *,
+    run_dir: Path,
+    notebook_paths: Mapping[str, str],
+    roles: tuple[str, ...],
+) -> dict[str, Any]:
+    """Rebind exact run-local paths without altering cached content evidence."""
+
+    resolved_run_dir = run_dir.resolve()
+    targets = manifest.get("disposable_targets")
+    if not isinstance(targets, dict):
+        raise InvariantFailure("Cached fixture manifest has no typed disposable targets.")
+    cached_notebook_paths = {
+        role: targets.get(f"{role}_notebook_path") for role in roles
+    }
+    source_notebook_path = cached_notebook_paths.get("source")
+    notebook_copy_root = targets.get("notebook_copy_root")
+    if not isinstance(source_notebook_path, str) or not source_notebook_path:
+        raise InvariantFailure("Cached fixture manifest has no source Notebook path.")
+    if not isinstance(notebook_copy_root, str) or not notebook_copy_root:
+        raise InvariantFailure("Cached fixture manifest has no disposable Notebook Copy root.")
+
+    cached_source_path = Path(source_notebook_path).resolve()
+    cached_notebooks_root = cached_source_path.parent
+    cached_run_dir = cached_notebooks_root.parent
+    if cached_notebooks_root.name != "notebooks":
+        raise InvariantFailure(
+            "Cached source Notebook path is not under its exact run-local notebooks root."
+        )
+    for role, value in cached_notebook_paths.items():
+        if not isinstance(value, str) or not value:
+            raise InvariantFailure(
+                f"Cached fixture manifest has no Notebook path for role {role}."
+            )
+        if Path(value).resolve().parent != cached_notebooks_root:
+            raise InvariantFailure(
+                f"Cached Notebook path for role {role} is outside its exact notebooks root."
+            )
+    expected_cached_copy_root = (cached_run_dir / "notebook-copies").resolve()
+    if Path(notebook_copy_root).resolve() != expected_cached_copy_root:
+        raise InvariantFailure(
+            "Cached disposable Notebook Copy root is inconsistent with its source run."
+        )
+
+    cached_lifecycle_lease = manifest.get("lifecycle_lease")
+    expected_cached_source_lease = (cached_run_dir / "lifecycle-lease.json").resolve()
+    if (
+        not isinstance(cached_lifecycle_lease, str)
+        or Path(cached_lifecycle_lease).resolve() != expected_cached_source_lease
+    ):
+        raise InvariantFailure(
+            "Cached source lifecycle lease is inconsistent with its source run."
+        )
+    cached_lifecycle_leases = manifest.get("lifecycle_leases")
+    if cached_lifecycle_leases is not None:
+        if not isinstance(cached_lifecycle_leases, dict):
+            raise InvariantFailure("Cached fixture lifecycle leases are not typed by role.")
+        if set(cached_lifecycle_leases) != set(roles):
+            raise InvariantFailure("Cached fixture lifecycle lease roles are incomplete.")
+        for role in roles:
+            expected = (
+                cached_run_dir
+                / ("lifecycle-lease.json" if role == "source" else f"lifecycle-lease-{role}.json")
+            ).resolve()
+            value = cached_lifecycle_leases.get(role)
+            if not isinstance(value, str) or Path(value).resolve() != expected:
+                raise InvariantFailure(
+                    f"Cached lifecycle lease for role {role} is inconsistent with its source run."
+                )
+
+    current_notebooks_root = (resolved_run_dir / "notebooks").resolve()
+    working_paths: dict[str, str] = {}
+    for role in roles:
+        value = notebook_paths.get(role)
+        if not isinstance(value, str) or not value:
+            raise InvariantFailure(f"Materialized role {role} has no working Notebook path.")
+        resolved = Path(value).resolve()
+        if resolved.parent != current_notebooks_root:
+            raise InvariantFailure(
+                f"Materialized role {role} is not under the exact run-local notebooks root."
+            )
+        working_paths[role] = str(resolved)
+
+    current_copy_root = str((resolved_run_dir / "notebook-copies").resolve())
+    current_lifecycle_leases = {
+        role: str(
+            (
+                resolved_run_dir
+                / ("lifecycle-lease.json" if role == "source" else f"lifecycle-lease-{role}.json")
+            ).resolve()
+        )
+        for role in roles
+    }
+    targets["notebook_copy_root"] = current_copy_root
+    targets.update(
+        {f"{role}_notebook_path": working_paths[role] for role in roles}
+    )
+    manifest["lifecycle_lease"] = current_lifecycle_leases["source"]
+    manifest["lifecycle_leases"] = current_lifecycle_leases
+    return {
+        "schema_version": 1,
+        "passed": True,
+        "source_run_dir": str(cached_run_dir),
+        "working_run_dir": str(resolved_run_dir),
+        "mappings": {
+            "disposable_targets.notebook_copy_root": {
+                "source": str(expected_cached_copy_root),
+                "working": current_copy_root,
+            },
+            "disposable_targets.notebook_paths": {
+                "source": {role: str(Path(value).resolve()) for role, value in cached_notebook_paths.items()},
+                "working": working_paths,
+            },
+            "lifecycle_leases": {
+                "source": (
+                    dict(cached_lifecycle_leases)
+                    if isinstance(cached_lifecycle_leases, dict)
+                    else {"source": str(expected_cached_source_lease)}
+                ),
+                "working": current_lifecycle_leases,
+            },
+        },
+        "cache_template_modified": False,
+    }
 
 
 def _fixture_result(
@@ -424,25 +559,131 @@ async def prepare_materialized_fixture(
     structure = manifest.get("structure")
     if not isinstance(structure, dict):
         raise InvariantFailure("Cached fixture manifest has no typed structure.")
-    evidence = {
+    cached_evidence = {
         key: manifest[key]
         for key in ("copy_fixture", "reparent_page_fixture")
-        if isinstance(manifest.get(key), dict)
+        if key in manifest
     }
-    snapshot = await capture_snapshot(client, str(notebook["id"]))
+    source_structure = structure
+    validation_started = time.monotonic()
+    options.progress.unit_started("cache hierarchy", "source")
+    hierarchy_started = time.monotonic()
+    (
+        converged_snapshot,
+        converged_structure,
+        _converged_remap,
+        convergence,
+    ) = await _await_materialized_structure_convergence(
+        client,
+        role="source",
+        structure=source_structure,
+        source_notebook=manifest.get("notebook", {}),
+        working_notebook=notebook,
+    )
+    convergence["hierarchy_elapsed_seconds"] = round(
+        time.monotonic() - hierarchy_started, 6
+    )
+    convergence_path = options.run_dir / "cache-hierarchy-convergence.json"
+
+    def persist_convergence() -> None:
+        write_json(
+            convergence_path,
+            {
+                "schema_version": 1,
+                "passed": convergence.get("passed") is True
+                and convergence.get("scenario_before_snapshot_completed") is True,
+                "roles": {"source": convergence},
+                "elapsed_seconds": round(time.monotonic() - validation_started, 6),
+            },
+        )
+
+    persist_convergence()
+    if convergence.get("passed") is not True or converged_snapshot is None:
+        raise InvariantFailure(
+            "Materialized fixture hierarchy convergence failed: "
+            f"{convergence.get('error', 'declared hierarchy was not stable')}."
+        )
+    options.progress.unit_completed("cache hierarchy", "source")
+    options.progress.unit_started("scenario before", "source")
+    content_started = time.monotonic()
+    convergence["scenario_before_snapshot_started"] = True
+    persist_convergence()
+    try:
+        snapshot = await capture_snapshot(client, str(notebook["id"]))
+    except Exception as exc:
+        convergence.update(
+            passed=False,
+            phase="scenario_before_snapshot",
+            scenario_before_snapshot_completed=False,
+            scenario_before_elapsed_seconds=round(
+                time.monotonic() - content_started, 6
+            ),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        persist_convergence()
+        raise InvariantFailure(
+            "Materialized fixture scenario before snapshot failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
     structure, remap = _rebind_materialized_structure(
-        structure,
+        source_structure,
         source_notebook=manifest.get("notebook", {}),
         working_notebook=notebook,
         snapshot=snapshot,
     )
-    write_json(options.run_dir / "cache-structure-remap.json", remap)
-    if remap["passed"] is not True:
+    hierarchy_changed = (
+        remap["passed"] is True
+        and _materialized_structure_signature(structure)
+        != _materialized_structure_signature(converged_structure)
+    )
+    if remap["passed"] is not True or hierarchy_changed:
+        convergence.update(
+            passed=False,
+            phase="scenario_before_snapshot",
+            scenario_before_snapshot_completed=True,
+            scenario_before_elapsed_seconds=round(
+                time.monotonic() - content_started, 6
+            ),
+            error=(
+                "declared hierarchy changed after convergence"
+                if hierarchy_changed
+                else "declared hierarchy was incomplete during scenario before snapshot"
+            ),
+        )
+        persist_convergence()
+        write_json(options.run_dir / "cache-structure-remap.json", remap)
         raise InvariantFailure(
-            "Materialized fixture structure could not be uniquely rebound to live IDs: "
+            "Materialized fixture scenario before snapshot could not preserve and uniquely "
+            "rebind the stable hierarchy: "
             + ", ".join(
                 f"{value['manifest_key']}={value['reason']}"
                 for value in remap["failures"]
+            )
+        )
+    convergence.update(
+        passed=True,
+        phase="scenario_before_snapshot",
+        scenario_before_snapshot_completed=True,
+        content_truth_validation_completed=True,
+        scenario_before_elapsed_seconds=round(time.monotonic() - content_started, 6),
+    )
+    persist_convergence()
+    options.progress.unit_completed("scenario before", "source")
+    evidence, evidence_remap = _rebind_materialized_evidence(
+        manifest.get("structure", {}),
+        structure,
+        cached_evidence,
+    )
+    remap["evidence_rebinding"] = evidence_remap
+    remap["passed"] = evidence_remap["passed"] is True
+    write_json(options.run_dir / "cache-structure-remap.json", remap)
+    if evidence_remap["passed"] is not True:
+        raise InvariantFailure(
+            "Materialized fixture evidence could not be safely rebound to live IDs: "
+            + ", ".join(
+                f"{value['field']}={value['reason']}"
+                for value in evidence_remap["failures"]
             )
         )
     build = FixtureBuildResult(structure, evidence)
@@ -473,12 +714,15 @@ async def prepare_materialized_fixture(
     manifest["structure"] = {
         key: stable_item(value) for key, value in structure.items()
     }
-    manifest["disposable_targets"]["source_notebook_path"] = str(
-        Path(notebook_path).resolve()
+    manifest.update(evidence)
+    run_local_path_remap = _rebind_materialized_run_local_paths(
+        manifest,
+        run_dir=options.run_dir,
+        notebook_paths={"source": notebook_path},
+        roles=("source",),
     )
-    manifest["lifecycle_lease"] = str(
-        (options.run_dir / "lifecycle-lease.json").resolve()
-    )
+    run_local_path_remap_path = options.run_dir / "cache-run-local-path-remap.json"
+    write_json(run_local_path_remap_path, run_local_path_remap)
     manifest["fixture_validation"] = {
         "status": "passed",
         "checks": list(checks),
@@ -493,6 +737,7 @@ async def prepare_materialized_fixture(
         "template_path": str(materialized.template_paths["source"]),
         "working_path": str(materialized.working_paths["source"]),
         "opened_template": False,
+        "run_local_path_remap_evidence": str(run_local_path_remap_path.resolve()),
     }
     _record_run_identity(manifest, args)
     if interactive_validation is not None:
@@ -513,6 +758,176 @@ async def prepare_materialized_fixture(
     write_json(options.run_dir / "manifest.json", manifest)
     write_json(options.run_dir / "fixture-result.json", result)
     return manifest, result
+
+
+def _materialized_structure_signature(
+    structure: Mapping[str, Mapping[str, Any]],
+) -> tuple[tuple[Any, ...], ...]:
+    """Return the content-free hierarchy identity that must settle before Page reads."""
+
+    fields = (
+        "resource_type",
+        "id",
+        "path",
+        "parent_id",
+        "section_id",
+        "page_level",
+        "parent_page_id",
+        "order",
+    )
+    return tuple(
+        (key, *(item.get(field) for field in fields))
+        for key, item in sorted(structure.items())
+    )
+
+
+async def _await_materialized_structure_convergence(
+    client: MCPStdioClient,
+    *,
+    role: str,
+    structure: Mapping[str, Any],
+    source_notebook: Mapping[str, Any],
+    working_notebook: Mapping[str, Any],
+    max_observations: int = MATERIALIZED_STRUCTURE_MAX_OBSERVATIONS,
+    stable_observations: int = MATERIALIZED_STRUCTURE_STABLE_OBSERVATIONS,
+    delay_seconds: float = MATERIALIZED_STRUCTURE_OBSERVATION_DELAY_SECONDS,
+) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Wait for every manifest-bound hierarchy object to be present and stable."""
+
+    if max_observations < stable_observations or stable_observations < 2:
+        raise ValueError("Materialized hierarchy convergence requires at least two observations.")
+    if delay_seconds < 0:
+        raise ValueError("Materialized hierarchy convergence delay cannot be negative.")
+
+    prior_signature: tuple[tuple[Any, ...], ...] | None = None
+    stable_count = 0
+    observations: list[dict[str, Any]] = []
+    latest_snapshot: dict[str, Any] | None = None
+    latest_rebound: dict[str, dict[str, Any]] = {}
+    latest_remap: dict[str, Any] = {
+        "schema_version": 1,
+        "mappings": [],
+        "failures": [{"reason": "not-observed"}],
+        "passed": False,
+    }
+    deterministic_error: Exception | None = None
+
+    for attempt in range(1, max_observations + 1):
+        observation: dict[str, Any] = {"attempt": attempt}
+        try:
+            tree_result = await client.call_tool(
+                "get_tree",
+                {"root_id": str(working_notebook["id"]), "max_depth": 8},
+            )
+            tree = tree_result.get("tree") if isinstance(tree_result, Mapping) else None
+            if not isinstance(tree, dict):
+                raise InvariantFailure(
+                    "Materialized hierarchy observation returned no typed tree."
+                )
+            latest_snapshot = {
+                "notebook_id": str(working_notebook["id"]),
+                "items": [stable_item(item) for item in _flatten_materialized_tree(tree)],
+            }
+            latest_rebound, latest_remap = _rebind_materialized_structure(
+                dict(structure),
+                source_notebook=source_notebook,
+                working_notebook=working_notebook,
+                snapshot=latest_snapshot,
+            )
+            observation.update(
+                structure_complete=latest_remap.get("passed") is True,
+                mapping_count=len(latest_remap.get("mappings", ())),
+                failures=list(latest_remap.get("failures", ())),
+            )
+            if latest_remap.get("passed") is True:
+                signature = _materialized_structure_signature(latest_rebound)
+                stable_count = stable_count + 1 if signature == prior_signature else 1
+                prior_signature = signature
+            else:
+                prior_signature = None
+                stable_count = 0
+        except InvariantFailure as exc:
+            deterministic_error = exc
+            stable_count = 0
+            observation.update(
+                structure_complete=False,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+        except Exception as exc:  # transient MCP/COM read failure; bounded below
+            stable_count = 0
+            prior_signature = None
+            observation.update(
+                structure_complete=False,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+        observation["stable_observations"] = stable_count
+        observations.append(observation)
+        if stable_count >= stable_observations:
+            return (
+                latest_snapshot,
+                latest_rebound,
+                latest_remap,
+                {
+                    "schema_version": 1,
+                    "role": role,
+                    "phase": "hierarchy_convergence",
+                    "passed": True,
+                    "attempts": attempt,
+                    "required_stable_observations": stable_observations,
+                    "stable_observations": stable_count,
+                    "declared_object_count": len(structure),
+                    "observations": observations,
+                    "scenario_before_snapshot_started": False,
+                    "scenario_before_snapshot_completed": False,
+                },
+            )
+        if deterministic_error is not None:
+            break
+        if attempt < max_observations and delay_seconds:
+            await asyncio.sleep(delay_seconds)
+
+    return (
+        latest_snapshot,
+        latest_rebound,
+        latest_remap,
+        {
+            "schema_version": 1,
+            "role": role,
+            "phase": "hierarchy_convergence",
+            "passed": False,
+            "attempts": len(observations),
+            "required_stable_observations": stable_observations,
+            "stable_observations": stable_count,
+            "declared_object_count": len(structure),
+            "observations": observations,
+            "scenario_before_snapshot_started": False,
+            "scenario_before_snapshot_completed": False,
+            "error": (
+                str(deterministic_error)
+                if deterministic_error is not None
+                else "deadline exceeded before the declared hierarchy was stable"
+            ),
+        },
+    )
+
+
+def _flatten_materialized_tree(tree: Mapping[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+
+    def visit(node: Mapping[str, Any]) -> None:
+        item = node.get("item")
+        if isinstance(item, dict):
+            items.append(item)
+        children = node.get("children", ())
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, dict):
+                    visit(child)
+
+    visit(tree)
+    return items
 
 
 async def prepare_materialized_fixture_bundle(
@@ -538,9 +953,29 @@ async def prepare_materialized_fixture_bundle(
     role_structures: dict[str, dict[str, dict[str, Any]]] = {}
     snapshots: dict[str, Mapping[str, Any]] = {}
     remaps: dict[str, Any] = {}
+    convergence_reports: dict[str, Any] = {}
     source_manifest: dict[str, Any] | None = None
     cached_results: dict[str, Mapping[str, Any]] = {}
-    for role in roles:
+    convergence_path = options.run_dir / "cache-hierarchy-convergence.json"
+    validation_started = time.monotonic()
+
+    def persist_convergence() -> None:
+        write_json(
+            convergence_path,
+            {
+                "schema_version": 1,
+                "passed": set(convergence_reports) == set(roles)
+                and all(
+                    value.get("passed") is True
+                    and value.get("scenario_before_snapshot_completed") is True
+                    for value in convergence_reports.values()
+                ),
+                "roles": convergence_reports,
+                "elapsed_seconds": round(time.monotonic() - validation_started, 6),
+            },
+        )
+
+    for role_index, role in enumerate(roles, start=1):
         artifact_root = hit.entry_path / "notebooks" / role
         cached_manifest = read_json(artifact_root / "template-manifest.json")
         cached_results[role] = read_json(artifact_root / "template-fixture-result.json")
@@ -549,23 +984,133 @@ async def prepare_materialized_fixture_bundle(
         structure = cached_manifest.get("structure")
         if not isinstance(structure, dict):
             raise InvariantFailure(f"Cached fixture role {role} has no typed structure.")
-        snapshot = await capture_snapshot(client, str(notebooks[role]["id"]))
+        options.progress.unit_started("cache hierarchy", role, role_index, len(roles))
+        hierarchy_started = time.monotonic()
+        (
+            converged_snapshot,
+            converged_rebound,
+            _converged_remap,
+            convergence,
+        ) = await _await_materialized_structure_convergence(
+            client,
+            role=role,
+            structure=structure,
+            source_notebook=cached_manifest.get("notebook", {}),
+            working_notebook=notebooks[role],
+        )
+        convergence_reports[role] = convergence
+        convergence["hierarchy_elapsed_seconds"] = round(
+            time.monotonic() - hierarchy_started, 6
+        )
+        persist_convergence()
+        if convergence.get("passed") is not True or converged_snapshot is None:
+            raise InvariantFailure(
+                f"Materialized fixture role {role} hierarchy convergence failed: "
+                f"{convergence.get('error', 'declared hierarchy was not stable')}."
+            )
+        options.progress.unit_completed(
+            "cache hierarchy", role, role_index, len(roles)
+        )
+        options.progress.unit_started("scenario before", role, role_index, len(roles))
+        content_started = time.monotonic()
+        convergence["scenario_before_snapshot_started"] = True
+        persist_convergence()
+        try:
+            snapshot = await capture_snapshot(client, str(notebooks[role]["id"]))
+        except Exception as exc:
+            convergence.update(
+                passed=False,
+                phase="scenario_before_snapshot",
+                scenario_before_snapshot_completed=False,
+                scenario_before_elapsed_seconds=round(
+                    time.monotonic() - content_started, 6
+                ),
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            persist_convergence()
+            raise InvariantFailure(
+                f"Materialized fixture role {role} scenario before snapshot failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
         rebound, remap = _rebind_materialized_structure(
             structure,
             source_notebook=cached_manifest.get("notebook", {}),
             working_notebook=notebooks[role],
             snapshot=snapshot,
         )
-        remaps[role] = remap
-        if remap["passed"] is not True:
-            raise InvariantFailure(
-                f"Materialized fixture role {role} could not be uniquely rebound to live IDs."
+        hierarchy_changed = (
+            remap["passed"] is True
+            and _materialized_structure_signature(rebound)
+            != _materialized_structure_signature(converged_rebound)
+        )
+        if remap["passed"] is not True or hierarchy_changed:
+            remaps[role] = remap
+            convergence.update(
+                passed=False,
+                phase="scenario_before_snapshot",
+                scenario_before_snapshot_completed=True,
+                scenario_before_elapsed_seconds=round(
+                    time.monotonic() - content_started, 6
+                ),
+                error=(
+                    "declared hierarchy changed after convergence"
+                    if hierarchy_changed
+                    else "declared hierarchy was incomplete during full content validation"
+                ),
             )
-        evidence = {
+            persist_convergence()
+            write_json(
+                options.run_dir / "cache-structure-remap.json",
+                {
+                    "schema_version": 1,
+                    "passed": False,
+                    "roles": remaps,
+                },
+            )
+            raise InvariantFailure(
+                f"Materialized fixture role {role} scenario before snapshot observed an "
+                "incomplete or changed hierarchy."
+            )
+        convergence.update(
+            passed=True,
+            phase="scenario_before_snapshot",
+            scenario_before_snapshot_completed=True,
+            content_truth_validation_completed=True,
+            scenario_before_elapsed_seconds=round(
+                time.monotonic() - content_started, 6
+            ),
+        )
+        persist_convergence()
+        options.progress.unit_completed("scenario before", role, role_index, len(roles))
+        cached_evidence = {
             key: cached_manifest[key]
             for key in ("copy_fixture", "reparent_page_fixture")
-            if isinstance(cached_manifest.get(key), dict)
+            if key in cached_manifest
         }
+        evidence, evidence_remap = _rebind_materialized_evidence(
+            structure,
+            rebound,
+            cached_evidence,
+        )
+        remap["evidence_rebinding"] = evidence_remap
+        remap["passed"] = evidence_remap["passed"] is True
+        remaps[role] = remap
+        if evidence_remap["passed"] is not True:
+            write_json(
+                options.run_dir / "cache-structure-remap.json",
+                {
+                    "schema_version": 1,
+                    "passed": False,
+                    "roles": remaps,
+                },
+            )
+            raise InvariantFailure(
+                f"Materialized fixture role {role} evidence could not be safely rebound to live IDs."
+            )
+        cached_manifest.update(evidence)
+        if role == "source":
+            source_manifest = cached_manifest
         build = FixtureBuildResult(rebound, evidence)
         role_structures[role] = rebound
         snapshots[role] = snapshot
@@ -602,6 +1147,12 @@ async def prepare_materialized_fixture_bundle(
         for key, value in role_structures[role].items()
     }
     manifest = dict(source_manifest)
+    run_local_path_remap = _rebind_materialized_run_local_paths(
+        manifest,
+        run_dir=options.run_dir,
+        notebook_paths=notebook_paths,
+        roles=roles,
+    )
     manifest.update(
         run_id=options.run_dir.name,
         notebook=stable_item(notebooks["source"]),
@@ -629,6 +1180,7 @@ async def prepare_materialized_fixture_bundle(
             },
             "bundle_checks": list(report.bundle_checks),
             "live_materialized_revalidation": True,
+            "scenario_before_snapshot_reused": True,
         },
         fixture_cache={
             "cache_mode": "use_cache",
@@ -646,11 +1198,10 @@ async def prepare_materialized_fixture_bundle(
             "opened_template": False,
         },
     )
-    manifest.setdefault("disposable_targets", {}).update(
-        {
-            f"{role}_notebook_path": str(Path(notebook_paths[role]).resolve())
-            for role in roles
-        }
+    run_local_path_remap_path = options.run_dir / "cache-run-local-path-remap.json"
+    write_json(run_local_path_remap_path, run_local_path_remap)
+    manifest["fixture_cache"]["run_local_path_remap_evidence"] = str(
+        run_local_path_remap_path.resolve()
     )
     if interactive_validation is not None:
         manifest["fixture_cache"]["interactive_live_validation"] = interactive_validation
@@ -682,6 +1233,7 @@ async def prepare_materialized_fixture_bundle(
             },
             "bundle_checks": list(report.bundle_checks),
             "live_materialized_revalidation": True,
+            "scenario_before_snapshot_reused": True,
         },
     }
     write_json(options.run_dir / "prepared.json", snapshots["source"])
@@ -769,7 +1321,86 @@ def _rebind_materialized_structure(
     return rebound, report
 
 
+def _rebind_materialized_evidence(
+    source_structure: Mapping[str, Any],
+    working_structure: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Rebind only typed evidence ID fields that are owned by a known structure key."""
+
+    rebound = deepcopy(dict(evidence))
+    mappings: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    if "reparent_page_fixture" in rebound:
+        rich = rebound["reparent_page_fixture"]
+        source_target = source_structure.get("reparent_page")
+        working_target = working_structure.get("reparent_page")
+        source_id = (
+            str(source_target.get("id", ""))
+            if isinstance(source_target, Mapping)
+            else ""
+        )
+        working_id = (
+            str(working_target.get("id", ""))
+            if isinstance(working_target, Mapping)
+            else ""
+        )
+        if not source_id or not working_id:
+            failures.append(
+                {
+                    "field": "reparent_page_fixture",
+                    "reason": "missing-reparent-page-structure-binding",
+                }
+            )
+        elif not isinstance(rich, dict):
+            failures.append(
+                {
+                    "field": "reparent_page_fixture",
+                    "reason": "invalid-evidence-shape",
+                }
+            )
+        else:
+            list_tag = rich.get("list_tag")
+            fields = [
+                ("reparent_page_fixture.page_id", rich),
+                ("reparent_page_fixture.list_tag.page_id", list_tag),
+            ]
+            for field, owner in fields:
+                observed = owner.get("page_id") if isinstance(owner, dict) else None
+                if not isinstance(owner, dict):
+                    failures.append({"field": field, "reason": "invalid-evidence-shape"})
+                    continue
+                if str(observed or "") != source_id:
+                    failures.append(
+                        {
+                            "field": field,
+                            "reason": "source-id-mismatch",
+                            "expected_source_id": source_id,
+                            "observed_source_id": str(observed or ""),
+                        }
+                    )
+                    continue
+                owner["page_id"] = working_id
+                mappings.append(
+                    {
+                        "field": field,
+                        "manifest_key": "reparent_page",
+                        "source_id": source_id,
+                        "working_id": working_id,
+                        "id_changed": source_id != working_id,
+                    }
+                )
+
+    return rebound, {
+        "schema_version": 1,
+        "mappings": mappings,
+        "failures": failures,
+        "passed": not failures,
+    }
+
+
 __all__ = [
+    "_rebind_materialized_evidence",
     "_rebind_materialized_structure",
     "bundle_cache_artifacts",
     "prepare_fixture",

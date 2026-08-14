@@ -230,12 +230,15 @@ def render_report(run_dir: Path) -> Path:
         )
     if failure_path.exists():
         failure = read_json(failure_path)
+        failure_finalization = failure.get("failure_finalization", {})
         lines.extend(
             [
                 "## Isolated run failure",
                 "",
                 f"- Failed step: `{failure.get('failed_step', 'unknown')}`",
                 f"- Finalization attempted: `{failure.get('finalization_attempted', False)}`",
+                f"- Failure finalization: `{failure_finalization.get('status', 'unknown')}`",
+                f"- Failure bundle closed: `{failure_finalization.get('closed', False)}`",
                 f"- Remaining state: {failure.get('remaining_state', '')}",
                 "",
             ]
@@ -265,7 +268,7 @@ def render_report(run_dir: Path) -> Path:
         [
             "## Safety boundary",
             "",
-            "Each named scenario is a complete isolated run: the narrow lifecycle wrapper creates and lease-binds a fresh source Notebook, then exactly one scenario-scoped least-privilege MCP process creates the minimal fixture and performs mutation/evidence/restore work. The wrapper closes only the exact leased source after success unless keep-notebook or keep-worksite was selected. keep-worksite preserves the named action's verified post-mutation state and records exact IDs plus manual cleanup guidance; the special all batch command never forwards it. Permanent OneNote delete and raw XML remain disabled. Scenarios never delete local Notebook directories; only a separate user-confirmed clear maintenance action may remove exact managed validation payloads.",
+            "Each named scenario is a complete isolated run: the narrow lifecycle wrapper creates and lease-binds a fresh source Notebook, then exactly one scenario-scoped least-privilege MCP process creates the minimal fixture and performs mutation/evidence/restore work. The wrapper closes every exact leased Notebook after success or failure unless keep-notebook or keep-worksite was selected. keep-worksite preserves the named action's verified post-mutation state and records exact IDs plus manual cleanup guidance; the special all batch command never forwards either keep option and continues after failure only when the child proves exact closure. Permanent OneNote delete and raw XML remain disabled. Scenarios never delete local Notebook directories; only a separate user-confirmed clear maintenance action may remove exact managed validation payloads.",
             "",
         ]
     )

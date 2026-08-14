@@ -3,6 +3,8 @@
 > [!CAUTION]
 > 本目录只承载由用户本人显式启动的真实 OneNote mutation 验证。Agent、CI、pytest、hook、安装脚本、timer、watcher、前台或后台任务不得执行真实 scenario。每次运行必须创建全新隔离 Notebook，并使用 scenario 级静态最小权限。智能体的强制行动边界见本目录的 [AGENTS.md](AGENTS.md)。
 
+真实运行前必须先启动并保留一个可见的 OneNote Desktop GUI。单项 scenario 会在创建/打开任何 working Notebook 前执行不触发 COM 的原生进程/窗口 preflight；`all` 在启动首个 child 前检查一次。OneNote 未运行、只有后台 `ONENOTE.EXE` 或 GUI 状态无法证明时均 fail closed，不创建 Notebook、不 materialize cache、不启动 scenario MCP；`--dry-run` 不读取 GUI 状态。当前 runner 不会自动启动 OneNote，未来显式工具由 [`TODO 031`](../../docs/todo/031_start_onenote_desktop_tool.md) 跟踪。
+
 ## 公开接口：扁平 Scenario、特殊 `all` 与 `clear`
 
 `run.py` 后通常直接接一个具名 scenario。没有 `validate` 分组，也没有公开的 `inspect`、`read`、`report`、`suite` 或其他辅助 action。`create` 是正式的 fixture-only scenario：
@@ -24,6 +26,7 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section
 .venv\Scripts\python.exe tests\manual_validation\run.py move-section-group
 .venv\Scripts\python.exe tests\manual_validation\run.py onenote-convergence
+.venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes
 ```
 
 历史验证 artifact 与 fixture cache 只通过独立的 `clear` maintenance 分组维护。它不是 Scenario，不进入 registry 或 `all`，不会启动 scenario MCP、修改或关闭 OneNote，也不接受任意路径或强制绕过参数：
@@ -58,7 +61,9 @@ Dry-run 只读受管 metadata，并获取一次当前 OneNote 已打开 Notebook
 .venv\Scripts\python.exe tests\manual_validation\run.py copy-page --keep-worksite
 ```
 
-`--keep-worksite` 会隐含保持源 Notebook 打开，并在成功 read-back 验证后保留该 action 的现场：`rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 跳过反向恢复，Copy 跳过目标 cleanup，`create/delete/move-page/move-section/move-section-group` 保留其原本最终状态以供查看。精确目标 ID、原/现 predecessor、现场状态和人工清理说明写入 `worksite.json`。Page reparent 若由 OneNote 重映射 ID，会同时记录 `target_id`、`current_target_id` 与完整 `id_history`。该选项不会扩权；Copy 场景反而从 policy/tool allowlist 移除不再需要的 Delete/Close cleanup 权限。默认不传时仍执行各 scenario 原有的 restore/cleanup 与生命周期策略。`reorder-section`、`reorder-section-group`、`reparent-page` 和 `reparent-section-group` 不进入 `all`，但仍全部进入注册 dry-run 自动测试。
+`--keep-worksite` 会隐含保持源 Notebook 打开，并在成功 read-back 验证后保留该 action 的现场：`rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 跳过反向恢复，Copy 跳过目标 cleanup，`create/delete/move-page/move-section/move-section-group` 保留其原本最终状态以供查看。精确目标 ID、原/现 predecessor、现场状态和人工清理说明写入 `worksite.json`。Page reparent 若由 OneNote 重映射 ID，会同时记录 `target_id`、`current_target_id` 与完整 `id_history`。该选项不会扩权；Copy 场景反而从 policy/tool allowlist 移除不再需要的 Delete/Close cleanup 权限。默认不传时仍执行各 scenario 原有的 restore/cleanup 与生命周期策略。支持的 `reorder-section` 和三个 Reparent 场景均已显式纳入 `all`；功能受限且真实验证失败的 `reorder-section-group` 继续排除，但仍进入注册 dry-run 自动测试。
+
+Cache materialization 会先按 Notebook-relative typed address 重绑结构 ID。Reparent Page 的 run-local evidence 还会显式重绑顶层与 List/Tag 两个 `page_id` 字段，并把两项映射写入 `cache-structure-remap.json.evidence_rebinding`；缓存模板保持不变，字段缺失或 source ID 不一致会在 scenario mutation 前 quarantine 并保留失败现场。三个 Reparent 的生产 read-back 先要求两次轻量 hierarchy 稳定观察，再进行带 hierarchy bookend 的完整 Page evidence capture；完整读取只允许重试一次且不会重放 mutation，失败 evidence 用 `readback_phase` 区分 hierarchy convergence、full evidence capture 与 invariant validation。
 
 四个 Copy 层级场景都自动创建两页组成的完整 Page 保真 fixture。Section/Group/Notebook Copy 使用通用名称；Page Copy 为便于 UI 对照，使用等价的编号名称：
 
@@ -83,6 +88,8 @@ Dry-run 只读受管 metadata，并获取一次当前 OneNote 已打开 Notebook
 .venv\Scripts\python.exe tests\manual_validation\run.py all
 ```
 
+非 JSON `all` 会实时转发当前 child 的 content-free progress，并用 `<scenario> |` 前缀区分 child 内的 `[phase/total]` 与 `all` 外层的 `[scenario/total]`。`quiet` 实时显示主要阶段，`normal` 继续显示 case/mutation progress 和紧凑结果，`verbose` 再实时显示 command、timing 与 stderr；父进程不会等整个 scenario 结束后才一次性回放 stdout。`quiet/normal` 的成功 stderr 保持隐藏，失败时输出经过脱敏和行数/字节限制的 stderr 尾部。`--json` 保持稳定 JSON Lines，不混入终端文本 progress。
+
 唯一注册表对象位于 `scenarios/common/registry.py` 的 `SCENARIO_REGISTRY`。每个场景类使用 `@SCENARIO_REGISTRY.register` wrapper；`scenarios/__init__.py` 按审查后的固定顺序导入所有公开场景，导入时自动完成实例注册。Registry 本身不导入具体场景，也不维护第二份构造列表。新增公开 scenario 默认 `included_in_all = False`；只有经过稳定性和权限审查才可改为 `True`。`get_all_scenario_names()` 只表示用户真实 `all` 批处理资格，不能用于 pytest collection。
 
 每个 Scenario 同时显式持有一个 `fixture_recipe`。场景专属 Description、构建与 validator 位于 `scenarios/fixture_recipes/<scenario>.py`；`common/fixture_runtime.py` 只负责 recorder、snapshot、通用 profile 检查和证据持久化，不按 scenario 名称分派。Recorder 在每个精确 ID 创建后增量写入 pending manifest；中途失败会保留已登记 ID、lifecycle lease 路径、Notebook 路径和 failed validation handoff。Copy/Move 只共享不含 scenario 名称分支的 layered Page component。
@@ -99,7 +106,7 @@ Dry-run 只读受管 metadata，并获取一次当前 OneNote 已打开 Notebook
 .venv\Scripts\python.exe tests\manual_validation\run.py all --use-cache --dry-run --json
 ```
 
-`--use-cache` 只改变 fixture 来源：validated hit 把关闭的 immutable template opaque-copy 到本次 run 的 role-specific working 路径。lifecycle 为每个 role 使用独立的 run-local lease（`source` 保持 `lifecycle-lease.json`，其他 role 使用 `lifecycle-lease-<role>.json`），先证明实际打开路径是 working path、不是任一 template path，并立即记录实际 working Notebook ID/name/path。Cache 不保存 working lease，也不与 run 维持所有权或生命周期关系；短时全局 open lock 串行化跨 run 的 lease 扫描、打开与 live identity 绑定。多个 run 可以从同一 immutable entry materialize 各自唯一的 working paths；只有实际 live Notebook ID/path 集相交、role 内重复或身份尚未可靠重绑定时才拒绝。Run-local active lease 不阻止物理独立 entry 的 invalidation/cleanup；cache cleanup 只在 template 自身的实际路径仍被 OneNote 打开时拒绝。随后逐 role、逐级调用 `OpenHierarchy` 打开 SectionGroup 和 `.one` Section：先用绝对 working path 与空 relative ID，必要时回退到文件名与精确 parent ID；不能把绝对 path 与非空 parent ID 混用，也不能把“Notebook shell 已打开”或 COM 仅返回 object ID 误当成内容层级已加载。每次都必须回读 actual parent；若全局 hierarchy snapshot 暂时不可见，还必须对同一返回 ID 做 exact-self 回读，严格证明类型、名称、非回收站状态和 parent，随后仍执行完整 live Recipe validation。Working Notebook/Section/Page ID 允许由 OneNote 重建，但必须按 role 内唯一的 Notebook-relative 类型化结构地址形成 old→live ID evidence，之后所有 validation/mutation 只使用 live ID。Programmatic miss 先构建并 live-validate 完整 fresh bundle，精确 close-all，生成逐 role per-file SHA-256 inventory 并原子发布，再从发布物 materialize 完整 working bundle；旧 receipt/hash 不能代替全部 role 的 live validation。多 Notebook 名称在 scenario 后增加 `source`/`destination` role。任一 working-copy open/activation 失败都保留整个 working bundle、逐 role lease 与 `materialized-hierarchy-open[-<role>].json`，lease 必须绑定已实际打开的 live working Notebook ID；这类 run-local 失败不污染已验证的 immutable template。active lease 冲突必须报告精确旧 run ID 和 working paths。ID rebind 或 live validator 失败仍会 quarantine exact entry。`--keep-worksite` 只保留该 run 的 working bundle 及 active lease，不写回 template，也不接管其他 run。
+`--use-cache` 只改变 fixture 来源：validated hit 把关闭的 immutable template opaque-copy 到本次 run 的 role-specific working 路径；cache build 已负责生成并验证 immutable template 的权威内容基线。每个 role 只打开一次 exact working path，并在同一个短命 PowerShell/COM session 内按精确 parent 批量 `OpenHierarchy`。随后 runner 重新枚举完整 hierarchy，按 Notebook-relative typed address 重绑全部 SectionGroup、Section 与 Page ID，要求连续两次结构稳定，然后只捕获一次完整 `scenario before` snapshot。它同时完成 materialized 内容真实性复核和 mutation 基线取证，并通过 exact role/Notebook ID/digest 单次 handoff 给 scenario；全部 role 未消费完时，首次 mutation 会在 MCP 调用前 fail closed。每个 Page 的 hash、能力与 normalized object evidence 都从同一次 `get_page_xml(page_info=all)` 本地派生，不再为对象投影重复调用 `get_page_objects`。Cached manifest 中明确属于旧 run 的 `notebook_copy_root`、逐 role working Notebook path 和 lifecycle lease 会在先证明同源关系后按字段重绑到当前 run，并记录 `cache-run-local-path-remap.json`；不会递归替换内容，也不会修改模板，旧字段缺失或彼此不一致时 mutation 前 fail closed。`cache-materialization.json` 将 materialize 决策与真正的 validated-hit/cold-build/bootstrap 来源分开记录，`cache-hierarchy-convergence.json` 细分 hierarchy/`scenario before` 耗时，`scenario-before-snapshot-handoff.json` 记录单次消费状态。Template 永不打开或修改；Cache 不保存 working lease，也不与 run 维持所有权或生命周期关系，多个 run 可从同一 immutable entry 得到各自唯一的 working paths。Programmatic miss 仍先构建并 live-validate fresh bundle、精确关闭、发布 immutable template，再只打开一次新的 materialized working copy。working activation、COM 或 convergence 失败只保留 run-local 失败证据，不再自动 quarantine 已验证 template；确定性的 template inventory、身份或缓存证据失败仍会在既有 cache 门限 fail closed。任一 ID rebind、双稳定、内容验证或 handoff 失败均保留 working files/evidence；默认 failure finalizer 精确关闭当前 lease，显式 keep 才保持打开。
 
 每个命令在 dispatch 时只读取一次主机本地时区，并冻结 run identity。Notebook、默认 run 目录以及 Copy/Move 目标名称共享 Windows-safe 的本地显示时间，例如 `2026-08-11-11-05-49`。完整本地 ISO 时间、UTC offset 和时区名称仍保存在 `run_identity`；JSON 中的 `created_at`、`failed_at`、`closed_at` 等事件字段仍使用 UTC ISO-8601。immutable template 继续使用内部 `template-notebook` 目录名，不作为 OneNote Notebook 打开。
 
@@ -125,7 +132,7 @@ Cache lookup 会区分真正不存在的实例与目录仍被保留的 `invalid`
 
 交互 detector 只接受公开 Page 对象模型的 `kind`，并把 `Outline`/`OE` 作为结构支撑节点；请求类型必须精确匹配。TODO 004 已闭合 `InkDrawing`（自由墨迹）、OneNote UI Shape（形状）、通过“插入 → 录制视频”创建的 `MediaFile`，以及复用既有 ready fixture 的 `InsertedFile` Copy 证据。两次用户 discovery 证明矩形和箭头都公开为 `kind=InkDrawing`，而不是字面量 `kind=Shape`；两者共同含 `ShapeInfo`，箭头还含形状相关的 `AnchorPoint`。因此 Shape detector 固定要求“恰好一个公开 `InkDrawing` 对象 + content-free projection 中恰好一个 `ShapeInfo` + capability `UIShape`”，普通自由墨迹必须拒绝；`AnchorPoint` 作为可选结构保存并在 Copy 前后精确比较。`FileAttachment` 的专属 bootstrap/Recipe 已删除，因为当前 OneNote GUI 多次只生成 `InsertedFile`、无法形成独立可验证 fixture；`MeetingInfo` 的专属入口也已删除，因为内容小众、难生成且当前价值低。`Embedded Spreadsheet`（内嵌电子表格）同样明确不支持且没有专属入口；尚未观察到它的公开 `kind` 或 XML 表示，不得把它映射为 Table、InsertedFile 或 FileAttachment。三类排除项都不获得共享 Copy 合同或 Move 源删除放行。FileAttachment 的历史证据、`kind` 边界和观察环境只保留在 [`docs/lesson/onenote_page_object_kind_and_file_attachment_representation.md`](../../docs/lesson/onenote_page_object_kind_and_file_attachment_representation.md)；完整排除边界见 [`docs/lesson/copy_content_type_exclusions.md`](../../docs/lesson/copy_content_type_exclusions.md)。
 
-用户确认后，runner 在验证前先写 `interactive-authored-snapshot.json` 和 content-free `interactive-detection.json`。后者固定记录 requested/observed/missing/unexpected/supporting、对象计数和 capability projection。失败时初始 `fixture-snapshot.json` 不被覆盖，Notebook 保持打开，cache 不初始化、不发布；错误摘要会显示精确类型和计数。
+用户确认后，runner 在验证前先写 `interactive-authored-snapshot.json` 和 content-free `interactive-detection.json`。后者固定记录 requested/observed/missing/unexpected/supporting、对象计数和 capability projection。失败时初始 `fixture-snapshot.json` 不被覆盖，cache 不初始化、不发布；working files 和诊断保留，Notebook 默认由 failure finalizer 精确关闭，只有显式 keep 模式才保持打开。错误摘要会显示精确类型和计数。
 
 `interactive-copy-ink-drawing`、`interactive-copy-ui-shape` 与 `interactive-copy-media-file` 是各自 bootstrap 的 cache-only、Copy-only consumer。它们只接受固定 `ready` instance，materialize 后先重跑精确 detector，再用连续两次相同的只读 plan 绑定 source/destination。InkDrawing/UIShape 各执行一次 root-only Page Copy；MediaFile 在同一场景中先复制到原 Section，再创建一个 run-bound 新 Section 并执行第二次 root-only Copy。第二个 case 必须证明第一个 target 和 source 都未变化，两个 target 分别写入独立 plan/copy/machine-comparison evidence，最后一个 run-bound 人工 verdict 同时确认两者的显示与播放。静态 policy 只有 Writes + Experimental Copy；MediaFile 为创建精确目标 Section额外允许 `create_section`，但仍没有 Delete、Move、Permanent Delete 或 Raw XML。Copy targets 永远保留在 disposable working artifact。若 `copy_page` 已精确创建唯一 target、源未触碰且唯一失败是 canonical read-back，场景会把结构化 `partial_failure` 作为诊断证据继续处理，而不是把它当作生产成功。MediaFile 仍要求 strict canonical；InkDrawing 使用 `semantic_ink_drawing`：请求/目标 detector、公开对象稳定签名、InkDrawing 节点结构、非几何属性和 Ink 数据 hash 必须精确一致；仅 `Position.x/y/z` 与 `Size.width/height` 允许基于真实 COM 量化证据的 `1e-4` 绝对容差。UI Shape 的 `semantic_ui_shape` 复用相同的 Decimal 逐字段 comparator、结构/data hash 和失败证据，但基于 `run-2026-08-11-22-18-48` 的真实 Shape bounding-box 重算证据使用独立 `0.02` 绝对容差；同时额外要求 source/target 各有一个 `ShapeInfo`、完整 shape marker 计数相等，因此矩形与箭头的 `AnchorPoint` 差异不会被动态忽略。evidence 固定记录每个几何字段的 source/target、absolute delta、最大 delta 和是否越界；非数字、缺失/额外字段或越界一律失败。visible text、content-object/binary checks、无 omitted content 和受限 issue 集也必须通过。Ink 子树之外的 Page canonical 漂移会被记录但不单独否定 Ink/Shape 证据。证据只保存 count/hash，并固定记录 `payloads_exposed=false`，不落盘 raw payload。随后用户必须对精确 target 给出 run-bound `ACCEPT` 或 `REJECT`；机器或人工任一失败都保留现场并且不产生放权。
 
@@ -207,7 +214,7 @@ UI Shape 使用一个小矩形作为固定 fixture；不要在 bootstrap 中改�
 
 同一个 Scenario registry 还导出冻结的 `dry_run_cases`：每个公开场景自动拥有 `default` 与 `keep-worksite` case，Rename 和 Page Reorder 在自身类中声明有限参数变体，另有 runner 级 `all.default`。pytest 使用正式 parser、无 I/O pure plan builder 和 side-effect sentinel 运行 catalog；`included_in_all=False` 不影响 dry-run 收集。Case 不得携带 `--dry-run`、`--json`、`--run-dir` 或授权参数，这些值只能由 harness 强制注入。
 
-`all` 本身不是 scenario，不创建共享 Notebook 或共享证据目录，也不接受 `--run-dir`、`--notebook-label`、`--notebook-name`、`--keep-notebook` 或 `--keep-worksite`。每个已注册子命令仍创建自己的默认 Notebook 和 `.local-validation\run-<YYYY-MM-DD-HH-MM-SS>`，使用自己的 MCP 子进程、最小权限、报告与关闭/失败保留语义。一个 scenario 失败后，`all` 会显示其错误并继续后续已注册 scenario，最终返回第一个失败的非零退出码。
+`all` 本身不是 scenario，不创建共享 Notebook 或共享证据目录，也不接受 `--run-dir`、`--notebook-label`、`--notebook-name`、`--keep-notebook` 或 `--keep-worksite`。每个已注册子命令仍创建自己的默认 Notebook 和 `.local-validation\run-<YYYY-MM-DD-HH-MM-SS>`，使用自己的 MCP 子进程、最小权限、报告与 lifecycle。具名 scenario 无论单独运行还是由 `all` 启动，失败都默认精确关闭本次 run 的全部 leased working Notebook，同时保留 working files、evidence 和 cache template。`all` 只有在 child 写入 durable `failure-finalization.json` 并通过内部握手证明全部 exact lease 已关闭后才继续下一个任务；close 失败、证明缺失或异常退出立即停止。最终进程仍返回首个场景失败码。`all --dry-run` 不会创建或保留 Notebook，因此仍检查全部已注册计划。
 
 每个命令本身就是一次完整的隔离闭环，只运行所选 scenario：
 
@@ -233,6 +240,7 @@ Group-A
 Group-B
 Delete-Sandbox
 ├─ Disposable-Group
+│  └─ Disposable-Section
 └─ Disposable-Section
    └─ Disposable-Page
 ```
@@ -251,6 +259,12 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks
+```
+
+`query-metadata-scopes` 是 fresh-only、`included_in_all=false` 的双 Notebook typed metadata Query 场景。两个 role 各自创建 run-unique 的嵌套 SectionGroup、Notebook/Group 直属 Section、根 Page 与缩进 Page。场景保存两份独立 typed hierarchy tree、逐 fixture item 的 expected 投影、每个请求/响应及对应 bridge operation；验证四个 root Query、Notebook/SectionGroup/Section 原生起点、Page `section_id/parent_page_id`、RFC 3339 严格时间、`page_size=2` 的全部页/末页/越界页，以及每次调用恰好产生规定的一个或两个 `GetHierarchy` 且不读取 Page 正文。随后由 lifecycle wrapper 精确关闭 `query-b` role，并证明 `include_recycle_bin=true` 也不能把已关闭 Notebook 或后代重新引入。场景只授予 fixture Writes；Delete、Copy、Move、Permanent Delete 与 Raw XML 均关闭。真实运行只能由用户本人前台启动：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes
 ```
 
 ## 安全审查与执行
@@ -354,6 +368,11 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
 .venv\Scripts\python.exe tests\manual_validation\run.py search-all-open-notebooks --dry-run --json
 ```
 
+<!-- dry-run-case: query-metadata-scopes.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py query-metadata-scopes --dry-run --json
+```
+
 <!-- dry-run-case: bootstrap-inserted-file-fixture.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-inserted-file-fixture --dry-run --json
@@ -451,8 +470,17 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
 - `normal`：额外展示每个成功子场景捕获到的紧凑进度和结果；检查全部 dry-run 计划时建议使用 `all --dry-run --verbosity normal`。
 - `verbose`：在 `normal` 基础上输出子进程命令、逐次 mutation 细节、read 批汇总及有界 stderr。
 - `--dry-run`、`--json`、所选 verbosity 和显式 `--timeout` 原样传给每个 scenario；`--json` 时聚合进度使用 JSON Lines，并允许完整 JSON payload。
+- 真实执行首个 FAIL 后显示 `N not started` 并停止；关闭该失败 run 的精确 working Notebook 后可重跑，已验证的 cache template 仍可复用。Dry-run 始终遍历完整注册集合。
 - 未指定 `--timeout` 时保留各 scenario 自己的默认值（普通场景 180 秒，Copy/Move 1800 秒）。
 - `all` 没有自己的 `run-dir`，因此不支持 `--run-dir`；它也不会把多个场景放进同一目录。
+
+### Cache working 单次打开与证据复用
+
+以下 parent-aware 规则细化并取代上文对所有节点统一“absolute 优先”的概括。
+
+Notebook 直属 child 仍先用 absolute working path 与空 relative ID；SectionGroup 下的嵌套 child 只用文件名与已经回读证明的精确 parent ID。最新失败证据显示，对嵌套 `.one` 先做 parentless absolute open 可能返回无关 parent，随后再次按 parent-relative 打开时 working group 路径会被 OneNote 改写；单一 parent-bound 路径避免这个双重 attachment，同时保留精确 parent 回读。
+
+所有 materialized working copy 都只打开一次 exact working path。Lifecycle 以 parent-aware batch 激活受 manifest 约束的物理容器，证据保存在 `materialized-hierarchy-open[-<role>].json`；Fixture observer 随后执行 typed ID 重绑、连续两次 hierarchy 稳定观察和唯一一次 `scenario before` 内容读取。该 snapshot 既是 live Recipe 真实性复核，也是 scenario 的 before baseline，单次消费状态写入 `scenario-before-snapshot-handoff.json`。流程不会 close/reopen working Notebook、复制第二份 working bundle、修改或重建 cache template，也不会重放 mutation；任一步失败继续 fail closed，并按默认 failure lifecycle 精确关闭当前 Notebook。
 
 ## 参数与生命周期
 
@@ -510,12 +538,12 @@ Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前
 | `onenote-convergence` | fresh-only 的两 anchor 最小 fixture；生产 Create/Page update/Reorder/Delete 均须返回连续两次 live 稳定证据，Close 由共享 lifecycle 取证；不进入 `all`，永久删除/Raw XML/Copy/Move 均关闭 |
 | `rename` | 一个选定 Group/Section；fixture 写入加对应 rename 工具；`--keep-worksite` 保留新名称并记录原名称 |
 | `reorder-page` | `Description/00-Reorder-Description` 明示操作前 `01,02,03`、正向操作后 `01,03,02`、恢复后 `01,02,03`；`01-Reorder-Page-Section` 下使用 `01-Parent`、`02-Child`、`03-Sibling`，让 UI 顺序和缩进变化可直接肉眼验收；`--keep-worksite` 保留 `01,03,02` 与新 predecessor/level |
-| `reorder-section` | `00-Description/00-Reorder-Section-Description` 分别说明 Notebook 父级和 `01-Section-Parent`（SectionGroup）父级的 before/after/restore；两组 Section 及其 Page 均使用 `01/02/03` 编号，UI 可直接核对 `01,02,03 → 01,03,02 → 01,02,03`；只开启 Writes 与 Section Reorder；用户已确认真实 UI 排序证据 |
+| `reorder-section` | **已注册到 `all`**。`00-Description/00-Reorder-Section-Description` 分别说明 Notebook 父级和 `01-Section-Parent`（SectionGroup）父级的 before/after/restore；两组 Section 及其 Page 均使用 `01/02/03` 编号，UI 可直接核对 `01,02,03 → 01,03,02 → 01,02,03`；只开启 Writes 与 Section Reorder；用户已确认真实 UI 排序证据。正向和逆序恢复分别用静态 `notebook-parent` / `section-group-parent` 标签输出 content-free progress。 |
 | `reorder-section-group` | **功能受限 / 验证失败 / 不注册到 `all`**。保留完整 fixture、mutation 和写后回读实现作为可单独调用的诊断场景；真实后端对 Notebook 直属 Group 返回 UpdateHierarchy 成功但保持按名称固定升序，嵌套操作未执行。dry-run 和运行状态证据写入 `capability_assessment={capability_status: limited, validation_status: failed, ...}`。 |
 | `reparent-section` | `00-Description/00-Reparent-Section-Description` 说明三种 before/after/restore：`01-Notebook-To-Group-Section` 从 Notebook 根换父级到 `01-Destination-Group`，`02-Group-To-Notebook-Section` 从 `02-Source-Group` 换父级到 Notebook 根，`03-Group-To-Group-Section` 从 `03-Source-Group` 换父级到 `03-Destination-Group`。每个 destination 预置两个可区分的直属 Section anchors；每次 Reparent 后刷新快照，验证 ID、父级、Page 拓扑、内容和独立位置证据，默认逆序恢复，`--keep-worksite` 保留三项目标父级。只允许同一 Notebook。 |
-| `reparent-page` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_page` 提交精确 ID 与 confirmation，不要求 Raw XML。`00-Description/00-Reparent-Page-Description` 解释原生 `UpdateHierarchy` 与 ID 重映射；`01-Source-Section/01-Reparent-Page` 同页包含 Rich Text、Table、List、Tag、Image，再请求改属预置两个根 Page anchors 的 `02-Destination-Section`。工具与 runner 双层验证 Page/内容对象一对一映射、富内容、无关对象和独立位置证据；默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
+| `reparent-page` | **typed 实验工具 / 当前 v3 fresh 与 cache 真实验证通过 / 已注册到 `all`**。通过 `reparent_page` 提交精确 ID 与 confirmation，不要求 Raw XML。唯一的跨 Section case 将 `01-Source-Section/01-Reparent-Page` 改属预置两个根 Page anchors 的 `02-Destination-Section`；目标 Page 同页包含 Rich Text、Table、List、Tag、Image。Recipe v3 保留已验证的 cache identity；manual runner 在 OneNote GUI preflight 通过后直接使用首次 live identity，cache 路径完成 typed ID/evidence 重绑、双稳定和单次完整内容验证。生产工具冻结完整基线后只执行一次 Reparent mutation。默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
 | `reparent-page-scope` | **typed 实验工具 / 待用户真实确认 / 不注册到 `all`**。同一个 disposable Notebook 准备两棵相互独立、选中根均为 level 2 的缩进树；`root-only-default` 省略 `include_descendants` 并验证排除后代留源且整体提升一级，`full-subtree` 显式为 `true` 并验证完整子树、相对层级和单射 `id_map`。两个 case 均从 after snapshot 独立计算并深比较仅属于 fresh 目标根的 `destination_position`；成功不使用 Reorder 权限恢复原缩进。 |
-| `reparent-section-group` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 不注册到 `all`**。通过 `reparent_section_group` 提交精确 ID 与 confirmation，不要求 Raw XML。三组编号 Group/Section/Page 覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；每个 destination 预置两个同类型 Group anchors，并按 read-back 固定名称顺序核对独立位置证据；要求目标及后代 ID、关系、Page 内容保持。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级。 |
+| `reparent-section-group` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 已注册到 `all`**。通过 `reparent_section_group` 提交精确 ID 与 confirmation，不要求 Raw XML。三组编号 Group/Section/Page 覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；每个 destination 预置两个同类型 Group anchors，并按 read-back 固定名称顺序核对独立位置证据；要求目标及后代 ID、关系、Page 内容保持。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级。 |
 | `delete` | Delete-Sandbox 与 allowlisted disposable group；写入加非永久 Delete，永久删除关闭；`--keep-worksite` 保持 Notebook 打开并记录回收站目标 |
 | Page Copy | 双 Notebook `source`/`destination` bundle；同一 source Page 对同 Section、跨 Section、跨 Notebook 三种目标分别执行 root-only（省略参数）与 subtree（显式 `true`），合计六个 case。同 Section 由既有源 Page 形成多项序列，跨 Section/Notebook 目标各预置同标题碰撞 anchor 与额外 position anchor；每个 case 分别稳定 plan、执行、双侧回读并断言 fresh/disjoint target IDs、源端、anchors 和独立位置证据不变；默认清理六个根目标并验证两侧恢复，`--keep-worksite` 保留六个目标和两个 working Notebook |
 | Section/Group Copy | 对应最小源和目标；每个 destination 预置两个同类型直属 anchors，源容器含严格富内容父页与三个混合 List/Tag 项的语义子页，并继续递归复制完整子树；每个 case 保存并深比较独立位置证据，默认执行可恢复清理，显式 `--keep-worksite` 在 after/mapping 验证后保留精确目标 ID |
@@ -616,7 +644,7 @@ Copy mutation 前会有界执行最多三次只读 `plan_copy`，只有连续两
 
 每次通用 snapshot 在完成逐 Page 取证后都会再读取一次完整 hierarchy：最终 `items/modified` 来自这次末尾回读，并要求前后 ID 集合一致。这避免把 fixture 刚创建时的旧 `modified` 用作随后 mutation 的 confirmation，同时不会重试 mutation。
 
-任一步失败立即停止。Mutation 失败时最终 close 不会启动，源 Notebook 保持打开；close 失败按恢复失败返回非零。`run-failure.json` 记录失败步骤、已完成步骤、finalization 状态和人工检查建议。
+任一步业务流程失败后不再执行后续 mutation、read-back、restore 或成功报告，但会进入独立的 failure finalization。默认对本次 run 的每个 exact lifecycle lease 执行 `CloseNotebook(force=false)` 并确认稳定关闭；`copy-notebook` 若已创建额外目标，也会在原 scenario MCP 退出前按 result/plan 的 exact ID/path binding 关闭并写 `copy-target-failure-finalization.json`，绑定不足或 close 失败即判定隔离失败。根级 `failure-finalization.json` 与 `run-failure.json` 汇总逐 role 结果。只有显式 `--keep-notebook` 或 `--keep-worksite` 才保持打开。默认 close 不删除 working Notebook 目录、普通 artifact 或 evidence；close/证明失败仍非零并要求停止批处理。
 
 成功的可恢复 action 默认仍完成 restore/cleanup，并用 `restored.json` 证明恢复。显式 `--keep-worksite` 才写入 `worksite.json`、保留动作后的精确状态和源 Notebook；该模式只在 scenario 自身的 read-back invariant 通过后报告成功。对 Copy，此成功还表示每页按其内容类型选择的 read-back tier 与 mapping invariant 均通过；UI 人工检查仍用于记录具体 OneNote 环境的真实证据。
 

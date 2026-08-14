@@ -20,7 +20,6 @@ from .config import (
     COPY_NOTEBOOK_TOOLS,
     COPY_PAGE_TOOLS,
     COPY_TOOLS,
-    CREATE_TOOLS,
     DELETE_TOOLS,
     MOVE_PAGE_TOOLS,
     MOVE_SECTION_GROUP_TOOLS,
@@ -96,7 +95,7 @@ def _profile(
 
 
 DELETE_SCENARIO_POLICY = ScenarioPolicy(writes_enabled=True, deletes_enabled=True)
-CREATE_FIXTURE_TOOLS = set(CREATE_TOOLS) - {"create_notebook"}
+CREATE_SCENARIO_TOOLS = READ_TOOLS | {"create_section", "create_page"}
 LAYERED_PAGE_FIXTURE_TOOLS = {
     "create_page",
     "append_to_page",
@@ -143,25 +142,19 @@ SCENARIO_SPECS = {
     "create": ScenarioSpec(
         "create",
         _profile(
-            "full-preset",
+            "minimal-create-target",
             (
-                "Group-A/Content-Section/{Parent,Child,Sibling}",
-                "Group-A/Duplicate-Title-Target (empty before scenario execution)",
-                "Group-B",
-                "Delete-Sandbox/Disposable-Group",
-                "Delete-Sandbox/Disposable-Section/Disposable-Page",
+                "Duplicate-Title-Target Section",
+                "scenario same-title Pages are absent before execution",
             ),
-            (
-                "group_a", "group_b", "delete_sandbox", "content_section",
-                "duplicate_title_section",
-                "parent_page", "child_page", "sibling_page", "disposable_group",
-                "disposable_section", "disposable_page",
+            ("duplicate_title_section",),
+            CREATE_SCENARIO_TOOLS,
+            checks=(
+                "the exact target Section resolves under the disposable Notebook",
             ),
-            CREATE_FIXTURE_TOOLS,
-            content=("RichText", "Table", "Image", "page_tree"),
         ),
         DELETE_SCENARIO_POLICY,
-        frozenset(CREATE_FIXTURE_TOOLS | {"delete_page"}),
+        frozenset(CREATE_SCENARIO_TOOLS | {"delete_page"}),
     ),
     "rename": ScenarioSpec(
         "rename",
@@ -458,16 +451,17 @@ SCENARIO_SPECS = {
         "delete",
         _profile(
             "disposable-group",
-            ("Delete-Sandbox/Disposable-Group",),
-            ("delete_sandbox", "disposable_group"),
-            {"create_section_group"},
+            ("Delete-Sandbox/Disposable-Group/Disposable-Section",),
+            ("delete_sandbox", "disposable_group", "disposable_section"),
+            {"create_section_group", "create_section"},
             checks=(
                 "disposable_group is a descendant of delete_sandbox",
+                "disposable_group contains a persisted sentinel Section",
                 "delete target ID is manifest-allowlisted",
             ),
         ),
         DELETE_SCENARIO_POLICY,
-        frozenset(DELETE_TOOLS | {"create_section_group"}),
+        frozenset(DELETE_TOOLS | {"create_section_group", "create_section"}),
     ),
     "copy-page": ScenarioSpec(
         "copy-page",
@@ -632,7 +626,9 @@ SCENARIO_SPECS = {
             (
                 "source:Group-A/Source-Section/Rich-Page[strict rich text+table+image]",
                 "source:Group-A/Source-Section/Rich-Page/List-Tag-Page[semantic list+tag]",
+                "source:{00-Group-Anchor-A,99-Group-Anchor-B}/Fixture-Sentinel",
                 "destination:Cross-Notebook-Anchor",
+                "destination:{00-Group-Anchor-A,99-Group-Anchor-B}/Fixture-Sentinel",
             ),
             (
                 "group_a",
@@ -640,10 +636,14 @@ SCENARIO_SPECS = {
                 "parent_page",
                 "semantic_page",
                 "same_notebook_anchor_a",
+                "same_notebook_anchor_a_sentinel",
                 "same_notebook_anchor_b",
+                "same_notebook_anchor_b_sentinel",
                 "cross_notebook_anchor_section",
                 "cross_notebook_anchor_group_a",
+                "cross_notebook_anchor_group_a_sentinel",
                 "cross_notebook_anchor_group_b",
+                "cross_notebook_anchor_group_b_sentinel",
             ),
             {"create_section_group", "create_section"} | LAYERED_PAGE_FIXTURE_TOOLS,
             content=("RichText", "Table", "Image", "Outline", "List", "Tag"),
@@ -651,6 +651,7 @@ SCENARIO_SPECS = {
                 "strict parent uses canonical read-back verification",
                 "semantic child uses List/Tag semantic read-back verification",
                 "same-Notebook and cross-Notebook destination roots are role-bound",
+                "each otherwise-empty destination SectionGroup is persisted by one typed sentinel Section",
             ),
         ),
         COPY_POLICY,
@@ -867,6 +868,48 @@ SCENARIO_SPECS["search-all-open-notebooks"] = ScenarioSpec(
         "max_total_chars": 512,
         "max_seconds": 60,
         "snippet_chars": 200,
+    },
+)
+
+_TYPED_QUERY_FIXTURE_TOOLS = {
+    "create_section_group",
+    "create_section",
+    "create_page",
+    "reorder_page",
+}
+SCENARIO_SPECS["query-metadata-scopes"] = ScenarioSpec(
+    "query-metadata-scopes",
+    _profile(
+        "fresh-typed-query-scopes",
+        (
+            "source:Outer/Inner/Deep/{Parent,Child(level 2),Sibling}",
+            "source:Root/RootPage",
+            "query-b:BOuter/BInner/BDeep/{BParent,BChild(level 2)}",
+            "query-b:BRoot/BRootPage",
+        ),
+        (
+            "query_outer_group", "query_inner_group", "query_deep_section",
+            "query_root_section", "query_parent_page", "query_child_page",
+            "query_sibling_page", "query_root_page", "query_b_outer_group",
+            "query_b_inner_group", "query_b_deep_section", "query_b_root_section",
+            "query_b_parent_page", "query_b_child_page", "query_b_root_page",
+        ),
+        _TYPED_QUERY_FIXTURE_TOOLS,
+        content=("hierarchy metadata only", "Page indentation"),
+        checks=(
+            "two open role Notebooks have unique IDs and paths",
+            "Notebook/SectionGroup/Section native start-node chain is exact",
+            "Page Section and direct indentation-parent relationships are proven",
+        ),
+    ),
+    WRITE_POLICY,
+    frozenset(READ_TOOLS | _TYPED_QUERY_FIXTURE_TOOLS),
+    {
+        "fresh_only": True,
+        "included_in_all": False,
+        "query_kind": "hierarchy_metadata",
+        "pagination": {"page_size": 2, "consistency": "live_hierarchy"},
+        "lifecycle_close_probe_role": "query-b",
     },
 )
 

@@ -8,8 +8,29 @@ from types import SimpleNamespace
 import pytest
 
 from local_onenote_mcp import bridge as bridge_module
-from local_onenote_mcp.bridge import OneNoteBridge
+from local_onenote_mcp.bridge import OneNoteBridge, POWERSHELL_BRIDGE
 from local_onenote_mcp.onenote_errors import OneNoteModalUIBlockedError
+
+
+def test_powershell_bridge_unwraps_bounded_inner_com_exception_hresult() -> None:
+    assert "$leaf.InnerException" in POWERSHELL_BRIDGE
+    assert "$exceptionDepth -lt 8" in POWERSHELL_BRIDGE
+    assert "wrapper_hresult = $ex.HResult" in POWERSHELL_BRIDGE
+    assert "hresult = $leaf.HResult" in POWERSHELL_BRIDGE
+
+
+def test_internal_hierarchy_batch_uses_one_com_session_and_one_snapshot() -> None:
+    branch = POWERSHELL_BRIDGE.split('"open_hierarchy_batch" {', 1)[1].split(
+        '"update_hierarchy" {', 1
+    )[0]
+
+    assert "foreach ($entry in @($p.requests))" in branch
+    assert "$openedByKey[$key] = $objectId" in branch
+    assert "Batch hierarchy parent key was not opened" in branch
+    assert branch.count("$onenote.GetHierarchy(") == 1
+    assert "New-Object -ComObject OneNote.Application" not in branch
+    assert "$hierarchyError = $failure.error" in branch
+    assert "hierarchy_error = $hierarchyError" in branch
 
 
 def test_bridge_audit_records_operation_without_params_or_result(monkeypatch, tmp_path) -> None:
@@ -92,6 +113,9 @@ def test_bridge_audit_keeps_typed_hresult_without_payload_or_message(monkeypatch
                     "error": {
                         "message": "secret page text must not enter audit",
                         "hresult": -2147213264,
+                        "wrapper_hresult": -2146233087,
+                        "exception_depth": 2,
+                        "leaf_exception_type": "System.Runtime.InteropServices.COMException",
                         "category": "OperationStopped",
                     },
                 }
@@ -113,6 +137,10 @@ def test_bridge_audit_keeps_typed_hresult_without_payload_or_message(monkeypatch
     assert record["error_code"] == "onenote_modal_ui_blocked"
     assert record["hresult"] == "0x80042030"
     assert record["hresult_signed"] == -2147213264
+    assert record["wrapper_hresult"] == "0x80131501"
+    assert record["wrapper_hresult_signed"] == -2146233087
+    assert record["exception_depth"] == 2
+    assert record["leaf_exception_type"] == "System.Runtime.InteropServices.COMException"
     rendered = json.dumps(record)
     assert "secret" not in rendered
     assert "raw XML" not in rendered

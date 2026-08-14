@@ -49,6 +49,9 @@ class OneNoteError(RuntimeError):
         operation: str | None = None,
         hresult: int | None = None,
         category: str | None = None,
+        wrapper_hresult: int | None = None,
+        exception_depth: int | None = None,
+        leaf_exception_type: str | None = None,
         retryability: str | None = None,
         partial: bool = False,
         reconciliation: str = "indeterminate",
@@ -58,6 +61,12 @@ class OneNoteError(RuntimeError):
         self.operation = operation
         self.hresult_unsigned = unsigned_hresult(hresult)
         self.hresult_signed = signed_hresult(hresult)
+        self.wrapper_hresult_unsigned = unsigned_hresult(wrapper_hresult)
+        self.wrapper_hresult_signed = signed_hresult(wrapper_hresult)
+        self.exception_depth = (
+            int(exception_depth) if exception_depth is not None else None
+        )
+        self.leaf_exception_type = leaf_exception_type
         self.category = category
         self.retryability = retryability or type(self).retryability
         self.partial = bool(partial)
@@ -67,6 +76,11 @@ class OneNoteError(RuntimeError):
     @property
     def hresult(self) -> str | None:
         value = self.hresult_unsigned
+        return None if value is None else f"0x{value:08X}"
+
+    @property
+    def wrapper_hresult(self) -> str | None:
+        value = self.wrapper_hresult_unsigned
         return None if value is None else f"0x{value:08X}"
 
     def public_details(self) -> dict[str, Any]:
@@ -126,12 +140,29 @@ class OneNoteCoordinationTimeoutError(OneNoteError):
     retryability = "safe_to_retry"
 
 
+class OneNoteDesktopNotRunningError(OneNoteError):
+    """The required interactive OneNote Desktop process/window is absent."""
+
+    code = "onenote_desktop_not_running"
+    retryability = "after_user_action"
+
+
+class OneNoteDesktopProbeError(OneNoteError):
+    """The non-activating Windows readiness probe could not prove GUI state."""
+
+    code = "onenote_desktop_probe_failed"
+    retryability = "after_user_action"
+
+
 def bridge_error(
     message: str,
     *,
     operation: str,
     hresult: int | None = None,
     category: str | None = None,
+    wrapper_hresult: int | None = None,
+    exception_depth: int | None = None,
+    leaf_exception_type: str | None = None,
     timed_out: bool = False,
 ) -> OneNoteBridgeError:
     """Classify a bridge failure only from structured bridge evidence."""
@@ -161,6 +192,9 @@ def bridge_error(
         operation=operation,
         hresult=hresult,
         category=category,
+        wrapper_hresult=wrapper_hresult,
+        exception_depth=exception_depth,
+        leaf_exception_type=leaf_exception_type,
     )
 
 

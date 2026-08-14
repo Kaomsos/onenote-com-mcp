@@ -175,6 +175,25 @@ def build_isolated_dry_run_plan(
             "allowed_operations": cache_operations,
             "target": "new run-scoped working Notebook path; never a template path",
         }
+        steps[1:2] = [
+            {
+                "step": "prepare-materialized-fixture",
+                "trust_boundary": "typed fixture observer and validator",
+                "allowed_operations": [
+                    "batch OpenHierarchy(exact parent)",
+                    "typed relative-address ID rebind",
+                    "two stable hierarchy observations",
+                    "one full read per declared Page",
+                ],
+                "target": "the first exact live identity for every materialized role",
+            },
+            _step(
+                args.scenario,
+                spec.policy,
+                set(spec.tool_allowlist),
+                "selected mutation against only stable rebound live IDs",
+            ),
+        ]
     if interactive_bootstrap:
         steps[1:2] = [
             _step(
@@ -375,15 +394,15 @@ def build_isolated_dry_run_plan(
             ]
             if representation_discovery
             else [
-                "validated-hit: materialize, load hierarchy, rebind live IDs, validate",
+                "validated-hit: materialize, batch import, close, exact-path reopen, then rebind and validate",
                 "working activation failure: preserve run/lease; validated template remains retryable after close",
                 f"miss/invalid: interactive_bootstrap_required {recipe.bootstrap_scenario_name}",
             ]
             if recipe.consumer_scenario and use_cache
             else
             [
-                "validated-hit: lock, inventory, materialize, open working paths, live validate",
-                "cold-miss: build fresh, live validate, close all, stage, inventory, publish, materialize",
+                "validated-hit: lock, inventory, materialize, import-close-reopen, live validate",
+                "cold-miss: build fresh, live validate, close all, stage, inventory, publish, materialize, import-close-reopen",
                 (
                     "invalid: exact safe cleanup then interactive bootstrap"
                     if interactive_bootstrap

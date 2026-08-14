@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from ...mcp_stdio_client import (
     COPY_NO_DELETE_POLICY,
@@ -22,6 +22,7 @@ from ...test_utils import (
     find_snapshot_item,
     flatten_tree,
     mathml_structure_projection,
+    read_json,
     resolve_manifest_item,
     scenario_dir,
     validate_manifest_notebook,
@@ -560,6 +561,189 @@ async def close_copied_notebook(
             "expected_modified": close_target.get("modified"),
         },
     )
+
+
+async def _finalize_failed_copied_notebook(
+    client: MCPStdioClient,
+    result: Mapping[str, Any],
+    planned: Mapping[str, Any],
+    out: Path,
+    *,
+    keep_open: bool,
+) -> dict[str, Any]:
+    """Close a possibly-created Notebook Copy target before propagating failure."""
+
+    evidence_path = out / "copy-target-failure-finalization.json"
+    created_ids = [str(value) for value in result.get("created_ids", []) if value]
+    target = result.get("item")
+    possibly_created = bool(created_ids) or isinstance(target, Mapping)
+    if not possibly_created:
+        evidence = {
+            "status": "not_created",
+            "closed": True,
+            "isolation_passed": True,
+            "filesystem_deleted": False,
+        }
+        write_json(evidence_path, evidence)
+        return evidence
+    if keep_open:
+        evidence = {
+            "status": "preserved_open",
+            "closed": False,
+            "isolation_passed": False,
+            "filesystem_deleted": False,
+        }
+        write_json(evidence_path, evidence)
+        return evidence
+
+    planned_path = str(planned.get("destination", {}).get("target_path", ""))
+    actual_path = str(result.get("destination_path", ""))
+    if (
+        not isinstance(target, dict)
+        or target.get("resource_type") != "notebook"
+        or not target.get("id")
+        or not planned_path
+        or not actual_path
+        or Path(actual_path).resolve() != Path(planned_path).resolve()
+    ):
+        evidence = {
+            "status": "close_failed",
+            "closed": False,
+            "isolation_passed": False,
+            "reason": "created Notebook target lacks an exact typed ID/path binding",
+            "filesystem_deleted": False,
+        }
+        write_json(evidence_path, evidence)
+        raise RestoreFailure(
+            "Notebook Copy failure created a target without enough exact binding evidence to close it."
+        )
+    try:
+        closed = await close_copied_notebook(
+            client,
+            target,
+            out / "failure-close-confirmation.json",
+        )
+        if closed.get("closed") is not True:
+            raise RestoreFailure("Notebook Copy failure close did not return closed=true.")
+        evidence = {
+            "status": "closed",
+            "closed": True,
+            "isolation_passed": True,
+            "target_id": str(target["id"]),
+            "target_path": actual_path,
+            "close_result": closed,
+            "filesystem_deleted": False,
+        }
+        write_json(evidence_path, evidence)
+        return evidence
+    except Exception as exc:
+        evidence = {
+            "status": "close_failed",
+            "closed": False,
+            "isolation_passed": False,
+            "target_id": str(target["id"]),
+            "target_path": actual_path,
+            "error": f"{type(exc).__name__}: {exc}",
+            "filesystem_deleted": False,
+        }
+        write_json(evidence_path, evidence)
+        if isinstance(exc, RestoreFailure):
+            raise
+        raise RestoreFailure(
+            f"Exact copied Notebook failure close failed: {exc}"
+        ) from exc
+
+
+async def _verify_and_finalize_notebook_copy(
+    args: argparse.Namespace,
+    options: RuntimeOptions,
+    client: MCPStdioClient,
+    before: dict[str, Any],
+    current: dict[str, Any],
+    copied: dict[str, Any],
+    planned: dict[str, Any],
+    spec: Mapping[str, Any],
+    out: Path,
+    *,
+    keep_worksite: bool,
+) -> dict[str, Any]:
+    try:
+        if copied.get("copy_report", {}).get("verified") is not True:
+            raise InvariantFailure(
+                "Copy response did not report successful read-back verification."
+            )
+        target = copied.get("item")
+        if not isinstance(target, dict) or target.get("resource_type") != "notebook":
+            raise InvariantFailure("Notebook Copy did not return a typed target Notebook.")
+        actual_target_path = str(copied.get("destination_path", ""))
+        planned_target_path = str(planned["destination"]["target_path"])
+        if not actual_target_path or actual_target_path.casefold() != planned_target_path.casefold():
+            raise InvariantFailure("Notebook Copy result path differs from the manifest-scoped plan.")
+        target_snapshot = await capture_snapshot(client, target["id"])
+        write_json(out / "after.json", target_snapshot)
+        position_evidence = assert_destination_position(
+            copied,
+            target_snapshot,
+            str(target["id"]),
+        )
+        write_json(out / "destination-position-evidence.json", position_evidence)
+        assert_copy_mapping(
+            before,
+            target_snapshot,
+            current["id"],
+            None,
+            str(spec["destination_name"]),
+            copied,
+            include_descendants=bool(spec.get("include_descendants", True)),
+        )
+        if keep_worksite:
+            remaining = {
+                "status": "preserved_open_for_manual_inspection",
+                "target_id": target["id"],
+                "target_ids": list(copied.get("created_ids", [])),
+                "target_path": actual_target_path,
+                "manual_cleanup_required": True,
+                "reason": "--keep-worksite preserved the copied Notebook for UI inspection.",
+            }
+            write_json(out / "worksite.json", remaining)
+        else:
+            closed = await close_copied_notebook(
+                client,
+                target,
+                out / "close-confirmation.json",
+            )
+            remaining = {
+                "status": "closed_not_deleted",
+                "target_id": target["id"],
+                "target_path": actual_target_path,
+                "close_result": closed,
+                "reason": "OneNote COM exposes CloseNotebook, not typed Notebook deletion.",
+            }
+            write_json(out / "restored.json", remaining)
+        result = {
+            "scenario": args.scenario,
+            "status": "passed",
+            "target_id": target["id"],
+            "restored": False,
+            "worksite_preserved": keep_worksite,
+            "remaining_state": remaining,
+            "copy_report": copied["copy_report"],
+        }
+        write_json(out / "result.json", result)
+        render_report(options.run_dir)
+        return result
+    except Exception:
+        await _finalize_failed_copied_notebook(
+            client,
+            copied,
+            planned,
+            out,
+            keep_open=bool(
+                getattr(args, "keep_notebook", False)
+                or getattr(args, "keep_worksite", False)
+            ),
+        )
+        raise
 
 
 async def _capture_notebook_bundle(
@@ -1421,76 +1605,48 @@ async def execute_copy(
         if find_snapshot_item(before, str(planned["source"]["id"])) is None:
             raise InvariantFailure("Plan-bound Copy source is missing from before evidence.")
         current = dict(planned["source"])
-        copied = await call_with_result_evidence(
-            client,
-            spec["tool"],
-            copy_execute_arguments(spec, current, planned["plan_digest"]),
-            out / "copy-result.json",
-        )
-        if copied.get("copy_report", {}).get("verified") is not True:
-            raise InvariantFailure("Copy response did not report successful read-back verification.")
+        try:
+            copied = await call_with_result_evidence(
+                client,
+                spec["tool"],
+                copy_execute_arguments(spec, current, planned["plan_digest"]),
+                out / "copy-result.json",
+            )
+        except Exception:
+            if args.scenario == "copy-notebook":
+                partial = (
+                    read_json(out / "copy-result.json")
+                    if (out / "copy-result.json").is_file()
+                    else {}
+                )
+                await _finalize_failed_copied_notebook(
+                    client,
+                    partial,
+                    planned,
+                    out,
+                    keep_open=bool(
+                        getattr(args, "keep_notebook", False)
+                        or getattr(args, "keep_worksite", False)
+                    ),
+                )
+            raise
 
         if args.scenario == "copy-notebook":
-            target = copied.get("item")
-            if not isinstance(target, dict) or target.get("resource_type") != "notebook":
-                raise InvariantFailure("Notebook Copy did not return a typed target Notebook.")
-            actual_target_path = str(copied.get("destination_path", ""))
-            planned_target_path = str(planned["destination"]["target_path"])
-            if not actual_target_path or actual_target_path.casefold() != planned_target_path.casefold():
-                raise InvariantFailure("Notebook Copy result path differs from the manifest-scoped plan.")
-            target_snapshot = await capture_snapshot(client, target["id"])
-            write_json(out / "after.json", target_snapshot)
-            position_evidence = assert_destination_position(
-                copied,
-                target_snapshot,
-                str(target["id"]),
-            )
-            write_json(out / "destination-position-evidence.json", position_evidence)
-            assert_copy_mapping(
+            return await _verify_and_finalize_notebook_copy(
+                args,
+                options,
+                client,
                 before,
-                target_snapshot,
-                current["id"],
-                None,
-                spec["destination_name"],
+                current,
                 copied,
-                include_descendants=spec.get("include_descendants", True),
+                planned,
+                spec,
+                out,
+                keep_worksite=keep_worksite,
             )
-            if keep_worksite:
-                remaining = {
-                    "status": "preserved_open_for_manual_inspection",
-                    "target_id": target["id"],
-                    "target_ids": list(copied.get("created_ids", [])),
-                    "target_path": actual_target_path,
-                    "manual_cleanup_required": True,
-                    "reason": "--keep-worksite preserved the copied Notebook for UI inspection.",
-                }
-                write_json(out / "worksite.json", remaining)
-            else:
-                closed = await close_copied_notebook(
-                    client,
-                    target,
-                    out / "close-confirmation.json",
-                )
-                remaining = {
-                    "status": "closed_not_deleted",
-                    "target_id": target["id"],
-                    "target_path": actual_target_path,
-                    "close_result": closed,
-                    "reason": "OneNote COM exposes CloseNotebook, not typed Notebook deletion.",
-                }
-                write_json(out / "restored.json", remaining)
-            result = {
-                "scenario": args.scenario,
-                "status": "passed",
-                "target_id": target["id"],
-                "restored": False,
-                "worksite_preserved": keep_worksite,
-                "remaining_state": remaining,
-                "copy_report": copied["copy_report"],
-            }
-            write_json(out / "result.json", result)
-            render_report(options.run_dir)
-            return result
+
+        if copied.get("copy_report", {}).get("verified") is not True:
+            raise InvariantFailure("Copy response did not report successful read-back verification.")
 
         after = await capture_snapshot(client, notebook_id)
         write_json(out / "after.json", after)

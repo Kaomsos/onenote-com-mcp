@@ -31,6 +31,11 @@ from tests.manual_validation.scenarios.fixture_recipes.reparent_section import D
 SCENARIOS = validation.PUBLIC_SCENARIOS
 
 
+@pytest.fixture(autouse=True)
+def _running_onenote_gui(monkeypatch):
+    monkeypatch.setattr(validation, "require_onenote_desktop", lambda: None)
+
+
 def _validate_fixture_snapshot(scenario, snapshot, structure, content_fixture):
     evidence = {}
     if content_fixture is not None:
@@ -163,7 +168,7 @@ def test_each_dry_run_declares_one_process_and_scenario_fixture(
 
 def test_fixture_profiles_are_scenario_specific() -> None:
     names = {name: spec.fixture.name for name, spec in SCENARIO_SPECS.items()}
-    assert names["create"] == "full-preset"
+    assert names["create"] == "minimal-create-target"
     assert names["rename"] == "rename-target"
     assert names["reparent-section"] == "section-reparent"
     assert names["reparent-page"] == "typed-page-reparent"
@@ -856,11 +861,13 @@ def test_fixture_validator_rejects_delete_target_outside_sandbox() -> None:
     structure = {
         "delete_sandbox": {"id": "sandbox"},
         "disposable_group": {"id": "target"},
+        "disposable_section": {"id": "sentinel"},
     }
     snapshot = {
         "items": [
             {"id": "sandbox", "resource_type": "section_group"},
             {"id": "target", "resource_type": "section_group", "parent_id": "other"},
+            {"id": "sentinel", "resource_type": "section", "parent_id": "target"},
         ]
     }
     with pytest.raises(runtime.InvariantFailure, match="Delete-Sandbox"):
@@ -872,10 +879,14 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
         [
             {"id": "sandbox", "name": "Delete-Sandbox"},
             {"id": "target", "name": "Disposable-Group"},
+            {"id": "sentinel", "name": "Disposable-Section"},
         ]
     )
 
     async def fake_group(*_args, **_kwargs):
+        return next(created)
+
+    async def fake_section(*_args, **_kwargs):
         return next(created)
 
     async def fake_snapshot(*_args, **_kwargs):
@@ -887,11 +898,17 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
                     "resource_type": "section_group",
                     "parent_id": "wrong",
                 },
+                {
+                    "id": "sentinel",
+                    "resource_type": "section",
+                    "parent_id": "target",
+                },
             ],
             "page_hashes": {},
         }
 
     monkeypatch.setattr(delete_fixture, "ensure_group", fake_group)
+    monkeypatch.setattr(delete_fixture, "ensure_section", fake_section)
     monkeypatch.setattr(fixture_runtime, "capture_snapshot", fake_snapshot)
     args = argparse.Namespace(scenario="delete")
     options = RuntimeOptions(tmp_path, 180, False, False)
@@ -1012,6 +1029,7 @@ class FakeLifecycle:
         )
         self.closed = False
         self.preserved = False
+        self.open_count = 0
         self.__class__.instances.append(self)
 
     def create_fresh_notebook(self, name: str):
@@ -1032,8 +1050,60 @@ class FakeLifecycle:
 
     def close_exact_notebook(self):
         self.closed = True
-        notebook_id = "notebook-id" if self.role == "source" else f"{self.role}-notebook-id"
-        return {"closed": True, "close_before": {"id": notebook_id}}
+        if self.open_count == 0:
+            notebook_id = (
+                "notebook-id" if self.role == "source" else f"{self.role}-notebook-id"
+            )
+        else:
+            notebook_id = (
+                f"reopened-{self.open_count}-notebook-id"
+                if self.role == "source"
+                else f"reopened-{self.open_count}-{self.role}-notebook-id"
+            )
+        return {
+            "closed": True,
+            "source_notebook_id": notebook_id,
+            "close_before": {"id": notebook_id},
+        }
+
+    def working_notebook_open_lock(self):
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    def snapshot_open_notebooks(self):
+        return {}
+
+    def assert_no_active_working_conflict(self, **_kwargs):
+        return None
+
+    def open_working_notebook(
+        self,
+        name,
+        working_path,
+        *,
+        template_paths,
+        role="source",
+    ):
+        assert role == self.role
+        self.open_count += 1
+        assert self.open_count == 1
+        self.closed = False
+        notebook_id = (
+            f"reopened-{self.open_count}-notebook-id"
+            if self.role == "source"
+            else f"reopened-{self.open_count}-{self.role}-notebook-id"
+        )
+        lease = {
+            "notebook_id": notebook_id,
+            "expected_name": name,
+            "expected_local_path": str(Path(working_path).resolve()),
+            "actual_local_path": str(Path(working_path).resolve()),
+            "hierarchy_open_status": "passed",
+            "opened_hierarchy": [{"object_id": "section"}],
+        }
+        test_utils.write_json(self.lease_path, {"schema_version": 1, **lease})
+        return {"id": notebook_id, "name": name}, lease
 
 class FakeMCP:
     starts = 0
@@ -1120,6 +1190,30 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
         return {"scenario": args.scenario, "status": "passed"}
 
     monkeypatch.setattr(SCENARIO_REGISTRY.get(scenario), "execute", fake_scenario)
+    if getattr(SCENARIO_REGISTRY.get(scenario), "requires_lifecycle_wrappers", False):
+        async def fake_lifecycle_scenario(
+            args,
+            _options,
+            _manifest_value,
+            *,
+            client=None,
+            fixture_result=None,
+            wrappers=None,
+        ):
+            assert wrappers is not None
+            return await fake_scenario(
+                args,
+                _options,
+                _manifest_value,
+                client=client,
+                fixture_result=fixture_result,
+            )
+
+        monkeypatch.setattr(
+            SCENARIO_REGISTRY.get(scenario),
+            "execute_with_lifecycle",
+            fake_lifecycle_scenario,
+        )
 
     result = asyncio.run(
         validation.run_validate(
@@ -1130,7 +1224,8 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
 
     assert FakeMCP.starts == 1
     assert calls[0] == "fixture"
-    assert calls[1] == scenario
+    expected_calls = ["fixture", scenario]
+    assert calls[: len(expected_calls)] == expected_calls
     assert FakeLifecycle.instances[0].closed is True
     assert result["metrics"]["observed_mcp_process_starts"] == 1
     multi_role = len(
@@ -1144,7 +1239,72 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
     ]
 
 
-def test_failure_preserves_open_and_stops_before_report(monkeypatch, tmp_path) -> None:
+def test_manual_scenario_fails_preflight_before_run_or_notebook_creation(
+    monkeypatch, tmp_path
+) -> None:
+    from local_onenote_mcp.onenote_errors import OneNoteDesktopNotRunningError
+
+    run_dir = tmp_path / "run"
+    monkeypatch.setattr(
+        validation,
+        "require_onenote_desktop",
+        lambda: (_ for _ in ()).throw(
+            OneNoteDesktopNotRunningError(
+                "OneNote Desktop is not running with a visible GUI. Start OneNote and retry.",
+                operation="health_preflight",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        validation,
+        "NotebookLifecycleWrapper",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("desktop preflight must run before lifecycle")
+        ),
+    )
+
+    with pytest.raises(runtime.RunnerFailure, match="Start OneNote and retry") as raised:
+        asyncio.run(
+            validation.run_validate(
+                _args(run_dir, "rename"),
+                RuntimeOptions(run_dir, 180, False, False),
+            )
+        )
+
+    assert raised.value.exit_code == runtime.EXIT_MCP
+    assert not run_dir.exists()
+
+
+def test_manual_scenario_dry_run_never_probes_desktop(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        validation,
+        "require_onenote_desktop",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("dry-run must not inspect OneNote GUI state")
+        ),
+    )
+    args = _args(tmp_path / "dry-run", "rename")
+    args.dry_run = True
+
+    result = asyncio.run(
+        validation.run_validate(
+            args,
+            RuntimeOptions(
+                run_dir=args.run_dir,
+                timeout=180,
+                json_output=False,
+                dry_run=True,
+            ),
+        )
+    )
+
+    assert result["dry_run"] is True
+    assert not args.run_dir.exists()
+
+
+def test_scenario_execution_defers_close_to_top_level_failure_finalization(
+    monkeypatch, tmp_path
+) -> None:
     calls: list[str] = []
     _install_orchestration_fakes(monkeypatch, calls)
 
@@ -1163,7 +1323,7 @@ def test_failure_preserves_open_and_stops_before_report(monkeypatch, tmp_path) -
     assert state["finalization_started"] is False
 
 
-def test_interactive_detection_failure_does_not_initialize_cache_or_close(
+def test_interactive_detection_failure_defers_close_and_does_not_initialize_cache(
     monkeypatch, tmp_path
 ) -> None:
     calls: list[str] = []
@@ -1216,7 +1376,7 @@ def test_restore_failure_never_enters_source_finalization(monkeypatch, tmp_path)
     assert state["finalization_started"] is False
 
 
-def test_copy_only_records_cleanup_and_never_closes(monkeypatch, tmp_path) -> None:
+def test_copy_only_records_cleanup_and_closes_by_default(monkeypatch, tmp_path) -> None:
     calls: list[str] = []
     _install_orchestration_fakes(monkeypatch, calls)
 
@@ -1246,17 +1406,130 @@ def test_copy_only_records_cleanup_and_never_closes(monkeypatch, tmp_path) -> No
     args = _args(tmp_path / "run", "move-page")
     with pytest.raises(ClientFailure, match="copy_only"):
         asyncio.run(validation.run_validate(args, RuntimeOptions(args.run_dir, 1_800, False, False)))
-    validation.record_failure(args, "copy_only", runtime.EXIT_MCP)
+    finalization = validation.record_failure(args, "copy_only", runtime.EXIT_MCP)
 
-    assert FakeLifecycle.instances[0].closed is False
+    assert finalization["status"] == "closed"
+    assert finalization["isolation_passed"] is True
+    assert set(finalization["roles"]) == {"source", "destination"}
+    assert all(role["closed"] is True for role in finalization["roles"].values())
+    assert any(wrapper.closed for wrapper in FakeLifecycle.instances[1:])
     failure = test_utils.read_json(
         args.run_dir / "scenarios" / args.scenario / "failure.json"
     )
     assert failure["status"] == "needs_manual_cleanup"
     assert failure["created_ids"] == ["copied-page"]
     state = test_utils.read_json(args.run_dir / "run-state.json")
-    assert state["status"] == "failed_preserved_open"
+    assert state["status"] == "failed_closed"
     assert state["failed_step"] == "move-page"
+    run_failure = test_utils.read_json(args.run_dir / "run-failure.json")
+    assert run_failure["failure_finalization"]["closed"] is True
+    assert run_failure["filesystem_deleted"] is False
+
+
+@pytest.mark.parametrize("flag", ("keep_notebook", "keep_worksite"))
+def test_failure_explicit_keep_mode_preserves_open(monkeypatch, tmp_path, flag) -> None:
+    calls: list[str] = []
+    _install_orchestration_fakes(monkeypatch, calls)
+
+    async def failed(*_args, **_kwargs):
+        raise runtime.InvariantFailure("injected failure")
+
+    monkeypatch.setattr(SCENARIO_REGISTRY.get("rename"), "execute", failed)
+    args = _args(tmp_path / flag, "rename")
+    setattr(args, flag, True)
+    with pytest.raises(runtime.InvariantFailure, match="injected failure"):
+        asyncio.run(
+            validation.run_validate(
+                args,
+                RuntimeOptions(args.run_dir, 180, False, False),
+            )
+        )
+
+    finalization = validation.record_failure(args, "injected failure", runtime.EXIT_INVARIANT)
+
+    assert finalization["status"] == "preserved_open"
+    assert finalization["isolation_passed"] is False
+    assert not any(wrapper.closed for wrapper in FakeLifecycle.instances)
+    assert test_utils.read_json(args.run_dir / "run-state.json")["status"] == "failed_preserved_open"
+
+
+def test_failure_before_run_creation_is_already_isolated_without_creating_directory(tmp_path) -> None:
+    args = _args(tmp_path / "absent", "rename")
+
+    finalization = validation.record_failure(args, "preflight", runtime.EXIT_INVARIANT)
+
+    assert finalization["status"] == "not_started"
+    assert finalization["isolation_passed"] is True
+    assert not args.run_dir.exists()
+
+
+def test_failure_close_error_is_not_reported_as_isolated(monkeypatch, tmp_path) -> None:
+    calls: list[str] = []
+    _install_orchestration_fakes(monkeypatch, calls)
+
+    async def failed(*_args, **_kwargs):
+        raise runtime.InvariantFailure("injected failure")
+
+    monkeypatch.setattr(SCENARIO_REGISTRY.get("rename"), "execute", failed)
+    args = _args(tmp_path / "close-failed", "rename")
+    with pytest.raises(runtime.InvariantFailure):
+        asyncio.run(
+            validation.run_validate(
+                args,
+                RuntimeOptions(args.run_dir, 180, False, False),
+            )
+        )
+
+    def close_failed(_self):
+        raise runtime.RestoreFailure("injected close failure")
+
+    monkeypatch.setattr(FakeLifecycle, "close_exact_notebook", close_failed)
+    finalization = validation.record_failure(args, "injected failure", runtime.EXIT_INVARIANT)
+
+    assert finalization["status"] == "close_failed"
+    assert finalization["closed"] is False
+    assert finalization["isolation_passed"] is False
+    assert finalization["roles"]["source"]["status"] == "close_failed"
+    assert test_utils.read_json(args.run_dir / "run-state.json")["status"] == "failure_finalization_failed"
+
+
+def test_copy_notebook_created_target_without_close_evidence_blocks_isolation(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[str] = []
+    _install_orchestration_fakes(monkeypatch, calls)
+
+    async def failed(args, options, *_args, **_kwargs):
+        test_utils.write_json(
+            test_utils.scenario_dir(options.run_dir, args.scenario)
+            / "copy-result.json",
+            {
+                "created_ids": ["copied-notebook"],
+                "item": {"id": "copied-notebook", "resource_type": "notebook"},
+            },
+        )
+        raise runtime.InvariantFailure("post-copy failure")
+
+    monkeypatch.setattr(SCENARIO_REGISTRY.get("copy-notebook"), "execute", failed)
+    args = _args(tmp_path / "copy-target-unproven", "copy-notebook")
+    with pytest.raises(runtime.InvariantFailure):
+        asyncio.run(
+            validation.run_validate(
+                args,
+                RuntimeOptions(args.run_dir, 1_800, False, False),
+            )
+        )
+
+    finalization = validation.record_failure(
+        args,
+        "post-copy failure",
+        runtime.EXIT_INVARIANT,
+    )
+
+    assert finalization["status"] == "close_failed"
+    assert finalization["isolation_passed"] is False
+    assert finalization["roles"]["source"]["closed"] is True
+    assert finalization["roles"]["copy-target"]["status"] == "close_unproven"
 
 
 def test_finalize_uses_lifecycle_lease_and_never_starts_mcp(tmp_path) -> None:
@@ -1275,6 +1548,61 @@ def test_finalize_uses_lifecycle_lease_and_never_starts_mcp(tmp_path) -> None:
     assert wrapper.closed is True
     assert result["status"] == "closed_preserved"
     assert Path(manifest["disposable_targets"]["source_notebook_path"]).exists()
+
+
+def test_finalize_accepts_only_exact_durable_preclosed_lifecycle_evidence(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    wrapper = FakeLifecycle(run_dir, timeout_seconds=180)
+    _notebook, _lease = wrapper.create_fresh_notebook("__ISOLATED__")
+    lease = test_utils.read_json(wrapper.lease_path)
+    lease.update(
+        state="closed",
+        close_result={
+            "closed": True,
+            "source_notebook_id": "notebook-id",
+            "close_before": {"id": "notebook-id"},
+            "filesystem_deleted": False,
+        },
+    )
+    test_utils.write_json(wrapper.lease_path, lease)
+
+    result = asyncio.run(
+        validation.finalize_notebook(
+            _args(run_dir, "query-metadata-scopes"),
+            RuntimeOptions(run_dir, 180, False, False),
+            _manifest(run_dir),
+            wrapper=wrapper,
+        )
+    )
+
+    assert wrapper.closed is False
+    assert result["closed"] is True
+    assert result["status"] == "closed_preserved"
+    assert result["close_result"] == lease["close_result"]
+
+
+def test_finalize_rejects_unbound_preclosed_lifecycle_evidence(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    wrapper = FakeLifecycle(run_dir, timeout_seconds=180)
+    _notebook, _lease = wrapper.create_fresh_notebook("__ISOLATED__")
+    lease = test_utils.read_json(wrapper.lease_path)
+    lease.update(
+        state="closed",
+        close_result={"closed": True, "source_notebook_id": "other-notebook"},
+    )
+    test_utils.write_json(wrapper.lease_path, lease)
+
+    with pytest.raises(runtime.RestoreFailure, match="exact close evidence"):
+        asyncio.run(
+            validation.finalize_notebook(
+                _args(run_dir, "query-metadata-scopes"),
+                RuntimeOptions(run_dir, 180, False, False),
+                _manifest(run_dir),
+                wrapper=wrapper,
+            )
+        )
+
+    assert wrapper.closed is False
 
 
 def test_bundle_finalization_failure_records_completed_roles_and_preserves_paths(tmp_path) -> None:

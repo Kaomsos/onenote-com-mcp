@@ -19,7 +19,7 @@ from .recipe_base import (
 )
 
 class CopySectionGroupFixtureRecipe(LayeredCopyFixtureRecipe):
-    recipe_version = 4
+    recipe_version = 5
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "same-Notebook and cross-Notebook roots belong to their declared roles",
@@ -32,30 +32,34 @@ class CopySectionGroupFixtureRecipe(LayeredCopyFixtureRecipe):
             "parent_page",
             "semantic_page",
             "same_notebook_anchor_a",
+            "same_notebook_anchor_a_sentinel",
             "same_notebook_anchor_b",
+            "same_notebook_anchor_b_sentinel",
         )
         destination_keys = (
             "cross_notebook_anchor_section",
             "cross_notebook_anchor_group_a",
+            "cross_notebook_anchor_group_a_sentinel",
             "cross_notebook_anchor_group_b",
+            "cross_notebook_anchor_group_b_sentinel",
         )
         profile = get_scenario_spec("copy-section-group").fixture
         source_profile = replace(
             profile,
             name="rich-group-copy-source",
-            expected_structure=profile.expected_structure[:-1],
+            expected_structure=profile.expected_structure[:3],
             manifest_keys=source_keys,
-            validation_conditions=profile.validation_conditions[:-1],
+            validation_conditions=profile.validation_conditions[:3],
         )
         destination_profile = replace(
             profile,
             name="copy-section-group-destination",
-            expected_structure=("destination:Cross-Notebook-Anchor",),
+            expected_structure=profile.expected_structure[3:],
             content_capabilities=(),
             manifest_keys=destination_keys,
-            creation_tools=frozenset({"create_section"}),
+            creation_tools=frozenset({"create_section_group", "create_section"}),
             validation_conditions=(
-                "destination anchor Section is active under the destination Notebook",
+                "destination anchor Section and both sentinel-backed Groups are active under the destination Notebook",
             ),
         )
         super().__init__(
@@ -85,13 +89,25 @@ class CopySectionGroupFixtureRecipe(LayeredCopyFixtureRecipe):
                     "Cross-Notebook-Anchor",
                 ),
             )
-            for key, name in (
-                ("cross_notebook_anchor_group_a", "00-Group-Anchor-A"),
-                ("cross_notebook_anchor_group_b", "99-Group-Anchor-B"),
+            for key, sentinel_key, name in (
+                (
+                    "cross_notebook_anchor_group_a",
+                    "cross_notebook_anchor_group_a_sentinel",
+                    "00-Group-Anchor-A",
+                ),
+                (
+                    "cross_notebook_anchor_group_b",
+                    "cross_notebook_anchor_group_b_sentinel",
+                    "99-Group-Anchor-B",
+                ),
             ):
-                context.recorder.record_structure(
+                group = context.recorder.record_structure(
                     key,
                     await ensure_group(context.client, context.notebook_id, name),
+                )
+                context.recorder.record_structure(
+                    sentinel_key,
+                    await ensure_section(context.client, group["id"], "Fixture-Sentinel"),
                 )
             return FixtureBuildResult(
                 context.recorder.structure,
@@ -102,13 +118,25 @@ class CopySectionGroupFixtureRecipe(LayeredCopyFixtureRecipe):
                 f"Unsupported Copy SectionGroup Notebook role: {context.role}"
             )
         build = await super().build(context)
-        for key, name in (
-            ("same_notebook_anchor_a", "00-Group-Anchor-A"),
-            ("same_notebook_anchor_b", "99-Group-Anchor-B"),
+        for key, sentinel_key, name in (
+            (
+                "same_notebook_anchor_a",
+                "same_notebook_anchor_a_sentinel",
+                "00-Group-Anchor-A",
+            ),
+            (
+                "same_notebook_anchor_b",
+                "same_notebook_anchor_b_sentinel",
+                "99-Group-Anchor-B",
+            ),
         ):
-            context.recorder.record_structure(
+            group = context.recorder.record_structure(
                 key,
                 await ensure_group(context.client, context.notebook_id, name),
+            )
+            context.recorder.record_structure(
+                sentinel_key,
+                await ensure_section(context.client, group["id"], "Fixture-Sentinel"),
             )
         return FixtureBuildResult(context.recorder.structure, context.recorder.evidence)
 
@@ -120,7 +148,9 @@ class CopySectionGroupFixtureRecipe(LayeredCopyFixtureRecipe):
         if set(build.structure) == {
             "cross_notebook_anchor_section",
             "cross_notebook_anchor_group_a",
+            "cross_notebook_anchor_group_a_sentinel",
             "cross_notebook_anchor_group_b",
+            "cross_notebook_anchor_group_b_sentinel",
         }:
             resolved, _by_id, checks = resolve_active_structure(
                 context.snapshot,
@@ -145,6 +175,24 @@ class CopySectionGroupFixtureRecipe(LayeredCopyFixtureRecipe):
                 "Cross-Notebook SectionGroup anchors escaped their Notebook.",
                 "cross-Notebook root contains two SectionGroup anchors",
             )
+            checks.require(
+                all(
+                    resolved[sentinel_key].get("resource_type") == "section"
+                    and resolved[sentinel_key].get("parent_id") == resolved[group_key]["id"]
+                    for group_key, sentinel_key in (
+                        (
+                            "cross_notebook_anchor_group_a",
+                            "cross_notebook_anchor_group_a_sentinel",
+                        ),
+                        (
+                            "cross_notebook_anchor_group_b",
+                            "cross_notebook_anchor_group_b_sentinel",
+                        ),
+                    )
+                ),
+                "Cross-Notebook SectionGroup sentinel Sections escaped their anchors.",
+                "each cross-Notebook SectionGroup anchor has one typed sentinel Section",
+            )
             return tuple(checks.checks)
         checks = list(super().validate(context, build))
         resolved, _by_id, state = resolve_active_structure(context.snapshot, build.structure)
@@ -157,7 +205,20 @@ class CopySectionGroupFixtureRecipe(LayeredCopyFixtureRecipe):
             "Same-Notebook SectionGroup anchors escaped their Notebook.",
             "same-Notebook root contains two SectionGroup anchors",
         )
+        state.require(
+            all(
+                resolved[sentinel_key].get("resource_type") == "section"
+                and resolved[sentinel_key].get("parent_id") == resolved[group_key]["id"]
+                for group_key, sentinel_key in (
+                    ("same_notebook_anchor_a", "same_notebook_anchor_a_sentinel"),
+                    ("same_notebook_anchor_b", "same_notebook_anchor_b_sentinel"),
+                )
+            ),
+            "Same-Notebook SectionGroup sentinel Sections escaped their anchors.",
+            "each same-Notebook SectionGroup anchor has one typed sentinel Section",
+        )
         checks.append("same-Notebook root contains two SectionGroup anchors")
+        checks.append("each same-Notebook SectionGroup anchor has one typed sentinel Section")
         return tuple(checks)
 
     def validate_live(

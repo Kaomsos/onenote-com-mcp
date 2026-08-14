@@ -1023,20 +1023,94 @@ class MutationService(BaseService):
             if item.get("id") == notebook_id or item.get("notebook_id") == notebook_id
         ]
 
+    def _capture_reparent_hierarchy(self, notebook_id: str) -> list[dict[str, Any]]:
+        """Capture one bounded, content-free hierarchy observation for Reparent."""
+
+        budget = CopyBudget.current()
+        items = self._notebook_items(
+            self.hierarchy.resources(include_recycle_bin=False), notebook_id
+        )
+        if not any(item.get("id") == notebook_id for item in items):
+            raise ValueError(f"No active notebook found for ID '{notebook_id}'.")
+        if len(items) > budget.max_resources:
+            raise ValueError(
+                "Reparent verification exceeds the configured hierarchy resource budget."
+            )
+        if sum(item.get("resource_type") == "page" for item in items) > budget.max_pages:
+            raise ValueError("Reparent verification exceeds the configured Page budget.")
+        return items
+
+    @staticmethod
+    def _reparent_hierarchy_signature(items: list[dict[str, Any]]) -> tuple[Any, ...]:
+        """Return a content-free signature including relationships and sibling order."""
+
+        relationships = tuple(
+            sorted(
+                (
+                    str(item.get("id", "")),
+                    str(item.get("resource_type", "")),
+                    str(item.get("parent_id") or ""),
+                    str(item.get("section_id") or ""),
+                    int(item.get("page_level") or 0),
+                    str(item.get("parent_page_id") or ""),
+                    int(item.get("order") or 0),
+                )
+                for item in items
+            )
+        )
+        children: dict[str, list[tuple[str, str]]] = {}
+        for item in items:
+            if item.get("resource_type") == "notebook":
+                continue
+            parent_id = (
+                item.get("section_id")
+                if item.get("resource_type") == "page"
+                else item.get("parent_id")
+            )
+            if parent_id:
+                children.setdefault(str(parent_id), []).append(
+                    (str(item.get("resource_type", "")), str(item.get("id", "")))
+                )
+        sibling_order = tuple(
+            (parent_id, tuple(sequence))
+            for parent_id, sequence in sorted(children.items())
+        )
+        return relationships, sibling_order
+
+    @staticmethod
+    def _reparent_confirmation_signature(item: dict[str, Any] | None) -> tuple[Any, ...] | None:
+        """Project the hierarchy facts that authorize a native Reparent.
+
+        OneNote can advance ``modified`` on a Page or container while it
+        finishes persisting an already-observed hierarchy.  Reparent binds the
+        caller's clock once above, then uses this semantic projection to make
+        sure the full evidence capture still names the same typed object and
+        relationship.  Volatile clocks and derived aggregate fields therefore
+        cannot be the sole reason a native move is rejected.
+        """
+
+        if item is None:
+            return None
+        return (
+            str(item.get("id", "")),
+            str(item.get("resource_type", "")),
+            str(item.get("name") or ""),
+            str(item.get("title") or ""),
+            str(item.get("parent_id") or ""),
+            str(item.get("notebook_id") or ""),
+            str(item.get("section_id") or ""),
+            int(item.get("page_level") or 0),
+            str(item.get("parent_page_id") or ""),
+            int(item.get("order") or 0),
+            bool(item.get("is_in_recycle_bin") is True),
+        )
+
     def _capture_reparent_snapshot(self, notebook_id: str) -> dict[str, Any]:
         """Capture bounded hierarchy and Page evidence for one active Notebook."""
 
         budget = CopyBudget.current()
-        initial = self._notebook_items(
-            self.hierarchy.resources(include_recycle_bin=False), notebook_id
-        )
-        if not any(item.get("id") == notebook_id for item in initial):
-            raise ValueError(f"No active notebook found for ID '{notebook_id}'.")
-        if len(initial) > budget.max_resources:
-            raise ValueError("Reparent verification exceeds the configured hierarchy resource budget.")
+        initial = self._capture_reparent_hierarchy(notebook_id)
         pages = [item for item in initial if item.get("resource_type") == "page"]
-        if len(pages) > budget.max_pages:
-            raise ValueError("Reparent verification exceeds the configured Page budget.")
 
         total_bytes = 0
         page_xml: dict[str, str] = {}
@@ -1052,14 +1126,54 @@ class MutationService(BaseService):
                 raise ValueError("Reparent verification exceeds the total Page XML budget.")
             page_xml[page["id"]] = xml
 
-        refreshed = self._notebook_items(
-            self.hierarchy.resources(include_recycle_bin=False), notebook_id
-        )
-        if {item["id"] for item in refreshed} != {item["id"] for item in initial}:
+        refreshed = self._capture_reparent_hierarchy(notebook_id)
+        if self._reparent_hierarchy_signature(refreshed) != self._reparent_hierarchy_signature(
+            initial
+        ):
             raise RuntimeError(
                 "Notebook hierarchy changed while Reparent verification evidence was collected."
             )
         return {"items": refreshed, "page_xml": page_xml}
+
+    def _reparent_topology_target(
+        self,
+        before_items: list[dict[str, Any]],
+        after_items: list[dict[str, Any]],
+        *,
+        target_id: str,
+        destination_parent_id: str,
+        resource_type: str,
+    ) -> tuple[dict[str, Any], dict[str, str]]:
+        """Resolve the moved target using hierarchy evidence only."""
+
+        before_by_id = {str(item["id"]): item for item in before_items}
+        after_by_id = {str(item["id"]): item for item in after_items}
+        before_target = before_by_id[target_id]
+        if resource_type != "page":
+            current = after_by_id.get(target_id)
+            if current is None or current.get("resource_type") != resource_type:
+                raise RuntimeError("Reparent hierarchy read-back is missing the typed target.")
+            if current.get("parent_id") != destination_parent_id:
+                raise RuntimeError("Reparent hierarchy read-back has not observed the requested parent.")
+            return current, {target_id: target_id}
+
+        added_ids = set(after_by_id) - set(before_by_id)
+        candidates = [
+            item
+            for item in after_items
+            if item.get("resource_type") == "page"
+            and item.get("section_id") == destination_parent_id
+            and int(item.get("page_level") or 0) == 1
+            and item.get("parent_page_id") in {None, ""}
+            and str(item.get("id", "")) in ({target_id} | added_ids)
+            and display_name(item) == display_name(before_target)
+        ]
+        if len(candidates) != 1:
+            raise RuntimeError(
+                "Page Reparent hierarchy read-back did not identify one unique destination root."
+            )
+        current = candidates[0]
+        return current, {target_id: str(current["id"])}
 
     @staticmethod
     def _ordered_children(
@@ -1602,7 +1716,12 @@ class MutationService(BaseService):
         before_by_id = {item["id"]: item for item in before["items"]}
         snap_target = before_by_id.get(object_id)
         snap_destination = before_by_id.get(destination_parent_id)
-        if snap_target != target or snap_destination != destination:
+        if (
+            self._reparent_confirmation_signature(snap_target)
+            != self._reparent_confirmation_signature(target)
+            or self._reparent_confirmation_signature(snap_destination)
+            != self._reparent_confirmation_signature(destination)
+        ):
             raise RuntimeError("Hierarchy changed after Reparent confirmation; mutation was not attempted.")
 
         selected: list[dict[str, Any]] = []
@@ -1686,89 +1805,219 @@ class MutationService(BaseService):
                 ) from exc
             raise
 
-        last_candidate: dict[str, Any] | None = None
-        last_error: RuntimeError | None = None
+        last_topology: dict[str, Any] | None = None
+        last_topology_error: RuntimeError | None = None
 
-        def observe_reparent():
-            nonlocal last_candidate, last_error
+        def observe_reparent_topology():
+            nonlocal last_topology, last_topology_error
+            items = self._capture_reparent_hierarchy(notebook_id)
             try:
-                candidate = self._capture_reparent_snapshot(notebook_id)
-                last_candidate = candidate
-                if resource_type == "page":
-                    current, id_map, verified = self._validate_reparent_page_scope(
-                        before,
-                        candidate,
-                        selected=(complete_scope if include_descendants else complete_scope[:1]),
-                        destination_section_id=destination_parent_id,
-                        include_descendants=include_descendants,
-                    )
-                else:
-                    current, id_map, verified = self._validate_reparent_snapshots(
-                        before,
-                        candidate,
-                        target_id=object_id,
-                        destination_parent_id=destination_parent_id,
-                        resource_type=resource_type,
-                    )
-                return {
-                    "after": candidate,
-                    "current": current,
-                    "id_map": id_map,
-                    "verified": verified,
-                }
-            except OneNoteError:
-                raise
+                current, id_map = self._reparent_topology_target(
+                    before["items"],
+                    items,
+                    target_id=object_id,
+                    destination_parent_id=destination_parent_id,
+                    resource_type=resource_type,
+                )
             except RuntimeError as exc:
-                last_error = exc
+                last_topology_error = exc
                 return None
+            last_topology = {"items": items, "current": current, "id_map": id_map}
+            return last_topology
 
-        stable = converge(
-            observe_reparent,
-            lambda value: value is not None,
-            lambda value: (
-                value["current"]["id"],
-                tuple(sorted(value["id_map"].items())),
-                tuple(
-                    sorted(
-                        (item["id"], item.get("parent_id"), item.get("section_id"))
-                        for item in value["after"]["items"]
-                    )
+        try:
+            stable = converge(
+                observe_reparent_topology,
+                lambda value: value is not None,
+                lambda value: (
+                    str(value["current"]["id"]),
+                    tuple(sorted(value["id_map"].items())),
+                    self._reparent_hierarchy_signature(value["items"]),
                 ),
-            ),
-            config=DEFAULT_CONVERGENCE,
-            clock=time.monotonic,
-            sleeper=time.sleep,
-            transient=transient_read_error,
-        )
+                config=DEFAULT_CONVERGENCE,
+                clock=time.monotonic,
+                sleeper=time.sleep,
+                transient=transient_read_error,
+            )
+        except Exception as exc:
+            raise PartialFailure(
+                "Reparent mutation succeeded, but hierarchy convergence could not be read.",
+                partial=True,
+                outcome="reparent_readback_incomplete",
+                reparent_attempted=True,
+                readback_phase="hierarchy_convergence",
+                readback_error=f"{type(exc).__name__}: {exc}",
+                mutation_replayed=False,
+                manual_recovery_required=True,
+            ) from exc
         if not stable.converged or stable.value is None:
+            diagnostic = (
+                str(last_topology_error)
+                if last_topology_error is not None
+                else (
+                    "deadline exceeded after "
+                    f"{stable.stable_observations}/"
+                    f"{DEFAULT_CONVERGENCE.required_stable_observations} stable observations"
+                )
+            )
+            details: dict[str, Any] = {
+                "partial": True,
+                "outcome": "reparent_readback_incomplete",
+                "reparent_attempted": True,
+                "readback_phase": "hierarchy_convergence",
+                "readback_error": diagnostic,
+                "convergence": stable.summary(),
+                "mutation_replayed": False,
+                "manual_recovery_required": True,
+            }
+            if resource_type == "page":
+                details.update(
+                    outcome="reparent_subtree_incomplete",
+                    include_descendants=bool(include_descendants),
+                    destination_position=unavailable_destination_position(
+                        "page", "destination_snapshot_unavailable"
+                    ),
+                    active_source_ids=[],
+                    observed_destination_ids=[],
+                    preserved_descendants=preservation,
+                )
+                if last_topology is not None:
+                    topology_current = last_topology["current"]
+                    details["destination_position"] = destination_position(
+                        last_topology["items"], str(topology_current["id"])
+                    )
+                    details["observed_destination_ids"] = [
+                        str(topology_current["id"])
+                    ]
+            raise PartialFailure(
+                "Reparent mutation succeeded, but hierarchy convergence did not complete: "
+                + diagnostic,
+                **details,
+            )
+
+        after: dict[str, Any] | None = None
+        capture_error: Exception | None = None
+        capture_attempts = 0
+        for capture_attempts in range(1, 3):
+            try:
+                after = self._capture_reparent_snapshot(notebook_id)
+                capture_error = None
+                break
+            except Exception as exc:
+                capture_error = exc
+                retryable_capture = isinstance(exc, RuntimeError) or (
+                    isinstance(exc, OneNoteError) and transient_read_error(exc)
+                )
+                if capture_attempts == 1 and retryable_capture:
+                    time.sleep(DEFAULT_CONVERGENCE.interval_seconds)
+                    continue
+                break
+        if after is None:
+            assert capture_error is not None
+            details = {
+                "partial": True,
+                "outcome": "reparent_readback_incomplete",
+                "reparent_attempted": True,
+                "readback_phase": "full_evidence_capture",
+                "readback_error": f"{type(capture_error).__name__}: {capture_error}",
+                "capture_attempts": capture_attempts,
+                "convergence": stable.summary(),
+                "mutation_replayed": False,
+                "manual_recovery_required": True,
+            }
+            if resource_type == "page":
+                topology_current = stable.value["current"]
+                topology_items = stable.value["items"]
+                topology_by_id = {
+                    str(item["id"]): item for item in topology_items
+                }
+                selected_source_ids = [
+                    str(item["id"])
+                    for item in (
+                        complete_scope
+                        if include_descendants
+                        else complete_scope[:1]
+                    )
+                ]
+                details.update(
+                    outcome="reparent_subtree_incomplete",
+                    include_descendants=bool(include_descendants),
+                    destination_position=destination_position(
+                        topology_items, str(topology_current["id"])
+                    ),
+                    active_source_ids=[
+                        source_id
+                        for source_id in selected_source_ids
+                        if source_id in topology_by_id
+                        and topology_by_id[source_id].get("section_id")
+                        != destination_parent_id
+                    ],
+                    observed_destination_ids=[str(topology_current["id"])],
+                    preserved_descendants=preservation,
+                )
+            raise PartialFailure(
+                "Reparent mutation succeeded, but full evidence capture failed: "
+                + str(capture_error),
+                **details,
+            ) from capture_error
+
+        try:
+            if resource_type == "page":
+                current, id_map, verified = self._validate_reparent_page_scope(
+                    before,
+                    after,
+                    selected=(complete_scope if include_descendants else complete_scope[:1]),
+                    destination_section_id=destination_parent_id,
+                    include_descendants=include_descendants,
+                )
+            else:
+                current, id_map, verified = self._validate_reparent_snapshots(
+                    before,
+                    after,
+                    target_id=object_id,
+                    destination_parent_id=destination_parent_id,
+                    resource_type=resource_type,
+                )
+        except Exception as exc:
+            details = {
+                "partial": True,
+                "outcome": "reparent_readback_incomplete",
+                "reparent_attempted": True,
+                "readback_phase": "invariant_validation",
+                "readback_error": str(exc),
+                "capture_attempts": capture_attempts,
+                "convergence": stable.summary(),
+                "mutation_replayed": False,
+                "manual_recovery_required": True,
+            }
             if resource_type == "page":
                 partial_position, active_source_ids, observed_destination_ids = (
                     self._partial_reparent_page_position(
                         before,
-                        last_candidate,
-                        selected_source_ids=[str(item["id"]) for item in complete_scope],
+                        after,
+                        selected_source_ids=[
+                            str(item["id"])
+                            for item in (
+                                complete_scope
+                                if include_descendants
+                                else complete_scope[:1]
+                            )
+                        ],
                         destination_section_id=destination_parent_id,
                     )
                 )
-                raise PartialFailure(
-                    f"Page Reparent returned, but scope read-back verification failed: {last_error}",
-                    partial=True,
+                details.update(
                     outcome="reparent_subtree_incomplete",
-                    reparent_attempted=True,
                     include_descendants=bool(include_descendants),
                     destination_position=partial_position,
                     active_source_ids=active_source_ids,
                     observed_destination_ids=observed_destination_ids,
                     preserved_descendants=preservation,
-                    manual_recovery_required=True,
                 )
-            raise RuntimeError(
-                f"Reparent returned success, but read-back verification failed: {last_error}"
-            )
-        after = stable.value["after"]
-        current = stable.value["current"]
-        id_map = stable.value["id_map"]
-        verified = stable.value["verified"]
+            raise PartialFailure(
+                "Reparent mutation succeeded, but invariant validation failed: " + str(exc),
+                **details,
+            ) from exc
         return {
             "item": current,
             "destination_position": destination_position(

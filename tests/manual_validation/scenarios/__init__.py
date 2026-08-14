@@ -41,6 +41,7 @@ from .move_section import MoveSectionScenario
 from .move_section_group import MoveSectionGroupScenario
 from .onenote_convergence import OneNoteConvergenceScenario
 from .search_all_open_notebooks import SearchAllOpenNotebooksScenario
+from .query_metadata_scopes import QueryMetadataScopesScenario
 from .bootstrap_inserted_file_fixture import BootstrapInsertedFileFixtureScenario
 from .bootstrap_ink_drawing_fixture import BootstrapInkDrawingFixtureScenario
 from .bootstrap_media_file_fixture import BootstrapMediaFileFixtureScenario
@@ -134,6 +135,7 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
         "run-metrics.json",
         "run-result.json",
         "run-failure.json",
+        "failure-finalization.json",
         "cache-materialization.json",
     ):
         evidence_path = run_root / evidence_name

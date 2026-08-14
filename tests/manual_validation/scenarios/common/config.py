@@ -35,6 +35,10 @@ READ_TOOLS = {
     "get_tree",
     "get_page_xml",
     "get_page_objects",
+    "query_notebook",
+    "query_section_group",
+    "query_section",
+    "query_page",
 }
 CREATE_TOOLS = READ_TOOLS | {
     "add_image_to_page",

@@ -27,6 +27,7 @@ class Scenario:
     dry_run_variants: tuple[DryRunVariant, ...] = ()
     worksite_dry_run_action = "preserve-verified-worksite"
     cache_invalidation_probe = False
+    requires_lifecycle_wrappers = False
 
     @property
     def spec(self) -> ScenarioSpec:
@@ -120,7 +121,10 @@ class Scenario:
         parser.add_argument(
             "--keep-notebook",
             action="store_true",
-            help="Leave the fresh isolated source Notebook open after this scenario succeeds.",
+            help=(
+                "Leave the fresh isolated Notebook bundle open after success or failure; "
+                "default failure finalization closes every exact leased Notebook."
+            ),
         )
         parser.add_argument(
             "--keep-worksite",
@@ -129,6 +133,12 @@ class Scenario:
                 "Preserve this action's verified post-mutation state for manual inspection, "
                 "leave the isolated source Notebook open, and record exact cleanup IDs."
             ),
+        )
+        parser.add_argument(
+            "--all-child",
+            action="store_true",
+            dest="all_child",
+            help=argparse.SUPPRESS,
         )
         runtime_flags(parser, timeout_default=self.timeout_default)
 

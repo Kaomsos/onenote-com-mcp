@@ -22,7 +22,7 @@ class ReparentSectionGroupScenario(Scenario):
         "EXPERIMENTAL: validate typed Notebook→SectionGroup, SectionGroup→Notebook, and "
         "SectionGroup→SectionGroup ID-preserving reparent, then restore or preserve."
     )
-    included_in_all = False
+    included_in_all = True
     worksite_dry_run_action = "preserve-reparented-section-group"
     capability_assessment = {
         "capability_status": "experimental",

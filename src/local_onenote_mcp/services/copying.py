@@ -110,6 +110,50 @@ class CopyService(BaseService):
         return {field: item.get(field) for field in fields if field in item}
 
     @staticmethod
+    def _protected_resource(item: dict[str, Any]) -> dict[str, Any]:
+        """Keep the authored identity, topology, and order a mutation must preserve.
+
+        OneNote may advance ``modified`` while it finishes persisting an
+        otherwise unchanged subtree.  The clock remains in observation
+        evidence, but is excluded from mutation authorization; stable Page
+        hashes provide the content half of that authorization.
+        """
+
+        fields = (
+            "resource_type",
+            "id",
+            "name",
+            "title",
+            "parent_id",
+            "notebook_id",
+            "section_id",
+            "page_level",
+            "order",
+            "parent_page_id",
+        )
+        return {field: item.get(field) for field in fields if field in item}
+
+    @classmethod
+    def _protected_destination(cls, destination: dict[str, Any]) -> dict[str, Any]:
+        """Project an explicit Copy destination without volatile COM clocks."""
+
+        return {
+            "resource_type": destination.get("resource_type"),
+            "parent": (
+                cls._protected_resource(destination["parent"])
+                if isinstance(destination.get("parent"), dict)
+                else None
+            ),
+            "name": destination.get("name"),
+            "base_folder": destination.get("base_folder"),
+            "target_path": destination.get("target_path"),
+            "existing_children": [
+                cls._protected_resource(item)
+                for item in destination.get("existing_children", [])
+            ],
+        }
+
+    @staticmethod
     def _digest(value: Any) -> str:
         payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return sha256(payload.encode("utf-8")).hexdigest()
@@ -246,12 +290,17 @@ class CopyService(BaseService):
             "resources": resource_snapshot,
             "page_hashes": page_hashes,
         }
+        protected_digest_snapshot = {
+            "resources": [self._protected_resource(item) for item in resources],
+            "page_hashes": page_hashes,
+        }
         return {
             "source": source,
             "resources": resources,
             "page_xml": page_xml,
             "source_snapshot": source_snapshot,
             "source_digest": self._digest(source_digest_snapshot),
+            "protected_digest": self._digest(protected_digest_snapshot),
             "estimated": {
                 "resources": len(resources),
                 "pages": len(pages),
@@ -422,14 +471,16 @@ class CopyService(BaseService):
         if time.monotonic() - started > budget.max_plan_seconds:
             raise ValueError(f"Copy planning exceeded {budget.max_plan_seconds} seconds.")
         digest_payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "operation": operation,
             "options": {"include_descendants": effective_include_descendants},
             "source_snapshot": {
-                "resources": bundle["source_snapshot"]["resources"],
+                "resources": [
+                    self._protected_resource(item) for item in bundle["resources"]
+                ],
                 "page_hashes": bundle["source_snapshot"]["page_hashes"],
             },
-            "destination": destination,
+            "destination": self._protected_destination(destination),
             "copyability": {
                 "content_capabilities": bundle["content_capabilities"],
                 "issues": bundle["preview_issues"],
@@ -437,7 +488,10 @@ class CopyService(BaseService):
         }
         if move_source_bundle is not None:
             digest_payload["move_source_snapshot"] = {
-                "resources": move_source_bundle["source_snapshot"]["resources"],
+                "resources": [
+                    self._protected_resource(item)
+                    for item in move_source_bundle["resources"]
+                ],
                 "page_hashes": move_source_bundle["source_snapshot"]["page_hashes"],
             }
         if move_notebooks is not None:
@@ -500,7 +554,7 @@ class CopyService(BaseService):
             "operation": plan["operation"],
             "include_descendants": plan["include_descendants"],
             "plan_digest": plan["plan_digest"],
-            "source_snapshot_digest": plan["source_digest"],
+            "source_snapshot_digest": plan["protected_digest"],
             "source": CopyService._stable_resource(plan["source"]),
             "destination": plan["destination"],
             **(
@@ -1150,7 +1204,7 @@ class CopyService(BaseService):
             resource_type,
             expected_name,
             expected_parent_id,
-            expected_modified,
+            None,
         )
         plan = self._build_plan(
             source_id,
@@ -1163,7 +1217,14 @@ class CopyService(BaseService):
             raise ValueError(f"source_id must identify a {resource_type}.")
         if not plan_digest or plan_digest != plan["plan_digest"]:
             raise ValueError("Copy plan is missing or stale. Run plan_copy again before mutation.")
-        return self._execute_copy(plan)
+        copied = self._execute_copy(plan)
+        if expected_modified is not None and plan["source"].get("modified") != expected_modified:
+            copied["warnings"] = [
+                *copied.get("warnings", []),
+                "OneNote advanced source modified timestamps after planning; "
+                "typed topology and stable Page content remained unchanged.",
+            ]
+        return copied
 
     def _promote_preserved_move_descendants(
         self,
@@ -1336,7 +1397,7 @@ class CopyService(BaseService):
             "page",
             expected_title,
             expected_section_id,
-            expected_modified,
+            None,
         )
         plan = self._build_plan(
             page_id,
@@ -1349,6 +1410,10 @@ class CopyService(BaseService):
             raise ValueError(
                 "Move plan is missing or stale. Run plan_move_page again."
             )
+        source_clock_drifted = (
+            expected_modified is not None
+            and plan["source"].get("modified") != expected_modified
+        )
         execute_started = time.monotonic()
         execute_budget = CopyBudget.current()
 
@@ -1418,7 +1483,7 @@ class CopyService(BaseService):
                 source_revalidation_error=str(exc),
             ) from exc
         expected_move_source = plan.get("move_source_bundle") or plan
-        if current["source_digest"] != expected_move_source["source_digest"]:
+        if current["protected_digest"] != expected_move_source["protected_digest"]:
             raise PartialFailure(
                 "The source Page scope or its preserved descendants changed after Copy verification; "
                 "source deletion was blocked.",
@@ -1432,6 +1497,10 @@ class CopyService(BaseService):
                 copy_report=report,
                 created_ids=copied["created_ids"],
             )
+        source_clock_drifted = (
+            source_clock_drifted
+            or current["source_digest"] != expected_move_source["source_digest"]
+        )
 
         try:
             preservation = self._promote_preserved_move_descendants(plan)
@@ -1456,8 +1525,11 @@ class CopyService(BaseService):
         removed: list[str] = []
         recycled: list[str] = []
         recycle_unverified: list[str] = []
+        current_by_id = {str(item["id"]): item for item in current["resources"]}
         source_pages = [
-            item for item in plan["resources"] if item["resource_type"] == "page"
+            current_by_id.get(str(item["id"]), item)
+            for item in plan["resources"]
+            if item["resource_type"] == "page"
         ]
         if preservation.get("promoted"):
             current_by_id = {
@@ -1552,6 +1624,14 @@ class CopyService(BaseService):
                 "preserved_descendants": preservation,
                 "warnings": [
                     *copied.get("warnings", []),
+                    *(
+                        [
+                            "OneNote advanced source modified timestamps after planning; "
+                            "typed topology and stable Page content remained unchanged."
+                        ]
+                        if source_clock_drifted
+                        else []
+                    ),
                     "Move created new Page IDs; inbound links outside the copied subtree were not scanned.",
                     *(
                         [
@@ -1590,7 +1670,7 @@ class CopyService(BaseService):
             resource_type,
             expected_name,
             expected_parent_id,
-            expected_modified,
+            None,
         )
         operation = f"move_{resource_type}"
         plan = self._build_plan(
@@ -1609,6 +1689,10 @@ class CopyService(BaseService):
             raise ValueError(
                 f"Move plan is missing or stale. Run {planner} again before mutation."
             )
+        source_clock_drifted = (
+            expected_modified is not None
+            and plan["source"].get("modified") != expected_modified
+        )
 
         execute_started = time.monotonic()
         execute_budget = CopyBudget.current()
@@ -1669,8 +1753,12 @@ class CopyService(BaseService):
                 time.monotonic(),
                 True,
             )
-            if current_source["source_digest"] != plan["source_digest"]:
+            if current_source["protected_digest"] != plan["protected_digest"]:
                 raise RuntimeError("The source container subtree changed after Copy verification.")
+            source_clock_drifted = (
+                source_clock_drifted
+                or current_source["source_digest"] != plan["source_digest"]
+            )
             target_root_id = str(id_map[source_id])
             target_before_delete = self._capture_source(
                 target_root_id,
@@ -1703,7 +1791,7 @@ class CopyService(BaseService):
                 resource_type,
                 expected_name,
                 expected_parent_id,
-                expected_modified,
+                current_source.get("source", {}).get("modified", expected_modified),
                 False,
             )
         except Exception as exc:
@@ -1790,8 +1878,14 @@ class CopyService(BaseService):
                 time.monotonic(),
                 True,
             )
-            if target_after_delete["source_digest"] != target_before_delete["source_digest"]:
-                raise RuntimeError("The verified destination subtree changed during source deletion.")
+            if target_after_delete["protected_digest"] != target_before_delete["protected_digest"]:
+                raise RuntimeError(
+                    "The verified destination subtree's protected topology or content changed "
+                    "during source deletion."
+                )
+            destination_clock_drifted = (
+                target_after_delete["source_digest"] != target_before_delete["source_digest"]
+            )
         except Exception as exc:
             raise PartialFailure(
                 "The source container subtree is inactive, but the destination could not be revalidated.",
@@ -1833,6 +1927,22 @@ class CopyService(BaseService):
                 "move_notebooks": plan["move_notebooks"],
                 "warnings": [
                     *copied.get("warnings", []),
+                    *(
+                        [
+                            "OneNote advanced source modified timestamps after planning; "
+                            "typed topology and stable Page content remained unchanged."
+                        ]
+                        if source_clock_drifted
+                        else []
+                    ),
+                    *(
+                        [
+                            "OneNote advanced destination modified timestamps while persisting the "
+                            "copied subtree; protected topology and Page content remained stable."
+                        ]
+                        if destination_clock_drifted
+                        else []
+                    ),
                     "Move created new IDs; inbound links outside the copied subtree were not scanned.",
                     *(
                         [
