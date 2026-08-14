@@ -28,7 +28,7 @@ from .reorder_section import ReorderSectionScenario
 from .reorder_section_group import ReorderSectionGroupScenario
 from .reparent_section import ReparentSectionScenario
 from .reparent_page import ReparentPageScenario
-from .reparent_page_scope import ReparentPageScopeScenario
+from .reparent_page_with_level import ReparentPageWithLevelScenario
 from .reparent_section_group import ReparentSectionGroupScenario
 from .delete import DeleteScenario
 from .copy_page import CopyPageScenario
@@ -193,7 +193,7 @@ __all__ = [
     "ReorderSectionGroupScenario",
     "ReparentSectionScenario",
     "ReparentPageScenario",
-    "ReparentPageScopeScenario",
+    "ReparentPageWithLevelScenario",
     "ReparentSectionGroupScenario",
     "DeleteScenario",
     "CopyPageScenario",

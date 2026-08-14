@@ -350,13 +350,13 @@ SCENARIO_SPECS = {
         REPARENT_POLICY,
         frozenset(REPARENT_PAGE_TOOLS | {"get_page_text"}),
     ),
-    "reparent-page-scope": ScenarioSpec(
-        "reparent-page-scope",
+    "reparent-page-with-level": ScenarioSpec(
+        "reparent-page-with-level",
         _profile(
             "typed-page-reparent-scope",
             (
                 "one source Section contains independent root-only and subtree indentation trees",
-                "both selected Pages start at level 2 and have two descendant levels",
+                "both selected Pages start at level 2 and use only OneNote's legal levels 1-3",
                 "destination Section contains two root Page anchors",
             ),
             (
@@ -367,11 +367,9 @@ SCENARIO_SPECS = {
                 "root_only_parent",
                 "root_only_selected",
                 "root_only_child",
-                "root_only_grandchild",
                 "subtree_parent",
                 "subtree_selected",
                 "subtree_child_a",
-                "subtree_grandchild",
                 "subtree_child_b",
                 "destination_anchor_a",
                 "destination_anchor_b",
@@ -385,8 +383,8 @@ SCENARIO_SPECS = {
             },
             content=("page_scope", "rich_text", "table", "image", "numbered_pages"),
             checks=(
-                "root-only selected Page starts at level 2 with two descendant levels",
-                "full-subtree selected Page starts at level 2 with a branched descendant tree",
+                "root-only selected Page starts at level 2 with one level-3 descendant",
+                "full-subtree selected Page starts at level 2 with two branched level-3 descendants",
                 "destination contains two root Page anchors",
                 "both selected Pages own stable rich-content evidence",
             ),

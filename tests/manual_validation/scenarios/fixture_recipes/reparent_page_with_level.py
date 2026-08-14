@@ -27,14 +27,18 @@ DESCRIPTION = """Reparent Page 范围人工验收说明
 2. full-subtree：显式 include_descendants=true，迁移选中的 level-2 Page 及完整缩进子树；
    目标根归一化为 level 1，后代保持相对顺序和相对层级。
 
+Fixture 只使用 OneNote Desktop 支持的 page level 1-3；两棵树的后代均位于 level 3。
+
 两个 case 的 destination_position 都仅描述 fresh 目标根 Page 在目标 Section 完整扁平
 Page 序列中的执行后位置，不包含 page_level，也不返回后代位置列表。
 """
 
 
-class ReparentPageScopeFixtureRecipe(RecipeBase):
+class ReparentPageWithLevelFixtureRecipe(RecipeBase):
+    recipe_version = 2
+
     def __init__(self) -> None:
-        super().__init__("reparent-page-scope")
+        super().__init__("reparent-page-with-level")
 
     async def build(self, context: FixtureContext) -> FixtureBuildResult:
         r = context.recorder
@@ -69,27 +73,19 @@ class ReparentPageScopeFixtureRecipe(RecipeBase):
         root_parent = await page("root_only_parent", "01-Root-Only-Parent", context.token)
         root_selected = await page("root_only_selected", "02-Root-Only-Selected", context.token)
         root_child = await page("root_only_child", "03-Root-Only-Child", context.token)
-        root_grandchild = await page(
-            "root_only_grandchild", "04-Root-Only-Grandchild", context.token
-        )
-        subtree_parent = await page("subtree_parent", "05-Subtree-Parent", context.token)
-        subtree_selected = await page("subtree_selected", "06-Subtree-Selected", context.token)
-        subtree_child_a = await page("subtree_child_a", "07-Subtree-Child-A", context.token)
-        subtree_grandchild = await page(
-            "subtree_grandchild", "08-Subtree-Grandchild", context.token
-        )
-        subtree_child_b = await page("subtree_child_b", "09-Subtree-Child-B", context.token)
+        subtree_parent = await page("subtree_parent", "04-Subtree-Parent", context.token)
+        subtree_selected = await page("subtree_selected", "05-Subtree-Selected", context.token)
+        subtree_child_a = await page("subtree_child_a", "06-Subtree-Child-A", context.token)
+        subtree_child_b = await page("subtree_child_b", "07-Subtree-Child-B", context.token)
 
         ordered = (
             (root_parent, "", 1),
             (root_selected, root_parent["id"], 2),
             (root_child, root_selected["id"], 3),
-            (root_grandchild, root_child["id"], 4),
-            (subtree_parent, root_grandchild["id"], 1),
+            (subtree_parent, root_child["id"], 1),
             (subtree_selected, subtree_parent["id"], 2),
             (subtree_child_a, subtree_selected["id"], 3),
-            (subtree_grandchild, subtree_child_a["id"], 4),
-            (subtree_child_b, subtree_grandchild["id"], 3),
+            (subtree_child_b, subtree_child_a["id"], 3),
         )
         for page_item, after_id, level in ordered:
             refreshed = await enforce_page_position(
@@ -154,11 +150,9 @@ class ReparentPageScopeFixtureRecipe(RecipeBase):
             "root_only_parent": (1, None),
             "root_only_selected": (2, resolved["root_only_parent"]["id"]),
             "root_only_child": (3, resolved["root_only_selected"]["id"]),
-            "root_only_grandchild": (4, resolved["root_only_child"]["id"]),
             "subtree_parent": (1, None),
             "subtree_selected": (2, resolved["subtree_parent"]["id"]),
             "subtree_child_a": (3, resolved["subtree_selected"]["id"]),
-            "subtree_grandchild": (4, resolved["subtree_child_a"]["id"]),
             "subtree_child_b": (3, resolved["subtree_selected"]["id"]),
         }
         for key, (level, parent_id) in expected.items():
@@ -197,6 +191,11 @@ class ReparentPageScopeFixtureRecipe(RecipeBase):
         return tuple(checks.checks)
 
 
-RECIPE = ReparentPageScopeFixtureRecipe()
+RECIPE = ReparentPageWithLevelFixtureRecipe()
 
-__all__ = ["DESCRIPTION", "DESCRIPTION_TITLE", "RECIPE", "ReparentPageScopeFixtureRecipe"]
+__all__ = [
+    "DESCRIPTION",
+    "DESCRIPTION_TITLE",
+    "RECIPE",
+    "ReparentPageWithLevelFixtureRecipe",
+]

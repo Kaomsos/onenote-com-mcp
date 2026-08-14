@@ -66,10 +66,10 @@
 2026-08-13 已完成以下非真实后端验证；Agent 未启动任何真实 OneNote scenario：
 
 - `test_all_scenarios.py`、`test_reparent_scenarios.py` 与注册 dry-run 合同均包含在 manual-validation 完整纯测试中；
-- `tests/manual_validation/tests` 清理重复展开与旧 fake-only activation 路径后当前收集 `540` 项，全部包含在本轮完整基线中；
-- 仓库当前完整 pytest：`924 passed`；
+- `tests/manual_validation/tests` 清理重复展开与旧 fake-only activation 路径后当前收集 `542` 项，全部包含在本轮完整基线中；
+- 仓库当前完整 pytest：`926 passed`；
 - v3 持久化检查点、lease archive、ID/evidence 重绑、内层 HRESULT audit 与 Reparent read-back 的聚焦纯测试：`231 passed`；
-- 初次纳入时 `run.py all --dry-run --json --verbosity quiet` 为 `14 passed, 0 failed`；TODO 028 随后把受支持的 `reorder-section` 纳入批处理，当前为 `15 passed, 0 failed`，有序 child 5–7 分别为 `reparent-section`、`reparent-page`、`reparent-section-group`。
+- 初次纳入时 `run.py all --dry-run --json --verbosity quiet` 为 `14 passed, 0 failed`；TODO 028 随后把受支持的 `reorder-section` 纳入批处理；TODO 013 完成独立真实验证后又把 `reparent-page-with-level` 纳入批处理，当前 dry-run 为 `16 passed, 0 failed`，有序 child 5–8 分别为 `reparent-section`、`reparent-page`、`reparent-page-with-level`、`reparent-section-group`。
 
 ## HUMAN-GATED 验收
 

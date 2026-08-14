@@ -178,6 +178,7 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
         ),
     }
     calls: list[str] = []
+    page_position_requests: list[tuple[str, int]] = []
     sequence = iter(range(1, 1000))
 
     def item(kind: str, parent_id: str, name: str) -> dict:
@@ -206,6 +207,7 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
 
     async def enforce(_client, section_id, _page_id, after_page_id, page_level):
         calls.append("reorder_page")
+        page_position_requests.append((after_page_id, page_level))
         return {
             "id": _page_id,
             "resource_type": "page",
@@ -335,6 +337,17 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
     read_calls = READ_TOOLS | {"get_page_text"}
     mutation_calls = {name for name in calls if name not in read_calls}
     assert mutation_calls <= set(recipe.profile.creation_tools)
+    if scenario_name == "reparent-page-with-level":
+        assert [level for _after_page_id, level in page_position_requests] == [
+            1,
+            2,
+            3,
+            1,
+            2,
+            3,
+            3,
+        ]
+        assert all(1 <= level <= 3 for _after_page_id, level in page_position_requests)
 
 
 def test_build_failure_preserves_incremental_ids_and_failed_handoff(

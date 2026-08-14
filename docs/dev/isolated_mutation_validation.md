@@ -307,4 +307,4 @@ Section/SectionGroup Move 使用不同的删除策略：只允许跨 Notebook，
 
 真实 COM mutation 永远不能进入默认 CI、pre-commit 或 smoke test。`write_contract` 仅是 mock 合同测试；真实隔离验证必须由用户在终端明确启动。
 
-本地程序化 Runner 不是默认自动化：只有用户本人手动运行具体 `run.py <scenario>` 才构成授权；Agent 只能修改 runner、运行不接触 OneNote 的合同测试或把命令交给用户，不能代为执行。Runner 为该场景唯一的 MCP 子进程开启完整闭环所需的静态最小权限，不要求额外权限开关或二次确认，也不跨场景合并权限。永久 OneNote Delete 在所有场景中始终关闭；三个 Reparent 场景全部使用 typed 工具且保持 Raw XML 关闭。所有 scenario suite 都不删除本地 Notebook 文件。
+本地程序化 Runner 不是默认自动化：只有用户本人手动运行具体 `run.py <scenario>` 才构成授权；Agent 只能修改 runner、运行不接触 OneNote 的合同测试或把命令交给用户，不能代为执行。Runner 为该场景唯一的 MCP 子进程开启完整闭环所需的静态最小权限，不要求额外权限开关或二次确认，也不跨场景合并权限。永久 OneNote Delete 在所有场景中始终关闭；四个具名 Reparent 场景全部使用 typed 工具且保持 Raw XML 关闭。所有 scenario suite 都不删除本地 Notebook 文件。

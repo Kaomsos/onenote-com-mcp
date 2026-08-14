@@ -571,7 +571,7 @@ async def prepare_materialized_fixture(
     (
         converged_snapshot,
         converged_structure,
-        _converged_remap,
+        converged_remap,
         convergence,
     ) = await _await_materialized_structure_convergence(
         client,
@@ -604,6 +604,30 @@ async def prepare_materialized_fixture(
             f"{convergence.get('error', 'declared hierarchy was not stable')}."
         )
     options.progress.unit_completed("cache hierarchy", "source")
+    evidence, evidence_remap = _rebind_materialized_evidence(
+        source_structure,
+        converged_structure,
+        cached_evidence,
+    )
+    if evidence_remap["passed"] is not True:
+        converged_remap["evidence_rebinding"] = evidence_remap
+        converged_remap["passed"] = False
+        convergence.update(
+            passed=False,
+            phase="evidence_rebinding",
+            scenario_before_snapshot_completed=False,
+            content_truth_validation_completed=False,
+            error="materialized fixture evidence could not be rebound",
+        )
+        persist_convergence()
+        write_json(options.run_dir / "cache-structure-remap.json", converged_remap)
+        raise InvariantFailure(
+            "Materialized fixture evidence could not be safely rebound to live IDs: "
+            + ", ".join(
+                f"{value['field']}={value['reason']}"
+                for value in evidence_remap["failures"]
+            )
+        )
     options.progress.unit_started("scenario before", "source")
     content_started = time.monotonic()
     convergence["scenario_before_snapshot_started"] = True
@@ -670,22 +694,9 @@ async def prepare_materialized_fixture(
     )
     persist_convergence()
     options.progress.unit_completed("scenario before", "source")
-    evidence, evidence_remap = _rebind_materialized_evidence(
-        manifest.get("structure", {}),
-        structure,
-        cached_evidence,
-    )
     remap["evidence_rebinding"] = evidence_remap
     remap["passed"] = evidence_remap["passed"] is True
     write_json(options.run_dir / "cache-structure-remap.json", remap)
-    if evidence_remap["passed"] is not True:
-        raise InvariantFailure(
-            "Materialized fixture evidence could not be safely rebound to live IDs: "
-            + ", ".join(
-                f"{value['field']}={value['reason']}"
-                for value in evidence_remap["failures"]
-            )
-        )
     build = FixtureBuildResult(structure, evidence)
     checks = scenario.fixture_recipe.validate(
         FixtureValidationContext(args=args, snapshot=snapshot),
@@ -989,7 +1000,7 @@ async def prepare_materialized_fixture_bundle(
         (
             converged_snapshot,
             converged_rebound,
-            _converged_remap,
+            converged_remap,
             convergence,
         ) = await _await_materialized_structure_convergence(
             client,
@@ -1011,6 +1022,44 @@ async def prepare_materialized_fixture_bundle(
         options.progress.unit_completed(
             "cache hierarchy", role, role_index, len(roles)
         )
+        cached_evidence = {
+            key: cached_manifest[key]
+            for key in ("copy_fixture", "reparent_page_fixture")
+            if key in cached_manifest
+        }
+        evidence, evidence_remap = _rebind_materialized_evidence(
+            structure,
+            converged_rebound,
+            cached_evidence,
+        )
+        if evidence_remap["passed"] is not True:
+            converged_remap["evidence_rebinding"] = evidence_remap
+            converged_remap["passed"] = False
+            remaps[role] = converged_remap
+            convergence.update(
+                passed=False,
+                phase="evidence_rebinding",
+                scenario_before_snapshot_completed=False,
+                content_truth_validation_completed=False,
+                error="materialized fixture evidence could not be rebound",
+            )
+            persist_convergence()
+            write_json(
+                options.run_dir / "cache-structure-remap.json",
+                {
+                    "schema_version": 1,
+                    "passed": False,
+                    "roles": remaps,
+                },
+            )
+            raise InvariantFailure(
+                f"Materialized fixture role {role} evidence could not be safely rebound "
+                "to live IDs: "
+                + ", ".join(
+                    f"{value['field']}={value['reason']}"
+                    for value in evidence_remap["failures"]
+                )
+            )
         options.progress.unit_started("scenario before", role, role_index, len(roles))
         content_started = time.monotonic()
         convergence["scenario_before_snapshot_started"] = True
@@ -1083,31 +1132,9 @@ async def prepare_materialized_fixture_bundle(
         )
         persist_convergence()
         options.progress.unit_completed("scenario before", role, role_index, len(roles))
-        cached_evidence = {
-            key: cached_manifest[key]
-            for key in ("copy_fixture", "reparent_page_fixture")
-            if key in cached_manifest
-        }
-        evidence, evidence_remap = _rebind_materialized_evidence(
-            structure,
-            rebound,
-            cached_evidence,
-        )
         remap["evidence_rebinding"] = evidence_remap
         remap["passed"] = evidence_remap["passed"] is True
         remaps[role] = remap
-        if evidence_remap["passed"] is not True:
-            write_json(
-                options.run_dir / "cache-structure-remap.json",
-                {
-                    "schema_version": 1,
-                    "passed": False,
-                    "roles": remaps,
-                },
-            )
-            raise InvariantFailure(
-                f"Materialized fixture role {role} evidence could not be safely rebound to live IDs."
-            )
         cached_manifest.update(evidence)
         if role == "source":
             source_manifest = cached_manifest
@@ -1331,10 +1358,10 @@ def _rebind_materialized_evidence(
     rebound = deepcopy(dict(evidence))
     mappings: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    if "reparent_page_fixture" in rebound:
-        rich = rebound["reparent_page_fixture"]
-        source_target = source_structure.get("reparent_page")
-        working_target = working_structure.get("reparent_page")
+
+    def bind_page_id(field: str, owner: Any, manifest_key: str) -> None:
+        source_target = source_structure.get(manifest_key)
+        working_target = working_structure.get(manifest_key)
         source_id = (
             str(source_target.get("id", ""))
             if isinstance(source_target, Mapping)
@@ -1348,11 +1375,41 @@ def _rebind_materialized_evidence(
         if not source_id or not working_id:
             failures.append(
                 {
-                    "field": "reparent_page_fixture",
-                    "reason": "missing-reparent-page-structure-binding",
+                    "field": field,
+                    "reason": "missing-structure-binding",
+                    "manifest_key": manifest_key,
                 }
             )
-        elif not isinstance(rich, dict):
+            return
+        if not isinstance(owner, dict):
+            failures.append({"field": field, "reason": "invalid-evidence-shape"})
+            return
+        observed = str(owner.get("page_id") or "")
+        if observed != source_id:
+            failures.append(
+                {
+                    "field": field,
+                    "reason": "source-id-mismatch",
+                    "manifest_key": manifest_key,
+                    "expected_source_id": source_id,
+                    "observed_source_id": observed,
+                }
+            )
+            return
+        owner["page_id"] = working_id
+        mappings.append(
+            {
+                "field": field,
+                "manifest_key": manifest_key,
+                "source_id": source_id,
+                "working_id": working_id,
+                "id_changed": source_id != working_id,
+            }
+        )
+
+    if "reparent_page_fixture" in rebound:
+        rich = rebound["reparent_page_fixture"]
+        if not isinstance(rich, dict):
             failures.append(
                 {
                     "field": "reparent_page_fixture",
@@ -1360,36 +1417,54 @@ def _rebind_materialized_evidence(
                 }
             )
         else:
-            list_tag = rich.get("list_tag")
-            fields = [
-                ("reparent_page_fixture.page_id", rich),
-                ("reparent_page_fixture.list_tag.page_id", list_tag),
-            ]
-            for field, owner in fields:
-                observed = owner.get("page_id") if isinstance(owner, dict) else None
-                if not isinstance(owner, dict):
-                    failures.append({"field": field, "reason": "invalid-evidence-shape"})
-                    continue
-                if str(observed or "") != source_id:
-                    failures.append(
-                        {
-                            "field": field,
-                            "reason": "source-id-mismatch",
-                            "expected_source_id": source_id,
-                            "observed_source_id": str(observed or ""),
-                        }
-                    )
-                    continue
-                owner["page_id"] = working_id
-                mappings.append(
+            scope_pages = rich.get("scope_pages")
+            if scope_pages is None:
+                bind_page_id(
+                    "reparent_page_fixture.page_id",
+                    rich,
+                    "reparent_page",
+                )
+                bind_page_id(
+                    "reparent_page_fixture.list_tag.page_id",
+                    rich.get("list_tag"),
+                    "reparent_page",
+                )
+            elif not isinstance(scope_pages, dict) or not scope_pages:
+                failures.append(
                     {
-                        "field": field,
-                        "manifest_key": "reparent_page",
-                        "source_id": source_id,
-                        "working_id": working_id,
-                        "id_changed": source_id != working_id,
+                        "field": "reparent_page_fixture.scope_pages",
+                        "reason": "invalid-evidence-shape",
                     }
                 )
+            else:
+                for manifest_key in sorted(scope_pages):
+                    bind_page_id(
+                        f"reparent_page_fixture.scope_pages.{manifest_key}.page_id",
+                        scope_pages[manifest_key],
+                        manifest_key,
+                    )
+                top_source_id = str(rich.get("page_id") or "")
+                top_keys = [
+                    manifest_key
+                    for manifest_key in sorted(scope_pages)
+                    if isinstance(source_structure.get(manifest_key), Mapping)
+                    and str(source_structure[manifest_key].get("id", "")) == top_source_id
+                ]
+                if len(top_keys) != 1:
+                    failures.append(
+                        {
+                            "field": "reparent_page_fixture.page_id",
+                            "reason": "source-id-not-uniquely-bound-to-scope-page",
+                            "observed_source_id": top_source_id,
+                            "candidate_manifest_keys": top_keys,
+                        }
+                    )
+                else:
+                    bind_page_id(
+                        "reparent_page_fixture.page_id",
+                        rich,
+                        top_keys[0],
+                    )
 
     return rebound, {
         "schema_version": 1,

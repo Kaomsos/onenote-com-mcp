@@ -21,7 +21,7 @@ from .common.config import REPARENT_PAGE_TOOLS
 from .common.destination_position import assert_destination_position
 from .common.registry import SCENARIO_REGISTRY
 from .common.report import render_report
-from .fixture_recipes.reparent_page_scope import RECIPE
+from .fixture_recipes.reparent_page_with_level import RECIPE
 
 
 def _section_pages(snapshot: dict[str, Any], section_id: str) -> list[dict[str, Any]]:
@@ -36,18 +36,21 @@ def _section_pages(snapshot: dict[str, Any], section_id: str) -> list[dict[str, 
 
 
 @SCENARIO_REGISTRY.register
-class ReparentPageScopeScenario(Scenario):
-    name = "reparent-page-scope"
+class ReparentPageWithLevelScenario(Scenario):
+    name = "reparent-page-with-level"
     fixture_recipe = RECIPE
     help_text = (
         "EXPERIMENTAL: validate root-only-default and full-subtree Page reparent scope."
     )
-    included_in_all = False
-    worksite_dry_run_action = "preserve-reparent-page-scope-result"
+    included_in_all = True
+    worksite_dry_run_action = "preserve-reparent-page-with-level-result"
     capability_assessment = {
         "capability_status": "experimental",
-        "validation_status": "pending",
-        "reason": "The new two-case Page scope contract requires an explicit user-run scenario.",
+        "validation_status": "passed",
+        "reason": (
+            "User-run fresh and cache-backed scenarios passed both legal-level "
+            "Page scope cases with observed destination-position evidence."
+        ),
     }
 
     async def execute(
@@ -68,7 +71,7 @@ class ReparentPageScopeScenario(Scenario):
                 "name": "root-only-default",
                 "target_key": "root_only_selected",
                 "selected_keys": ("root_only_selected",),
-                "preserved_keys": ("root_only_child", "root_only_grandchild"),
+                "preserved_keys": ("root_only_child",),
                 "include_descendants": False,
             },
             {
@@ -77,7 +80,6 @@ class ReparentPageScopeScenario(Scenario):
                 "selected_keys": (
                     "subtree_selected",
                     "subtree_child_a",
-                    "subtree_grandchild",
                     "subtree_child_b",
                 ),
                 "preserved_keys": (),
@@ -267,4 +269,4 @@ class ReparentPageScopeScenario(Scenario):
             return result
 
 
-__all__ = ["ReparentPageScopeScenario"]
+__all__ = ["ReparentPageWithLevelScenario"]

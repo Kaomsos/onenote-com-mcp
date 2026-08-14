@@ -1,7 +1,7 @@
 # 013：Reparent Page 子树范围与 Mutation 目标位置回传合同
 
 > ID：013
-> 状态：阻塞
+> 状态：已完成
 > 优先级：P2
 > 类型：公开 mutation 契约 / Reparent Page 范围与目标位置可观测性
 > 更新日期：2026-08-14
@@ -223,7 +223,7 @@ Section 没有 Page 那样的显式 `order` 字段。返回值只承诺它在最
 
 ## Manual-validation 方案
 
-位置响应继续扩展现有十个具名执行场景；此外，为 Reparent Page 新范围能力新增独立、HUMAN-GATED 的 `reparent-page-scope` 场景。使用独立场景而不是把新 mutation matrix 塞入既有 `reparent-page`，原因是 root-only 路线会永久改变 disposable source fixture 的缩进拓扑，不能依赖旧场景的简单反向 Reparent 恢复合同。
+位置响应继续扩展现有十个具名执行场景；此外，为 Reparent Page 新范围能力新增独立、HUMAN-GATED 的 `reparent-page-with-level` 场景。使用独立场景而不是把新 mutation matrix 塞入既有 `reparent-page`，原因是 root-only 路线会永久改变 disposable source fixture 的缩进拓扑，不能依赖旧场景的简单反向 Reparent 恢复合同。
 
 位置覆盖的现有场景为：
 
@@ -252,21 +252,21 @@ Page 在最终完整扁平 Section Page 序列中核对 fresh 目标根的 index
 
 任何 response/evidence 字段不一致都必须使场景非零退出并按现有失败规则保持 working bundle 与全部 evidence。UI 顺序检查只作为真实后端交叉证据，不能替代机器逐字段比较。
 
-### 新场景：`reparent-page-scope`
+### 新场景：`reparent-page-with-level`
 
 场景使用一个由本次 run 创建或从不可变模板物理复制的 disposable Notebook、单个前台 MCP 进程、现有 Writes + Reparent 最小权限以及精确 manifest IDs。一次运行包含两个相互独立的 fixture 分支：
 
-1. `root-only-default`：调用时省略 `include_descendants`。源 Section 中所选 Page 初始为 level 2，带至少两层缩进后代，并具有源父页、同级前后 anchors；destination Section 准备至少两个根 Page anchors。断言只有 fresh 所选 Page 进入 destination 并成为根 Page；排除后代留在源 Section、全部 level 减一且相对 level/顺序不变，ID 与稳定内容不变；所选 Page 原父页及其他 anchors 不变；`id_map` 不含排除后代；独立 position helper 从 after evidence 计算目标根 index/count 并与 `destination_position` 深比较，响应不得含 level 或后代位置。
-2. `full-subtree`：显式提交 `include_descendants=true`。使用另一棵以 level 2 Page 为所选根、至少两层且含分支的 Page 子树；断言所选 Page 及全部后代迁入 destination，完整单射 `id_map`、目标根归一化为 level 1、后代相对 level/顺序/derived parent、富内容与源父页/无关 anchors 均保持；独立 position helper 仍只对 fresh 目标根生成一份 expected object 并与响应深比较，响应不含 level 或后代位置数组。
+1. `root-only-default`：调用时省略 `include_descendants`。源 Section 中所选 Page 初始为 level 2，带一个 level-3 后代，并具有源父页、同级前后 anchors；destination Section 准备至少两个根 Page anchors。断言只有 fresh 所选 Page 进入 destination 并成为根 Page；排除后代留在源 Section 并提升为 level 2，ID、稳定内容和相对位置不变；所选 Page 原父页及其他 anchors 不变；`id_map` 不含排除后代；独立 position helper 从 after evidence 计算目标根 index/count 并与 `destination_position` 深比较，响应不得含 level 或后代位置。
+2. `full-subtree`：显式提交 `include_descendants=true`。使用另一棵由 level-2 所选根和两个 level-3 直属后代组成的分支 Page 子树；断言所选 Page 及全部后代迁入 destination，完整单射 `id_map`、目标根归一化为 level 1、后代相对 level/顺序/derived parent、富内容与源父页/无关 anchors 均保持；独立 position helper 仍只对 fresh 目标根生成一份 expected object 并与响应深比较，响应不含 level 或后代位置数组。Fixture 不再构造 OneNote Desktop 不支持的 level 4；该限制不削弱 root-only promotion 或 full-subtree branching 的验收目标。
 
 两个 case 必须分别保存 before、调用参数、mutation response、after、独立计算的位置与内容/topology evidence。不要在真实 OneNote 场景中故意注入“提升成功后 Reparent 失败”；该 partial 状态由纯自动化 fault injection 覆盖。真实场景若自然失败，则立即 fail closed、保留已创建的 working Notebook 和 evidence，不继续第二个 case 或尝试自动恢复。
 
-由于 root-only 成功会有意提升保留后代，新场景在自身静态最小权限下属于不可自动恢复场景：采用“验证最终预期状态后精确关闭 disposable lease”的非恢复式成功生命周期，不增加 Page Reorder 权限来重建初始缩进，也不删除 `.one` 文件。Cache template 必须保持未打开且 byte-for-byte 不变；working copy 属于本 run 并按现有证据/clear 规则保留。任一 mutation、read-back 或 lifecycle 状态不确定时必须非零退出、保持 working Notebook 打开并保存 handoff evidence。场景最初 `included_in_all=false`，只有用户独立确认真实双 case 且完成稳定性与权限审查后才能显式纳入 `all`。
+由于 root-only 成功会有意提升保留后代，新场景在自身静态最小权限下属于不可自动恢复场景：采用“验证最终预期状态后精确关闭 disposable lease”的非恢复式成功生命周期，不增加 Page Reorder 权限来重建初始缩进，也不删除 `.one` 文件。Cache template 必须保持未打开且 byte-for-byte 不变；working copy 属于本 run 并按现有证据/clear 规则保留。任一 mutation、read-back 或 lifecycle 状态不确定时必须非零退出、保持 working Notebook 打开并保存 handoff evidence。场景最初 `included_in_all=false`；用户完成 fresh 与 cache-backed 双 case 真实验证并明确批准后，现已显式纳入 `all`。
 
 场景必须注册 Scenario-owned recipe、静态最小权限和正式 dry-run case。Agent 只允许运行：
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py reparent-page-scope --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py reparent-page-with-level --dry-run --json
 ```
 
 Move 必须使用删除源后的最终 after snapshot。若 Page Move 支持同父级合法路线，至少一个 case 应证明删除源导致的索引变化不会留下 Copy 阶段旧值。场景只验证“返回值准确描述观察状态”，不要求目标成为末项，也不因非末位而修改现场。
@@ -314,8 +314,8 @@ OneNote 可能重映射 Page/内容对象 ID，完整子树又扩大了目标集
 3. 复用 [TODO 002](002_p2_copy_and_reconstructive_page_move.md) 与 [TODO 012](012_reconstructive_section_and_section_group_move.md) 的 Copy/Move final read-back 和 partial outcome；不改变其保真或删除门限。
 4. 复用 [TODO 006](006_typed_section_and_section_group_reorder.md) 已确认的 Section traversal 语义与 SectionGroup 固定名称排序边界。
 5. 先实现 Page scope snapshot/promotion/subtree Reparent 纯合同与 fault injection，再实现共享 position projector 并分别接入 Reparent、Copy 和 Move 响应。
-6. 注册 `reparent-page-scope` 的 Scenario-owned recipe、静态权限与 dry-run case，同步 tool descriptions、`docs/design/`、根 README、manual-validation README 与现有场景说明。
-7. 由用户单独运行并确认 `reparent-page-scope` 双 case，再运行受到响应变化影响的既有具名场景；Agent 不运行真实 mutation。
+6. 注册 `reparent-page-with-level` 的 Scenario-owned recipe、静态权限与 dry-run case，同步 tool descriptions、`docs/design/`、根 README、manual-validation README 与现有场景说明。
+7. 由用户单独运行并确认 `reparent-page-with-level` 双 case，再运行受到响应变化影响的既有具名场景；Agent 不运行真实 mutation。
 
 ## 非目标
 
@@ -341,14 +341,14 @@ OneNote 可能重映射 Page/内容对象 ID，完整子树又扩大了目标集
 - Page 位置响应只覆盖 fresh 目标根在最终 Section 完整扁平 Page 序列中的 `index/sibling_count`，不返回 level、derived parent 或后代位置。
 - 自动化位置矩阵覆盖十个执行工具；expected position 均由不调用生产 builder 的独立 snapshot helper 计算，并与成功/partial response 深比较，覆盖 Page fresh ID、容器两类父级、SectionGroup 固定排序、Notebook 不适用和 Move 最终观察时点。
 - 十个既有 manual-validation 场景均保存独立 `destination-position-evidence*.json` 并逐字段核验返回值；字段不一致必须非零退出并保留现场。用户确认增强场景的真实证据后，才能认为相应工具的后端位置回传合同成立。
-- 新 `reparent-page-scope` 的 dry-run/静态权限/失败保留合同通过，用户确认 `root-only-default` 与 `full-subtree` 真实证据；两个 case 同样使用独立 position evidence，只描述 fresh 目标根。Agent 只运行 dry-run/纯测试。
+- 新 `reparent-page-with-level` 的 dry-run/静态权限/失败保留合同通过，用户确认 `root-only-default` 与 `full-subtree` 真实证据；两个 case 同样使用独立 position evidence，只描述 fresh 目标根。Agent 只运行 dry-run/纯测试。
 - tool contracts、object model、architecture、README、manual-validation README、TODO 002/005/006/009/012/015/017 与 TODO 索引保持一致。
 
 ## 当前实施状态（2026-08-14）
 
-代码、公开契约和纯验证已经交付：十个执行工具返回统一 `destination_position`，Move 在源删除后重新投影；`reparent_page` 已加入默认 `false` 的 `include_descendants`，并实现 root-only 后代提升与完整子树路线；自动化合同覆盖目标根位置、Notebook 不适用、fresh ID、分叉 Page 范围、同父级 Page Move 的删除后索引，以及 promotion/Reparent 各阶段的结构化 partial outcome。十个既有 manual-validation runtime 已接入独立 after-snapshot projector；所有 hierarchy-child destination fixture 均准备至少两个可区分的同类型 anchors；新的 `reparent-page-scope` 已注册 Scenario-owned recipe、最小静态权限和正式 dry-run case。
+代码、公开契约和纯验证已经交付：十个执行工具返回统一 `destination_position`，Move 在源删除后重新投影；`reparent_page` 已加入默认 `false` 的 `include_descendants`，并实现 root-only 后代提升与完整子树路线；自动化合同覆盖目标根位置、Notebook 不适用、fresh ID、分叉 Page 范围、同父级 Page Move 的删除后索引，以及 promotion/Reparent 各阶段的结构化 partial outcome。十个既有 manual-validation runtime 已接入独立 after-snapshot projector；所有 hierarchy-child destination fixture 均准备至少两个可区分的同类型 anchors；新的 `reparent-page-with-level` 已注册 Scenario-owned recipe、最小静态权限和正式 dry-run case。
 
-纯验证记录：完整 pytest 的交付基线为 `845 passed`，后续共享 manual-validation 稳定性与 mutation 安全强化纳入后曾达到 `1037 passed`；清理重复 dry-run/orchestrator 展开、旧逐项 activation fake 路径和历史 tombstone 后，当前等价行为基线为 `924 passed`，其中 manual-validation 纯合同为 `540 passed`。`reparent-page-scope --dry-run --json` 返回 `ok=true`、`server_started=false`。Agent 未启动任何真实 mutation；下述真实 run 均由用户本人在交互式前台终端启动，Agent 只读取保存的 evidence。
+纯验证记录：完整 pytest 的交付基线为 `845 passed`，后续共享 manual-validation 稳定性与 mutation 安全强化纳入后曾达到 `1037 passed`；清理重复 dry-run/orchestrator 展开、旧逐项 activation fake 路径和历史 tombstone并完成本轮注册后，当前等价行为基线为 `926 passed`，其中 manual-validation 纯合同收集 `542` 项。`reparent-page-with-level --dry-run --json` 返回 `ok=true`、`server_started=false`；`all --dry-run --json --verbosity quiet` 返回 `16 passed, 0 failed`。Agent 未启动任何真实 mutation；下述真实 run 均由用户本人在交互式前台终端启动，Agent 只读取保存的 evidence。
 
 ### 最新真实运行进度
 
@@ -356,10 +356,6 @@ OneNote 可能重映射 Page/内容对象 ID，完整子树又扩大了目标集
 
 十个 run 均为 `cache.decision=validated_hit`、`status=passed` 且 lifecycle 为 `closed_preserved`。保存的位置证据确认 Page、Section 与 SectionGroup 均为 `status=observed`，并覆盖 Reparent 的 7 个、Copy 的 10 个和 Move 的 4 个实际落点；Notebook Copy 按合同返回 `resource_type=notebook`、`status=not_applicable`。因此“手动位置验证矩阵”中的十个既有场景已经闭合，不再构成本 TODO 的阻塞项。
 
-本 TODO 当前仍为“阻塞”：代码、文档、纯测试、dry-run 和十个既有位置场景均已完成，但完成定义还要求独立 `reparent-page-scope` 的 `root-only-default` 与 `full-subtree` 两个真实 case。该场景明确不属于 `all`，仓库安全门限又禁止 Agent 代为运行，因此解除最后阻塞仍需要用户显式执行并审查：
+用户随后在前台完成 `reparent-page-with-level` 的三次真实运行：`run-2026-08-14-12-44-14`（fresh）、`run-2026-08-14-13-51-48`（validated cache hit）和 `run-2026-08-14-13-53-49`（fresh）均为 `status=passed`，lifecycle 均为 `closed_preserved`；`root-only-default` 与 `full-subtree` 的独立 `destination-position-evidence*.json` 均报告 `status=observed`。用户据此明确批准将场景注册到 `all`，其 `capability_assessment.validation_status` 同步收敛为 `passed`。
 
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py reparent-page-scope --json
-```
-
-该独立场景的两份保存证据与响应逐字段一致后，即可解除阻塞并将状态改为“已完成”；任一 case 失败则应保留现场，并依据真实 evidence 恢复实施工作。
+至此，代码、公开契约、纯测试、dry-run、十个既有位置场景和新范围双 case 的真实证据均满足完成定义，本 TODO 标记为“已完成”。

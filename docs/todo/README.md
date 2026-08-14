@@ -18,7 +18,7 @@
 | 010 | [Manual Validation Dry-run 自动测试用例注册](010_registered_dry_run_test_cases.md) | 已完成 | P1 | 32 个冻结 registry case、纯 plan builder、正式 parser/CLI sentinel harness 与 README 投影合同已交付；真实 `all` allowlist 未扩大。 |
 | 011 | [Scenario 自管理 Fixture Recipe 与拆分集中式 Fixtures](011_scenario_owned_fixture_recipes.md) | 已完成 | P1 | 14 个 Scenario 已各自拥有唯一 recipe；中央 1439 行 fixture switch 已由增量 recorder、无分支 runtime、场景 validator 和共享 typed primitive 取代。 |
 | 012 | [跨 Notebook Section 与 SectionGroup 重建式 Move](012_reconstructive_section_and_section_group_move.md) | 已完成 | P2 | typed 工具、独立门控与严格单次根删除已交付；用户确认 Section/SectionGroup 两个跨 Notebook 真实场景均通过。 |
-| 013 | [Reparent Page 子树范围与 Mutation 目标位置回传合同](013_reparent_default_placement_contract.md) | 阻塞 | P2 | 实现、治理后 924 项当前全套纯测试、十场景位置矩阵和新范围场景 dry-run 已交付；十个既有场景已在用户真实 `all --use-cache` 中通过，仅等待独立 `reparent-page-scope` 双 case。 |
+| 013 | [Reparent Page 子树范围与 Mutation 目标位置回传合同](013_reparent_default_placement_contract.md) | 已完成 | P2 | 统一目标位置合同、Page 双范围、十场景位置矩阵和新范围场景均已交付；用户真实 fresh/cache 双 case 通过并批准将 `reparent-page-with-level` 纳入 `all`。 |
 | 014 | [Recipe 驱动的不可变 Notebook 模板缓存与隔离工作副本](014_recipe_fixture_validation_and_local_notebook_cache.md) | 已完成 | P2 | 不可变 cache、单/多 role working bundle、失效恢复和四类 Interactive Copy 已闭合；用户确认最终全量真实回归全部通过。UserAuthored 完整化由 TODO 020 独立跟踪。 |
 | 015 | [Mutation 目标精确定位收尾与重名 Page 回归](015_mutation_target_identity_hardening_and_duplicate_page_regression.md) | 已完成 | P1 | allocated-ID-first 与精确身份合同已交付；Create、v4 Page Copy、Move 及增强后的三个容器 Copy 均有用户真实成功证据，cleanup/close 与 cache immutability 门通过。 |
 | 016 | [Page Copy 人工验证只读取证降本](016_copy_page_manual_validation_read_evidence_efficiency.md) | 已完成 | P3 | 单次 Page XML 复用和 cache 层级双稳定门已交付；用户真实 Copy Page 六 case 通过，重复 `get_page_objects`/Page XML 读取降为零并记录实际调用分类。 |

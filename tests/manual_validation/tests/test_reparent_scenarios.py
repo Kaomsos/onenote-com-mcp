@@ -24,8 +24,12 @@ from tests.manual_validation.scenarios.common.specs import SCENARIO_SPECS
 from tests.manual_validation.scenarios.fixture_recipes.reparent_page import DESCRIPTION as REPARENT_PAGE_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reparent_section_group import DESCRIPTION as REPARENT_SECTION_GROUP_DESCRIPTION
 from tests.manual_validation.scenarios.reparent_page import ReparentPageScenario
-from tests.manual_validation.scenarios import reparent_page_scope as reparent_scope_runtime
-from tests.manual_validation.scenarios.reparent_page_scope import ReparentPageScopeScenario
+from tests.manual_validation.scenarios import (
+    reparent_page_with_level as reparent_scope_runtime,
+)
+from tests.manual_validation.scenarios.reparent_page_with_level import (
+    ReparentPageWithLevelScenario,
+)
 from tests.manual_validation.scenarios.reparent_section_group import (
     ReparentSectionGroupScenario,
 )
@@ -368,12 +372,10 @@ def _page_scope_case() -> tuple[dict, dict, dict, dict]:
         page("root-parent", "Root Parent", 1, 0, None),
         page("root-selected", "Root Selected", 2, 1, "root-parent"),
         page("root-child", "Root Child", 3, 2, "root-selected"),
-        page("root-grandchild", "Root Grandchild", 4, 3, "root-child"),
-        page("tree-parent", "Tree Parent", 1, 4, None),
-        page("tree-selected", "Tree Selected", 2, 5, "tree-parent"),
-        page("tree-child-a", "Tree Child A", 3, 6, "tree-selected"),
-        page("tree-grandchild", "Tree Grandchild", 4, 7, "tree-child-a"),
-        page("tree-child-b", "Tree Child B", 3, 8, "tree-selected"),
+        page("tree-parent", "Tree Parent", 1, 3, None),
+        page("tree-selected", "Tree Selected", 2, 4, "tree-parent"),
+        page("tree-child-a", "Tree Child A", 3, 5, "tree-selected"),
+        page("tree-child-b", "Tree Child B", 3, 6, "tree-selected"),
     ]
     anchors = [
         {**page("anchor-a", "Anchor A", 1, 0, None), "parent_id": "destination", "section_id": "destination"},
@@ -385,8 +387,6 @@ def _page_scope_case() -> tuple[dict, dict, dict, dict]:
     for item in after_root["items"]:
         if item["id"] == "root-child":
             item.update(page_level=2, parent_page_id="root-parent")
-        elif item["id"] == "root-grandchild":
-            item.update(page_level=3, parent_page_id="root-child")
     root_new = {
         **next(item for item in before["items"] if item["id"] == "root-selected"),
         "id": "root-new",
@@ -401,12 +401,12 @@ def _page_scope_case() -> tuple[dict, dict, dict, dict]:
         value = after_root[field].pop("root-selected")
         after_root[field]["root-new"] = value
 
-    selected_ids = ["tree-selected", "tree-child-a", "tree-grandchild", "tree-child-b"]
+    selected_ids = ["tree-selected", "tree-child-a", "tree-child-b"]
     after_tree = deepcopy(after_root)
     after_tree["items"] = [item for item in after_tree["items"] if item["id"] not in selected_ids]
     id_map = {source_id: f"new-{source_id}" for source_id in selected_ids}
-    levels = [1, 2, 3, 2]
-    parents = [None, id_map["tree-selected"], id_map["tree-child-a"], id_map["tree-selected"]]
+    levels = [1, 2, 2]
+    parents = [None, id_map["tree-selected"], id_map["tree-selected"]]
     for order, (source_id, level, parent_id) in enumerate(zip(selected_ids, levels, parents), start=3):
         old = next(item for item in before["items"] if item["id"] == source_id)
         after_tree["items"].append(
@@ -430,10 +430,8 @@ def _page_scope_case() -> tuple[dict, dict, dict, dict]:
             "destination_section": destination,
             "root_only_selected": next(item for item in pages if item["id"] == "root-selected"),
             "root_only_child": next(item for item in pages if item["id"] == "root-child"),
-            "root_only_grandchild": next(item for item in pages if item["id"] == "root-grandchild"),
             "subtree_selected": next(item for item in pages if item["id"] == "tree-selected"),
             "subtree_child_a": next(item for item in pages if item["id"] == "tree-child-a"),
-            "subtree_grandchild": next(item for item in pages if item["id"] == "tree-grandchild"),
             "subtree_child_b": next(item for item in pages if item["id"] == "tree-child-b"),
         }
     )
@@ -544,7 +542,7 @@ def test_typed_reparent_rejects_com_success_without_parent_change(monkeypatch, t
     assert [name for name, _arguments in client.calls] == ["reparent_page"]
 
 
-def test_reparent_page_scope_runner_verifies_both_ranges_and_independent_positions(
+def test_reparent_page_with_level_runner_verifies_both_ranges_and_independent_positions(
     monkeypatch, tmp_path
 ) -> None:
     manifest, before, after_root, after_tree = _page_scope_case()
@@ -568,7 +566,7 @@ def test_reparent_page_scope_runner_verifies_both_ranges_and_independent_positio
                     "id_map": {"root-selected": "root-new"},
                     "preserved_descendants": {
                         "promoted": True,
-                        "preserved_descendant_ids": ["root-child", "root-grandchild"],
+                        "preserved_descendant_ids": ["root-child"],
                     },
                 }
             else:
@@ -579,7 +577,6 @@ def test_reparent_page_scope_runner_verifies_both_ranges_and_independent_positio
                         for source_id in (
                             "tree-selected",
                             "tree-child-a",
-                            "tree-grandchild",
                             "tree-child-b",
                         )
                     },
@@ -606,7 +603,7 @@ def test_reparent_page_scope_runner_verifies_both_ranges_and_independent_positio
     monkeypatch.setattr(reparent_scope_runtime, "render_report", lambda _path: None)
 
     result = asyncio.run(
-        ReparentPageScopeScenario().execute(
+        ReparentPageWithLevelScenario().execute(
             SimpleNamespace(notebook_name=None, keep_worksite=False),
             RuntimeOptions(tmp_path, 180, False, False),
             manifest,
@@ -625,17 +622,16 @@ def test_reparent_page_scope_runner_verifies_both_ranges_and_independent_positio
     assert result["cases"][1]["target_parent_page_ids"] == {
         "new-tree-selected": None,
         "new-tree-child-a": "new-tree-selected",
-        "new-tree-grandchild": "new-tree-child-a",
         "new-tree-child-b": "new-tree-selected",
     }
-    scenario = tmp_path / "scenarios" / "reparent-page-scope"
+    scenario = tmp_path / "scenarios" / "reparent-page-with-level"
     for case in ("root-only-default", "full-subtree"):
         assert (scenario / f"mutation-response-{case}.json").exists()
         assert (scenario / f"after-{case}.json").exists()
         assert (scenario / f"destination-position-evidence-{case}.json").exists()
 
 
-def test_reparent_page_scope_runner_rejects_excluded_descendant_in_id_map(
+def test_reparent_page_with_level_runner_rejects_excluded_descendant_in_id_map(
     monkeypatch, tmp_path
 ) -> None:
     manifest, before, after_root, _after_tree = _page_scope_case()
@@ -653,7 +649,7 @@ def test_reparent_page_scope_runner_rejects_excluded_descendant_in_id_map(
             },
             "preserved_descendants": {
                 "promoted": True,
-                "preserved_descendant_ids": ["root-child", "root-grandchild"],
+                "preserved_descendant_ids": ["root-child"],
             },
         }
 
@@ -673,7 +669,7 @@ def test_reparent_page_scope_runner_rejects_excluded_descendant_in_id_map(
 
     with pytest.raises(InvariantFailure, match="incorrectly includes excluded"):
         asyncio.run(
-            ReparentPageScopeScenario().execute(
+            ReparentPageWithLevelScenario().execute(
                 SimpleNamespace(notebook_name=None, keep_worksite=False),
                 RuntimeOptions(tmp_path, 180, False, False),
                 manifest,

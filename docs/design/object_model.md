@@ -1,7 +1,7 @@
 # OneNote 对象模型（P0/P1 实现版）
 
 > 状态：实现契约
-> 更新日期：2026-08-11
+> 更新日期：2026-08-14
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
@@ -68,12 +68,12 @@ Page 不公开 `name`，统一使用 `title`：
 | `title` | string | Page 标题。 |
 | `notebook_id` | string/null | 所属 Notebook ID。 |
 | `section_id` | string/null | 所属 Section ID。 |
-| `page_level` | integer | COM `pageLevel`，最小为 1。 |
+| `page_level` | integer | COM `pageLevel`；OneNote Desktop 的合法范围为 1-3（根 Page 加两级 Subpage）。 |
 | `order` | integer | 同 Section 完整 Page 序列中的零基位置。 |
 | `parent_page_id` | string/null | 按完整有序 Page 序列和 `page_level` 推导。 |
 | `has_children` | boolean | 是否存在缩进子 Page，派生值。 |
 
-`parent_id` 表示 COM 容器父级；`parent_page_id` 表示 Page 缩进父级，两者不能混用。普通 List/Get 不读取正文。
+`parent_id` 表示 COM 容器父级；`parent_page_id` 表示 Page 缩进父级，两者不能混用。普通 List/Get 不读取正文。Microsoft 的 OneNote Desktop 支持文档明确说明只能有两级 Subpage，因此真实 fixture 和 mutation 验证不得构造 `page_level=4`；参见 [Create a subpage in OneNote](https://support.microsoft.com/en-US/OneNote/onenote-help-and-learning/create-a-subpage-in-onenote)。
 
 ### PageContentObject
 

@@ -312,7 +312,7 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 | [010：Manual Validation Dry-run 自动测试用例注册](../todo/010_registered_dry_run_test_cases.md)              | 已完成 | registry case、正式 parser 与零副作用 sentinel 合同已交付           |
 | [011：Scenario 自管理 Fixture Recipe](../todo/011_scenario_owned_fixture_recipes.md)                         | 已完成 | Scenario-owned recipe、增量 recorder 和共享 typed primitive 已交付  |
 | [012：跨 Notebook 容器重建式 Move](../todo/012_reconstructive_section_and_section_group_move.md)            | 已完成 | 四个 typed 工具、独立门控与双 Notebook 场景已交付；用户确认 Section/SectionGroup 真实 Move 均通过 |
-| [013：Reparent Page 子树范围与 Mutation 目标位置回传合同](../todo/013_reparent_default_placement_contract.md) | 阻塞 | 实现与 dry-run 已交付；受 HUMAN-GATED 门限阻塞，等待新范围场景及十个既有位置场景的用户真实证据 |
+| [013：Reparent Page 子树范围与 Mutation 目标位置回传合同](../todo/013_reparent_default_placement_contract.md) | 已完成 | 十个既有位置场景与 `reparent-page-with-level` 的 fresh/cache 双范围真实证据均已通过；新场景已纳入 `all` |
 | [018：在线视频表示与 Copy 保真验证](../todo/018_online_video_copy_fidelity_validation.md)                  | 已取消 | 不建立独立对象类型或有损 Copy 合同；局限性证据保留在 Lesson |
 | [022：四层 Typed Metadata Query、原生 Scope 与 List 工具退役](../todo/022_typed_metadata_query_tools_and_native_scopes.md) | 阻塞 | 四 Query、原生 scope、纯合同和完整双 Notebook 场景已交付；尚无用户真实场景 artifact，取得证据和后续独立批准前不能移除五个 `list_*`。 |
 
@@ -320,7 +320,7 @@ Move 的成功关口是源子树从活动 hierarchy 消失。COM 若能返回 `i
 
 1. 由用户运行 TODO 022 的 `query-metadata-scopes`，审查 root/三类起点、open-only、缩进父页和分页证据；证据通过后再单独决定是否批准 List 退役。
 2. 完成 TODO 008 的双 Notebook index-only 真实验收，核对归属、scope、预算与 index readiness，不把空 `start_id` 未经证据地等同于 Desktop `Ctrl+E`。
-3. 由用户运行 TODO 013 的 `reparent-page-scope` 与十个既有位置场景，核对保存证据后完成状态收敛。
+3. 保持 TODO 013 已闭合的目标位置与 Page 双范围合同；`reparent-page-with-level` 的 fresh/cache 真实证据已通过并已纳入 `all`。
 4. 保持 TODO 004 已完成的静态边界：InkDrawing、UIShape、MediaFile、InsertedFile 的 Copy comparator、用户 UI verdict 和 allowlist 评审已经完成，运行时输入不得动态扩展生产 allowlist，Move 不另建逐类别门禁。
 5. 继续保持统一 Reparent、Copy、Page Move 和容器 Move 的独立实验开关；SectionGroup Reorder 的遗留开关保持关闭。若 Page body replacement 的审查需求提高，再为 Replace 设计独立 plan/execute。只有在收集正式基准后才评估长驻单线程 COM broker。
 

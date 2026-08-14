@@ -150,7 +150,10 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
                 bundle_checks=("roles remain distinct",),
             )
 
+    events: list[str] = []
+
     async def fake_convergence(_client, *, role, working_notebook, **_kwargs):
+        events.append(f"hierarchy-{role}")
         snapshot = {
             "notebook_id": working_notebook["id"],
             "items": [],
@@ -169,6 +172,7 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
     capture_calls: list[str] = []
 
     async def fake_capture(_client, notebook_id):
+        events.append(f"content-{notebook_id}")
         capture_calls.append(notebook_id)
         return {
             "notebook_id": notebook_id,
@@ -181,6 +185,17 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
         fixture_runtime_module,
         "_await_materialized_structure_convergence",
         fake_convergence,
+    )
+    original_rebind_evidence = fixture_runtime_module._rebind_materialized_evidence
+
+    def recording_rebind_evidence(*args, **kwargs):
+        events.append("evidence-rebind")
+        return original_rebind_evidence(*args, **kwargs)
+
+    monkeypatch.setattr(
+        fixture_runtime_module,
+        "_rebind_materialized_evidence",
+        recording_rebind_evidence,
     )
     monkeypatch.setattr(fixture_runtime_module, "capture_snapshot", fake_capture)
     scenario = argparse.Namespace(name="fake-materialized", fixture_recipe=FakeRecipe())
@@ -208,6 +223,14 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
     )
 
     assert capture_calls == ["working-destination", "working-source"]
+    assert events == [
+        "hierarchy-destination",
+        "evidence-rebind",
+        "content-working-destination",
+        "hierarchy-source",
+        "evidence-rebind",
+        "content-working-source",
+    ]
     convergence = read_json(run_dir / "cache-hierarchy-convergence.json")
     assert convergence["passed"] is True
     assert all(
@@ -1225,6 +1248,75 @@ def test_materialized_reparent_page_evidence_rebinds_only_owned_page_id_fields()
     assert rich["manual_content"] == ["literal source-page remains content"]
     assert cached["reparent_page_fixture"]["page_id"] == "source-page"
     assert cached["reparent_page_fixture"]["list_tag"]["page_id"] == "source-page"
+
+
+def test_materialized_scoped_reparent_page_evidence_rebinds_each_owned_page() -> None:
+    source_structure = {
+        "root_only_selected": {"id": "source-root", "resource_type": "page"},
+        "subtree_selected": {"id": "source-subtree", "resource_type": "page"},
+    }
+    working_structure = {
+        "root_only_selected": {"id": "working-root", "resource_type": "page"},
+        "subtree_selected": {"id": "working-subtree", "resource_type": "page"},
+    }
+    cached = {
+        "reparent_page_fixture": {
+            "page_id": "source-root",
+            "manual_content": ["literal source-root remains content"],
+            "scope_pages": {
+                "root_only_selected": {"page_id": "source-root"},
+                "subtree_selected": {"page_id": "source-subtree"},
+            },
+        }
+    }
+
+    rebound, report = _rebind_materialized_evidence(
+        source_structure,
+        working_structure,
+        cached,
+    )
+
+    assert report["passed"] is True
+    assert [mapping["field"] for mapping in report["mappings"]] == [
+        "reparent_page_fixture.scope_pages.root_only_selected.page_id",
+        "reparent_page_fixture.scope_pages.subtree_selected.page_id",
+        "reparent_page_fixture.page_id",
+    ]
+    rich = rebound["reparent_page_fixture"]
+    assert rich["page_id"] == "working-root"
+    assert rich["scope_pages"]["root_only_selected"]["page_id"] == "working-root"
+    assert rich["scope_pages"]["subtree_selected"]["page_id"] == "working-subtree"
+    assert rich["manual_content"] == ["literal source-root remains content"]
+    assert cached["reparent_page_fixture"]["page_id"] == "source-root"
+    assert (
+        cached["reparent_page_fixture"]["scope_pages"]["subtree_selected"]["page_id"]
+        == "source-subtree"
+    )
+
+
+def test_materialized_scoped_reparent_page_evidence_rejects_unknown_scope_key() -> None:
+    _rebound, report = _rebind_materialized_evidence(
+        {"root_only_selected": {"id": "source-root"}},
+        {"root_only_selected": {"id": "working-root"}},
+        {
+            "reparent_page_fixture": {
+                "page_id": "source-root",
+                "scope_pages": {
+                    "root_only_selected": {"page_id": "source-root"},
+                    "undeclared_selected": {"page_id": "source-other"},
+                },
+            }
+        },
+    )
+
+    assert report["passed"] is False
+    assert any(
+        failure["field"]
+        == "reparent_page_fixture.scope_pages.undeclared_selected.page_id"
+        and failure["reason"] == "missing-structure-binding"
+        and failure["manifest_key"] == "undeclared_selected"
+        for failure in report["failures"]
+    )
 
 
 @pytest.mark.parametrize(

@@ -39,7 +39,7 @@ SCENARIO_MODULES = {
     "reorder_section_group": "ReorderSectionGroupScenario",
     "reparent_section": "ReparentSectionScenario",
     "reparent_page": "ReparentPageScenario",
-    "reparent_page_scope": "ReparentPageScopeScenario",
+    "reparent_page_with_level": "ReparentPageWithLevelScenario",
     "reparent_section_group": "ReparentSectionGroupScenario",
     "delete": "DeleteScenario",
     "copy_page": "CopyPageScenario",
@@ -223,6 +223,7 @@ def test_all_membership_and_reviewed_capabilities_are_exact() -> None:
         "reorder-section",
         "reparent-section",
         "reparent-page",
+        "reparent-page-with-level",
         "reparent-section-group",
         "delete",
         "copy-page",
@@ -244,7 +245,11 @@ def test_all_membership_and_reviewed_capabilities_are_exact() -> None:
             "did not apply the requested sibling order after UpdateHierarchy returned success."
         ),
     }
-    for name in ("reparent-page", "reparent-section-group"):
+    for name in (
+        "reparent-page",
+        "reparent-page-with-level",
+        "reparent-section-group",
+    ):
         assessment = SCENARIO_REGISTRY.get(name).capability_assessment
         assert assessment["capability_status"] == "experimental"
         assert assessment["validation_status"] == "passed"
@@ -279,11 +284,11 @@ def test_all_runs_every_scenario_serially_and_is_quiet_by_default(capsys) -> Non
 
     assert [command[2] for command in commands] == list(registered)
     output = capsys.readouterr().out
-    assert "[1/15] create ..." in output
+    assert "[1/16] create ..." in output
     assert "PASS move-page" in output
     assert "PASS move-section" in output
     assert "PASS move-section-group" in output
-    assert "Completed 15 scenarios: 15 passed, 0 failed" in output
+    assert "Completed 16 scenarios: 16 passed, 0 failed" in output
     assert "result for" not in output
 
 
