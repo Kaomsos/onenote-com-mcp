@@ -4,7 +4,7 @@
 > 状态：阻塞
 > 优先级：P2
 > 类型：公开 mutation 契约 / Reparent Page 范围与目标位置可观测性
-> 更新日期：2026-08-13
+> 更新日期：2026-08-14
 
 ## 决策摘要
 
@@ -344,16 +344,22 @@ OneNote 可能重映射 Page/内容对象 ID，完整子树又扩大了目标集
 - 新 `reparent-page-scope` 的 dry-run/静态权限/失败保留合同通过，用户确认 `root-only-default` 与 `full-subtree` 真实证据；两个 case 同样使用独立 position evidence，只描述 fresh 目标根。Agent 只运行 dry-run/纯测试。
 - tool contracts、object model、architecture、README、manual-validation README、TODO 002/005/006/009/012/015/017 与 TODO 索引保持一致。
 
-## 当前实施状态（2026-08-13）
+## 当前实施状态（2026-08-14）
 
 代码、公开契约和纯验证已经交付：十个执行工具返回统一 `destination_position`，Move 在源删除后重新投影；`reparent_page` 已加入默认 `false` 的 `include_descendants`，并实现 root-only 后代提升与完整子树路线；自动化合同覆盖目标根位置、Notebook 不适用、fresh ID、分叉 Page 范围、同父级 Page Move 的删除后索引，以及 promotion/Reparent 各阶段的结构化 partial outcome。十个既有 manual-validation runtime 已接入独立 after-snapshot projector；所有 hierarchy-child destination fixture 均准备至少两个可区分的同类型 anchors；新的 `reparent-page-scope` 已注册 Scenario-owned recipe、最小静态权限和正式 dry-run case。
 
-纯验证记录：完整 pytest 为 `845 passed`；manual-validation 纯合同曾整套 `533 passed`，本轮 anchor/recipe 增强后的目标相关 manual 集合为 `278 passed`，完整 pytest 同样覆盖这些变更并通过；`reparent-page-scope --dry-run --json` 返回 `ok=true`、`server_started=false`。一次 manual 全套复跑出现与本 TODO 无关的 Windows 原子目录替换重试计数瞬态差异（预期 2、观察 3），该单测随后复跑为 `1 passed`。Agent 未运行任何真实 mutation。
+纯验证记录：完整 pytest 的交付基线为 `845 passed`，后续共享 manual-validation 稳定性与 mutation 安全强化纳入后的仓库基线为 `1037 passed`；manual-validation 纯合同曾整套 `533 passed`，本轮 anchor/recipe 增强后的目标相关 manual 集合为 `278 passed`；`reparent-page-scope --dry-run --json` 返回 `ok=true`、`server_started=false`。一次 manual 全套复跑出现与本 TODO 无关的 Windows 原子目录替换重试计数瞬态差异（预期 2、观察 3），该单测随后复跑为 `1 passed`。Agent 未启动任何真实 mutation；下述真实 run 均由用户本人在交互式前台终端启动，Agent 只读取保存的 evidence。
 
-本 TODO 当前为“阻塞”：代码、文档、纯测试和 dry-run 已无可继续推进的缺口，但完成定义要求的真实 OneNote mutation 证据只能由用户本人显式启动并审查；仓库安全门限禁止 Agent 代为运行。Agent 未运行任何真实 scenario。解除阻塞至少需要用户执行并审查：
+### 最新真实运行进度
+
+用户在 2026-08-14 启动的当前版本 `all --use-cache` 完整批次产生 15 个 child run，最终为 `15 passed, 0 failed`。其中与本 TODO 的十个既有位置场景对应的证据为：`reparent-section`（`run-2026-08-14-11-19-40`）、`reparent-page`（`run-2026-08-14-11-20-38`）、`reparent-section-group`（`run-2026-08-14-11-21-06`）、`copy-page`（`run-2026-08-14-11-22-18`）、`copy-section`（`run-2026-08-14-11-24-58`）、`copy-section-group`（`run-2026-08-14-11-26-12`）、`copy-notebook`（`run-2026-08-14-11-27-34`）、`move-page`（`run-2026-08-14-11-28-18`）、`move-section`（`run-2026-08-14-11-29-20`）和 `move-section-group`（`run-2026-08-14-11-29-54`）。
+
+十个 run 均为 `cache.decision=validated_hit`、`status=passed` 且 lifecycle 为 `closed_preserved`。保存的位置证据确认 Page、Section 与 SectionGroup 均为 `status=observed`，并覆盖 Reparent 的 7 个、Copy 的 10 个和 Move 的 4 个实际落点；Notebook Copy 按合同返回 `resource_type=notebook`、`status=not_applicable`。因此“手动位置验证矩阵”中的十个既有场景已经闭合，不再构成本 TODO 的阻塞项。
+
+本 TODO 当前仍为“阻塞”：代码、文档、纯测试、dry-run 和十个既有位置场景均已完成，但完成定义还要求独立 `reparent-page-scope` 的 `root-only-default` 与 `full-subtree` 两个真实 case。该场景明确不属于 `all`，仓库安全门限又禁止 Agent 代为运行，因此解除最后阻塞仍需要用户显式执行并审查：
 
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py reparent-page-scope --json
 ```
 
-随后还应按“手动位置验证矩阵”重新运行受响应变化影响的十个既有具名场景。只有这些保存证据与响应逐字段一致，才能解除阻塞并将状态改为“已完成”；任一场景失败则应保留现场，并依据真实 evidence 恢复实施工作。
+该独立场景的两份保存证据与响应逐字段一致后，即可解除阻塞并将状态改为“已完成”；任一 case 失败则应保留现场，并依据真实 evidence 恢复实施工作。

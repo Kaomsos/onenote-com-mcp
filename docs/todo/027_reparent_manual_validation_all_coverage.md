@@ -41,9 +41,13 @@
 
 ## 最新真实运行证据（2026-08-14）
 
+- 用户在当前版本启动的完整 `all --use-cache` 批次从 `run-2026-08-14-11-17-56` 运行至 `run-2026-08-14-11-29-54`，最终为 `15 passed, 0 failed`；全部 child 均为 `cache.decision=validated_hit`、`status=passed`，并以 `closed_preserved` 完成失败隔离边界内的精确关闭。
+- 三个 Reparent child 分别为 `reparent-section`（`run-2026-08-14-11-19-40`）、`reparent-page`（`run-2026-08-14-11-20-38`）和 `reparent-section-group`（`run-2026-08-14-11-21-06`）。三者均完成默认恢复；独立 `destination-position-evidence*.json` 分别确认 3、1、3 个 `status=observed` 的 Section、Page、SectionGroup 落点。
+- 本批次在三个 Reparent 后继续完成其余八个 child，没有 fixture、mutation、read-back、lifecycle 或异常扩散失败；它取代了下面较早批次“Reparent 已通过但后续无关 consumer 失败”的批次级保留意见，并确认三个 Reparent 作为 `all` 成员的当前回归资格。
+
 - 用户启动的 `all --use-cache` 依次产生 `run-2026-08-14-00-11-15`、`run-2026-08-14-00-14-21` 和 `run-2026-08-14-00-15-47`。三个 run 均为 `validated_hit`、`status=passed`、`opened_template=false`、默认 restore 完成且 lifecycle 为 `closed_preserved`。
 - Section run 的 operations 明确包含 Notebook → SectionGroup、SectionGroup → Notebook、SectionGroup → SectionGroup；Page run 完成唯一跨 Section case并验证 ID history、富内容与无关对象；SectionGroup run 完成三个 parent transition、后代身份/内容/位置验证与逆序恢复。
-- 批处理在稍后的无关 cache consumer 上返回非零，但不改变这三个独立 child run 已完成且精确关闭的成功证据；失败隔离允许 `all` 继续执行后续 child，未复用它们的 Notebook、MCP 或 evidence。
+- 较早批处理在稍后的无关 cache consumer 上返回非零，但不改变这三个独立 child run 已完成且精确关闭的成功证据；失败隔离允许 `all` 继续执行后续 child，未复用它们的 Notebook、MCP 或 evidence。上述最新 15/15 批次已经消除这项批次级保留意见。
 
 - `run-2026-08-13-20-05-35`：`reparent-section-group --use-cache` 的三个 parent transition、完整内容/拓扑取证、逆序 restore 和 lifecycle close 全部通过。这是用户运行的真实后端证据。
 - `run-2026-08-13-20-01-15` 与 `run-2026-08-13-20-04-40`：`reparent-page`、`reparent-section` 均未进入 mutation。两者在首个 materialized Section 上观察到 `OpenHierarchy` 返回 ID、exact parent 回读成功，但初次全局 snapshot 不可见，随后 16 次 exact-self 读取均为 `0x80131501`。因此失败属于 fixture activation，不是 Reparent read-back 或 mutation 回归。
@@ -63,7 +67,7 @@
 
 - `test_all_scenarios.py`、`test_reparent_scenarios.py` 与注册 dry-run 合同均包含在 manual-validation 完整纯测试中；
 - `tests/manual_validation/tests` 当前收集 `630` 项，全部包含在本轮完整基线中；
-- 仓库当前完整 pytest：`1002 passed`；
+- 仓库当前完整 pytest：`1037 passed`；
 - v3 持久化检查点、lease archive、ID/evidence 重绑、内层 HRESULT audit 与 Reparent read-back 的聚焦纯测试：`231 passed`；
 - 初次纳入时 `run.py all --dry-run --json --verbosity quiet` 为 `14 passed, 0 failed`；TODO 028 随后把受支持的 `reorder-section` 纳入批处理，当前为 `15 passed, 0 failed`，有序 child 5–7 分别为 `reparent-section`、`reparent-page`、`reparent-section-group`。
 
