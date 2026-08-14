@@ -6,7 +6,17 @@ from .coordination import ReadWriteCoordinator
 from .convergence import ConvergenceConfig, ConvergenceResult, converge
 from .errors import PartialFailure
 from .reconciliation import ReconciliationResult, ReconciliationState, reconcile_mutation
-from .hierarchy import HierarchyService, IDENTIFIER_RESOLUTION_ORDER, RESOURCE_TYPES
+from .hierarchy import (
+    DEFAULT_METADATA_QUERY_PAGE_SIZE,
+    MAX_METADATA_QUERY_PAGE_SIZE,
+    METADATA_QUERY_KIND,
+    METADATA_QUERY_PAGINATION_CONSISTENCY,
+    METADATA_QUERY_SCOPE_MODES,
+    METADATA_QUERY_TOOLS,
+    HierarchyService,
+    IDENTIFIER_RESOLUTION_ORDER,
+    RESOURCE_TYPES,
+)
 from .mutations import MutationService
 from .operations import OperationsService
 from .pages import PageService
@@ -38,6 +48,12 @@ __all__ = [
     "ReconciliationState",
     "reconcile_mutation",
     "RESOURCE_TYPES",
+    "DEFAULT_METADATA_QUERY_PAGE_SIZE",
+    "MAX_METADATA_QUERY_PAGE_SIZE",
+    "METADATA_QUERY_KIND",
+    "METADATA_QUERY_PAGINATION_CONSISTENCY",
+    "METADATA_QUERY_SCOPE_MODES",
+    "METADATA_QUERY_TOOLS",
     "DEFAULT_SEARCH_PAGE_SIZE",
     "MAX_SEARCH_PAGE_SIZE",
     "PAGINATION_CONSISTENCY",

@@ -1,10 +1,20 @@
 # 022：四层 Typed Metadata Query、原生 Scope 与 List 工具退役
 
 > ID：022
-> 状态：待办
+> 状态：阻塞
 > 优先级：P1
 > 类型：公开工具契约 / Query 能力 / Tool 收敛 / Agent 可发现性
 > 更新日期：2026-08-13
+
+## 当前进度（2026-08-13）
+
+当前阻塞原因：仓库规则禁止 Agent 启动真实 `query-metadata-scopes`，且 `.local-validation/` 中尚无该场景的真实 result/failure artifact。阶段 A 实现、自动化、完整模拟 runtime、文档和 dry-run 已完成；只有用户本人前台运行并确认真实证据后，才能审查 List 覆盖并请求独立退役批准。该批准取得前，阶段 B 不得开始。
+
+阶段 A 已落地：默认 profile 注册四个 fixed-type Query，删除公开 `query_hierarchy` 且未新增 `global_query`；service 使用 root/最浅 scope 或 root `hsSections` catalog 加一个精确 native start call，实施 open-only、严格关系/时间、回收站和 `offset/page_size` live pagination。health、README 与 canonical tool contract 已同步。五个 List 按批准门继续保留。
+
+自动化聚焦合同通过；完成审计后又补齐原生起点矩阵、空 root、XML fail-closed、schema ID/mode description、完整模拟 scenario runtime 与精确 pre-closed lifecycle receipt 合同，最终完整纯测试基线为 `974 passed`。新增 fresh-only、`included_in_all=false` 的 `query-metadata-scopes` 双 Notebook scenario；两个 role 现在各自具备嵌套 Group、Notebook/Group 直属 Section、根页和缩进页，并持久化独立 typed tree、expected 投影、每个请求/响应与 bridge operation，覆盖末页和越界页。其 `--dry-run --json` 已零副作用通过，静态权限仅包含 fixture Writes 和读工具，Delete/Copy/Move/Permanent Delete/Raw XML 均关闭。Agent 未运行真实场景。
+
+List→Query 迁移审查清单已经固化在本文件的覆盖矩阵；当前默认 schema diff 为：删除 `query_hierarchy(resource_type,...,limit)`，新增四个固定资源类型入口；必填 discriminated `scope` 只用于后三者；`limit/truncated` 改为与 Search 同形的 `offset/page_size/has_more/next_offset`；Page 的重载 `parent_id` 拆为 `section_id/parent_page_id`；统一增加 `resource_type/query_kind/scope/pagination_consistency`。待用户真实运行并确认场景证据后，仍须取得单独的 List 退役批准，才可执行阶段 B。
 
 ## 背景与当前实现
 

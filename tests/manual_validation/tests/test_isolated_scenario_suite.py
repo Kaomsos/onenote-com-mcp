@@ -31,6 +31,11 @@ from tests.manual_validation.scenarios.fixture_recipes.reparent_section import D
 SCENARIOS = validation.PUBLIC_SCENARIOS
 
 
+@pytest.fixture(autouse=True)
+def _running_onenote_gui(monkeypatch):
+    monkeypatch.setattr(validation, "require_onenote_desktop", lambda: None)
+
+
 def _validate_fixture_snapshot(scenario, snapshot, structure, content_fixture):
     evidence = {}
     if content_fixture is not None:
@@ -1284,6 +1289,69 @@ def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scena
         "report",
         "close-notebook-bundle" if multi_role else "close-source-notebook",
     ]
+
+
+def test_manual_scenario_fails_preflight_before_run_or_notebook_creation(
+    monkeypatch, tmp_path
+) -> None:
+    from local_onenote_mcp.onenote_errors import OneNoteDesktopNotRunningError
+
+    run_dir = tmp_path / "run"
+    monkeypatch.setattr(
+        validation,
+        "require_onenote_desktop",
+        lambda: (_ for _ in ()).throw(
+            OneNoteDesktopNotRunningError(
+                "OneNote Desktop is not running with a visible GUI. Start OneNote and retry.",
+                operation="health_preflight",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        validation,
+        "NotebookLifecycleWrapper",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("desktop preflight must run before lifecycle")
+        ),
+    )
+
+    with pytest.raises(runtime.RunnerFailure, match="Start OneNote and retry") as raised:
+        asyncio.run(
+            validation.run_validate(
+                _args(run_dir, "rename"),
+                RuntimeOptions(run_dir, 180, False, False),
+            )
+        )
+
+    assert raised.value.exit_code == runtime.EXIT_MCP
+    assert not run_dir.exists()
+
+
+def test_manual_scenario_dry_run_never_probes_desktop(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        validation,
+        "require_onenote_desktop",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("dry-run must not inspect OneNote GUI state")
+        ),
+    )
+    args = _args(tmp_path / "dry-run", "rename")
+    args.dry_run = True
+
+    result = asyncio.run(
+        validation.run_validate(
+            args,
+            RuntimeOptions(
+                run_dir=args.run_dir,
+                timeout=180,
+                json_output=False,
+                dry_run=True,
+            ),
+        )
+    )
+
+    assert result["dry_run"] is True
+    assert not args.run_dir.exists()
 
 
 def test_scenario_execution_defers_close_to_top_level_failure_finalization(

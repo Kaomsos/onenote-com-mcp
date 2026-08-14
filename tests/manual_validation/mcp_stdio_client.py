@@ -311,6 +311,11 @@ class MCPStdioClient:
                 raise ClientFailure(f"Server is missing required tools: {', '.join(missing)}")
             health = await self.call_tool("health_check", {}, retry_read=False)
             self.health_result = health
+            desktop = health.get("onenote_desktop")
+            if not isinstance(desktop, dict) or desktop.get("ready") is not True:
+                raise ClientFailure(
+                    "OneNote Desktop health preflight did not prove an existing visible GUI."
+                )
             actual = health.get("mutation_policy")
             expected = self.policy.as_dict()
             if actual != expected:

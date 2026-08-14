@@ -5,6 +5,8 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from local_onenote_mcp import server
+from local_onenote_mcp.desktop import OneNoteDesktopState
+from local_onenote_mcp.onenote_errors import OneNoteDesktopNotRunningError
 from local_onenote_mcp.policy import SearchBudget
 from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.tools.advanced import merge_sections, open_hierarchy, set_filing_location
@@ -13,9 +15,15 @@ from local_onenote_mcp.tools.mutations import create_page, create_section, delet
 from local_onenote_mcp.tools.operations import publish_object
 from local_onenote_mcp.tools.pages import RootSearchScope, StartNodeSearchScope, search_pages
 from local_onenote_mcp.tools.system import health_check, resolve_identifier
+from local_onenote_mcp.tools import system as system_tools
 
 
 def test_health_check_includes_runtime_diagnostics(monkeypatch):
+    monkeypatch.setattr(
+        system_tools,
+        "require_onenote_desktop",
+        lambda: OneNoteDesktopState(True, True),
+    )
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",
@@ -37,12 +45,72 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
         "max_page_size": 200,
         "consistency": "live_index",
     }
+    assert result["metadata_query"] == {
+        "tools": [
+            "query_notebook",
+            "query_section_group",
+            "query_section",
+            "query_page",
+        ],
+        "scope_modes": ["root", "start_node"],
+        "query_kind": "hierarchy_metadata",
+        "pagination": {
+            "default_page_size": 200,
+            "max_page_size": 200,
+            "consistency": "live_hierarchy",
+        },
+    }
     assert "search_default_backend" not in result
     assert "search_backends" not in result
     assert result["content_formats"] == ["plain", "html", "markdown"]
     assert result["copy_budget"]["max_pages"] > 0
     assert result["python_executable"]
     assert result["module_path"].endswith("tools\\system.py") or result["module_path"].endswith("tools/system.py")
+    assert result["onenote_desktop"] == {
+        "process_running": True,
+        "visible_window_present": True,
+        "ready": True,
+        "probe": "native_windows_process_and_visible_window",
+    }
+
+
+def test_health_check_fails_before_com_when_onenote_gui_is_absent(monkeypatch):
+    monkeypatch.setattr(
+        system_tools,
+        "require_onenote_desktop",
+        lambda: (_ for _ in ()).throw(
+            OneNoteDesktopNotRunningError(
+                "OneNote Desktop is not running with a visible GUI. Start OneNote and retry.",
+                operation="health_preflight",
+                details={
+                    "onenote_desktop": {
+                        "process_running": False,
+                        "visible_window_present": False,
+                        "ready": False,
+                        "probe": "native_windows_process_and_visible_window",
+                    },
+                    "required_action": "start_onenote_desktop_and_retry",
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("health preflight must not activate OneNote COM")
+        ),
+    )
+
+    result = asyncio.run(health_check())
+
+    assert result["ok"] is False
+    assert result["complete"] is False
+    assert result["code"] == "onenote_desktop_not_running"
+    assert result["retryability"] == "after_user_action"
+    assert result["operation"] == "health_preflight"
+    assert result["required_action"] == "start_onenote_desktop_and_retry"
+    assert result["onenote_desktop"]["ready"] is False
 
 
 def test_resolve_identifier_returns_single_item(monkeypatch):
@@ -183,10 +251,76 @@ def test_search_scope_models_forbid_extra_fields_and_blank_start_ids():
         StartNodeSearchScope(mode="start_node", start_node_id="   ")
 
 
+def test_metadata_query_schemas_are_typed_strict_and_bounded():
+    tools = server.mcp._tool_manager._tools
+    query_names = {
+        "query_notebook",
+        "query_section_group",
+        "query_section",
+        "query_page",
+    }
+
+    assert query_names <= set(tools)
+    assert "query_hierarchy" not in tools
+    assert "global_query" not in tools
+    notebook_schema = tools["query_notebook"].parameters
+    assert "scope" not in notebook_schema["properties"]
+    assert "resource_type" not in notebook_schema["properties"]
+    assert "include_recycle_bin" not in notebook_schema["properties"]
+
+    for name in query_names:
+        tool = tools[name]
+        schema = tool.parameters
+        properties = schema["properties"]
+        assert "resource_type" not in properties
+        assert properties["offset"]["default"] == 0
+        assert properties["offset"]["minimum"] == 0
+        assert properties["page_size"]["default"] == 200
+        assert properties["page_size"]["minimum"] == 1
+        assert properties["page_size"]["maximum"] == 200
+        assert "pattern" in properties["modified_after"]
+        assert "pattern" in properties["modified_before"]
+        description = tool.description.casefold()
+        assert "hierarchy metadata" in description
+        assert "page body text" in description
+        assert "gethierarchy" in description
+
+    for name in ("query_section_group", "query_section", "query_page"):
+        schema = tools[name].parameters
+        assert schema["required"] == ["scope"]
+        scope = schema["properties"]["scope"]
+        assert scope["discriminator"]["propertyName"] == "mode"
+        assert len(scope["oneOf"]) == 2
+        assert schema["$defs"]["RootQueryScope"]["additionalProperties"] is False
+        start = schema["$defs"]["StartNodeQueryScope"]
+        assert start["additionalProperties"] is False
+        assert start["properties"]["mode"]["description"]
+        assert start["properties"]["start_node_id"]["minLength"] == 1
+        assert schema["$defs"]["RootQueryScope"]["properties"]["mode"]["description"]
+
+    page_properties = tools["query_page"].parameters["properties"]
+    assert {"title_equals", "title_contains", "section_id", "parent_page_id"} <= set(
+        page_properties
+    )
+    assert "parent_id" not in page_properties
+    assert page_properties["section_id"]["pattern"] == r"^$|.*\S.*"
+    assert page_properties["parent_page_id"]["pattern"] == r"^$|.*\S.*"
+    for name in ("query_section_group", "query_section"):
+        assert tools[name].parameters["properties"]["parent_id"]["pattern"] == r"^$|.*\S.*"
+
+
 def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
-    assert len(names) == 58
+    assert len(names) == 61
+    assert {
+        "query_notebook",
+        "query_section_group",
+        "query_section",
+        "query_page",
+    } <= names
+    assert "query_hierarchy" not in names
+    assert "global_query" not in names
     assert {
         "reorder_section",
         "reorder_section_group",

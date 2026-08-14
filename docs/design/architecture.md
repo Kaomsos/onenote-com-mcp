@@ -390,6 +390,14 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 - 工具函数是 async transport 接口，service 和 bridge 当前为同步阻塞执行。
 - mutation 回读使用有限次数的同步轮询；搜索顺序读取 Page，不并行调用 COM。
 
+`OneNote.Application` 在当前 Windows 安装中由 `ONENOTE.EXE` 进程外 COM server 承载。`OneNoteBridge` 只复用 Python 配置对象，不复用 PowerShell 进程或 COM reference；因此长驻 MCP server 也不构成跨 bridge 调用的 COM lifecycle owner。生产 MCP 当前不承诺自动启动的 OneNote 实例会在两个独立 bridge 调用之间保持运行，也不承诺前一 client 激活的临时 live hierarchy 会被下一 client 继承。
+
+Manual validation 已有一项当前环境限制：如果 scenario 启动前 OneNote Desktop 尚未运行，由首个短命 PowerShell/COM client 冷启动 OneNote 后，fixture working Notebook 可能只保留可读的空 shell，而 SectionGroup/Section/Page hierarchy 在后续独立调用中持续缺失；少数情况下整个刚打开的 Notebook ID 会消失。相同流程在 OneNote 已预启动时可以完成 hierarchy 双稳定。该对照把初始 OneNote 进程状态识别为主变量；`CloseNotebook(force=false)` 是 checkpoint/identity 交接步骤，但不是已证明的根因。完整观察、推断边界和错误归因见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)。
+
+当前代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在；manual-validation 单项在创建/打开 working Notebook 前复用同一门限，真实 `all` 在启动首个 child 前只检查一次。缺失或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote；dry-run 不读取 GUI 状态。Manual validation 后续仍以 typed hierarchy 双稳定 fail closed，不得因为 Notebook shell 可读、`OpenHierarchy` 返回 ID 或观察超时而放行 mutation。
+
+当前尚未实现自动 GUI 启动或 scenario-scoped COM keeper。显式 `start_onenote_app` 由 [TODO 031](../todo/031_start_onenote_desktop_tool.md) 跟踪；长期 COM owner 暂不采用。运行前由用户启动 OneNote 仍是当前可执行前置条件，生产 MCP 与 runner 不承诺可靠冷启动自举。
+
 ## 7. 测试与写入隔离
 
 | 测试文件 | 主要边界 | 自动运行权限 |
@@ -421,5 +429,6 @@ Windows 普通路径现统一执行 240 UTF-16 code units 的确定性 preflight
 1. 完整层级快照会在一次复杂用例中被多次读取；若引入缓存，mutation 前确认和写后回读必须绕过缓存。
 2. `tools.context` 是进程级 service 绑定，适合当前单 server 实例；多租户或多 bridge 配置需要改为显式 MCP context 注入。
 3. PowerShell/COM 每次调用的延迟尚无正式基准；长驻 broker 必须先验证 COM apartment、超时和恢复语义。
-4. 字典是当前 MCP 边界格式；新增 DTO 时必须复用 `domain/` 的字段契约，不能建立第二套对象模型。
-5. Page、Section、SectionGroup Reparent 均为默认注册的 typed 实验工具，共用独立 Reparent 开关且只允许同一 Notebook；用户已确认三个迁移后的 typed 真实场景在当前环境全部通过，跨版本证据仍需单独积累。
+4. Manual validation 在 OneNote 未预启动时存在已观察到的 COM 冷启动生命周期缺口；当前以 GUI preflight fail closed，未来显式启动工具由 TODO 031 跟踪，不能把延长轮询、重复激活或 ID rebind 当作修复。
+5. 字典是当前 MCP 边界格式；新增 DTO 时必须复用 `domain/` 的字段契约，不能建立第二套对象模型。
+6. Page、Section、SectionGroup Reparent 均为默认注册的 typed 实验工具，共用独立 Reparent 开关且只允许同一 Notebook；用户已确认三个迁移后的 typed 真实场景在当前环境全部通过，跨版本证据仍需单独积累。

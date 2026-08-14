@@ -140,6 +140,20 @@ class OneNoteCoordinationTimeoutError(OneNoteError):
     retryability = "safe_to_retry"
 
 
+class OneNoteDesktopNotRunningError(OneNoteError):
+    """The required interactive OneNote Desktop process/window is absent."""
+
+    code = "onenote_desktop_not_running"
+    retryability = "after_user_action"
+
+
+class OneNoteDesktopProbeError(OneNoteError):
+    """The non-activating Windows readiness probe could not prove GUI state."""
+
+    code = "onenote_desktop_probe_failed"
+    retryability = "after_user_action"
+
+
 def bridge_error(
     message: str,
     *,

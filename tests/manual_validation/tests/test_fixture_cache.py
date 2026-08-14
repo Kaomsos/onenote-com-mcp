@@ -59,6 +59,11 @@ def tmp_path(tmp_path_factory) -> Path:
     return tmp_path_factory.mktemp("fc")
 
 
+@pytest.fixture(autouse=True)
+def _running_onenote_gui(monkeypatch):
+    monkeypatch.setattr(validation, "require_onenote_desktop", lambda: None)
+
+
 def _source(tmp_path: Path, role: str = "source") -> Path:
     root = tmp_path / "closed" / role
     root.mkdir(parents=True)

@@ -26,6 +26,11 @@ from tests.manual_validation.scenarios.common.registry import (
 from tests.manual_validation.scenarios.common import specs
 
 
+@pytest.fixture(autouse=True)
+def _running_onenote_gui(monkeypatch):
+    monkeypatch.setattr(all_scenarios, "require_onenote_desktop", lambda: None)
+
+
 SCENARIO_MODULES = {
     "create": "CreateScenario",
     "rename": "RenameScenario",
@@ -47,6 +52,7 @@ SCENARIO_MODULES = {
     "move_section_group": "MoveSectionGroupScenario",
     "onenote_convergence": "OneNoteConvergenceScenario",
     "search_all_open_notebooks": "SearchAllOpenNotebooksScenario",
+    "query_metadata_scopes": "QueryMetadataScopesScenario",
     "bootstrap_inserted_file_fixture": "BootstrapInsertedFileFixtureScenario",
     "bootstrap_ink_drawing_fixture": "BootstrapInkDrawingFixtureScenario",
     "bootstrap_media_file_fixture": "BootstrapMediaFileFixtureScenario",
@@ -135,6 +141,47 @@ def test_all_rejects_non_positive_timeout_without_starting_children(capsys) -> N
         "exit_code": 2,
         "ok": False,
     }
+
+
+def test_real_all_fails_preflight_once_before_any_child(monkeypatch, capsys) -> None:
+    from local_onenote_mcp.onenote_errors import OneNoteDesktopNotRunningError
+
+    child_calls = 0
+
+    def absent():
+        raise OneNoteDesktopNotRunningError(
+            "OneNote Desktop is not running with a visible GUI. Start OneNote and retry.",
+            operation="health_preflight",
+        )
+
+    def forbidden_child(*_args, **_kwargs):
+        nonlocal child_calls
+        child_calls += 1
+        raise AssertionError("all preflight must run before the first child")
+
+    monkeypatch.setattr(all_scenarios, "require_onenote_desktop", absent)
+
+    assert run_all(_args(), scenarios=("create", "rename"), run_child=forbidden_child) == 3
+    assert child_calls == 0
+    output = capsys.readouterr().out
+    assert "Start OneNote and retry" in output
+    assert "No scenario was started" in output
+
+
+def test_all_dry_run_never_probes_desktop(monkeypatch) -> None:
+    monkeypatch.setattr(
+        all_scenarios,
+        "require_onenote_desktop",
+        lambda: (_ for _ in ()).throw(AssertionError("dry-run must not inspect GUI state")),
+    )
+
+    assert run_all(
+        _args(dry_run=True),
+        scenarios=("create",),
+        run_child=lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="", stderr=""
+        ),
+    ) == 0
 
 
 def test_all_uses_only_the_explicit_test_scenario_registry(monkeypatch) -> None:

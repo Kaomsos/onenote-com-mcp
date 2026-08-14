@@ -12,7 +12,10 @@ import subprocess
 import sys
 from threading import Thread
 import time
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
+
+from local_onenote_mcp.desktop import require_onenote_desktop
+from local_onenote_mcp.onenote_errors import OneNoteError
 
 from .progress import VERBOSITY_LEVELS, bounded_terminal_text, safe_error_text
 from .runtime import ALL_CHILD_ISOLATION_PREFIX, EXIT_MCP
@@ -301,11 +304,26 @@ def run_all(
     scenarios: Sequence[str],
     run_child: Any | None = None,
     start_child: Any | None = None,
+    desktop_preflight: Callable[[], Any] | None = None,
 ) -> int:
     """Run suites serially, continuing only across proven-isolated failures."""
 
     if args.timeout is not None and args.timeout < 1:
         raise ValueError("--timeout must be at least 1 second.")
+
+    if not args.dry_run:
+        preflight = desktop_preflight
+        if preflight is None:
+            preflight = require_onenote_desktop
+        try:
+            preflight()
+        except OneNoteError as exc:
+            if args.json_output:
+                print(json.dumps({"ok": False, **exc.public_details(), "code": exc.code, "error": str(exc)}, ensure_ascii=False, sort_keys=True))
+            else:
+                print(f"ERROR: {exc}", flush=True)
+                print("No scenario was started.", flush=True)
+            return EXIT_MCP
 
     reporter = ProgressReporter(
         json_output=bool(args.json_output),

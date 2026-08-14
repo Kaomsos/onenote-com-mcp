@@ -73,7 +73,7 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
    └─ Disposable-Section
 ```
 
-不得复用真实 Notebook，也不得在测试结构中放置唯一副本。开始前等待 OneNote 完成同步，并保留 UI 截图或导出副本供人工比对。
+不得复用真实 Notebook，也不得在测试结构中放置唯一副本。开始前先启动并保留一个可见的 OneNote Desktop GUI，再等待 OneNote 完成同步，并保留 UI 截图或导出副本供人工比对。当前 `health_check` 与真实 Runner 都只执行 fail-closed readiness 检查，不会隐式启动 OneNote；显式启动工具由 [TODO 031](../todo/031_start_onenote_desktop_tool.md) 跟踪。
 
 ## 3. 独立进程配置
 
@@ -90,7 +90,7 @@ LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP = "false"
 LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
 ```
 
-先调用 `health_check`，确认只有 `writes_enabled` 和 `experimental_reparent_enabled` 为 `true`。禁止设置 raw XML 或永久删除开关。
+先调用 `health_check`，确认 `onenote_desktop.ready=true`，且只有 `writes_enabled` 和 `experimental_reparent_enabled` 为 `true`。禁止设置 raw XML 或永久删除开关。
 
 ## 4. 建立只读基线
 

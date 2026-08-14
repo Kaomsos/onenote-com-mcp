@@ -1,5 +1,6 @@
 # Project-scoped MCP configuration. Codex loads this only for trusted projects.
 [mcp_servers.local-onenote]
+enabled = false
 command = "uv"
 args = ["run", "--locked", "local-onenote-mcp"]
 startup_timeout_sec = 120

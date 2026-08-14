@@ -871,6 +871,48 @@ SCENARIO_SPECS["search-all-open-notebooks"] = ScenarioSpec(
     },
 )
 
+_TYPED_QUERY_FIXTURE_TOOLS = {
+    "create_section_group",
+    "create_section",
+    "create_page",
+    "reorder_page",
+}
+SCENARIO_SPECS["query-metadata-scopes"] = ScenarioSpec(
+    "query-metadata-scopes",
+    _profile(
+        "fresh-typed-query-scopes",
+        (
+            "source:Outer/Inner/Deep/{Parent,Child(level 2),Sibling}",
+            "source:Root/RootPage",
+            "query-b:BOuter/BInner/BDeep/{BParent,BChild(level 2)}",
+            "query-b:BRoot/BRootPage",
+        ),
+        (
+            "query_outer_group", "query_inner_group", "query_deep_section",
+            "query_root_section", "query_parent_page", "query_child_page",
+            "query_sibling_page", "query_root_page", "query_b_outer_group",
+            "query_b_inner_group", "query_b_deep_section", "query_b_root_section",
+            "query_b_parent_page", "query_b_child_page", "query_b_root_page",
+        ),
+        _TYPED_QUERY_FIXTURE_TOOLS,
+        content=("hierarchy metadata only", "Page indentation"),
+        checks=(
+            "two open role Notebooks have unique IDs and paths",
+            "Notebook/SectionGroup/Section native start-node chain is exact",
+            "Page Section and direct indentation-parent relationships are proven",
+        ),
+    ),
+    WRITE_POLICY,
+    frozenset(READ_TOOLS | _TYPED_QUERY_FIXTURE_TOOLS),
+    {
+        "fresh_only": True,
+        "included_in_all": False,
+        "query_kind": "hierarchy_metadata",
+        "pagination": {"page_size": 2, "consistency": "live_hierarchy"},
+        "lifecycle_close_probe_role": "query-b",
+    },
+)
+
 _INTERACTIVE_TOOLS = READ_TOOLS | {"create_section", "create_page"}
 for _scenario_name, _capability in (
     ("bootstrap-inserted-file-fixture", "InsertedFile"),

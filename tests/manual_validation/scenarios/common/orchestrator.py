@@ -9,12 +9,16 @@ import re
 import time
 from typing import Any, Callable, Mapping
 
+from local_onenote_mcp.desktop import require_onenote_desktop
+from local_onenote_mcp.onenote_errors import OneNoteError
+
 from ...mcp_stdio_client import (
     COPY_BUDGET_ENV,
     MCPStdioClient,
 )
 from ...lifecycle import NotebookLifecycleWrapper
 from ...runtime import (
+    EXIT_MCP,
     EXIT_RESTORE,
     PathBudgetFailure,
     RestoreFailure,
@@ -538,6 +542,10 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
             "Representation discovery never reads or publishes fixture cache; "
             "remove --use-cache."
         )
+    try:
+        require_onenote_desktop()
+    except OneNoteError as exc:
+        raise RunnerFailure(str(exc), EXIT_MCP) from exc
     _assert_fresh_run_dir(options.run_dir)
     _assert_no_legacy_validation_payload(options.run_dir, options.cache_root)
     progress = options.progress

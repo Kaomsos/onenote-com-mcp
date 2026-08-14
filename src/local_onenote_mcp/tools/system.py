@@ -6,11 +6,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..desktop import require_onenote_desktop
 from ..policy import CopyBudget, MutationPolicy, SearchBudget
 from ..services import (
     DEFAULT_SEARCH_PAGE_SIZE,
+    DEFAULT_METADATA_QUERY_PAGE_SIZE,
+    MAX_METADATA_QUERY_PAGE_SIZE,
     IDENTIFIER_RESOLUTION_ORDER,
     MAX_SEARCH_PAGE_SIZE,
+    METADATA_QUERY_KIND,
+    METADATA_QUERY_PAGINATION_CONSISTENCY,
+    METADATA_QUERY_SCOPE_MODES,
+    METADATA_QUERY_TOOLS,
     PAGINATION_CONSISTENCY,
     RESOURCE_TYPES,
     SEARCH_BACKEND,
@@ -25,6 +32,7 @@ async def health_check() -> dict[str, Any]:
     """Verify local OneNote COM access and return a small hierarchy summary."""
 
     def action() -> dict[str, Any]:
+        desktop = require_onenote_desktop()
         services = get_services()
         items = services.hierarchy.resources(include_recycle_bin=False)
         policy = MutationPolicy.current()
@@ -36,6 +44,7 @@ async def health_check() -> dict[str, Any]:
             "python_executable": sys.executable,
             "module_path": str(Path(__file__).resolve()),
             "process_cwd": str(Path.cwd()),
+            "onenote_desktop": desktop.as_dict(),
             "timeout_seconds": services.hierarchy.bridge.timeout_seconds,
             "max_text_chars": services.pages.max_text_chars,
             "identifier_resolution_order": IDENTIFIER_RESOLUTION_ORDER,
@@ -45,6 +54,16 @@ async def health_check() -> dict[str, Any]:
                 "default_page_size": DEFAULT_SEARCH_PAGE_SIZE,
                 "max_page_size": MAX_SEARCH_PAGE_SIZE,
                 "consistency": PAGINATION_CONSISTENCY,
+            },
+            "metadata_query": {
+                "tools": list(METADATA_QUERY_TOOLS),
+                "scope_modes": list(METADATA_QUERY_SCOPE_MODES),
+                "query_kind": METADATA_QUERY_KIND,
+                "pagination": {
+                    "default_page_size": DEFAULT_METADATA_QUERY_PAGE_SIZE,
+                    "max_page_size": MAX_METADATA_QUERY_PAGE_SIZE,
+                    "consistency": METADATA_QUERY_PAGINATION_CONSISTENCY,
+                },
             },
             "content_formats": ["plain", "html", "markdown"],
             "mutation_policy": {
