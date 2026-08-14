@@ -62,6 +62,133 @@ def _record_run_identity(manifest: dict[str, Any], args: argparse.Namespace) -> 
         }
 
 
+def _rebind_materialized_run_local_paths(
+    manifest: dict[str, Any],
+    *,
+    run_dir: Path,
+    notebook_paths: Mapping[str, str],
+    roles: tuple[str, ...],
+) -> dict[str, Any]:
+    """Rebind exact run-local paths without altering cached content evidence."""
+
+    resolved_run_dir = run_dir.resolve()
+    targets = manifest.get("disposable_targets")
+    if not isinstance(targets, dict):
+        raise InvariantFailure("Cached fixture manifest has no typed disposable targets.")
+    cached_notebook_paths = {
+        role: targets.get(f"{role}_notebook_path") for role in roles
+    }
+    source_notebook_path = cached_notebook_paths.get("source")
+    notebook_copy_root = targets.get("notebook_copy_root")
+    if not isinstance(source_notebook_path, str) or not source_notebook_path:
+        raise InvariantFailure("Cached fixture manifest has no source Notebook path.")
+    if not isinstance(notebook_copy_root, str) or not notebook_copy_root:
+        raise InvariantFailure("Cached fixture manifest has no disposable Notebook Copy root.")
+
+    cached_source_path = Path(source_notebook_path).resolve()
+    cached_notebooks_root = cached_source_path.parent
+    cached_run_dir = cached_notebooks_root.parent
+    if cached_notebooks_root.name != "notebooks":
+        raise InvariantFailure(
+            "Cached source Notebook path is not under its exact run-local notebooks root."
+        )
+    for role, value in cached_notebook_paths.items():
+        if not isinstance(value, str) or not value:
+            raise InvariantFailure(
+                f"Cached fixture manifest has no Notebook path for role {role}."
+            )
+        if Path(value).resolve().parent != cached_notebooks_root:
+            raise InvariantFailure(
+                f"Cached Notebook path for role {role} is outside its exact notebooks root."
+            )
+    expected_cached_copy_root = (cached_run_dir / "notebook-copies").resolve()
+    if Path(notebook_copy_root).resolve() != expected_cached_copy_root:
+        raise InvariantFailure(
+            "Cached disposable Notebook Copy root is inconsistent with its source run."
+        )
+
+    cached_lifecycle_lease = manifest.get("lifecycle_lease")
+    expected_cached_source_lease = (cached_run_dir / "lifecycle-lease.json").resolve()
+    if (
+        not isinstance(cached_lifecycle_lease, str)
+        or Path(cached_lifecycle_lease).resolve() != expected_cached_source_lease
+    ):
+        raise InvariantFailure(
+            "Cached source lifecycle lease is inconsistent with its source run."
+        )
+    cached_lifecycle_leases = manifest.get("lifecycle_leases")
+    if cached_lifecycle_leases is not None:
+        if not isinstance(cached_lifecycle_leases, dict):
+            raise InvariantFailure("Cached fixture lifecycle leases are not typed by role.")
+        if set(cached_lifecycle_leases) != set(roles):
+            raise InvariantFailure("Cached fixture lifecycle lease roles are incomplete.")
+        for role in roles:
+            expected = (
+                cached_run_dir
+                / ("lifecycle-lease.json" if role == "source" else f"lifecycle-lease-{role}.json")
+            ).resolve()
+            value = cached_lifecycle_leases.get(role)
+            if not isinstance(value, str) or Path(value).resolve() != expected:
+                raise InvariantFailure(
+                    f"Cached lifecycle lease for role {role} is inconsistent with its source run."
+                )
+
+    current_notebooks_root = (resolved_run_dir / "notebooks").resolve()
+    working_paths: dict[str, str] = {}
+    for role in roles:
+        value = notebook_paths.get(role)
+        if not isinstance(value, str) or not value:
+            raise InvariantFailure(f"Materialized role {role} has no working Notebook path.")
+        resolved = Path(value).resolve()
+        if resolved.parent != current_notebooks_root:
+            raise InvariantFailure(
+                f"Materialized role {role} is not under the exact run-local notebooks root."
+            )
+        working_paths[role] = str(resolved)
+
+    current_copy_root = str((resolved_run_dir / "notebook-copies").resolve())
+    current_lifecycle_leases = {
+        role: str(
+            (
+                resolved_run_dir
+                / ("lifecycle-lease.json" if role == "source" else f"lifecycle-lease-{role}.json")
+            ).resolve()
+        )
+        for role in roles
+    }
+    targets["notebook_copy_root"] = current_copy_root
+    targets.update(
+        {f"{role}_notebook_path": working_paths[role] for role in roles}
+    )
+    manifest["lifecycle_lease"] = current_lifecycle_leases["source"]
+    manifest["lifecycle_leases"] = current_lifecycle_leases
+    return {
+        "schema_version": 1,
+        "passed": True,
+        "source_run_dir": str(cached_run_dir),
+        "working_run_dir": str(resolved_run_dir),
+        "mappings": {
+            "disposable_targets.notebook_copy_root": {
+                "source": str(expected_cached_copy_root),
+                "working": current_copy_root,
+            },
+            "disposable_targets.notebook_paths": {
+                "source": {role: str(Path(value).resolve()) for role, value in cached_notebook_paths.items()},
+                "working": working_paths,
+            },
+            "lifecycle_leases": {
+                "source": (
+                    dict(cached_lifecycle_leases)
+                    if isinstance(cached_lifecycle_leases, dict)
+                    else {"source": str(expected_cached_source_lease)}
+                ),
+                "working": current_lifecycle_leases,
+            },
+        },
+        "cache_template_modified": False,
+    }
+
+
 def _fixture_result(
     scenario_name: str,
     notebook: dict[str, Any],
@@ -444,6 +571,26 @@ async def prepare_reopened_fixture_bundle(
     role_evidence: dict[str, dict[str, Any]] = {}
     snapshots: dict[str, Mapping[str, Any]] = {}
     remaps: dict[str, Any] = {}
+    convergence_reports: dict[str, Any] = {}
+    convergence_path = options.run_dir / "fixture-persistence-hierarchy-convergence.json"
+
+    def persist_convergence() -> None:
+        write_json(
+            convergence_path,
+            {
+                "schema_version": 1,
+                "passed": set(convergence_reports) == set(roles)
+                and all(
+                    value.get("passed") is True
+                    and value.get("persistence_content_validation_completed") is True
+                    for value in convergence_reports.values()
+                ),
+                "roles": convergence_reports,
+                "mutation_attempted": False,
+                "filesystem_deleted": False,
+            },
+        )
+
     for role in roles:
         source_notebook = prior_notebooks.get(role)
         source_structure = prior_structures.get(role)
@@ -453,9 +600,56 @@ async def prepare_reopened_fixture_bundle(
             raise InvariantFailure(
                 f"Persistence checkpoint source metadata is incomplete for role {role}."
             )
+        options.progress.unit_started("persistence hierarchy", role)
+        (
+            converged_snapshot,
+            converged_rebound,
+            _converged_remap,
+            convergence,
+        ) = await _await_materialized_structure_convergence(
+            client,
+            role=role,
+            structure=source_structure,
+            source_notebook=source_notebook,
+            working_notebook=notebooks[role],
+        )
+        convergence_reports[role] = convergence
+        persist_convergence()
+        if convergence.get("passed") is not True or converged_snapshot is None:
+            write_json(
+                options.run_dir / "fixture-persistence-checkpoint-failure.json",
+                {
+                    "schema_version": 1,
+                    "status": "failed",
+                    "phase": "post_reopen_hierarchy_convergence",
+                    "role": role,
+                    "error": convergence.get(
+                        "error", "declared hierarchy was not stable"
+                    ),
+                    "mutation_attempted": False,
+                    "bundle_preserved": True,
+                    "filesystem_deleted": False,
+                },
+            )
+            raise InvariantFailure(
+                f"Persisted fixture role {role} hierarchy convergence failed: "
+                f"{convergence.get('error', 'declared hierarchy was not stable')}."
+            )
+        options.progress.unit_completed("persistence hierarchy", role)
+        options.progress.unit_started("persistence content", role)
+        convergence["persistence_content_validation_started"] = True
+        persist_convergence()
         try:
             snapshot = await capture_snapshot(client, str(notebooks[role]["id"]))
         except Exception as exc:
+            convergence.update(
+                passed=False,
+                phase="persistence_content_validation",
+                persistence_content_validation_completed=False,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            persist_convergence()
             write_json(
                 options.run_dir / "fixture-persistence-checkpoint-failure.json",
                 {
@@ -476,6 +670,11 @@ async def prepare_reopened_fixture_bundle(
             working_notebook=notebooks[role],
             snapshot=snapshot,
         )
+        hierarchy_changed = (
+            remap.get("passed") is True
+            and _materialized_structure_signature(rebound)
+            != _materialized_structure_signature(converged_rebound)
+        )
         evidence_source = (
             {
                 key: prior_manifest[key]
@@ -492,10 +691,23 @@ async def prepare_reopened_fixture_bundle(
         )
         remap["evidence_rebinding"] = evidence_remap
         remap["passed"] = (
-            remap.get("passed") is True and evidence_remap.get("passed") is True
+            remap.get("passed") is True
+            and not hierarchy_changed
+            and evidence_remap.get("passed") is True
         )
         remaps[role] = remap
         if remap["passed"] is not True:
+            convergence.update(
+                passed=False,
+                phase="persistence_content_validation",
+                persistence_content_validation_completed=True,
+                error=(
+                    "declared hierarchy changed after convergence"
+                    if hierarchy_changed
+                    else "declared hierarchy or evidence could not be rebound"
+                ),
+            )
+            persist_convergence()
             write_json(
                 options.run_dir / "fixture-persistence-remap.json",
                 {
@@ -510,6 +722,14 @@ async def prepare_reopened_fixture_bundle(
             raise InvariantFailure(
                 f"Persisted fixture role {role} could not be uniquely rebound to live IDs."
             )
+        convergence.update(
+            passed=True,
+            phase="persistence_content_validation",
+            persistence_content_validation_completed=True,
+            content_truth_validation_completed=True,
+        )
+        persist_convergence()
+        options.progress.unit_completed("persistence content", role)
         build = FixtureBuildResult(rebound, evidence)
         role_structures[role] = rebound
         role_evidence[role] = evidence
@@ -595,6 +815,7 @@ async def prepare_reopened_fixture_bundle(
                 (options.run_dir / "fixture-persistence-remap.json").resolve()
             ),
             "full_live_validation": True,
+            "hierarchy_convergence_evidence": str(convergence_path.resolve()),
             "mutation_attempted": False,
             "filesystem_deleted": False,
         },
@@ -834,12 +1055,14 @@ async def prepare_materialized_fixture(
         key: stable_item(value) for key, value in structure.items()
     }
     manifest.update(evidence)
-    manifest["disposable_targets"]["source_notebook_path"] = str(
-        Path(notebook_path).resolve()
+    run_local_path_remap = _rebind_materialized_run_local_paths(
+        manifest,
+        run_dir=options.run_dir,
+        notebook_paths={"source": notebook_path},
+        roles=("source",),
     )
-    manifest["lifecycle_lease"] = str(
-        (options.run_dir / "lifecycle-lease.json").resolve()
-    )
+    run_local_path_remap_path = options.run_dir / "cache-run-local-path-remap.json"
+    write_json(run_local_path_remap_path, run_local_path_remap)
     manifest["fixture_validation"] = {
         "status": "passed",
         "checks": list(checks),
@@ -854,6 +1077,7 @@ async def prepare_materialized_fixture(
         "template_path": str(materialized.template_paths["source"]),
         "working_path": str(materialized.working_paths["source"]),
         "opened_template": False,
+        "run_local_path_remap_evidence": str(run_local_path_remap_path.resolve()),
     }
     _record_run_identity(manifest, args)
     if interactive_validation is not None:
@@ -1263,6 +1487,12 @@ async def prepare_materialized_fixture_bundle(
         for key, value in role_structures[role].items()
     }
     manifest = dict(source_manifest)
+    run_local_path_remap = _rebind_materialized_run_local_paths(
+        manifest,
+        run_dir=options.run_dir,
+        notebook_paths=notebook_paths,
+        roles=roles,
+    )
     manifest.update(
         run_id=options.run_dir.name,
         notebook=stable_item(notebooks["source"]),
@@ -1308,11 +1538,10 @@ async def prepare_materialized_fixture_bundle(
             "opened_template": False,
         },
     )
-    manifest.setdefault("disposable_targets", {}).update(
-        {
-            f"{role}_notebook_path": str(Path(notebook_paths[role]).resolve())
-            for role in roles
-        }
+    run_local_path_remap_path = options.run_dir / "cache-run-local-path-remap.json"
+    write_json(run_local_path_remap_path, run_local_path_remap)
+    manifest["fixture_cache"]["run_local_path_remap_evidence"] = str(
+        run_local_path_remap_path.resolve()
     )
     if interactive_validation is not None:
         manifest["fixture_cache"]["interactive_live_validation"] = interactive_validation

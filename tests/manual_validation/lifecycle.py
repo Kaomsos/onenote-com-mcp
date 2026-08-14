@@ -278,12 +278,16 @@ class NotebookLifecycleWrapper:
             "activation-retry",
             "cold-build",
             "materialized-import-checkpoint",
+            "persistence-import-checkpoint",
             "persistence-checkpoint",
         }:
             raise RunnerFailure("Lifecycle lease archive reason is not allowlisted.")
-        if not activate_hierarchy and lease_archive_reason != "materialized-import-checkpoint":
+        if not activate_hierarchy and lease_archive_reason not in {
+            "materialized-import-checkpoint",
+            "persistence-import-checkpoint",
+        }:
             raise RunnerFailure(
-                "Hierarchy activation may only be deferred for the materialized import checkpoint."
+                "Hierarchy activation may only be deferred for an import checkpoint."
             )
         if self.lease_path.exists():
             previous = self._read_lease()

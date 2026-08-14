@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 from pathlib import Path
 import re
 import time
@@ -781,6 +782,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                             role: Path(str(leases[role]["expected_local_path"]))
                             for role in roles
                         },
+                        close_results,
                     )
                     notebook, lease = notebooks["source"], leases["source"]
                     args.notebook_name = str(
@@ -1811,41 +1813,138 @@ def _reopen_persisted_bundle(
     wrappers: Mapping[str, NotebookLifecycleWrapper],
     roles: tuple[str, ...],
     working_paths: Mapping[str, Path],
+    build_close_results: Mapping[str, Mapping[str, Any]],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-    """Reopen an exact just-closed fixture bundle without involving cache paths."""
+    """Checkpoint fresh bytes through an import identity, then open mutation identity."""
 
-    if set(working_paths) != set(roles):
+    if set(working_paths) != set(roles) or set(build_close_results) != set(roles):
         raise RunnerFailure(
-            "Persistence checkpoint paths do not cover every declared Notebook role."
+            "Persistence checkpoint inputs do not cover every declared Notebook role."
         )
     notebooks: dict[str, dict[str, Any]] = {}
     leases: dict[str, dict[str, Any]] = {}
+    import_notebooks: dict[str, dict[str, Any]] = {}
+    import_leases: dict[str, dict[str, Any]] = {}
     resolved_paths = {
         role: Path(working_paths[role]).resolve(strict=True) for role in roles
     }
-    with wrappers["source"].working_notebook_open_lock():
-        before_open = wrappers["source"].snapshot_open_notebooks()
-        wrappers["source"].assert_no_active_working_conflict(
-            notebook_ids=None,
-            working_paths=resolved_paths,
-            open_notebooks=before_open,
-        )
-        for role in roles:
-            kwargs = {} if role == "source" else {"role": role}
-            notebooks[role], leases[role] = wrappers[role].open_working_notebook(
-                resolved_paths[role].name,
-                resolved_paths[role],
-                template_paths=(),
-                lease_archive_reason="persistence-checkpoint",
-                **kwargs,
+    checkpoint_path = (
+        wrappers["source"].run_dir / "fixture-persistence-import-checkpoint.json"
+    )
+    checkpoint: dict[str, Any] = {
+        "schema_version": 1,
+        "status": "running",
+        "phase": "import_open",
+        "roles": {},
+        "build_close_results": deepcopy(dict(build_close_results)),
+        "close_force": False,
+        "mutation_attempted": False,
+        "filesystem_deleted": False,
+        "started_at": utc_now(),
+    }
+    write_json(checkpoint_path, checkpoint)
+    try:
+        with wrappers["source"].working_notebook_open_lock():
+            before_open = wrappers["source"].snapshot_open_notebooks()
+            wrappers["source"].assert_no_active_working_conflict(
+                notebook_ids=None,
+                working_paths=resolved_paths,
+                open_notebooks=before_open,
             )
-        live_ids = {role: str(notebooks[role]["id"]) for role in roles}
-        after_open = wrappers["source"].snapshot_open_notebooks()
-        wrappers["source"].assert_no_active_working_conflict(
-            notebook_ids=live_ids,
-            working_paths=resolved_paths,
-            open_notebooks=after_open,
+            for role in roles:
+                kwargs = {} if role == "source" else {"role": role}
+                import_notebooks[role], import_leases[role] = wrappers[
+                    role
+                ].open_working_notebook(
+                    resolved_paths[role].name,
+                    resolved_paths[role],
+                    template_paths=(),
+                    lease_archive_reason="persistence-checkpoint",
+                    _allow_activation_retry=False,
+                    **kwargs,
+                )
+                checkpoint["roles"][role] = {
+                    "working_path": str(resolved_paths[role]),
+                    "import_notebook_id": str(import_notebooks[role]["id"]),
+                    "import_hierarchy_open_status": import_leases[role].get(
+                        "hierarchy_open_status"
+                    ),
+                    "import_opened_hierarchy_count": len(
+                        import_leases[role].get("opened_hierarchy", ())
+                    ),
+                }
+                write_json(checkpoint_path, checkpoint)
+            import_ids = {
+                role: str(import_notebooks[role]["id"]) for role in roles
+            }
+            after_import = wrappers["source"].snapshot_open_notebooks()
+            wrappers["source"].assert_no_active_working_conflict(
+                notebook_ids=import_ids,
+                working_paths=resolved_paths,
+                open_notebooks=after_import,
+            )
+            checkpoint["phase"] = "import_close"
+            write_json(checkpoint_path, checkpoint)
+            import_close_results = _close_bundle(wrappers, roles)
+            for role in roles:
+                closed_identity = str(
+                    import_close_results[role].get("source_notebook_id")
+                    or import_close_results[role].get("close_before", {}).get("id")
+                    or ""
+                )
+                exact_closed = (
+                    import_close_results[role].get("closed") is True
+                    and closed_identity == str(import_notebooks[role]["id"])
+                )
+                checkpoint["roles"][role].update(
+                    import_close_result=import_close_results[role],
+                    exact_import_identity_closed=exact_closed,
+                )
+                if not exact_closed:
+                    raise RestoreFailure(
+                        f"Persistence import role {role} did not close its exact Notebook identity."
+                    )
+            checkpoint["phase"] = "mutation_identity_reopen"
+            write_json(checkpoint_path, checkpoint)
+            for role in roles:
+                kwargs = {} if role == "source" else {"role": role}
+                notebooks[role], leases[role] = wrappers[role].open_working_notebook(
+                    resolved_paths[role].name,
+                    resolved_paths[role],
+                    template_paths=(),
+                    lease_archive_reason="persistence-import-checkpoint",
+                    activate_hierarchy=False,
+                    _allow_activation_retry=False,
+                    **kwargs,
+                )
+                checkpoint["roles"][role].update(
+                    mutation_notebook_id=str(notebooks[role]["id"]),
+                    mutation_identity_path=str(leases[role]["actual_local_path"]),
+                    mutation_hierarchy_source="post_reopen_fixture_convergence",
+                )
+                write_json(checkpoint_path, checkpoint)
+            live_ids = {role: str(notebooks[role]["id"]) for role in roles}
+            after_reopen = wrappers["source"].snapshot_open_notebooks()
+            wrappers["source"].assert_no_active_working_conflict(
+                notebook_ids=live_ids,
+                working_paths=resolved_paths,
+                open_notebooks=after_reopen,
+            )
+        checkpoint.update(
+            status="passed",
+            phase="awaiting_post_reopen_fixture_convergence",
+            completed_at=utc_now(),
         )
+        write_json(checkpoint_path, checkpoint)
+    except Exception as exc:
+        checkpoint.update(
+            status="failed",
+            failed_at=utc_now(),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        write_json(checkpoint_path, checkpoint)
+        raise
     return notebooks, leases
 
 

@@ -1032,6 +1032,7 @@ class FakeLifecycle:
         )
         self.closed = False
         self.preserved = False
+        self.open_count = 0
         self.__class__.instances.append(self)
 
     def create_fresh_notebook(self, name: str):
@@ -1052,8 +1053,21 @@ class FakeLifecycle:
 
     def close_exact_notebook(self):
         self.closed = True
-        notebook_id = "notebook-id" if self.role == "source" else f"{self.role}-notebook-id"
-        return {"closed": True, "close_before": {"id": notebook_id}}
+        if self.open_count == 0:
+            notebook_id = (
+                "notebook-id" if self.role == "source" else f"{self.role}-notebook-id"
+            )
+        else:
+            notebook_id = (
+                f"reopened-{self.open_count}-notebook-id"
+                if self.role == "source"
+                else f"reopened-{self.open_count}-{self.role}-notebook-id"
+            )
+        return {
+            "closed": True,
+            "source_notebook_id": notebook_id,
+            "close_before": {"id": notebook_id},
+        }
 
     def working_notebook_open_lock(self):
         from contextlib import nullcontext
@@ -1074,20 +1088,34 @@ class FakeLifecycle:
         template_paths,
         role="source",
         lease_archive_reason="cold-build",
+        activate_hierarchy=True,
+        _allow_activation_retry=True,
     ):
         assert role == self.role
         assert template_paths == ()
-        assert lease_archive_reason == "persistence-checkpoint"
+        self.open_count += 1
+        assert lease_archive_reason == (
+            "persistence-checkpoint"
+            if self.open_count == 1
+            else "persistence-import-checkpoint"
+        )
+        assert activate_hierarchy is (self.open_count == 1)
+        assert _allow_activation_retry is False
         self.closed = False
         notebook_id = (
-            "reopened-notebook-id"
+            f"reopened-{self.open_count}-notebook-id"
             if self.role == "source"
-            else f"reopened-{self.role}-notebook-id"
+            else f"reopened-{self.open_count}-{self.role}-notebook-id"
         )
         lease = {
             "notebook_id": notebook_id,
             "expected_name": name,
             "expected_local_path": str(Path(working_path).resolve()),
+            "actual_local_path": str(Path(working_path).resolve()),
+            "hierarchy_open_status": (
+                "passed" if activate_hierarchy else "deferred_to_fixture_convergence"
+            ),
+            "opened_hierarchy": ([{"object_id": "section"}] if activate_hierarchy else []),
         }
         test_utils.write_json(self.lease_path, {"schema_version": 1, **lease})
         return {"id": notebook_id, "name": name}, lease

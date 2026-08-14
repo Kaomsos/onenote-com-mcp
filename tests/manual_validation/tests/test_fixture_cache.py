@@ -34,6 +34,7 @@ from tests.manual_validation.scenarios.common.fixture_runtime import (
     _await_materialized_structure_convergence,
     _assert_authored_cache_identity,
     _rebind_materialized_evidence,
+    _rebind_materialized_run_local_paths,
     _rebind_materialized_structure,
     prepare_materialized_fixture,
     prepare_materialized_fixture_bundle,
@@ -78,19 +79,23 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
         role: {
             "id": f"working-{role}",
             "name": f"Working {role}",
-            "path": str(run_dir / role),
+            "path": str(run_dir / "notebooks" / role),
             "resource_type": "notebook",
         }
         for role in roles
     }
-    notebook_paths = {role: str(run_dir / role) for role in roles}
+    notebook_paths = {role: str(run_dir / "notebooks" / role) for role in roles}
     template_paths = {role: entry_path / "notebooks" / role / "template" for role in roles}
     working_paths = {role: Path(notebook_paths[role]) for role in roles}
+    cached_run_dir = tmp_path / "cached-run"
+    cached_notebook_paths = {
+        role: cached_run_dir / "notebooks" / f"{role}-template" for role in roles
+    }
     for role in roles:
         artifact_root = entry_path / "notebooks" / role
         artifact_root.mkdir(parents=True)
         template_paths[role].mkdir()
-        working_paths[role].mkdir()
+        working_paths[role].mkdir(parents=True)
         write_json(
             artifact_root / "template-manifest.json",
             {
@@ -101,6 +106,25 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
                     "resource_type": "notebook",
                 },
                 "structure": {},
+                "disposable_targets": {
+                    "notebook_copy_root": str(cached_run_dir / "notebook-copies"),
+                    **{
+                        f"{cached_role}_notebook_path": str(cached_path)
+                        for cached_role, cached_path in cached_notebook_paths.items()
+                    },
+                },
+                "lifecycle_lease": str(cached_run_dir / "lifecycle-lease.json"),
+                "lifecycle_leases": {
+                    cached_role: str(
+                        cached_run_dir
+                        / (
+                            "lifecycle-lease.json"
+                            if cached_role == "source"
+                            else f"lifecycle-lease-{cached_role}.json"
+                        )
+                    )
+                    for cached_role in roles
+                },
             },
         )
         write_json(
@@ -188,6 +212,56 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
     )
     assert manifest["fixture_validation"]["scenario_before_snapshot_reused"] is True
     assert result["validation"]["scenario_before_snapshot_reused"] is True
+    assert manifest["disposable_targets"]["notebook_copy_root"] == str(
+        (run_dir / "notebook-copies").resolve()
+    )
+    assert manifest["lifecycle_lease"] == str(
+        (run_dir / "lifecycle-lease.json").resolve()
+    )
+    path_remap = read_json(run_dir / "cache-run-local-path-remap.json")
+    assert path_remap["passed"] is True
+    assert path_remap["cache_template_modified"] is False
+    cached_source_after = read_json(
+        entry_path / "notebooks" / "source" / "template-manifest.json"
+    )
+    assert cached_source_after["disposable_targets"]["notebook_copy_root"] == str(
+        cached_run_dir / "notebook-copies"
+    )
+    assert cached_source_after["lifecycle_lease"] == str(
+        cached_run_dir / "lifecycle-lease.json"
+    )
+
+
+def test_materialized_run_local_paths_fail_closed_on_inconsistent_copy_root(
+    tmp_path,
+) -> None:
+    cached_run_dir = tmp_path / "cached-run"
+    run_dir = tmp_path / "run"
+    working = run_dir / "notebooks" / "working-source"
+    manifest = {
+        "disposable_targets": {
+            "notebook_copy_root": str(tmp_path / "different-run" / "notebook-copies"),
+            "source_notebook_path": str(
+                cached_run_dir / "notebooks" / "cached-source"
+            ),
+        },
+        "lifecycle_lease": str(cached_run_dir / "lifecycle-lease.json"),
+    }
+
+    with pytest.raises(
+        InvariantFailure,
+        match="Copy root is inconsistent with its source run",
+    ):
+        _rebind_materialized_run_local_paths(
+            manifest,
+            run_dir=run_dir,
+            notebook_paths={"source": str(working)},
+            roles=("source",),
+        )
+
+    assert manifest["disposable_targets"]["notebook_copy_root"] == str(
+        tmp_path / "different-run" / "notebook-copies"
+    )
 
 
 def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
@@ -334,6 +408,111 @@ def test_materialized_bundle_uses_import_close_reopen_before_live_identity(
         "total",
     }
     assert all(value >= 0 for value in checkpoint["phases_seconds"].values())
+
+
+def test_fresh_persistence_checkpoint_uses_import_then_mutation_identity(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    working = run_dir / "notebooks" / "fresh-working"
+    working.mkdir(parents=True)
+    calls: list[tuple[str, object]] = []
+
+    class FakeWrapper:
+        role = "source"
+        lease_path = run_dir / "lifecycle-lease.json"
+
+        def __init__(self) -> None:
+            self.run_dir = run_dir
+            self.open_count = 0
+
+        def working_notebook_open_lock(self):
+            from contextlib import nullcontext
+
+            return nullcontext()
+
+        def snapshot_open_notebooks(self):
+            calls.append(("snapshot", self.open_count))
+            return {}
+
+        def assert_no_active_working_conflict(self, **kwargs):
+            calls.append(("conflict", kwargs.get("notebook_ids")))
+
+        def open_working_notebook(self, _name, path, **kwargs):
+            self.open_count += 1
+            identity = "import" if self.open_count == 1 else "mutation"
+            notebook_id = f"source-{identity}-id"
+            calls.append(
+                (
+                    "open",
+                    {
+                        "identity": identity,
+                        "archive": kwargs["lease_archive_reason"],
+                        "activate_hierarchy": kwargs.get("activate_hierarchy", True),
+                    },
+                )
+            )
+            return (
+                {"id": notebook_id, "name": working.name},
+                {
+                    "actual_local_path": str(Path(path).resolve()),
+                    "hierarchy_open_status": (
+                        "passed"
+                        if kwargs.get("activate_hierarchy", True)
+                        else "deferred_to_fixture_convergence"
+                    ),
+                    "opened_hierarchy": (
+                        [{"object_id": "section-id"}]
+                        if kwargs.get("activate_hierarchy", True)
+                        else []
+                    ),
+                },
+            )
+
+        def close_exact_notebook(self):
+            calls.append(("close", "source-import-id"))
+            return {
+                "closed": True,
+                "source_notebook_id": "source-import-id",
+                "close_before": {"id": "source-import-id"},
+            }
+
+    wrapper = FakeWrapper()
+    notebooks, leases = validation._reopen_persisted_bundle(
+        {"source": wrapper},
+        ("source",),
+        {"source": working},
+        {
+            "source": {
+                "closed": True,
+                "source_notebook_id": "source-build-id",
+                "close_before": {"id": "source-build-id"},
+            }
+        },
+    )
+
+    assert [value for name, value in calls if name in {"open", "close"}] == [
+        {
+            "identity": "import",
+            "archive": "persistence-checkpoint",
+            "activate_hierarchy": True,
+        },
+        "source-import-id",
+        {
+            "identity": "mutation",
+            "archive": "persistence-import-checkpoint",
+            "activate_hierarchy": False,
+        },
+    ]
+    assert notebooks["source"]["id"] == "source-mutation-id"
+    assert leases["source"]["hierarchy_open_status"] == (
+        "deferred_to_fixture_convergence"
+    )
+    checkpoint = read_json(run_dir / "fixture-persistence-import-checkpoint.json")
+    assert checkpoint["status"] == "passed"
+    assert checkpoint["roles"]["source"]["import_notebook_id"] == "source-import-id"
+    assert checkpoint["roles"]["source"]["exact_import_identity_closed"] is True
+    assert checkpoint["roles"]["source"]["mutation_notebook_id"] == (
+        "source-mutation-id"
+    )
 
 
 def _publish(tmp_path: Path):
@@ -1443,11 +1622,18 @@ def test_reparent_page_materialization_persists_rebound_run_local_evidence(
             "observed_counts": {"List": 3, "Tag": 3},
         },
     }
+    cached_run_dir = tmp_path / "cached-run"
     source_manifest = {
         "notebook": source_notebook,
         "structure": source_structure,
         "reparent_page_fixture": rich,
-        "disposable_targets": {"source_notebook_path": "source"},
+        "disposable_targets": {
+            "notebook_copy_root": str(cached_run_dir / "notebook-copies"),
+            "source_notebook_path": str(
+                cached_run_dir / "notebooks" / "source-template"
+            ),
+        },
+        "lifecycle_lease": str(cached_run_dir / "lifecycle-lease.json"),
         "fixture_validation": {"status": "passed", "checks": []},
     }
     write_json(artifact_root / "template-manifest.json", source_manifest)
@@ -1613,6 +1799,33 @@ def test_reparent_page_persistence_checkpoint_rebinds_and_revalidates(
         fake_snapshot,
     )
 
+    async def fake_convergence(*_args, **_kwargs):
+        rebound, remap = _rebind_materialized_structure(
+            source_structure,
+            source_notebook=source_notebook,
+            working_notebook={
+                "id": "working-notebook",
+                "name": "Fresh",
+                "path": "Fresh",
+            },
+            snapshot=snapshot,
+        )
+        return snapshot, rebound, remap, {
+            "schema_version": 1,
+            "role": "source",
+            "phase": "hierarchy_convergence",
+            "passed": True,
+            "attempts": 2,
+            "stable_observations": 2,
+            "persistence_content_validation_started": False,
+            "persistence_content_validation_completed": False,
+        }
+
+    monkeypatch.setattr(
+        "tests.manual_validation.scenarios.common.fixture_runtime._await_materialized_structure_convergence",
+        fake_convergence,
+    )
+
     def validate_live(_observation):
         if validator_fails:
             raise InvariantFailure("injected post-reopen mismatch")
@@ -1662,6 +1875,12 @@ def test_reparent_page_persistence_checkpoint_rebinds_and_revalidates(
     assert manifest["fixture_persistence_checkpoint"]["status"] == "passed"
     assert manifest["fixture_persistence_checkpoint"]["close_force"] is False
     assert manifest["fixture_validation"]["post_close_reopen_revalidation"] is True
+    assert (
+        manifest["fixture_persistence_checkpoint"]["hierarchy_convergence_evidence"]
+        == str(
+            (tmp_path / "run" / "fixture-persistence-hierarchy-convergence.json").resolve()
+        )
+    )
     assert result["structure_ids"]["reparent_page"] == "working-page"
     remap = read_json(tmp_path / "run" / "fixture-persistence-remap.json")
     assert remap["passed"] is True
@@ -1675,6 +1894,7 @@ def test_inserted_file_copy_live_validates_rebound_cached_structure(
 ) -> None:
     scenario = SCENARIO_REGISTRY.get("interactive-copy-inserted-file")
     artifact_root = tmp_path / "entry" / "notebooks" / "source"
+    cached_run_dir = tmp_path / "cached-run"
     source_manifest = {
         "notebook": {"id": "source-notebook", "name": "Original", "path": "Original"},
         "structure": {
@@ -1692,7 +1912,13 @@ def test_inserted_file_copy_live_validates_rebound_cached_structure(
                 "page_level": 1,
             },
         },
-        "disposable_targets": {"source_notebook_path": "source"},
+        "disposable_targets": {
+            "notebook_copy_root": str(cached_run_dir / "notebook-copies"),
+            "source_notebook_path": str(
+                cached_run_dir / "notebooks" / "source-template"
+            ),
+        },
+        "lifecycle_lease": str(cached_run_dir / "lifecycle-lease.json"),
         "fixture_validation": {"status": "passed", "checks": []},
     }
     write_json(artifact_root / "template-manifest.json", source_manifest)
