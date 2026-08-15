@@ -39,6 +39,9 @@
 | 031 | [启动 OneNote Desktop GUI 的显式工具](031_start_onenote_desktop_tool.md)                                                | 待办   | P1     | 规划 check-only`health_check` 之外的显式 `start_onenote_app`：可信本机 executable、single launch、可见 GUI 收敛和幂等返回；不包含长期 COM owner。                         |
 | 032 | [Hierarchy Navigation 人工验证](032_hierarchy_navigation_manual_validation.md)                                          | 已完成 | P2     | `get_parent/get_path/get_tree` 对照场景已交付；用户确认 fresh 与 cache cold-build working copy 的容器路径、缩进树和 depth boundary 真实验收全部通过。                       |
 | 033 | [Notebook 结构浏览的 List 与 Expand 工具重组](033_notebook_structure_list_and_expand_tools.md)                          | 已完成 | P1     | 六个最终浏览入口、共享 tree builder、List/Expand 与 Query 场景分离、自动化及 fresh/cache 真实验收均已完成。                                                                   |
+| 034 | [用户测试前 MCP 工具面收敛与不必要入口隐藏](034_pre_user_testing_tool_surface_convergence.md)                         | 待办   | P0     | 用户测试准入项：逐项审计当前工具，按用户任务冻结默认 profile，移除不支持入口并隐藏底层/诊断/非必要能力，保持独立 policy 与真实验收门限。                                      |
+| 035 | [Copy/Move 内部 Planning、Preview 高级能力与 Agent 职责收敛](035_copy_move_internal_planning_and_agent_role.md)          | 待办   | P1     | 移除公开 Plan Tool 与 Agent 管理的 plan digest，Copy/Move 改为单次受控调用；可选 Preview 仅作为默认隐藏、只读、非必经的高级能力。                                             |
+| 036 | [Operation Runtime 操作执行控制层与 Tool 迁移](036_operation_runtime_control_plane_and_tool_migration.md)               | 待办   | P1     | 建立 transport-independent Operation Runtime，统一 Tool 的准入、授权、协调、预算、执行策略、结果与审计；以 TODO 029 为 Mutation 首个纵向切片并分型推广到大部分 Tool。         |
 
 ## 文件命名
 
