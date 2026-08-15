@@ -33,7 +33,7 @@
 
 - 每个真实 scenario 都获得全新的 run-scoped disposable working Notebook bundle 和全新或空的 evidence directory：默认 fresh 路径直接创建；显式 `--use-cache` 只能从已关闭 immutable template opaque-copy 后打开新的 working paths。Notebook 名称冲突或非空 run directory 必须被拒绝。
 - Cache template 与 run working bundle 不维持 lease、所有权或生命周期关系。多个 scenario 可以从同一 immutable entry materialize 各自唯一的 run-scoped working bundle；短时全局 open lock 内打开前后各捕获一次当前 Notebook ID/path snapshot，全部历史 `lifecycle-lease*.json` 只与 snapshot 做内存比较，不得逐 lease 重复访问 COM。只有实际 live Notebook ID 集相交、working path 相交、role 内重复或身份尚未可靠重绑定时才拒绝。Run-local active lease 不得阻止物理独立 cache entry 的 invalidation/cleanup；cache cleanup 只按实际 template path 判断 template 本身是否打开。
-- 所有受管 cache/staging/working/evidence 路径使用普通绝对 Windows 路径并受 240 UTF-16 units preflight 约束；不得使用 `\\?\`、依赖系统 long-path 开关、截断 opaque Notebook 名称或以重试 `WinError 3` 绕过预算。
+- 所有新建的受管 cache/staging/working/evidence 路径使用普通绝对 Windows 路径并受 240 UTF-16 units preflight 约束；不得使用 `\\?\`、依赖系统 long-path 开关、截断 opaque Notebook 名称或以重试 `WinError 3` 绕过预算。唯一的历史恢复例外是 human-gated `clear runs|cache|all`：它仍须预检自身将创建的 lock、receipt、summary、index 与原子临时路径，但不得仅因已经存在且等待清理的 owned payload 超过 240 units 而拒绝；该 payload 仍须通过精确 ownership、固定根 containment、plain-tree/reparse、当前 OneNote open-path snapshot 和交互确认门限。
 - OneNote 返回的 Notebook、SectionGroup、Section、Page 与对象 ID 只属于逻辑身份；不得把完整 ID 插入任何受管文件名、目录名、working name 或临时名。物理名称只能使用固定语义 token、有界 ordinal 或既有 typed short key，完整 ID 必须保存在 JSON evidence/metadata 内；运行时 name guard 与源码合同测试必须同时覆盖该边界。
 - 一个 scenario 最多启动一个 MCP child process。其静态 spec 只能包含该 scenario 的 fixture、mutation、evidence read 和 restore/cleanup 所必需的完整最小权限闭包。
 - Fixture 创建前，通过一次 `health_check` 核对精确的 policy、tool allowlist、timeout 和适用的 Copy budget。绝不能合并不同 scenario 的权限，也不能在启动后扩权。

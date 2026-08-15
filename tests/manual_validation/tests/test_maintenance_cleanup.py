@@ -12,8 +12,10 @@ import pytest
 from tests.manual_validation.maintenance import cleanup
 from tests.manual_validation.maintenance.cleanup import OpenNotebookPathSnapshot
 from tests.manual_validation.path_budget import (
+    MAX_MANAGED_PATH_UNITS,
     fingerprint_disk_key,
     programmatic_location,
+    windows_path_units,
 )
 from tests.manual_validation.runner import build_parser, main
 from tests.manual_validation.runtime import EXIT_INVARIANT, PathBudgetFailure, RunnerFailure
@@ -75,6 +77,24 @@ def _source(tmp_path: Path) -> Path:
     (source / "Open Notebook.onetoc2").write_bytes(b"catalog")
     (source / "Section.one").write_bytes(b"section")
     return source
+
+
+def _add_overbudget_file(root: Path, leaf: str = "historical.onetoc2") -> Path:
+    """Create an accessible historical path just beyond the managed creation budget."""
+
+    current = root
+    while windows_path_units(current / leaf) <= MAX_MANAGED_PATH_UNITS:
+        current_units = windows_path_units(current / leaf)
+        component_units = min(
+            60,
+            max(1, MAX_MANAGED_PATH_UNITS + 1 - current_units - 1),
+        )
+        current /= "x" * component_units
+    current.mkdir(parents=True)
+    target = current / leaf
+    target.write_bytes(b"historical-overbudget-payload")
+    assert windows_path_units(target) > MAX_MANAGED_PATH_UNITS
+    return target
 
 
 def test_cleanup_metadata_uses_guarded_atomic_replace(tmp_path, monkeypatch) -> None:
@@ -230,6 +250,49 @@ def test_clear_runs_dry_run_accepts_owned_plain_runs_without_count_assumptions(
     }
     assert result["targets"][0]["target"] == str(target.resolve())
     assert target.exists()
+
+
+def test_clear_runs_deletes_owned_historical_overbudget_payload(tmp_path) -> None:
+    workspace, validation = _roots(tmp_path)
+    target = _run(validation, "run-2026-08-12-10-00-15")
+    overbudget = _add_overbudget_file(target / "notebooks" / "Notebook-0")
+
+    result, exit_code = _execute(
+        _args("clear-runs", dry_run=False),
+        workspace,
+        validation,
+        confirmation="CLEAR-RUNS",
+    )
+
+    assert exit_code == 0, json.dumps(result, indent=2)
+    assert windows_path_units(overbudget) > MAX_MANAGED_PATH_UNITS
+    assert result["counts"]["deleted"] == 1
+    assert result["targets"][0]["reason"] == "deleted_after_all_checks_passed"
+    assert not target.exists()
+
+
+def test_clear_cache_accepts_owned_historical_overbudget_payload(tmp_path) -> None:
+    workspace, validation = _roots(tmp_path)
+    _recipe, _store, hit = _cache(validation, tmp_path)
+    entry_path = Path(hit.entry_path) / "bundle-entry.json"
+    entry = json.loads(entry_path.read_text(encoding="utf-8"))
+    template = Path(entry["role_entries"]["source"]["template_path"])
+    overbudget = _add_overbudget_file(template)
+    observed = cleanup._inventory_existing_directory(template)
+    entry["role_inventories"]["source"] = observed
+    entry["bundle_inventory_digest"] = cleanup._bundle_inventory_digest(
+        {"source": observed}
+    )
+    write_json(entry_path, entry)
+
+    result, exit_code = _execute(
+        _args("clear-cache", dry_run=True), workspace, validation
+    )
+
+    assert exit_code == 0, json.dumps(result, indent=2)
+    assert windows_path_units(overbudget) > MAX_MANAGED_PATH_UNITS
+    assert result["counts"]["planned"] == 1
+    assert result["targets"][0]["reason"] == "all_cache_entry_cleanup_checks_passed"
 
 
 def test_dry_run_performs_no_managed_write_or_delete(tmp_path, monkeypatch) -> None:

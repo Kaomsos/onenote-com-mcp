@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass
+import hashlib
 import json
 import msvcrt
 import os
@@ -48,8 +49,6 @@ from ..scenarios.common.fixture_cache import (
     AUTHORED_INSTANCE_PATTERN,
     PROGRAMMATIC_INSTANCE_PATTERN,
     MANAGED_MARKER,
-    bundle_inventory,
-    inventory_directory,
 )
 
 
@@ -178,6 +177,67 @@ def _plain_tree(root: Path) -> tuple[bool, str | None]:
     except OSError as exc:
         return False, f"{type(exc).__name__}: {exc}"
     return True, None
+
+
+def _inventory_existing_directory(root: Path) -> dict[str, Any]:
+    """Hash an existing cleanup target without applying creation-time path budgets."""
+
+    root = _filesystem_path(root)
+    if not root.is_dir():
+        raise RunnerFailure(f"Notebook template path is not a directory: {root}")
+    files: list[tuple[str, int, str]] = []
+    for current, directories, filenames in os.walk(root, followlinks=False):
+        directories.sort()
+        filenames.sort()
+        current_path = Path(current)
+        for name in (*directories, *filenames):
+            candidate = current_path / name
+            if _is_reparse_point(candidate):
+                raise RunnerFailure(
+                    f"Managed cleanup tree contains a reparse point: {candidate}"
+                )
+        for name in filenames:
+            candidate = current_path / name
+            if not candidate.is_file():
+                raise RunnerFailure(
+                    f"Managed cleanup tree contains an unsupported filesystem node: {candidate}"
+                )
+            digest = hashlib.sha256()
+            with candidate.open("rb") as stream:
+                while block := stream.read(1024 * 1024):
+                    digest.update(block)
+            files.append(
+                (
+                    candidate.relative_to(root).as_posix(),
+                    candidate.stat().st_size,
+                    digest.hexdigest(),
+                )
+            )
+    if not files:
+        raise RunnerFailure("A Notebook template directory must contain at least one file.")
+    files.sort(key=lambda item: item[0])
+    canonical = json.dumps(
+        files,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "files": [
+            {"relative_path": path, "length": length, "sha256": digest}
+            for path, length, digest in files
+        ],
+        "digest": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def _bundle_inventory_digest(inventories: Mapping[str, Mapping[str, Any]]) -> str:
+    payload = [
+        (role, str(inventories[role].get("digest", "")))
+        for role in sorted(inventories)
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _canonical_path(value: str | Path) -> Path:
@@ -361,10 +421,8 @@ def _validate_root(
     resolved = managed_absolute(validation_root)
     preflight_paths(
         (
-            (workspace_root, "repository_path", None),
             (resolved, "run_root", None),
             (resolved / VALIDATION_MARKER, "maintenance_metadata", None),
-            (resolved / "fixture-cache", "cache_root", None),
         ),
         phase="maintenance_preflight",
     )
@@ -405,24 +463,16 @@ def _validate_root(
 
 
 def _preflight_maintenance_tree(action: str, validation_root: Path) -> None:
-    """Budget every existing and prospective managed maintenance path before COM."""
+    """Budget only paths maintenance may create; existing payload is cleanup input."""
 
     cache_root = validation_root / "fixture-cache"
-    include_runs = action in {"clear-runs", "clear-all"}
     include_cache = action in {"clear-cache", "clear-all"}
     paths: list[tuple[Path, str, str | None]] = [
         (validation_root, "run_root", None),
-        (validation_root / VALIDATION_MARKER, "maintenance_metadata", None),
         (validation_root / "working-notebook-open.lock", "maintenance_open_lock", None),
-        (cache_root, "cache_root", None),
     ]
     if include_cache and cache_root.exists():
         marker_path = cache_root / MANAGED_MARKER
-        preflight_path(
-            marker_path,
-            phase=f"{action}_path_budget_preflight",
-            target_kind="maintenance_metadata",
-        )
         if not marker_path.is_file():
             raise RunnerFailure("Managed fixture cache ownership marker is missing.")
         marker = _read_json(marker_path)
@@ -431,11 +481,14 @@ def _preflight_maintenance_tree(action: str, validation_root: Path) -> None:
                 "Legacy fixture cache schema remains. Return to the pre-upgrade version "
                 "and complete its human-gated clear all workflow."
             )
-    for final in (
+    prospective_atomic_paths = [
+        validation_root / VALIDATION_MARKER,
         validation_root / f"{RECEIPT_PREFIX}{'0' * 32}.json",
         validation_root / f"{SUMMARY_PREFIX}{'0' * 32}.json",
-        cache_root / "index.json",
-    ):
+    ]
+    if include_cache and cache_root.exists():
+        prospective_atomic_paths.append(cache_root / "index.json")
+    for final in prospective_atomic_paths:
         paths.extend(
             (
                 (final, "maintenance_metadata", None),
@@ -447,43 +500,6 @@ def _preflight_maintenance_tree(action: str, validation_root: Path) -> None:
             )
         )
     preflight_paths(paths, phase=f"{action}_path_budget_preflight")
-    if not validation_root.exists():
-        return
-    stack = [validation_root]
-    while stack:
-        current = stack.pop()
-        children = sorted(current.iterdir(), key=lambda path: path.name)
-        directories: list[Path] = []
-        for candidate in children:
-            if candidate == cache_root and not include_cache:
-                continue
-            if (
-                candidate.parent == validation_root
-                and candidate.name.startswith("run-")
-                and not include_runs
-            ):
-                continue
-            if cache_root == candidate or cache_root in candidate.parents:
-                kind = "cache_managed_path"
-            elif candidate.parent == validation_root and candidate.name.startswith(
-                "run-"
-            ):
-                kind = "run_root"
-            elif any(
-                parent.parent == validation_root and parent.name.startswith("run-")
-                for parent in (candidate, *candidate.parents)
-            ):
-                kind = "run_evidence"
-            else:
-                kind = "maintenance_metadata"
-            preflight_path(
-                candidate,
-                phase=f"{action}_path_budget_preflight",
-                target_kind=kind,
-            )
-            if candidate.is_dir() and not _is_reparse_point(candidate):
-                directories.append(candidate)
-        stack.extend(reversed(directories))
 
 
 def _assess_run(
@@ -763,7 +779,7 @@ def _assess_cache_entry(
     template_paths: list[Path] = []
     inventory_valid = checks["entry_metadata_owned"]
     if entry is not None and checks["entry_metadata_owned"]:
-        inventories = {}
+        inventories: dict[str, Mapping[str, Any]] = {}
         for role in entry["roles"]:
             role_value = entry.get("role_entries", {}).get(role)
             expected = target / "notebooks" / str(role) / "template-notebook"
@@ -778,14 +794,16 @@ def _assess_cache_entry(
                 continue
             template_paths.append(expected.resolve())
             try:
-                observed = inventory_directory(_filesystem_path(expected))
+                observed = _inventory_existing_directory(expected)
             except (OSError, RunnerFailure):
                 inventory_valid = False
                 continue
-            if entry.get("role_inventories", {}).get(role) != observed.as_dict():
+            if entry.get("role_inventories", {}).get(role) != observed:
                 inventory_valid = False
             inventories[str(role)] = observed
-        if inventories and entry.get("bundle_inventory_digest") != bundle_inventory(inventories):
+        if inventories and entry.get("bundle_inventory_digest") != _bundle_inventory_digest(
+            inventories
+        ):
             inventory_valid = False
     checks["inventory_valid"] = inventory_valid and bool(template_paths)
     open_matches = snapshot.any_exact(template_paths) if snapshot.status == "complete" else []
