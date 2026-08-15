@@ -160,7 +160,7 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
         async def call_tool(self, name: str, arguments: dict) -> dict:
             self.calls.append(name)
             self.arguments.append(dict(arguments))
-            if name == "sync_notebook":
+            if name == "request_notebook_sync":
                 return {
                     "ok": True,
                     "complete": False,
@@ -175,7 +175,7 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
                     ),
                 }
             if name == "create_notebook":
-                target = Path(arguments["base_folder"]) / arguments["name_or_path"]
+                target = Path(arguments["base_folder"]) / arguments["name"]
                 return {
                     "ok": True,
                     "complete": True,
@@ -198,7 +198,7 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
                         attempts=1,
                     ),
                 }
-            if name == "publish_object":
+            if name == "export_object_to_pdf":
                 target = Path(arguments["target_path"])
                 target.write_bytes(b"fake-pdf")
                 return {
@@ -237,18 +237,6 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
                         "completed",
                     ),
                 }
-            if name == "navigate_to_url":
-                return {
-                    "ok": True,
-                    "complete": True,
-                    "navigated": True,
-                    "execution": _execution(
-                        name,
-                        "ui_effect",
-                        "windows_ui",
-                        "action_accepted",
-                    ),
-                }
             if name == "create_page":
                 return {
                     "page_id": "probe-id",
@@ -260,7 +248,7 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
                     },
                     "convergence": _convergence(),
                 }
-            if name == "get_page_objects":
+            if name == "list_page_content_objects":
                 self.object_reads += 1
                 objects = [
                     {
@@ -294,7 +282,7 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
                         ]
                     )
                 return {"objects": objects, "count": len(objects)}
-            if name == "update_page_title":
+            if name == "rename_page":
                 item = {
                     "id": "probe-id",
                     "title": "03-Convergence-Probe-Renamed",
@@ -306,7 +294,7 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
                     "title": "03-Convergence-Probe-Renamed",
                     "modified": "m3",
                 }
-            elif name == "append_to_page":
+            elif name == "append_page_content":
                 item = {
                     "id": "probe-id",
                     "title": "03-Convergence-Probe-Renamed",
@@ -314,7 +302,7 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
                 }
             elif name == "reorder_page":
                 item = {"id": "probe-id", "order": 1}
-            elif name == "delete_page_content":
+            elif name == "delete_page_content_object":
                 item = None
             elif name == "delete_page":
                 item = None
@@ -385,26 +373,28 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
 
     assert result["status"] == "passed"
     assert client.calls == [
-        "sync_notebook",
+        "request_notebook_sync",
         "create_notebook",
         "close_notebook",
-        "publish_object",
+        "export_object_to_pdf",
         "navigate_to",
         "get_hyperlink",
-        "navigate_to_url",
         "create_page",
-        "update_page_title",
+        "rename_page",
         "replace_page_body",
-        "get_page_objects",
-        "append_to_page",
-        "get_page_objects",
-        "delete_page_content",
+        "list_page_content_objects",
+        "append_page_content",
+        "list_page_content_objects",
+        "delete_page_content_object",
         "reorder_page",
         "delete_page",
         "close_notebook",
     ]
-    delete_content_index = client.calls.index("delete_page_content")
-    assert client.arguments[delete_content_index]["object_id"] == "fresh-outline-id"
+    delete_content_index = client.calls.index("delete_page_content_object")
+    assert (
+        client.arguments[delete_content_index]["page_content_object_id"]
+        == "fresh-outline-id"
+    )
     assert set(result["convergence"]) == {
         "create",
         "title",

@@ -22,6 +22,7 @@ from ..page import (
     build_image_page_update_xml,
     build_page_update_xml,
     collect_page_objects,
+    image_file_format,
     proportional_dimensions,
     tag_definitions_from_page_xml,
 )
@@ -865,7 +866,7 @@ class MutationService(BaseService):
         after_id: str,
         expected_modified: str | None,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_experimental_reorder(resource_type)
+        MutationPolicy.current().require_section_reorder(resource_type)
         all_items = self.hierarchy.resources(include_recycle_bin=True)
         by_id = {item["id"]: item for item in all_items if item.get("id")}
         item = by_id.get(object_id)
@@ -1816,7 +1817,7 @@ class MutationService(BaseService):
         expected_modified: str | None,
         include_descendants: bool = False,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_experimental_reparent()
+        MutationPolicy.current().require_organize()
         all_items = self.hierarchy.resources(include_recycle_bin=True)
         by_id = {item["id"]: item for item in all_items if item.get("id")}
         target = by_id.get(object_id)
@@ -2506,7 +2507,9 @@ class MutationService(BaseService):
         width: float | None = None,
         height: float | None = None,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_write()
+        policy = MutationPolicy.current()
+        policy.require_write()
+        policy.require_local_file_io()
         self.pages.confirm(
             page_id,
             expected_title=expected_title,
@@ -2518,9 +2521,13 @@ class MutationService(BaseService):
         record_backend_call("filesystem:image_source_is_file")
         if not path.is_file():
             raise ValueError(f"Image file not found: {image_path}")
-        fmt = image_format or path.suffix.lstrip(".")
-        if not fmt:
-            raise ValueError("image_format is required when image_path has no extension.")
+        detected_format = image_file_format(path)
+        if image_format:
+            requested_format = image_format.strip().casefold()
+            requested_format = "jpeg" if requested_format in {"jpg", "jpeg"} else requested_format
+            if requested_format != detected_format:
+                raise ValueError("image_format does not match the local image file content.")
+        fmt = detected_format
         record_backend_call("filesystem:image_dimension_read")
         resolved_width, resolved_height = proportional_dimensions(path, width, height)
         record_backend_call("filesystem:image_source_read")

@@ -75,7 +75,7 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
    └─ Disposable-Section
 ```
 
-不得复用真实 Notebook，也不得在测试结构中放置唯一副本。开始前先启动并保留一个可见的 OneNote Desktop GUI，再等待 OneNote 完成同步，并保留 UI 截图或导出副本供人工比对。当前 `health_check` 与真实 Runner 都只执行 fail-closed readiness 检查，不会隐式启动 OneNote；显式启动工具由 [TODO 031](../todo/031_start_onenote_desktop_tool.md) 跟踪。
+不得复用真实 Notebook，也不得在测试结构中放置唯一副本。开始前先启动并保留一个可见的 OneNote Desktop GUI，再等待 OneNote 完成同步，并保留 UI 截图或导出副本供人工比对。`health_check` 与标准 Runner 都只执行 fail-closed readiness 检查，不会隐式启动 OneNote；显式启动使用独立的 HUMAN-GATED `tests/manual_validation/launch_onenote_gui_check.py` 验收入口。该入口不属于 Scenario Registry 或 `all`，通过两个顺序冻结的 MCP policy 验证未授权拒绝、单次启动、重复调用幂等、health readiness、只读 hierarchy COM 和人工单窗口 verdict；它只把 MCP runtime progress/stderr 流向前台终端，结构化证据照常落盘，OneNote/Office 自管的隔离 TEMP diagnostics/cache 不在此承诺内。Agent 只可运行其 `--dry-run`。
 
 ## 3. 独立进程配置
 
@@ -85,21 +85,21 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
 [mcp_servers.local-onenote-isolated.env]
 LOCAL_ONENOTE_ENABLE_WRITES = "true"
 LOCAL_ONENOTE_ENABLE_DELETES = "false"
-LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES = "false"
-LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT = "true"
-LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION = "false"
-LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP = "false"
-LOCAL_ONENOTE_ENABLE_RAW_XML = "false"
+LOCAL_ONENOTE_ENABLE_ORGANIZE = "true"
+LOCAL_ONENOTE_ENABLE_COPY = "false"
+LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO = "false"
+LOCAL_ONENOTE_ENABLE_UI_CONTROL = "false"
+LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
 ```
 
-先调用 `health_check`，确认 `onenote_desktop.ready=true`，且只有 `writes_enabled` 和 `experimental_reparent_enabled` 为 `true`。禁止设置 raw XML 或永久删除开关。
+先调用 `health_check`，确认 `onenote_desktop.ready=true`，且只有 `writes_enabled` 和 `organize_enabled` 为 `true`。禁止设置内部 raw XML 或永久删除开关。
 
 ## 4. 建立只读基线
 
-1. 用 `resolve_identifier("__LOCAL_ONENOTE_MCP_ISOLATED__", "notebook")` 取得 Notebook ID；后续 mutation 禁止继续用名称或路径。
+1. 用 `list_notebooks` 或 `query_notebook(name_equals="__LOCAL_ONENOTE_MCP_ISOLATED__")` 找到候选，并用 `get_notebook_metadata(notebook_id)` 固定精确 Notebook ID；后续 mutation 禁止继续用名称或路径。
 2. 调用 `expand_hierarchy(root_id=notebook_id)`，记录所有 ID、父级、Page `order/page_level`。
-3. 对 3 个 Page 调用 `get_page_xml(page_id, "all")`，在测试记录中保存 SHA-256。
-4. 对含图片/附件的 Page 调用 `get_page_objects`，记录 `id/callback_id/format`，但不要把二进制粘贴到日志。
+3. 对 3 个 Page 调用 `get_page_text` 并保存有界内容摘要；具名 Runner 会用非 MCP 的内部验证 capability 计算 raw Page snapshot SHA-256。
+4. 对含图片/附件的 Page 调用 `list_page_content_objects`，记录 `id/callback_id/media_type`，但不要把二进制粘贴到日志。
 5. 调用 `expand_notebook` 和相关 `expand_section`，确认没有回收站对象混入。
 
 任何 ID、标题、父级或内容与准备结构不一致时立即停止。
@@ -178,7 +178,7 @@ Notebook 父级：
 
 各 Section 内的 Page 也对应编号，以便目视确认后代没有互换。
 
-不要再运行 `reorder-section-group` 作为正向能力验收，也不要开启 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP`。该场景实现和单独 CLI 入口继续保留用于诊断，但显式设置 `included_in_all=False`，不会由 `all` 调度；它仍由 registry 自动收集 default/keep dry-run cases。dry-run 和运行状态将其标记为 `capability_status=limited`、`validation_status=failed`。2026-08-10 保存的真实后端证据显示：Notebook 直属 Group 的 `01,02,03 → 01,03,02` 请求中，`UpdateHierarchy(xs2013)` 返回成功，但即时回读仍保持按名称固定升序 `01,02,03`。失败发生在生产工具自身的写后验证，不是 Runner 误报。嵌套父级操作因根级失败而没有执行；产品层依据后端没有可变 SectionGroup sibling order 的能力边界，对 Notebook 和 SectionGroup 两种父级统一拒绝 reorder。
+不要再运行 `reorder-section-group` 作为正向能力验收。该内部诊断场景不进入 `all`，也不存在公开 Tool 或用户授权开关。2026-08-10 保存的真实后端证据显示：Notebook 直属 Group 的 `01,02,03 → 01,03,02` 请求中，`UpdateHierarchy(xs2013)` 返回成功，但即时回读仍保持按名称固定升序 `01,02,03`。产品层据此对 Notebook 和 SectionGroup 两种父级统一不发布 reorder。
 
 `reorder-section` 默认完成正向 reorder、before/after read-back、反向 restore 和 restored read-back，并记录稳定 Page 内容 hash、原始 XML 诊断 hash 与内容对象投影；`--keep-worksite` 可保留新 predecessor 供 UI 检查。稳定 hash 忽略 OneNote 延迟补写的作者/时钟/选择/视图元数据，但保留内容对象 ID、格式、文本和二进制内容；原始 XML hash 的单独变化不判定正文变化。逐 Page 取证完成后会末尾刷新 hierarchy，mutation confirmation 使用这次最新回读的 `modified`。正向两个 case 和反向两个 restore step 分别以静态 `notebook-parent` / `section-group-parent` 标签发出 content-free progress，不投影 Section 名称、ID、请求参数或响应。场景只开启 Section Reorder 实验开关，不启用 Delete、Permanent Delete、Copy、Move 或 Raw XML；完成稳定性与权限审查后已显式设置 `included_in_all=True`。场景不要求环境元数据参数；跨版本取证另见 [`TODO 007`](../todo/007_cross_version_compatibility_evidence.md)，不作为当前验收前置条件。
 
@@ -266,7 +266,7 @@ COM 返回成功但父级未变化、Page ID 转换不是精确一对一、富�
 
 ## 8. 非永久 Delete 验证（可选、单独重启）
 
-关闭测试进程，将 `LOCAL_ONENOTE_ENABLE_DELETES` 改为 `true`，永久删除仍为 `false`。仅对 `Delete-Sandbox` 下的 disposable 对象调用 typed delete，且完整提供 `expected_name/expected_parent_id`。
+关闭测试进程，将 `LOCAL_ONENOTE_ENABLE_DELETES` 改为 `true`。仅对 `Delete-Sandbox` 下的 disposable 对象调用公开的可恢复 typed delete，且完整提供 `expected_name/expected_parent_id`；公开 schema 不提供永久删除选项。
 
 验收：返回 `permanently=false`，对象从默认列表消失；启用 `include_recycle_bin=true` 时对象缺失或标记 `is_in_recycle_bin=true`。不要调用 `permanently=true`。
 
@@ -277,7 +277,7 @@ COM 返回成功但父级未变化、Page ID 转换不是精确一对一、富�
 3. 默认具名 scenario suite 在成功或失败时都只对本次 run 的 exact lease 执行 typed `close_notebook` 并回读确认，不删除本地 Notebook 目录。显式 `--keep-notebook` 或 `--keep-worksite` 时源 Notebook 保持打开；`--keep-worksite` 还会在该 action 的 after/read-back 通过后跳过适用的 restore/cleanup，并在 `worksite.json` 中记录精确 ID 和人工清理步骤；特殊入口 `all` 不接受也不透传这两个选项；
 4. 若任一步发生 ID 变化、内容摘要变化、重复 Section/Page 或恢复失败，保留隔离 Notebook，不继续后续 mutation，并保留操作前后快照。
 
-Page Move 只对本次 `include_descendants` 选定范围使用 `DeleteHierarchy(permanently=false)`。省略参数时只移动根 Page：生产服务先把被排除的完整后代子树整体提升一级，回读其精确 ID、Section、相对层级与内容，再删除根 Page；显式为 `true` 时才按叶到根处理完整子树。生产删除服务会有界回读每个精确选定 Page ID，并拒绝仍留在活动 hierarchy 的对象；manual scenario 的双 Notebook `after.json` 再确认选定源已消失、root-only 排除后代仍活动且内容未变。`is_in_recycle_bin=true` 若能通过 COM 取得，会记录为额外诊断证据；COM 不暴露回收站旧 ID 时不再令验收失败。用户仍应在 OneNote UI 的“已删除的笔记”中人工检查或清理现场，但该 UI/COM 回收站可见性不属于自动成功关口。背景与适用边界见 [`lesson/onenote_com_recycle_bin_visibility.md`](../lesson/onenote_com_recycle_bin_visibility.md)。
+Page Move 只对本次 `page_scope` 选定范围执行源侧非永久删除。默认 `page_only` 只移动根 Page：生产服务先把被排除的完整后代子树整体提升一级，回读其精确 ID、Section、相对层级与内容，再删除根 Page；`indentation_subtree` 才按叶到根处理完整子树。生产删除服务会有界回读每个精确选定 Page ID，并拒绝仍留在活动 hierarchy 的对象；manual scenario 的双 Notebook `after.json` 再确认选定源已消失、root-only 排除后代仍活动且内容未变。回收站 metadata 若能取得只作为额外诊断证据。背景与适用边界见 [`lesson/onenote_com_recycle_bin_visibility.md`](../lesson/onenote_com_recycle_bin_visibility.md)。
 
 Section/SectionGroup Move 使用不同的删除策略：只允许跨 Notebook，完整容器子树 Copy 与生产验证通过后，只对源容器根调用一次 `DeleteHierarchy(permanently=false)`，不得逐个删除后代“补齐”。`move-section` / `move-section-group` 的双 Notebook after snapshot 必须证明计划中的全部源 ID 都不再活动、完整目标映射只位于 destination role；同 Notebook 请求必须在 mutation 前拒绝并改用对应 `reparent-*`。两个新场景均不进入 `all`，真实执行只能由用户本人分别启动。
 

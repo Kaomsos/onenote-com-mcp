@@ -219,7 +219,7 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
         }
 
     async def rich(_client, page, _run_dir, *, include_equations=False, **_kwargs):
-        calls.extend(["append_to_page", "add_image_to_page"])
+        calls.extend(["append_page_content", "add_page_image_from_file"])
         automated_content = ["rich_text", "table", "image"]
         evidence = {
             "page_id": page["id"],
@@ -240,7 +240,7 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
         return page, evidence
 
     async def list_tag(_client, page):
-        calls.append("append_to_page")
+        calls.append("append_page_content")
         return page, {
             "page_id": page["id"],
             "observed_capabilities": ["List", "Tag"],
@@ -276,7 +276,7 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
     class Client:
         async def call_tool(self, name, arguments):
             calls.append(name)
-            if name == "append_to_page":
+            if name == "append_page_content":
                 return {
                     "item": {
                         "id": arguments["page_id"],

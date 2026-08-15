@@ -219,7 +219,7 @@ classDiagram
 - `MutationAttemptExecutor` 是部分 mutation Handler 组合的 029 principal-attempt 原语，不是 Runtime 的父类，也不适用于 Replace、Create、Copy/Move 等 operation-wide saga；
 - `OperationExecution` 是单次调用内的可变控制面状态，只通过 `ContextVar` 暂时绑定给 content-free backend-call counter；调用结束后只生成不可变语义的 `OperationOutcome` 和 allowlist audit；
 - `OperationOutcome.data` 承载 Service 返回值，但 `public_execution()` 仅投影固定控制字段，不把业务 payload 写入 Runtime audit。
-- `StaticExecutionStrategy` 是当前代码中的预留实现；当前 56 项 production Registry 没有 `static` binding，实际生产分类仍是 Read、Mutation、Lifecycle、Filesystem Effect、UI Effect 五类。
+- `StaticExecutionStrategy` 是当前代码中的预留实现；当前 52 项 production Registry 没有 `static` binding，实际生产分类仍是 Read、Mutation、Lifecycle、Filesystem Effect、UI Effect 五类。
 
 ## 3. 时序图
 
@@ -357,7 +357,7 @@ OperationSpec + ExecutionStrategy + OperationHandler
 
 `OperationSpec` 固定记录：`name/kind/capability/coordination/backend/strategy/handler/budget_policy/cache_policy/retry_policy/authorization_policy/audit_policy/exposures`。Mutation 还必须登记 operation-specific 的 authorization、attempt policy、replay、identity、observer、partial boundary、recovery 和 saga 属性；缺少任一 mutation policy 或 authorization policy 会在构造 Registry 时 fail closed。
 
-当前 production inventory 为唯一默认 profile 56 项；advanced profile 为空，Registry 中也没有隐藏的 advanced binding。启动时 Registry 与实际 Tool 集合做精确双向审计；重复 operation、未注册 Tool、profile 错配或 Registry 中未出现在该 profile 的 operation 都阻止启动。`LOCAL_ONENOTE_ENABLE_RAW_XML` 只可作为内部低层 service 的授权门，不参与 Tool 注册。
+当前 production inventory 为唯一 User profile 52 项；advanced profile 为空，Registry 中也没有隐藏的 advanced binding。启动时 Registry 与 `tool_surface.py` 的冻结顺序、分类及实际 Tool 集合做精确双向审计；重复 operation、未注册 Tool、profile 错配或额外 operation 都阻止启动。五项 Internal & Incubating capability 和 forbidden set 不参与 Tool 注册；内部 raw safety gate 也不改变 exposure。
 
 ## 5. Operation 分类与阶段
 
@@ -432,7 +432,7 @@ generation_before, generation_after
 
 Strategy-specific outcome 保持真实边界：
 
-- `sync_notebook` 返回 `accepted=true, complete=false, completion_observable=false`，execution outcome 为 `accepted_completion_unobservable`；
+- `request_notebook_sync` 返回 `accepted=true, complete=false, completion_observable=false`，execution outcome 为 `accepted_completion_unobservable`；
 - Navigate 的 execution outcome 为 `action_accepted`；
 - Publish 的 execution outcome 为 `filesystem_effect_completed`；
 - Close 归 Lifecycle，但继续吸收 029 的单次 attempt 与 open-state convergence 证据。

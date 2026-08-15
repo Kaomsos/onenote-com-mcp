@@ -3,7 +3,7 @@
 > [!CAUTION]
 > 本目录只承载由用户本人显式启动的真实 OneNote mutation 验证。Agent、CI、pytest、hook、安装脚本、timer、watcher、前台或后台任务不得执行真实 scenario。每次运行必须创建全新隔离 Notebook，并使用 scenario 级静态最小权限。智能体的强制行动边界见本目录的 [AGENTS.md](AGENTS.md)。
 
-真实运行前必须先启动并保留一个可见的 OneNote Desktop GUI。单项 scenario 会在创建/打开任何 working Notebook 前执行不触发 COM 的原生进程/窗口 preflight；`all` 在启动首个 child 前检查一次。OneNote 未运行、只有后台 `ONENOTE.EXE` 或 GUI 状态无法证明时均 fail closed，不创建 Notebook、不 materialize cache、不启动 scenario MCP；`--dry-run` 不读取 GUI 状态。当前 runner 不会自动启动 OneNote，未来显式工具由 [`TODO 031`](../../docs/todo/031_start_onenote_desktop_tool.md) 跟踪。
+真实运行前必须先启动并保留一个可见的 OneNote Desktop GUI。单项 scenario 会在创建/打开任何 working Notebook 前执行不触发 COM 的原生进程/窗口 preflight；`all` 在启动首个 child 前检查一次。OneNote 未运行、只有后台 `ONENOTE.EXE` 或 GUI 状态无法证明时均 fail closed，不创建 Notebook、不 materialize cache、不启动 scenario MCP；`--dry-run` 不读取 GUI 状态。标准 runner 永不隐式启动 OneNote；显式启动工具只由下述独立 HUMAN-GATED 验收入口测试。
 
 本框架把 MCP server 当作独立黑盒。Runner、Scenario Registry、fixture/cache、lifecycle 和共享证据代码不导入 Operation Runtime、canonical Registry、operation catalog、Tool runtime context/response mapper 或生产 server 对象，也不根据生产 Registry 动态扩大 tool allowlist。场景只通过 stdio MCP 调用冻结的公开 Tool，并可以像验证其他公开返回字段一样验证 content-free `execution` 投影。生产 Operation→具名 scenario 的完整性检查归属仓库顶层 Runtime 合同测试，不进入本目录核心。共享 stdio client 只用公开 envelope 的 `ok` 判断 Tool 调用成败；`complete` 是由各具名场景解释和验证的业务完成语义，因此 Sync 的 `ok=true, accepted=true, complete=false` 不会在核心 client 中被误判为 transport failure。
 
@@ -31,6 +31,32 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py query
 .venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation
 ```
+
+### 独立 GUI 启动验收入口
+
+`launch_onenote_gui_check.py` 是唯一不属于 Scenario Registry、也不进入 `run.py all` 的 GUI effect 验收入口。它不创建 Notebook、不修改 Notebook 内容、不关闭 OneNote；真实执行只允许用户本人在交互式前台终端启动，并把 OneNote 留在运行状态。Agent、pytest、CI、hook、timer、watcher、后台任务和重定向 stdin 均不得运行真实命令。
+
+先检查零副作用静态计划：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --dry-run --json
+```
+
+真实验收前完全退出 OneNote，再运行：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --verbosity verbose
+```
+
+入口要求两次 run-bound 终端确认，并顺序启动两个权限不可扩展的短命 MCP：
+
+1. UI Control 全关：两次 `health_check` 必须都证明进程和可见窗口不存在；中间的 `launch_onenote_gui` 必须以 `policy_disabled` 在 authorization stage、`backend_calls=0` 拒绝；
+2. 仅开启 UI Control：第一次 Launch 必须返回 `started / launch_attempts=1 / ready=true`；第二次必须返回 `already_running / launch_attempts=0`；随后 `health_check` 必须 ready，`list_notebooks` 必须完成一次 typed hierarchy COM 读取；
+3. 用户观察桌面并输入 run-bound verdict，确认只有一个可见 OneNote GUI，第二次调用没有打开额外窗口。
+
+`--verbosity quiet|normal|verbose` 只控制前台终端细节，默认 `normal`；排障时使用 `verbose`。该特殊入口不把 `calls.jsonl`、bridge audit 或 server stderr 写入对应 MCP runtime 日志文件，两个 MCP 的 server stderr 与 content-free progress 只流向当前前台终端。结构化验收证据仍写入普通 `.local-validation/run-<timestamp>/`，包含逐阶段 JSON、`run-state.json` 和最终 `run-result.json` 或 `run-failure.json`；它沿用 managed run ownership 形状，可由既有 human-gated `clear runs` 安全评估。OneNote/Office 可能在这个 run 的隔离 TEMP 下生成自身管理的 diagnostics/cache；它们不是 MCP runtime 日志，入口不会重定向、解释或自动清理。失败不自动关闭 OneNote 或改写证据。
+
+2026-08-16 用户真实运行 `run-2026-08-16-00-01-03` 通过：未授权请求在零 backend call 时拒绝；授权首调只发出一次 launch 并 ready；复调没有再次 launch；后续 health、typed hierarchy COM 读取及 run-bound 单窗口人工 verdict 全部通过。OneNote 按合同保持运行。
 
 历史验证 artifact 与 fixture cache 只通过独立的 `clear` maintenance 分组维护。它不是 Scenario，不进入 registry 或 `all`，不会启动 scenario MCP、修改或关闭 OneNote，也不接受任意路径或强制绕过参数：
 
@@ -250,7 +276,7 @@ Delete-Sandbox
 
 场景保存 `before.json/create-results.json/after.json`，要求两次 COM allocated/read-back ID 完全一致、互异、均为 fresh Page 且属于 `Duplicate-Title-Target`，两份不同正文可独立回读。默认按两个精确 Page ID 非永久删除并以 `restored.json` 证明恢复；`--keep-worksite` 跳过该清理、保持 Notebook 打开并记录精确 IDs。
 
-`onenote-convergence` 是默认不进入 `all` 的 fresh-only 生产可靠性场景，拒绝 `--use-cache`。它先请求 `sync_notebook`，再通过公开 `create_notebook` 在本次 run 根内创建第二个 disposable Notebook、精确回读并立即用公开 `close_notebook` 关闭；目录和证据保留。随后执行 `publish_object → navigate_to → get_hyperlink → navigate_to_url`：Sync 必须只报告 accepted-not-completed，Publish 必须创建精确的 run-scoped PDF，两种 Navigate 都只报告 UI action accepted；它们分别核验 Lifecycle/Filesystem/UI Runtime outcome。对唯一 probe Page 执行 `create_page → update_page_title → replace_page_body → append_to_page → delete_page_content → reorder_page → delete_page(permanently=false) → close_notebook`。每项受 attempt policy 管理的生产 Tool 都检查 `reconciliation` 和 additive `execution`，要求 `applied`、单次 principal attempt、无 replay、正确 kind/backend 且 `content_exposed=false`；明确不进入 029 principal-attempt inventory 的非原子 `replace_page_body` 则检查 operation-wide Runtime outcome、单次实际写入、非 partial 结果和至少一个 fixture body 对象被替换，不伪造 029 字段。具有公共 convergence 的步骤还要求 `converged=true`、`attempts>=2`、`stable_observations>=2`。内容对象删除只选择本次 Append 产生且可精确识别的一个 fresh object，删除后其余 object ID 集合必须保持。默认非永久删除 probe、证明 fixture 恢复，并把 source Notebook 的生产 `close_notebook` 作为最后一个 scenario MCP mutation；只有完整成功、精确 ID/name、双稳定和单次执行证据才能交给窄 lifecycle wrapper，把 active lease 封存为 pre-closed exact lease。Wrapper 不二次调用 source Close，handoff 证据不完整时 fail closed。`--keep-worksite` 在生产 Delete/source Close 前保留 probe 和精确清理说明；第二个 disposable Notebook仍会被关闭。Modal UI 不由场景制造、点击或关闭；`0x80042030` 只由纯合同测试验证 typed 分类与禁止自动重放。
+`onenote-convergence` 是默认不进入 `all` 的 fresh-only 生产可靠性场景，拒绝 `--use-cache`。它按当前 52 Tool wire contract 执行 `request_notebook_sync`，创建并关闭第二个 disposable Notebook，执行 `export_object_to_pdf → navigate_to → get_hyperlink`，再对唯一 probe Page 执行 `create_page → rename_page → replace_page_body → append_page_content → delete_page_content_object → reorder_page → delete_page → close_notebook`。Sync 只报告 accepted-not-completed，Export 创建精确 run-scoped PDF，Navigate 只报告 UI action accepted；每个 effect 使用对应 Notebook Lifecycle、Local File IO 或 UI Control gate。内容对象删除只选择本次 Append 产生且可精确识别的 fresh object；默认删除均为非永久且公开 schema 没有 `permanently`。场景继续检查 convergence、单次 principal attempt、无 replay、Runtime kind/backend 和 content-free execution；handoff 不完整时 fail closed。
 
 029 收尾的两项真实验证必须由用户在前台显式执行；Agent、pytest 与后台任务不得运行：
 
@@ -261,7 +287,7 @@ Delete-Sandbox
 
 2026-08-13 用户前台真实运行 `run-2026-08-13-15-50-42` 通过：Create、Page update、Reorder、非永久 Delete 均返回 `attempts=2/stable_observations=2`，probe cleanup 后 `restored=true`；共享 lifecycle Close 同样连续稳定两次并关闭 Notebook。随后受影响回归 `run-2026-08-13-15-54-30`（Create）、`run-2026-08-13-15-56-46`（Reorder Page）、`run-2026-08-13-15-58-04`（Delete）、`run-2026-08-13-15-58-25`（六 case Page Copy）与 `run-2026-08-13-16-05-59`（两 case Page Move）全部通过。Copy 六 case 均 verified/lossless、最终 topology 连续稳定两次且 cleanup 后双侧恢复；Move 两 case 均只在 Copy verified/lossless 后非永久删除精确 source，未出现 partial，并关闭双 Notebook。
 
-2026-08-15 用户运行 `run-2026-08-15-13-26-00` 时，Title 与 Append 已通过，但场景在调用内容删除前错误地把公开 `get_page_objects` 的 `id/can_delete/delete_target_id` 当成内部 parser 的 `object_id/delete_supported`，因此误判 fresh deletable Outline 数量并 fail closed；failure finalizer 已精确关闭 Notebook。场景现只消费公开 PageContentObject schema，纯测试使用与真实响应相同的 Outline/OE 形状。同期参数化 `run-2026-08-15-13-26-25` 已证明 SectionGroup Rename 正向、恢复和关闭成功；后续 canonical `rename` 不再暴露 `--target`，而是在一条场景中固定覆盖 Section 与 SectionGroup 两个 case。
+2026-08-15 用户运行 `run-2026-08-15-13-26-00` 时，Title 与 Append 已通过，但场景在调用内容删除前错误地把公开 PageContentObject 的 `id/can_delete/delete_target_id` 当成内部 parser 字段，因此误判 fresh deletable Outline 数量并 fail closed；failure finalizer 已精确关闭 Notebook。场景现只消费 `list_page_content_objects` 的公开 schema，纯测试使用与真实响应相同的 Outline/OE 形状。同期参数化 `run-2026-08-15-13-26-25` 已证明 SectionGroup Rename 正向、恢复和关闭成功；后续 canonical `rename` 在一条场景中固定覆盖 Section 与 SectionGroup 两个 case。
 
 Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前后各捕获一次当前 Notebook ID/实际目录 snapshot；全部历史 run-local lease 只与 snapshot 做内存比较，历史 run 数量不得放大 COM 调用次数。Snapshot 获取失败按 MCP/lifecycle failure fail closed，并保留本次 working 现场。
 
@@ -559,25 +585,25 @@ Notebook 直属 child 仍先用 absolute working path 与空 relative ID；Secti
 
 | Scenario | Fixture 与权限限制 |
 | --- | --- |
-| `create` | 完整预设 fixture 加空 `Duplicate-Title-Target`；连续两次 `create_page` 验证同标题 fresh allocated/read-back IDs，默认用 typed `delete_page(permanently=false)` 精确清理；不暴露 `create_notebook`，永久删除关闭；`--keep-worksite` 保留两个目标 Page |
-| `onenote-convergence` | fresh-only 的两 anchor 最小 fixture；验证 Sync accepted-not-completed、公开 Notebook Create+Close、精确 run-scoped PDF Publish、typed/URL Navigate action accepted，再对生产 Page Create/Title/Replace/Append/内容对象 Delete/Reorder/非永久 hierarchy Delete/source Close 逐项取证；source Close 是最后一个 scenario MCP mutation，其完整双稳定单次执行证据由 lifecycle wrapper 精确封存为 pre-closed lease且不二次 Close；不进入 `all`，永久删除/Raw XML/Copy/Move 均关闭 |
+| `create` | 完整预设 fixture 加空 `Duplicate-Title-Target`；连续两次 `create_page` 验证同标题 fresh allocated/read-back IDs，默认用公开 `delete_page` 精确清理且 Service 固定为可恢复删除；不暴露 `create_notebook`，永久删除关闭；`--keep-worksite` 保留两个目标 Page |
+| `onenote-convergence` | fresh-only 的两 anchor 最小 fixture；验证 `request_notebook_sync` accepted-not-completed、公开 Notebook Create+Close、精确 run-scoped `export_object_to_pdf`、typed `navigate_to` action accepted，再对生产 `create_page`、`rename_page`、`replace_page_body`、`append_page_content`、`delete_page_content_object`、`reorder_page`、可恢复 `delete_page` 和 source `close_notebook` 逐项取证；source Close 是最后一个 scenario MCP mutation，其完整双稳定单次执行证据由 lifecycle wrapper 精确封存为 pre-closed lease且不二次 Close；不进入 `all`，永久删除/Raw XML/Copy/Move 均关闭 |
 | `rename` | canonical fixture 只包含 `Rename-Group/Rename-Section`；单次运行固定按 Section→SectionGroup 执行 Rename/read-back，再逆序恢复，两种生产 Tool 均有独立 evidence；没有 `--target`；`--keep-worksite` 保留两个新名称并记录两项精确恢复说明 |
 | `reorder-page` | `Description/00-Reorder-Description` 明示操作前 `01,02,03`、正向操作后 `01,03,02`、恢复后 `01,02,03`；`01-Reorder-Page-Section` 下使用 `01-Parent`、`02-Child`、`03-Sibling`，让 UI 顺序和缩进变化可直接肉眼验收；`--keep-worksite` 保留 `01,03,02` 与新 predecessor/level |
-| `reorder-section` | **已注册到 `all`**。`00-Description/00-Reorder-Section-Description` 分别说明 Notebook 父级和 `01-Section-Parent`（SectionGroup）父级的 before/after/restore；两组 Section 及其 Page 均使用 `01/02/03` 编号，UI 可直接核对 `01,02,03 → 01,03,02 → 01,02,03`；只开启 Writes 与 Section Reorder；用户已确认真实 UI 排序证据。正向和逆序恢复分别用静态 `notebook-parent` / `section-group-parent` 标签输出 content-free progress。 |
+| `reorder-section` | **已注册到 `all`**。`00-Description/00-Reorder-Section-Description` 分别说明 Notebook 父级和 `01-Section-Parent`（SectionGroup）父级的 before/after/restore；两组 Section 及其 Page 均使用 `01/02/03` 编号，UI 可直接核对 `01,02,03 → 01,03,02 → 01,02,03`；公开授权只开启 Writes；用户已确认真实 UI 排序证据。正向和逆序恢复分别用静态 `notebook-parent` / `section-group-parent` 标签输出 content-free progress。 |
 | `reparent-section` | `00-Description/00-Reparent-Section-Description` 说明三种 before/after/restore：`01-Notebook-To-Group-Section` 从 Notebook 根换父级到 `01-Destination-Group`，`02-Group-To-Notebook-Section` 从 `02-Source-Group` 换父级到 Notebook 根，`03-Group-To-Group-Section` 从 `03-Source-Group` 换父级到 `03-Destination-Group`。每个 destination 预置两个可区分的直属 Section anchors；每次 Reparent 后刷新快照，验证 ID、父级、Page 拓扑、内容和独立位置证据，默认逆序恢复，`--keep-worksite` 保留三项目标父级。只允许同一 Notebook。 |
-| `reparent-page` | **typed 实验工具 / 当前 v3 fresh 与 cache 真实验证通过 / 已注册到 `all`**。通过 `reparent_page` 提交精确 ID 与 confirmation，不要求 Raw XML。唯一的跨 Section case 将 `01-Source-Section/01-Reparent-Page` 改属预置两个根 Page anchors 的 `02-Destination-Section`；目标 Page 同页包含 Rich Text、Table、List、Tag、Image。Recipe v3 保留已验证的 cache identity；manual runner 在 OneNote GUI preflight 通过后直接使用首次 live identity，cache 路径完成 typed ID/evidence 重绑、双稳定和单次完整内容验证。生产工具冻结完整基线后只执行一次 Reparent mutation。默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
-| `reparent-page-with-level` | **typed 实验工具 / 当前 fresh 与 cache 真实验证通过 / 已注册到 `all`**。Recipe v2 只使用 OneNote Desktop 的合法 page level 1-3：同一个 disposable Notebook 准备两棵相互独立、选中根均为 level 2 的缩进树；`root-only-default` 省略 `include_descendants` 并验证一个 level-3 排除后代留源且提升为 level 2，`full-subtree` 显式为 `true` 并验证两个 level-3 分支后代随完整子树迁移、保持相对层级并形成单射 `id_map`。两个 case 均从 after snapshot 独立计算并深比较仅属于 fresh 目标根的 `destination_position`；成功不使用 Reorder 权限恢复原缩进。用户前台运行 `run-2026-08-14-12-44-14`（fresh）、`run-2026-08-14-13-51-48`（validated cache hit）和 `run-2026-08-14-13-53-49`（fresh）均为 `passed`、`closed_preserved`，因此经用户批准纳入 `all`。 |
-| `reparent-section-group` | **typed 实验工具 / 用户确认迁移后真实验证通过 / 已注册到 `all`**。通过 `reparent_section_group` 提交精确 ID 与 confirmation，不要求 Raw XML。三组编号 Group/Section/Page 覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；每个 destination 预置两个同类型 Group anchors，并按 read-back 固定名称顺序核对独立位置证据；要求目标及后代 ID、关系、Page 内容保持。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级。 |
+| `reparent-page` | **当前 typed 工具 / v3 fresh 与 cache 真实验证通过 / 已注册到 `all`**。通过 `reparent_page` 提交精确 ID、confirmation 与 `page_scope`，不要求 Raw XML。唯一的跨 Section case 将 `01-Source-Section/01-Reparent-Page` 改属预置两个根 Page anchors 的 `02-Destination-Section`；目标 Page 同页包含 Rich Text、Table、List、Tag、Image。Recipe v3 保留已验证的 cache identity；manual runner 在 OneNote GUI preflight 通过后直接使用首次 live identity，cache 路径完成 typed ID/evidence 重绑、双稳定和单次完整内容验证。生产工具冻结完整基线后只执行一次 Reparent mutation。默认使用新 ID 逻辑移回，或由 `--keep-worksite` 保留。 |
+| `reparent-page-with-level` | **当前 typed 工具 / fresh 与 cache 真实验证通过 / 已注册到 `all`**。Recipe v2 只使用 OneNote Desktop 的合法 page level 1-3：同一个 disposable Notebook 准备两棵相互独立、选中根均为 level 2 的缩进树；`root-only-default` 使用 `page_scope="page_only"` 并验证一个 level-3 排除后代留源且提升为 level 2，`full-subtree` 使用 `page_scope="indentation_subtree"` 并验证两个 level-3 分支后代随完整子树迁移、保持相对层级并形成单射 `id_map`。两个 case 均从 after snapshot 独立计算并深比较仅属于 fresh 目标根的 `destination_position`；成功不使用 Reorder 权限恢复原缩进。用户前台运行 `run-2026-08-14-12-44-14`（fresh）、`run-2026-08-14-13-51-48`（validated cache hit）和 `run-2026-08-14-13-53-49`（fresh）均为 `passed`、`closed_preserved`，因此经用户批准纳入 `all`。 |
+| `reparent-section-group` | **当前 typed 工具 / 用户确认迁移后真实验证通过 / 已注册到 `all`**。通过 `reparent_section_group` 提交精确 ID 与 confirmation，不要求 Raw XML。三组编号 Group/Section/Page 覆盖 Notebook→SectionGroup、SectionGroup→Notebook、SectionGroup→SectionGroup；每个 destination 预置两个同类型 Group anchors，并按 read-back 固定名称顺序核对独立位置证据；要求目标及后代 ID、关系、Page 内容保持。默认按 `03→02→01` 逆序恢复，`--keep-worksite` 保留三组父级。 |
 | `delete` | Delete-Sandbox 与 allowlisted disposable group；写入加非永久 Delete，永久删除关闭；`--keep-worksite` 保持 Notebook 打开并记录回收站目标 |
-| Page Copy | 双 Notebook `source`/`destination` bundle；同一 source Page 对同 Section、跨 Section、跨 Notebook 三种目标分别执行 root-only（省略参数）与 subtree（显式 `true`），合计六个 case。同 Section 由既有源 Page 形成多项序列，跨 Section/Notebook 目标各预置同标题碰撞 anchor 与额外 position anchor；每个 case 只调用一次公开 `copy_page`，保存内部 planning 摘要并完成双侧回读，断言 fresh/disjoint target IDs、源端、anchors 和独立位置证据不变；默认清理六个根目标并验证两侧恢复，`--keep-worksite` 保留六个目标和两个 working Notebook |
+| Page Copy | 双 Notebook `source`/`destination` bundle；同一 source Page 对同 Section、跨 Section、跨 Notebook 三种目标分别执行 `page_scope="page_only"` 与 `page_scope="indentation_subtree"`，合计六个 case。同 Section 由既有源 Page 形成多项序列，跨 Section/Notebook 目标各预置同标题碰撞 anchor 与额外 position anchor；每个 case 只调用一次公开 `copy_page`，保存内部 planning 摘要并完成双侧回读，断言 fresh/disjoint target IDs、源端、anchors 和独立位置证据不变；默认清理六个根目标并验证两侧恢复，`--keep-worksite` 保留六个目标和两个 working Notebook |
 | Section/Group Copy | 对应最小源和目标；每个 destination 预置两个同类型直属 anchors，源容器含严格富内容父页与三个混合 List/Tag 项的语义子页，并继续递归复制完整子树；每个 case 保存并深比较独立位置证据，默认执行可恢复清理，显式 `--keep-worksite` 在 after/mapping 验证后保留精确目标 ID |
 | Notebook Copy | 最小 Notebook 同样包含严格父页和 List/Tag 语义子页；Copy 开启、Delete 关闭，默认关闭副本；显式 `--keep-worksite` 保持副本打开并记录路径 |
-| Page Move | 固定双 Notebook `source`/`destination` bundle，destination 预置两个根 Page anchors，只覆盖跨 Notebook两个 case：root-only 省略 `include_descendants`，subtree 显式为 `true`。前者只复制/删除根 Page，并要求被排除子页在源 Section 中提升一级、ID 与内容不变；后者复制两页并按叶到根非永久删除两页。两者都从删除源后的最终 snapshot 深比较独立位置证据；`--keep-worksite` 保留目标 Page 和双 Notebook 供 UI 检查 |
+| Page Move | 固定双 Notebook `source`/`destination` bundle，destination 预置两个根 Page anchors，只覆盖跨 Notebook 两个 case：`page_scope="page_only"` 与 `page_scope="indentation_subtree"`。前者只复制/删除根 Page，并要求被排除子页在源 Section 中提升一级、ID 与内容不变；后者复制两页并按叶到根非永久删除两页。两者都从删除源后的最终 snapshot 深比较独立位置证据；`--keep-worksite` 保留目标 Page 和双 Notebook 供 UI 检查 |
 | Section/SectionGroup Move | 两个独立、已进入 `all` 的双 Notebook 场景；destination Notebook 根预置两个同类型 anchors。容器完整递归复制到 destination，要求完整单射 `id_map` 与 verified/lossless Copy，然后只允许一次对应 typed 根删除且固定非永久。after snapshot 必须证明全部原源子树 ID inactive、全部目标 ID 仅位于 destination role，并深比较删除后的独立位置证据；不重复未验证 content type comparator |
 | Report | 只读取本地 artifacts，不启动 MCP |
 | Source lifecycle | wrapper 仅支持 fresh create、working-copy open、受控 SectionGroup/`.one` 加载、精确 get/close 与只读 open-state probe；不启动额外 MCP，也不打开 template |
 
-永久 OneNote Delete 始终关闭。四个具名 Reparent 场景只启用 Writes 与统一 Reparent 实验门；Raw XML 在全部 Reparent 场景中关闭，runner 不构造、不接收也不传递 hierarchy XML。
+永久 OneNote Delete 始终关闭。四个具名 Reparent 场景只启用公开 Writes 与 Organize；Raw XML 在全部 Reparent 场景中关闭，runner 不构造、不接收也不传递 hierarchy XML。
 
 ### 同 Notebook Reparent 能力
 
@@ -597,7 +623,7 @@ Page typed 场景接受两种原生结果：目标 ID 保持，或全树中恰�
 
 SectionGroup typed 场景仍要求同一目标 ID、全树 ID 集合、全部后代和 Page 内容身份保持不变；每步回读，默认按第三、第二、第一条路线逆序恢复。`--keep-worksite` 只在全部正向验证通过时保留现场。请求被忽略、Page ID 转换不是精确一对一、富内容变化、无关对象变化或恢复失败都会非零退出并保留 Notebook 与证据。一次通过只证明当前 OneNote/Office 组合，不构成跨版本保证。
 
-`reorder-section` 与 `reorder-page` 一样，不要求也不收集 OneNote 版本或 Office channel 参数。跨版本兼容性取证作为独立低优先级工作跟踪，见 [`docs/todo/007_cross_version_compatibility_evidence.md`](../../docs/todo/007_cross_version_compatibility_evidence.md)，不作为当前场景的运行前置条件。`reorder-section-group` 已从生产 Tool、Registry 和 `run.py` 公共场景目录移除；其 Service、fixture 与纯测试只保留后端固定名称升序的负能力证据，不得由环境变量恢复为生产或人工 mutation 入口，也不要求重复真实运行。
+`reorder-section` 与 `reorder-page` 一样，不要求也不收集 OneNote 版本或 Office channel 参数。跨版本兼容性取证作为独立低优先级工作跟踪，见 [`docs/todo/007_cross_version_compatibility_evidence.md`](../../docs/todo/007_cross_version_compatibility_evidence.md)，不作为当前场景的运行前置条件。`reorder-section-group` 已从生产 Tool、Registry 和 `run.py` 公共场景目录移除；其 Service、fixture 与纯测试只保留后端固定名称升序的负能力证据。任何环境变量都不能恢复 MCP Tool 或公共 scenario；直接 Service 诊断仍同时要求 Writes 与默认关闭的非产品内部门，也不要求重复真实运行。
 
 ## Section 与 SectionGroup Move
 
@@ -609,7 +635,7 @@ SectionGroup typed 场景仍要求同一目标 ID、全树 ID 集合、全部后
 
 ## Page Move
 
-`move-page` 的语义是对显式范围执行重建。省略 `include_descendants` 时只选择根 Page；显式为 `true` 时选择完整缩进子树。场景固定使用两个 Notebook，并只覆盖 `cross-notebook-root-only` 与 `cross-notebook-subtree`：不再重复同 Notebook 跨 Section，因为该位置变化已经由 typed `reparent-page` 验证。
+`move-page` 的语义是对显式范围执行重建。`page_scope="page_only"` 只选择根 Page；`page_scope="indentation_subtree"` 选择完整缩进子树。场景固定使用两个 Notebook，并只覆盖 `cross-notebook-root-only` 与 `cross-notebook-subtree`：不再重复同 Notebook 跨 Section，因为该位置变化已经由 typed `reparent-page` 验证。
 
 Move 场景不负责附件、墨迹、形状、媒体或其他内容类型的独立保真取证；这些结论由 Copy 场景及其逐类型 comparator 负责。Move 只要求生产 Copy 报告 `verified=true/lossless=true`，并验证实际 `id_map` 与选定范围一致，然后审计安全删除：root-only 只允许删除根 Page，并要求被排除子页先整体提升一级且保持 ID、Section、相对层级和内容；subtree 必须按叶到根删除父子两页。任何 Copy、提升、快照重校验或删除证据不完整都非零退出并保留现场。
 
@@ -656,7 +682,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\inspect_current_
 
 唯一 MCP 的 content-free bridge audit 位于 `scenario-mcp/bridge-calls.jsonl`；只记录 operation、成功状态、时间和耗时，不记录参数、OneNote 内容或返回值。`fixture-result.json` 的 `validation` 段记录 profile topology/content invariants 的实际通过证据。
 
-每个 Copy/Move case 只调用一次公开 mutation Tool；allowlist 不包含 Plan 或 Preview。生产调用在同一个 Runtime operation 内建立 live 内部计划，Runner 从 `copy_report.planning` 保存 `internal-planning.json`，只记录 operation、有效 `include_descendants`、估算、内容能力和 lossless candidate，不保存 digest、token、正文或 raw XML。`copy-page` 的三个 root-only case 省略范围值并要求内部 planning 回显 `false`，三个 subtree case 显式提交并要求回显 `true`；`copy-section` 与 `copy-section-group` 分别保存 same-notebook/cross-notebook 两组单次调用证据。Runner 在每次 mutation 前复核目标父级、目标 role 和范围，并从 source/destination 两侧最新 snapshot 合并下一 case 的 before evidence，从而把多次 mutation 的增量逐项隔离；它不重试任何 mutation。
+每个 Copy/Move case 只调用一次公开 mutation Tool；allowlist 不包含 Plan 或 Preview。生产调用在同一个 Runtime operation 内建立 live 内部计划，Runner 从 `copy_report.planning` 保存 `internal-planning.json`，只记录 operation、由公开 `page_scope` 规范化得到的内部 `include_descendants` 布尔值、估算、内容能力和 lossless candidate，不保存 digest、token、正文或 raw XML。`copy-page` 的三个 root-only case 提交 `page_scope="page_only"` 并要求内部 planning 回显 `false`，三个 subtree case 提交 `page_scope="indentation_subtree"` 并要求回显 `true`；`copy-section` 与 `copy-section-group` 分别保存 same-notebook/cross-notebook 两组单次调用证据。Runner 在每次 mutation 前复核目标父级、目标 role 和范围，并从 source/destination 两侧最新 snapshot 合并下一 case 的 before evidence，从而把多次 mutation 的增量逐项隔离；它不重试任何 mutation。
 
 每次 mutation 使用 case 前最新 snapshot 的容器 `modified` 作为 confirmation，而不是 fixture 刚写完时可能仍在被 COM 延迟更新的旧值。Runner 的 `before/after.page_hashes` 使用稳定内容 hash：忽略 Page 根级 hierarchy 字段、OneNote 在任意内容节点上延迟补写的时钟/作者/选择/视图元数据，以及空、无子节点且只携带 `selected/isSelected` 的 T 视图占位；普通空 T、非空文本、内容对象 ID、格式和二进制仍保留。`page_canonical_hashes` 忽略 Page/内容对象 ID，作为诊断摘要；Page reparent 的成功门限使用更精确的 `page_reparent_hashes`，额外把 Tag index 解析成类型/符号语义，同时保留 Rich Text、Table、List、Tag 状态、Image Data 和其他结构。原始 XML SHA-256 另记在 `page_xml_hashes`，只用于诊断 COM 重序列化，不作为内容变化成功门限；`page_objects` 仍独立记录内容对象投影。Page Copy 的逐 case 不变性门只绑定 manifest 中的 source Parent/Child 与跨 Section/Notebook anchors，并同时比较 topology、稳定内容 hash 和内容对象身份；Description 等非验收页的后台规范化不参与业务成功判断。默认 cleanup 恢复仍比较一致的 Runner 证据；任何受保护 Page 的真实稳定内容变化都会 fail closed。
 

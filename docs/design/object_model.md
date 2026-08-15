@@ -1,15 +1,13 @@
-# OneNote 对象模型（P0/P1 实现版）
+# OneNote 对象模型
 
 > 状态：实现契约
 > 更新日期：2026-08-15
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
-> **发布规划说明：** 本文仍是当前实现契约。面向用户测试的目标能力分类和对象—操作矩阵见 [对象模型概念评估](../overview/onenote_object_model_assessment.md) 与 [TODO 034](../todo/034_pre_user_testing_tool_surface_convergence.md)；目标重命名和授权尚未落地。
-
 ## 1. 边界与标识符
 
-公开对象模型固定为 `Notebook → SectionGroup → Section → Page → PageContentObject`。层级对象以 OneNote COM `ID` 为唯一 mutation 主键；`path` 仅用于展示和 `resolve_identifier` 只读解析，不能授权写操作。
+公开对象模型固定为 `Notebook → SectionGroup → Section → Page → PageContentObject`。层级对象以 OneNote COM `ID` 为唯一 mutation 主键；`path` 仅用于展示，不能授权写操作。发现从 List、Query 或 Search 开始，再固定 exact ID。
 
 COM XML 中未列入本文的 attribute 不进入公开返回。字段缺失时返回 `null`，不依据动作能力推测状态。所有时间字段保留 COM 返回的 ISO 字符串；服务不改写时区。
 
@@ -103,7 +101,7 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 
 `Embedded Spreadsheet`（内嵌电子表格）目前只是产品能力类别，不是已观察到的公开对象模型枚举。项目尚未收集它的 `PageContentObject.kind`、Page XML 或引用边界，因此不得把它建模为 `Table`、`InsertedFile`、`FileAttachment` 或猜测的 Office/OLE kind。当前支持状态明确为 unsupported；未知或未验证表示由 Copy 合同 fail closed。证据边界见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。
 
-`get_binary_content` 会在当前 Page 的最新对象快照中再次校验 `callback_id`，不把它当作全局句柄。`delete_page_content` 同样要求对象仍存在且 `can_delete=true`。
+`get_page_object_binary` 的公开参数 `page_content_object_id` 指向上述对象 `id`；Service 会在当前 Page 的最新对象快照中重新确认归属，再使用对象的内部 `callback_id` 读取二进制，不把 callback 当作全局句柄。`delete_page_content_object` 同样要求对象仍存在且 `can_delete=true`。
 
 ## 4. 关系与树重建
 
@@ -134,11 +132,11 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 | typed/全部已打开 Notebook 正文搜索和调用级硬预算 | P0 已实现 |
 | Metadata Query、Path、共享 Expand tree、Page 缩进树 | P1 已实现 |
 | SectionGroup/Section Rename、Page Reorder | P1 已实现，默认关闭写入 |
-| Section 同父级 Reorder | P1 typed 实验实现；由独立开关 fail closed，已有用户确认的真实 UI 排序证据 |
+| Section 同父级 Reorder | 已实现；使用 Writes gate，已有用户确认的真实 UI 排序证据 |
 | SectionGroup 同父级 Reorder | 明确不支持并拒绝；后端仅提供按名称固定升序，不提供可变 sibling order |
-| Section 同 Notebook 换父级（历史 Move 语义） | 已收敛为 typed `reparent_section`；保持 Section ID，由独立 Reparent 开关 fail closed，已有用户确认的真实 COM 证据 |
-| Reparent | 只表示同一 Notebook 内的容器换父级；默认 profile 注册 typed `reparent_page`、`reparent_section`、`reparent_section_group`，共用 Writes + Reparent 实验门。Page 默认只迁移选中对象并提升被排除后代，也可显式迁移完整缩进子树；目标根始终归一化为 level 1 并返回原生 ID 映射。Section/SectionGroup 验证自身、后代拓扑和 Page 内容。生产 MCP 不暴露 raw hierarchy XML。 |
-| Section/SectionGroup 跨 Notebook 转移 | P2 实验实现；不属于 Reparent。完整子树 Copy 与验证后只对源容器根执行一次非永久删除，全部后代获得新 ID；同 Notebook 请求 fail closed。用户已确认当前环境的两个真实 COM 场景通过，独立实验门继续默认关闭。 |
-| 四层 Copy、Page/容器 Move | P2 实验实现；Page Copy/Move 默认只选择根 Page，可显式选择完整缩进子树；容器 Copy/Move 始终递归。Move 采用选定范围 Copy→验证→非永久删除源的重建语义；root-only Page Move 会先提升并保留被排除后代，容器 Move 则只允许跨 Notebook 且一次删除源根。Reparent/Copy/Move execute 统一返回目标根的最终观察位置；Notebook Copy 为不适用。 |
+| Section 同 Notebook 换父级（历史 Move 语义） | 已收敛为 typed `reparent_section`；保持 Section ID，由 Writes + Organize fail closed，已有用户确认的真实 COM 证据 |
+| Reparent | 只表示同一 Notebook 内的容器换父级；公开 typed `reparent_page`、`reparent_section`、`reparent_section_group` 共用 Writes + Organize。Page 默认只迁移选中对象并提升被排除后代，也可用 `page_scope="indentation_subtree"` 迁移完整缩进子树。生产 MCP 不暴露 raw hierarchy XML。 |
+| Section/SectionGroup 跨 Notebook转移 | 重建式 Move；完整子树 Copy 与验证后只对源容器根执行一次非永久删除，全部后代获得新 ID；同 Notebook 请求 fail closed。需要 Writes + Copy + Deletes。 |
+| 四层 Copy、Page/容器 Move | 已实现为单次公开调用；Page Copy/Move 用 `page_scope` 选择根 Page 或完整缩进子树，容器始终递归。内部 live planning 不暴露 token；Move 采用 Copy→验证→非永久删除源的重建语义。 |
 | Notebook/Section/Page Export、导航、Notebook Sync/Close | P1 typed 契约已实现 |
 | Notebook Delete、SectionGroup Export | 不承诺 |

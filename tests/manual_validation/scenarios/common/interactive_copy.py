@@ -429,7 +429,7 @@ class InteractiveCopyEvidenceScenario(Scenario):
                     "create_section",
                     {
                         "parent_id": notebook_id,
-                        "section_name": destination_section_name,
+                        "name": destination_section_name,
                     },
                     out / "destination-section-result.json",
                 )
@@ -503,7 +503,7 @@ class InteractiveCopyEvidenceScenario(Scenario):
                         "expected_section_id": current_source.get("section_id"),
                         "expected_modified": current_source.get("modified"),
                         "destination_title": destination_title,
-                        "include_descendants": False,
+                        "page_scope": "page_only",
                     },
                     self._case_evidence_path(out, "copy-result", case_name),
                 )
@@ -771,7 +771,7 @@ class InteractiveCopyEvidenceScenario(Scenario):
                             "expected_section_id": chain_source.get("section_id"),
                             "expected_modified": chain_source.get("modified"),
                             "destination_title": chain_title,
-                            "include_descendants": False,
+                            "page_scope": "page_only",
                         },
                         self._case_evidence_path(
                             out, "copy-result", case_name, hop_index

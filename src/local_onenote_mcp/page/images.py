@@ -9,6 +9,32 @@ class ImageDimensionError(ValueError):
     """Raised when image dimensions cannot be read from a local file."""
 
 
+def image_file_format(path: str | Path) -> str:
+    """Infer a supported image format from file bytes and verify any suffix."""
+
+    image_path = Path(path)
+    with image_path.open("rb") as handle:
+        header = handle.read(16)
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        detected = "png"
+    elif header.startswith(b"\xff\xd8"):
+        detected = "jpeg"
+    elif header.startswith((b"GIF87a", b"GIF89a")):
+        detected = "gif"
+    elif header.startswith(b"BM"):
+        detected = "bmp"
+    else:
+        raise ImageDimensionError(f"Unsupported image file content: {image_path}")
+
+    suffix = image_path.suffix.lstrip(".").casefold()
+    normalized_suffix = "jpeg" if suffix in {"jpg", "jpeg"} else suffix
+    if normalized_suffix and normalized_suffix != detected:
+        raise ImageDimensionError(
+            f"Image filename extension does not match file content: {image_path}"
+        )
+    return detected
+
+
 def image_dimensions(path: str | Path) -> tuple[int, int]:
     """Return native image dimensions for common local image formats."""
 

@@ -1,14 +1,14 @@
 # Local OneNote MCP 对象模型概念评估
 
 > 文档性质：产品概念模型
-> 对齐方案：用户测试前 v1.0 目标工具面
+> 对齐方案：当前 52 Tool User profile
 > 更新日期：2026-08-15
 
 ## 文档边界
 
 本文只解释 Local OneNote MCP 如何理解 OneNote 的对象、关系、标识、读取层次和操作语义，帮助产品设计与工具分类保持一致。本文不记录 commit、测试数量、开发阶段、实现模块、bridge 调用方式或人工验证进度。
 
-当前已实现的工具合同以 [工具参数与返回格式](../design/tool_contracts.md) 为准；尚未实现的发布目标以 [TODO 034：用户测试前 MCP 工具发布面收敛](../todo/034_pre_user_testing_tool_surface_convergence.md) 为准。本文的对象—操作矩阵描述后者的**概念目标**，不表示目标名称和权限已经可用。
+当前已实现的工具合同以 [工具参数与返回格式](../design/tool_contracts.md) 为准；[TODO 034](../todo/034_pre_user_testing_tool_surface_convergence.md) 记录发布面收敛和验收证据。本文的对象—操作矩阵只描述当前产品概念，不记录开发过程或具体实现。
 
 ## 1. 核心对象
 
@@ -106,7 +106,7 @@ Mutation 除精确 ID 外，还应携带对象类型适用的 expected name/titl
 
 用户任务按意图选择入口，不把所有读取混成通用 Get：
 
-| 层次 | 回答的问题 | v1.0 目标工具族 |
+| 层次 | 回答的问题 | 当前工具族 |
 | --- | --- | --- |
 | Session | OneNote 是否可用，是否需要显式启动 GUI | `health_check`、`launch_onenote_gui` |
 | Hierarchy Browse | 有哪些 Notebook，对象下面有什么 | `list_notebooks`、`expand_*`、`get_hierarchy_path` |
@@ -161,9 +161,9 @@ Move 是 Copy、目标验证、源状态复核和源可恢复删除组成的非�
 
 导出本地 PDF、控制 OneNote GUI、请求 Notebook sync 和关闭 Notebook 都不是普通只读。它们分别属于 Local File IO、UI Control 和 Notebook Lifecycle effect，必须在授权与描述中显式可见。
 
-## 6. v1.0 对象—操作矩阵
+## 6. 对象—操作矩阵
 
-符号：`●` 表示目标 User profile 提供 typed 能力；`◇` 表示通过所属对象间接适用；`—` 表示不适用或明确不提供。矩阵表达产品概念，不代替每个工具的详细 schema。
+符号：`●` 表示 User profile 提供 typed 能力；`◇` 表示通过所属对象间接适用；`—` 表示不适用或明确不提供。矩阵表达产品概念，不代替每个工具的详细 schema。
 
 | 操作 | Notebook | SectionGroup | Section | Page | PageContentObject | 目标工具或说明 |
 | --- | :---: | :---: | :---: | :---: | :---: | --- |
@@ -197,7 +197,7 @@ Session 的 `health_check` 和 `launch_onenote_gui` 面向 OneNote Desktop sessi
 
 ## 7. 权限概念模型
 
-v1.0 目标使用七个默认关闭的授权类别：Writes、Deletes、Organize、Copy、Local File IO、UI Control、Notebook Lifecycle。
+当前产品使用七个默认关闭的授权类别：Writes、Deletes、Organize、Copy、Local File IO、UI Control、Notebook Lifecycle。
 
 | 操作类别 | 需要的授权 |
 | --- | --- |

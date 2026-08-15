@@ -120,7 +120,7 @@ def test_reparent_section_rejects_cross_notebook_destination_before_com(monkeypa
         }
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     monkeypatch.setattr(
         server.services.mutations,
@@ -160,7 +160,7 @@ def test_reparent_section_group_rejects_self_or_descendant_before_com(monkeypatc
         ]
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     monkeypatch.setattr(
         server.services.mutations,
@@ -193,7 +193,7 @@ def test_reparent_page_rejects_wrong_destination_type_before_com(monkeypatch) ->
         }
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     monkeypatch.setattr(
         server.services.mutations,
@@ -213,7 +213,7 @@ def test_reparent_page_rejects_wrong_destination_type_before_com(monkeypatch) ->
 def test_reparent_rejects_stale_confirmation_before_com(monkeypatch) -> None:
     items = _container_items()
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     monkeypatch.setattr(
         server.services.mutations,
@@ -531,7 +531,7 @@ def test_reparent_page_reports_structured_partial_after_promotion_when_reparent_
     target = next(item for item in items if item["id"] == "selected")
     target["modified"] = "modified"
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     before = _page_scope_before()
     next(item for item in before["items"] if item["id"] == "selected")["modified"] = "modified"
@@ -594,7 +594,7 @@ def test_reparent_page_reports_promotion_failure_before_reparent(
         return {}
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before["items"]
     )
@@ -643,7 +643,7 @@ def test_reparent_page_rejects_semantic_snapshot_change_before_first_mutation(mo
     changed_target["title"] = "Changed After Confirmation"
     calls: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     monkeypatch.setattr(
         server.services.mutations,
@@ -684,7 +684,7 @@ def test_reparent_page_allows_modified_clock_drift_before_first_mutation(monkeyp
     destination["modified"] = "destination-clock-drift"
     calls: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     monkeypatch.setattr(
         server.services.mutations,
@@ -756,7 +756,7 @@ def test_reparent_page_partial_reports_observed_root_when_subtree_is_incomplete(
     }
     captures = iter([before, candidate])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",
@@ -833,7 +833,7 @@ def test_reparent_page_readback_unavailable_reports_stable_partial_reason(
         raise RuntimeError("destination snapshot unavailable")
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before["items"]
     )
@@ -882,7 +882,7 @@ def test_reparent_fails_closed_when_com_succeeds_without_state_change(monkeypatc
     snapshot = {"items": items, "page_xml": {}}
     calls: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     monkeypatch.setattr(
         server.services.mutations,
@@ -987,7 +987,7 @@ def test_reparent_container_service_returns_observed_destination_position(
         ]
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",
@@ -1069,7 +1069,7 @@ def test_reparent_page_service_returns_only_normalized_root_position(monkeypatch
     }
     snapshots = iter([before, after])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",
@@ -1150,7 +1150,7 @@ def test_reparent_page_without_descendants_skips_promotion_and_false_is_equivale
     snapshots = iter([before, after])
     calls: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before["items"]
     )
@@ -1285,7 +1285,7 @@ def test_reparent_full_evidence_capture_may_exceed_convergence_deadline(
         return after_items
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda **_kwargs: items)
     monkeypatch.setattr(server.services.mutations, "_capture_reparent_snapshot", capture)
     monkeypatch.setattr(
@@ -1366,7 +1366,7 @@ def test_reparent_retries_full_capture_once_without_replaying_mutation(monkeypat
         return after
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before_items
     )
@@ -1437,7 +1437,7 @@ def test_reparent_hierarchy_deadline_reports_stable_count_instead_of_none(
         return after_items
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before_items
     )
@@ -1498,7 +1498,7 @@ def test_reparent_execute_error_with_complete_postcondition_is_reconciled_succes
     calls: list[str] = []
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before_items
     )
@@ -1554,7 +1554,7 @@ def test_reparent_execute_error_with_exact_prestate_is_typed_not_applied(
     calls: list[str] = []
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before_items
     )
@@ -1659,7 +1659,7 @@ def test_reparent_page_error_classifies_partial_and_ambiguous_live_states(
     calls: list[str] = []
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
     monkeypatch.setattr(
         server.services.hierarchy, "resources", lambda **_kwargs: before["items"]
     )

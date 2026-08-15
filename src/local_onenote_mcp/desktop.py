@@ -3,13 +3,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
+import re
+import subprocess
 import sys
+import time
 from typing import Any
 
-from .onenote_errors import OneNoteDesktopNotRunningError, OneNoteDesktopProbeError
+from .onenote_errors import (
+    OneNoteDesktopExecutableError,
+    OneNoteDesktopLaunchError,
+    OneNoteDesktopLaunchTimeoutError,
+    OneNoteDesktopNotRunningError,
+    OneNoteDesktopProbeError,
+    OneNoteDesktopWindowUnavailableError,
+)
 
 
 ONENOTE_PROCESS_NAME = "ONENOTE.EXE"
+ONENOTE_GUI_LAUNCH_TIMEOUT_SECONDS = 15.0
+ONENOTE_GUI_READINESS_POLL_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -162,9 +176,183 @@ def require_onenote_desktop() -> OneNoteDesktopState:
     return state
 
 
+def _registered_executable(command: str) -> Path:
+    """Parse one trusted LocalServer32 value without executing command text."""
+
+    value = command.strip()
+    if not value:
+        raise ValueError("empty registration")
+    if value.startswith('"'):
+        closing = value.find('"', 1)
+        if closing < 0:
+            raise ValueError("unterminated quoted executable")
+        executable = value[1:closing]
+        remainder = value[closing + 1 :].strip()
+        if remainder and remainder.casefold() not in {"/embedding", "-embedding"}:
+            raise ValueError("unsupported registered arguments")
+    else:
+        if not value.casefold().endswith("onenote.exe"):
+            raise ValueError("ambiguous unquoted executable")
+        executable = value
+
+    candidate = Path(executable)
+    if not candidate.is_absolute() or str(candidate).startswith("\\\\"):
+        raise ValueError("executable is not an absolute local path")
+    candidate_attributes = getattr(os.lstat(candidate), "st_file_attributes", 0)
+    if candidate_attributes & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
+        raise ValueError("registered target is a reparse point")
+    resolved = candidate.resolve(strict=True)
+    if resolved.name.casefold() != ONENOTE_PROCESS_NAME.casefold() or not resolved.is_file():
+        raise ValueError("registered target is not ONENOTE.EXE")
+    resolved_attributes = getattr(os.lstat(resolved), "st_file_attributes", 0)
+    if resolved_attributes & 0x400:  # FILE_ATTRIBUTE_REPARSE_POINT
+        raise ValueError("registered target is a reparse point")
+    return resolved
+
+
+def resolve_onenote_executable() -> Path:
+    """Resolve a trusted registered ONENOTE.EXE without COM activation."""
+
+    if sys.platform != "win32":
+        raise OneNoteDesktopExecutableError(
+            "OneNote Desktop executable resolution is only supported on Windows.",
+            operation="launch_onenote_gui",
+        )
+    try:
+        import winreg
+
+        resolved = _resolve_registered_onenote_localserver(winreg)
+        if resolved is not None:
+            return resolved
+    except OneNoteDesktopExecutableError:
+        raise
+    except Exception as exc:
+        raise OneNoteDesktopExecutableError(
+            "The registered OneNote Desktop executable could not be inspected safely.",
+            operation="launch_onenote_gui",
+        ) from exc
+    raise OneNoteDesktopExecutableError(
+        "A trusted registered OneNote Desktop executable was not found.",
+        operation="launch_onenote_gui",
+    )
+
+
+def _resolve_registered_onenote_localserver(winreg: Any) -> Path | None:
+    """Resolve the exact ProgID -> CLSID -> LocalServer32 registration chain."""
+
+    access_modes = [winreg.KEY_READ]
+    for view in (
+        getattr(winreg, "KEY_WOW64_64KEY", 0),
+        getattr(winreg, "KEY_WOW64_32KEY", 0),
+    ):
+        access = winreg.KEY_READ | view
+        if view and access not in access_modes:
+            access_modes.append(access)
+    for access in access_modes:
+        for application in ("OneNote.Application", "OneNote.Application.15"):
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_CLASSES_ROOT,
+                    f"{application}\\CLSID",
+                    0,
+                    access,
+                ) as key:
+                    clsid, clsid_type = winreg.QueryValueEx(key, None)
+                if clsid_type != winreg.REG_SZ or re.fullmatch(
+                    r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+                    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}",
+                    str(clsid),
+                ) is None:
+                    continue
+                with winreg.OpenKey(
+                    winreg.HKEY_CLASSES_ROOT,
+                    f"CLSID\\{clsid}\\LocalServer32",
+                    0,
+                    access,
+                ) as key:
+                    value, value_type = winreg.QueryValueEx(key, None)
+                if value_type not in {winreg.REG_SZ, winreg.REG_EXPAND_SZ}:
+                    continue
+                if value_type == winreg.REG_EXPAND_SZ:
+                    value = os.path.expandvars(str(value))
+                return _registered_executable(str(value))
+            except (FileNotFoundError, OSError, ValueError):
+                continue
+    return None
+
+
+def _start_onenote_process(executable: Path) -> None:
+    try:
+        subprocess.Popen(
+            [str(executable)],
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except Exception as exc:
+        raise OneNoteDesktopLaunchError(
+            "OneNote Desktop could not be started by the explicit launch request.",
+            operation="launch_onenote_gui",
+        ) from exc
+
+
+def launch_onenote_gui(
+    *,
+    probe: Any = probe_onenote_desktop,
+    resolver: Any = resolve_onenote_executable,
+    process_launcher: Any = _start_onenote_process,
+    clock: Any = time.monotonic,
+    sleeper: Any = time.sleep,
+    timeout_seconds: float = ONENOTE_GUI_LAUNCH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    """Start OneNote once only when no process is running, then observe readiness."""
+
+    initial = probe()
+    if initial.ready:
+        return {
+            "status": "already_running",
+            "launch_attempted": False,
+            "launch_attempts": 0,
+            "ready": True,
+            "onenote_desktop": initial.as_dict(),
+        }
+    if initial.process_running:
+        raise OneNoteDesktopWindowUnavailableError(
+            "OneNote Desktop is running without a supported visible GUI window.",
+            operation="launch_onenote_gui",
+            details={"onenote_desktop": initial.as_dict(), "launch_attempts": 0},
+        )
+
+    executable = resolver()
+    process_launcher(executable)
+    deadline = clock() + max(0.1, float(timeout_seconds))
+    last = initial
+    while clock() < deadline:
+        last = probe()
+        if last.ready:
+            return {
+                "status": "started",
+                "launch_attempted": True,
+                "launch_attempts": 1,
+                "ready": True,
+                "onenote_desktop": last.as_dict(),
+            }
+        sleeper(min(ONENOTE_GUI_READINESS_POLL_SECONDS, max(0.0, deadline - clock())))
+    raise OneNoteDesktopLaunchTimeoutError(
+        "OneNote Desktop did not reach visible-GUI readiness within the launch budget.",
+        operation="launch_onenote_gui",
+        details={"onenote_desktop": last.as_dict(), "launch_attempts": 1},
+    )
+
+
 __all__ = [
     "ONENOTE_PROCESS_NAME",
+    "ONENOTE_GUI_LAUNCH_TIMEOUT_SECONDS",
     "OneNoteDesktopState",
+    "launch_onenote_gui",
     "probe_onenote_desktop",
     "require_onenote_desktop",
+    "resolve_onenote_executable",
 ]

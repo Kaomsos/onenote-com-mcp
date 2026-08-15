@@ -658,7 +658,6 @@ def test_close_is_bound_to_exact_lease_and_preserves_files(tmp_path) -> None:
 def _production_close_result(**overrides):
     result = {
         "ok": True,
-        "complete": True,
         "closed": True,
         "item": {
             "id": "notebook-id",

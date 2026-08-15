@@ -203,7 +203,7 @@ class OneNoteConvergenceScenario(Scenario):
 
         synced = await call_with_result_evidence(
             client,
-            "sync_notebook",
+            "request_notebook_sync",
             {"notebook_id": notebook_id},
             out / "sync-result.json",
         )
@@ -213,12 +213,12 @@ class OneNoteConvergenceScenario(Scenario):
             or synced.get("completion_observable") is not False
         ):
             raise InvariantFailure(
-                "sync_notebook must report accepted without claiming completion."
+                "request_notebook_sync must report accepted without claiming completion."
             )
         effect_evidence = {
             "sync": _require_runtime_execution(
                 synced,
-                "sync_notebook",
+                "request_notebook_sync",
                 kind="lifecycle",
                 backend="onenote_com",
                 observed_outcome="accepted_completion_unobservable",
@@ -234,7 +234,7 @@ class OneNoteConvergenceScenario(Scenario):
             client,
             "create_notebook",
             {
-                "name_or_path": created_notebook_name,
+                "name": created_notebook_name,
                 "base_folder": str(created_notebook_path.parent),
             },
             out / "create-notebook-result.json",
@@ -290,12 +290,10 @@ class OneNoteConvergenceScenario(Scenario):
         published_path = (out / "published-anchor.pdf").resolve()
         published = await call_with_result_evidence(
             client,
-            "publish_object",
+            "export_object_to_pdf",
             {
                 "object_id": first["id"],
                 "target_path": str(published_path),
-                "format": "pdf",
-                "overwrite": False,
             },
             out / "publish-result.json",
         )
@@ -304,11 +302,11 @@ class OneNoteConvergenceScenario(Scenario):
             or not published_path.is_file()
         ):
             raise InvariantFailure(
-                "publish_object did not create the exact run-scoped filesystem target."
+                "export_object_to_pdf did not create the exact run-scoped filesystem target."
             )
         effect_evidence["publish"] = _require_runtime_execution(
             published,
-            "publish_object",
+            "export_object_to_pdf",
             kind="filesystem_effect",
             backend="filesystem",
             observed_outcome="filesystem_effect_completed",
@@ -335,28 +333,11 @@ class OneNoteConvergenceScenario(Scenario):
         hyperlink = await call_with_result_evidence(
             client,
             "get_hyperlink",
-            {"object_id": first["id"], "page_content_object_id": "", "web": False},
+            {"object_id": first["id"], "link_type": "desktop"},
             out / "hyperlink-result.json",
         )
-        navigation_url = str(hyperlink.get("hyperlink", ""))
-        if not navigation_url:
+        if not str(hyperlink.get("hyperlink", "")):
             raise InvariantFailure("get_hyperlink omitted the exact navigation URL.")
-        navigated_url = await call_with_result_evidence(
-            client,
-            "navigate_to_url",
-            {"url": navigation_url, "new_window": False},
-            out / "navigate-url-result.json",
-        )
-        if navigated_url.get("navigated") is not True:
-            raise InvariantFailure("navigate_to_url did not report action acceptance.")
-        effect_evidence["navigate_url"] = _require_runtime_execution(
-            navigated_url,
-            "navigate_to_url",
-            kind="ui_effect",
-            backend="windows_ui",
-            observed_outcome="action_accepted",
-            attempts=0,
-        )
 
         created = await call_with_result_evidence(
             client,
@@ -384,7 +365,7 @@ class OneNoteConvergenceScenario(Scenario):
         renamed_title = "03-Convergence-Probe-Renamed"
         titled = await call_with_result_evidence(
             client,
-            "update_page_title",
+            "rename_page",
             {
                 "page_id": created_id,
                 "title": renamed_title,
@@ -395,8 +376,8 @@ class OneNoteConvergenceScenario(Scenario):
             out / "title-result.json",
         )
         evidence["title"] = {
-            "convergence": _require_convergence(titled, "update_page_title"),
-            "attempt": _require_attempt_contract(titled, "update_page_title"),
+            "convergence": _require_convergence(titled, "rename_page"),
+            "attempt": _require_attempt_contract(titled, "rename_page"),
         }
         titled_item = titled.get("item")
         if not isinstance(titled_item, dict) or titled_item.get("title") != renamed_title:
@@ -430,7 +411,7 @@ class OneNoteConvergenceScenario(Scenario):
                 "replace_page_body omitted its verified Page identity or replacement result."
             )
         objects_before_append = await client.call_tool(
-            "get_page_objects", {"page_id": created_id}
+            "list_page_content_objects", {"page_id": created_id}
         )
         before_object_ids = {
             str(item["id"])
@@ -439,7 +420,7 @@ class OneNoteConvergenceScenario(Scenario):
         }
         appended = await call_with_result_evidence(
             client,
-            "append_to_page",
+            "append_page_content",
             {
                 "page_id": created_id,
                 "content": "Second convergence marker",
@@ -451,15 +432,15 @@ class OneNoteConvergenceScenario(Scenario):
             out / "append-result.json",
         )
         evidence["page_update"] = {
-            "convergence": _require_convergence(appended, "append_to_page"),
-            "attempt": _require_attempt_contract(appended, "append_to_page"),
+            "convergence": _require_convergence(appended, "append_page_content"),
+            "attempt": _require_attempt_contract(appended, "append_page_content"),
         }
 
         appended_item = appended.get("item")
         if not isinstance(appended_item, dict):
             raise InvariantFailure("Append response omitted the stable Page identity.")
         objects_after_append = await client.call_tool(
-            "get_page_objects", {"page_id": created_id}
+            "list_page_content_objects", {"page_id": created_id}
         )
         fresh_deletable = [
             item
@@ -476,10 +457,10 @@ class OneNoteConvergenceScenario(Scenario):
         content_object_id = str(fresh_deletable[0]["delete_target_id"])
         content_deleted = await call_with_result_evidence(
             client,
-            "delete_page_content",
+            "delete_page_content_object",
             {
                 "page_id": created_id,
-                "object_id": content_object_id,
+                "page_content_object_id": content_object_id,
                 "expected_title": appended_item["title"],
                 "expected_section_id": section["id"],
                 "expected_modified": appended_item.get("modified"),
@@ -488,10 +469,10 @@ class OneNoteConvergenceScenario(Scenario):
         )
         evidence["content_delete"] = {
             "convergence": _require_convergence(
-                content_deleted, "delete_page_content"
+                content_deleted, "delete_page_content_object"
             ),
             "attempt": _require_attempt_contract(
-                content_deleted, "delete_page_content"
+                content_deleted, "delete_page_content_object"
             ),
         }
         after_content_delete = await capture_snapshot(client, notebook_id)

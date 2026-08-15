@@ -20,10 +20,124 @@ from local_onenote_mcp.services.operation_runtime import (
     OperationSpec,
     OperationStage,
     STRATEGIES,
+    record_backend_call,
 )
 from local_onenote_mcp.tools import DEFAULT_TOOLS
 from local_onenote_mcp.tools.context import get_runtime
-from local_onenote_mcp.tools.hierarchy import get_notebook
+from local_onenote_mcp.tool_surface import (
+    INTERNAL_CAPABILITY_NAMES,
+    LEGACY_PUBLIC_NAMES,
+    USER_TOOL_NAME_SET,
+)
+from local_onenote_mcp.tools.hierarchy import get_notebook_metadata
+
+
+PUBLIC_AUTHORIZATION_ENV = {
+    "writes": "LOCAL_ONENOTE_ENABLE_WRITES",
+    "deletes": "LOCAL_ONENOTE_ENABLE_DELETES",
+    "organize": "LOCAL_ONENOTE_ENABLE_ORGANIZE",
+    "copy": "LOCAL_ONENOTE_ENABLE_COPY",
+    "local_file_io": "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO",
+    "ui_control": "LOCAL_ONENOTE_ENABLE_UI_CONTROL",
+    "notebook_lifecycle": "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE",
+}
+
+REQUIRED_GATES_BY_AUTHORIZATION = {
+    "none": (),
+    "write": ("writes",),
+    "delete": ("deletes",),
+    "write_delete": ("writes", "deletes"),
+    "organize": ("writes", "organize"),
+    "copy": ("writes", "copy"),
+    "move": ("writes", "copy", "deletes"),
+    "local_file": ("local_file_io",),
+    "write_local_file": ("writes", "local_file_io"),
+    "ui_control": ("ui_control",),
+    "notebook_lifecycle": ("notebook_lifecycle",),
+}
+
+EXPECTED_OPERATIONS_BY_AUTHORIZATION = {
+    "none": (
+        "health_check",
+        "list_notebooks",
+        "get_hierarchy_path",
+        "expand_notebook",
+        "expand_section_group",
+        "expand_section",
+        "expand_page",
+        "expand_hierarchy",
+        "get_notebook_metadata",
+        "get_section_group_metadata",
+        "get_section_metadata",
+        "get_page_metadata",
+        "query_notebook",
+        "query_section_group",
+        "query_section",
+        "query_page",
+        "search_pages",
+        "get_page_text",
+        "list_page_content_objects",
+        "get_page_object_binary",
+        "get_hyperlink",
+    ),
+    "write": (
+        "create_notebook",
+        "create_section_group",
+        "create_section",
+        "create_page",
+        "rename_page",
+        "rename_section_group",
+        "rename_section",
+        "reorder_page",
+        "reorder_section",
+        "append_page_content",
+    ),
+    "delete": (
+        "delete_page_content_object",
+        "delete_page",
+        "delete_section",
+        "delete_section_group",
+    ),
+    "write_delete": ("replace_page_body",),
+    "organize": (
+        "reparent_page",
+        "reparent_section",
+        "reparent_section_group",
+    ),
+    "copy": (
+        "copy_page",
+        "copy_section",
+        "copy_section_group",
+        "copy_notebook",
+    ),
+    "move": ("move_page", "move_section", "move_section_group"),
+    "local_file": ("export_object_to_pdf",),
+    "write_local_file": ("add_page_image_from_file",),
+    "ui_control": ("launch_onenote_gui", "navigate_to"),
+    "notebook_lifecycle": ("request_notebook_sync", "close_notebook"),
+}
+
+EXPECTED_AUTHORIZATION_BY_OPERATION = {
+    operation: authorization
+    for authorization, operations in EXPECTED_OPERATIONS_BY_AUTHORIZATION.items()
+    for operation in operations
+}
+
+AUTHORIZATION_ALLOW_CASES = tuple(
+    pytest.param(operation, authorization, id=operation)
+    for operation, authorization in EXPECTED_AUTHORIZATION_BY_OPERATION.items()
+)
+
+AUTHORIZATION_DENY_CASES = tuple(
+    pytest.param(
+        operation,
+        authorization,
+        missing_gate,
+        id=f"{operation}-missing-{missing_gate}",
+    )
+    for operation, authorization in EXPECTED_AUTHORIZATION_BY_OPERATION.items()
+    for missing_gate in REQUIRED_GATES_BY_AUTHORIZATION[authorization]
+)
 
 
 def mutation_policy(name: str = "test_mutation") -> MutationOperationPolicy:
@@ -53,6 +167,7 @@ def binding_runtime(
     policy = mutation_policy(name) if kind is OperationKind.MUTATION else None
     spec = OperationSpec(
         name=name,
+        category="test",
         kind=kind,
         capability=name,
         coordination=coordination,
@@ -75,6 +190,87 @@ def binding_runtime(
     )
 
 
+def mock_production_operation_runtime(operation: str, handler) -> OperationRuntime:
+    source = get_runtime().registry.resolve(operation)
+    registry = OperationRegistry()
+    registry.register(source.spec, source.strategy, handler, source.authorizer)
+    return OperationRuntime(
+        registry,
+        ReadWriteCoordinator(default_timeout_seconds=1),
+    )
+
+
+def set_public_authorization_environment(monkeypatch, enabled_gates) -> None:
+    enabled = set(enabled_gates)
+    for gate, env_name in PUBLIC_AUTHORIZATION_ENV.items():
+        monkeypatch.setenv(env_name, "true" if gate in enabled else "false")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES", "false")
+
+
+def test_public_operation_authorization_mapping_is_frozen_for_all_52_tools() -> None:
+    actual = {
+        operation: binding.spec.authorization_policy
+        for operation, binding in get_runtime().registry.bindings.items()
+    }
+
+    assert len(EXPECTED_AUTHORIZATION_BY_OPERATION) == 52
+    assert len(AUTHORIZATION_ALLOW_CASES) == 52
+    assert len(AUTHORIZATION_DENY_CASES) == 46
+    assert actual == EXPECTED_AUTHORIZATION_BY_OPERATION
+
+
+@pytest.mark.parametrize(
+    ("operation", "authorization"), AUTHORIZATION_ALLOW_CASES
+)
+def test_each_public_operation_accepts_its_exact_minimum_authorization(
+    monkeypatch, operation, authorization
+) -> None:
+    required_gates = REQUIRED_GATES_BY_AUTHORIZATION[authorization]
+    set_public_authorization_environment(monkeypatch, required_gates)
+    handler_calls = []
+
+    def handler(arguments):
+        handler_calls.append(dict(arguments))
+        record_backend_call("mock_backend")
+        return {}
+
+    runtime = mock_production_operation_runtime(operation, handler)
+    outcome = runtime.execute(operation, {})
+
+    assert outcome.success is True
+    assert outcome.error is None
+    assert outcome.backend_calls == 1
+    assert handler_calls == [{}]
+
+
+@pytest.mark.parametrize(
+    ("operation", "authorization", "missing_gate"), AUTHORIZATION_DENY_CASES
+)
+def test_each_required_gate_rejects_before_backend_for_every_public_operation(
+    monkeypatch, operation, authorization, missing_gate
+) -> None:
+    required_gates = set(REQUIRED_GATES_BY_AUTHORIZATION[authorization])
+    assert missing_gate in required_gates
+    enabled_gates = set(PUBLIC_AUTHORIZATION_ENV) - {missing_gate}
+    set_public_authorization_environment(monkeypatch, enabled_gates)
+    handler_calls = []
+
+    def handler(arguments):
+        handler_calls.append(dict(arguments))
+        raise AssertionError("authorization rejection must prevent Handler execute")
+
+    runtime = mock_production_operation_runtime(operation, handler)
+    generation = runtime.coordinator.generation
+    outcome = runtime.execute(operation, {})
+
+    assert outcome.success is False
+    assert isinstance(outcome.error, PermissionError)
+    assert outcome.stage is OperationStage.AUTHORIZATION
+    assert outcome.backend_calls == 0
+    assert handler_calls == []
+    assert outcome.generation_before == outcome.generation_after == generation
+
+
 def test_registry_is_the_unique_default_and_advanced_tool_inventory() -> None:
     registry = get_runtime().registry
     default_names = {tool.__name__ for tool in DEFAULT_TOOLS}
@@ -83,7 +279,10 @@ def test_registry_is_the_unique_default_and_advanced_tool_inventory() -> None:
     assert registry.names_for_profile("default") == default_names
     assert registry.names_for_profile("advanced") == advanced_names
     assert advanced_names == set()
-    assert len(registry.bindings) == len(default_names) == 56
+    assert len(registry.bindings) == len(default_names) == 52
+    assert default_names == USER_TOOL_NAME_SET
+    assert INTERNAL_CAPABILITY_NAMES.isdisjoint(default_names | advanced_names)
+    assert LEGACY_PUBLIC_NAMES.isdisjoint(default_names | advanced_names)
     assert {
         "plan_copy",
         "plan_move_page",
@@ -124,7 +323,10 @@ def test_every_non_read_operation_has_a_named_black_box_manual_scenario() -> Non
         for tool in scenario.spec.tool_allowlist
     }
 
-    assert non_read - covered == set()
+    # GUI launch has a separate human acceptance flow because the standard
+    # runner must prove OneNote is already running before any Scenario starts.
+    assert non_read - covered == {"launch_onenote_gui"}
+    assert "launch_onenote_gui" not in covered
 
 
 def test_manual_validation_never_imports_the_operation_control_plane() -> None:
@@ -167,13 +369,13 @@ def test_manual_validation_never_imports_the_operation_control_plane() -> None:
 def test_registry_covers_five_effect_kinds_without_mutation_semantic_leakage() -> None:
     bindings = get_runtime().registry.bindings
 
-    assert bindings["get_notebook"].spec.kind is OperationKind.READ
-    assert bindings["get_notebook"].spec.coordination is CoordinationMode.SHARED
+    assert bindings["get_notebook_metadata"].spec.kind is OperationKind.READ
+    assert bindings["get_notebook_metadata"].spec.coordination is CoordinationMode.SHARED
     assert bindings["rename_section"].spec.kind is OperationKind.MUTATION
     assert bindings["rename_section"].spec.coordination is CoordinationMode.EXCLUSIVE
-    assert bindings["sync_notebook"].spec.kind is OperationKind.LIFECYCLE
-    assert bindings["publish_object"].spec.kind is OperationKind.FILESYSTEM_EFFECT
-    assert bindings["publish_object"].spec.backend is BackendCategory.FILESYSTEM
+    assert bindings["request_notebook_sync"].spec.kind is OperationKind.LIFECYCLE
+    assert bindings["export_object_to_pdf"].spec.kind is OperationKind.FILESYSTEM_EFFECT
+    assert bindings["export_object_to_pdf"].spec.backend is BackendCategory.FILESYSTEM
     assert bindings["navigate_to"].spec.kind is OperationKind.UI_EFFECT
     assert bindings["navigate_to"].spec.backend is BackendCategory.WINDOWS_UI
 
@@ -186,9 +388,9 @@ def test_registry_covers_five_effect_kinds_without_mutation_semantic_leakage() -
         OperationStage.CONVERGE,
         OperationStage.POSTCONDITION,
     )
-    assert OperationStage.RECONCILE not in bindings["get_notebook"].strategy.stages
-    assert OperationStage.RECONCILE not in bindings["sync_notebook"].strategy.stages
-    assert OperationStage.RECONCILE not in bindings["publish_object"].strategy.stages
+    assert OperationStage.RECONCILE not in bindings["get_notebook_metadata"].strategy.stages
+    assert OperationStage.RECONCILE not in bindings["request_notebook_sync"].strategy.stages
+    assert OperationStage.RECONCILE not in bindings["export_object_to_pdf"].strategy.stages
     assert OperationStage.RECONCILE not in bindings["navigate_to"].strategy.stages
 
 
@@ -200,20 +402,21 @@ def test_registry_authorization_catalog_is_explicit_for_risk_classes() -> None:
     assert bindings["replace_page_body"].spec.authorization_policy == "write_delete"
     assert (
         bindings["reparent_page"].spec.authorization_policy
-        == "experimental_reparent"
+        == "organize"
     )
-    assert bindings["copy_page"].spec.authorization_policy == "experimental_copy"
-    assert bindings["move_page"].spec.authorization_policy == "move_page"
-    assert bindings["move_section"].spec.authorization_policy == "move_containers"
-    assert bindings["close_notebook"].spec.authorization_policy == "write"
-    assert bindings["sync_notebook"].spec.authorization_policy == "none"
+    assert bindings["copy_page"].spec.authorization_policy == "copy"
+    assert bindings["move_page"].spec.authorization_policy == "move"
+    assert bindings["move_section"].spec.authorization_policy == "move"
+    assert bindings["close_notebook"].spec.authorization_policy == "notebook_lifecycle"
+    assert bindings["request_notebook_sync"].spec.authorization_policy == "notebook_lifecycle"
+    assert bindings["launch_onenote_gui"].spec.authorization_policy == "ui_control"
 
 
 def test_production_authorization_rejects_before_coordination_or_argument_access(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_WRITES", raising=False)
-    monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", raising=False)
+    monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_COPY", raising=False)
     runtime = get_runtime()
     generation = runtime.coordinator.generation
 
@@ -226,10 +429,25 @@ def test_production_authorization_rejects_before_coordination_or_argument_access
     assert outcome.generation_before == outcome.generation_after == generation
 
 
+def test_launch_authorization_rejects_before_any_process_side_effect(monkeypatch) -> None:
+    monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_UI_CONTROL", raising=False)
+    runtime = get_runtime()
+    generation = runtime.coordinator.generation
+
+    outcome = runtime.execute("launch_onenote_gui", {})
+
+    assert outcome.success is False
+    assert isinstance(outcome.error, PermissionError)
+    assert outcome.stage is OperationStage.AUTHORIZATION
+    assert outcome.backend_calls == 0
+    assert outcome.generation_before == outcome.generation_after == generation
+
+
 def test_registry_rejects_duplicate_operations_and_incomplete_profile() -> None:
     registry = OperationRegistry()
     spec = OperationSpec(
         name="read",
+        category="test",
         kind=OperationKind.READ,
         capability="read",
         coordination=CoordinationMode.SHARED,
@@ -247,7 +465,7 @@ def test_registry_rejects_duplicate_operations_and_incomplete_profile() -> None:
         raise AssertionError("Duplicate operation registration must fail closed.")
 
     try:
-        registry.audit_public_tools({"missing"}, profile="default")
+        registry.audit_public_tools(("missing",), profile="default")
     except RuntimeError as exc:
         assert "unregistered" in str(exc)
     else:
@@ -519,11 +737,11 @@ def test_tool_response_adds_stable_execution_projection(monkeypatch) -> None:
         },
     )
 
-    result = asyncio.run(get_notebook("notebook-id"))
+    result = asyncio.run(get_notebook_metadata("notebook-id"))
 
     assert result["ok"] is True
-    assert result["item"]["id"] == "notebook-id"
-    assert result["execution"]["operation"] == "get_notebook"
+    assert result["result"]["item"]["id"] == "notebook-id"
+    assert result["execution"]["operation"] == "get_notebook_metadata"
     assert result["execution"]["stage"] == "finalize"
     assert result["execution"]["kind"] == "read"
     assert result["execution"]["backend_category"] == "onenote_com"

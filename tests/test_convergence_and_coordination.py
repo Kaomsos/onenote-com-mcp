@@ -141,10 +141,11 @@ def test_modal_hresult_is_typed_and_not_marked_for_automatic_replay():
 
     assert isinstance(error, OneNoteModalUIBlockedError)
     response = caught(error)
-    assert response["code"] == "onenote_modal_ui_blocked"
-    assert response["hresult"] == "0x80042030"
-    assert response["retryability"] == "after_user_action"
-    assert response["reconciliation"] == "indeterminate"
+    assert response["error"]["code"] == "onenote_modal_ui_blocked"
+    details = response["error"]["details"]
+    assert details["hresult"] == "0x80042030"
+    assert details["retryability"] == "after_user_action"
+    assert details["reconciliation"] == "indeterminate"
 
 
 def test_reconciliation_retries_only_once_after_exact_pre_state():

@@ -74,7 +74,7 @@ matches = parse_hierarchy(find_pages_xml, catalog=catalog)
 - `xml_utils.resolve_item`；
 - 旧 server 内 `_hierarchy_items/_resolve_id/_resolve_item/_find_item_by_*` 兼容链。
 
-兼容的 `resolve_identifier` MCP 工具仍保留，由 `tools.system → HierarchyService → resolve_resource` 调用 typed snapshot，返回值不再经历旧字段模型。
+`resolve_identifier` 只保留为 Internal & Incubating capability，不注册 MCP Tool。公开发现链使用 `list_notebooks`、Query、Search、Metadata Get 与 Expand，并在 mutation 前固定 exact ID。
 
 ## 6. 测试责任
 

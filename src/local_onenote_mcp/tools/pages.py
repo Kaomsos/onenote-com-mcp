@@ -31,16 +31,10 @@ SearchScope = Annotated[
 ]
 
 
-async def get_page(page_id: str) -> dict[str, Any]:
+async def get_page_metadata(page_id: str) -> dict[str, Any]:
     """Get Page metadata only."""
 
-    return invoke("get_page", page_id=page_id)
-
-
-async def get_page_xml(page_id: str, page_info: str = "basic") -> dict[str, Any]:
-    """Return raw OneNote XML for one Page."""
-
-    return invoke("get_page_xml", page_id=page_id, page_info=page_info)
+    return invoke("get_page_metadata", page_id=page_id)
 
 
 async def get_page_text(page_id: str, max_chars: int = MAX_TEXT_CHARS) -> dict[str, Any]:
@@ -49,16 +43,22 @@ async def get_page_text(page_id: str, max_chars: int = MAX_TEXT_CHARS) -> dict[s
     return invoke("get_page_text", page_id=page_id, max_chars=max_chars)
 
 
-async def get_page_objects(page_id: str) -> dict[str, Any]:
+async def list_page_content_objects(page_id: str) -> dict[str, Any]:
     """List typed PageContentObjects."""
 
-    return invoke("get_page_objects", page_id=page_id)
+    return invoke("list_page_content_objects", page_id=page_id)
 
 
-async def get_binary_content(page_id: str, callback_id: str) -> dict[str, Any]:
-    """Read validated binary Page content."""
+async def get_page_object_binary(
+    page_id: str, page_content_object_id: str
+) -> dict[str, Any]:
+    """Read one exact Page object binary after ownership validation and within the hard response budget."""
 
-    return invoke("get_binary_content", page_id=page_id, callback_id=callback_id)
+    return invoke(
+        "get_page_object_binary",
+        page_id=page_id,
+        page_content_object_id=page_content_object_id,
+    )
 
 
 async def search_pages(
@@ -82,4 +82,10 @@ async def search_pages(
     )
 
 
-TOOLS = [get_page, get_page_xml, get_page_text, get_page_objects, get_binary_content, search_pages]
+TOOLS = [
+    get_page_metadata,
+    get_page_text,
+    list_page_content_objects,
+    get_page_object_binary,
+    search_pages,
+]

@@ -630,8 +630,8 @@ def test_reparent_page_with_level_runner_verifies_both_ranges_and_independent_po
         "root-only-default",
         "full-subtree",
     ]
-    assert "include_descendants" not in client.calls[0]
-    assert client.calls[1]["include_descendants"] is True
+    assert "page_scope" not in client.calls[0]
+    assert client.calls[1]["page_scope"] == "indentation_subtree"
     assert result["cases"][1]["target_parent_page_ids"] == {
         "new-tree-selected": None,
         "new-tree-child-a": "new-tree-selected",

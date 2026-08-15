@@ -12,10 +12,38 @@ from local_onenote_mcp.onenote_errors import (
 )
 from local_onenote_mcp.policy import SearchBudget
 from local_onenote_mcp.services import PartialFailure
-from local_onenote_mcp.tools.mutations import create_page, create_section, delete_page_content
-from local_onenote_mcp.tools.operations import navigate_to, publish_object, sync_notebook
+from local_onenote_mcp.tool_surface import (
+    INTERNAL_CAPABILITIES,
+    INTERNAL_CAPABILITY_NAMES,
+    LEGACY_PUBLIC_NAMES,
+    USER_TOOL_NAMES,
+)
+from local_onenote_mcp.tools.mutations import (
+    create_page,
+    create_section,
+    delete_page_content_object,
+)
+from local_onenote_mcp.tools.operations import (
+    export_object_to_pdf,
+    navigate_to,
+    request_notebook_sync,
+)
 from local_onenote_mcp.tools.pages import RootSearchScope, StartNodeSearchScope, search_pages
-from local_onenote_mcp.tools.system import health_check, resolve_identifier
+from local_onenote_mcp.tools.system import health_check
+
+
+def success_data(envelope):
+    assert set(envelope) == {"ok", "result", "warnings", "execution"}
+    assert envelope["ok"] is True
+    assert isinstance(envelope["result"], dict)
+    return envelope["result"]
+
+
+def failure_error(envelope):
+    assert set(envelope) == {"ok", "error", "execution"}
+    assert envelope["ok"] is False
+    assert set(envelope["error"]) == {"code", "message", "details"}
+    return envelope["error"]
 
 
 def test_health_check_includes_runtime_diagnostics(monkeypatch):
@@ -33,11 +61,9 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
         ],
     )
 
-    result = asyncio.run(health_check())
-
-    assert result["ok"] is True
+    envelope = asyncio.run(health_check())
+    result = success_data(envelope)
     assert result["server"] == "local-onenote"
-    assert result["identifier_resolution_order"] == ["id", "exact_path", "unique_name"]
     assert result["search_backend"] == "onenote_index"
     assert result["search_scope_modes"] == ["root", "start_node"]
     assert result["search_pagination"] == {
@@ -63,6 +89,7 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
     assert result["hierarchy_browsing"] == {
         "tools": [
             "list_notebooks",
+            "get_hierarchy_path",
             "expand_notebook",
             "expand_section_group",
             "expand_section",
@@ -78,8 +105,8 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
     assert result["content_formats"] == ["plain", "html", "markdown"]
     assert result["operation_runtime"] == {
         "enabled": True,
-        "registered_operations": 56,
-        "default_operations": 56,
+        "registered_operations": 52,
+        "default_operations": 52,
         "advanced_operations": 0,
         "content_free_audit": True,
     }
@@ -140,39 +167,20 @@ def test_health_check_fails_before_com_when_onenote_gui_is_absent(monkeypatch):
         ),
     )
 
-    result = asyncio.run(health_check())
+    result = failure_error(asyncio.run(health_check()))
 
-    assert result["ok"] is False
-    assert result["complete"] is False
     assert result["code"] == "onenote_desktop_not_running"
-    assert result["retryability"] == "after_user_action"
-    assert result["operation"] == "health_preflight"
-    assert result["required_action"] == "start_onenote_desktop_and_retry"
-    assert result["onenote_desktop"]["ready"] is False
+    assert result["details"]["retryability"] == "after_user_action"
+    assert result["details"]["operation"] == "health_preflight"
+    assert result["details"]["required_action"] == "start_onenote_desktop_and_retry"
+    assert result["details"]["onenote_desktop"]["ready"] is False
 
 
-def test_resolve_identifier_returns_single_item(monkeypatch):
-    expected = {"resource_type": "section", "id": "section-id", "path": "NB/Sec", "name": "Sec"}
-
-    def fake_resolve(identifier, resource_type=None):
-        assert identifier == "NB/Sec"
-        assert resource_type == "section"
-        return expected
-
-    monkeypatch.setattr(server.services.hierarchy, "resolve", fake_resolve)
-
-    result = asyncio.run(resolve_identifier("NB/Sec", "section"))
-
-    assert result["ok"] is True
-    assert result["item"] == expected
-    assert result["identifier_resolution_order"] == ["id", "exact_path", "unique_name"]
-
-
-def test_resolve_identifier_rejects_unknown_type():
-    result = asyncio.run(resolve_identifier("NB/Sec", "folder"))
-
-    assert result["ok"] is False
-    assert "item_type must be empty or one of" in result["error"]
+def test_internal_capability_catalog_is_non_public_and_complete():
+    assert {item.name for item in INTERNAL_CAPABILITIES} == INTERNAL_CAPABILITY_NAMES
+    assert INTERNAL_CAPABILITY_NAMES.isdisjoint(server.mcp._tool_manager._tools)
+    assert all(item.reason and item.internal_callers and item.promotion_requirements for item in INTERNAL_CAPABILITIES)
+    assert LEGACY_PUBLIC_NAMES.isdisjoint(server.mcp._tool_manager._tools)
 
 
 def test_without_recycle_bin_removes_container_and_children():
@@ -209,7 +217,7 @@ def test_search_pages_forwards_strict_scope_and_pagination(monkeypatch):
 
     monkeypatch.setattr(server.services.search, "search", fake_search)
 
-    result = asyncio.run(
+    result = success_data(asyncio.run(
         search_pages(
             "needle",
             StartNodeSearchScope(mode="start_node", start_node_id="section-id"),
@@ -217,9 +225,7 @@ def test_search_pages_forwards_strict_scope_and_pagination(monkeypatch):
             page_size=3,
             include_snippets=False,
         )
-    )
-
-    assert result["ok"] is True
+    ))
     assert result["pages"] == expected["pages"]
     assert result["search_backend"] == "onenote_index"
 
@@ -316,8 +322,10 @@ def test_metadata_query_schemas_are_typed_strict_and_bounded():
         assert properties["page_size"]["default"] == 200
         assert properties["page_size"]["minimum"] == 1
         assert properties["page_size"]["maximum"] == 200
-        assert "pattern" in properties["modified_after"]
-        assert "pattern" in properties["modified_before"]
+        assert "pattern" in properties["modified_after"]["anyOf"][0]
+        assert "pattern" in properties["modified_before"]["anyOf"][0]
+        assert properties["modified_after"]["default"] is None
+        assert properties["modified_before"]["default"] is None
         description = tool.description.casefold()
         assert "hierarchy metadata" in description
         assert "page body text" in description
@@ -341,16 +349,17 @@ def test_metadata_query_schemas_are_typed_strict_and_bounded():
         page_properties
     )
     assert "parent_id" not in page_properties
-    assert page_properties["section_id"]["pattern"] == r"^$|.*\S.*"
-    assert page_properties["parent_page_id"]["pattern"] == r"^$|.*\S.*"
+    assert page_properties["section_id"]["default"] is None
+    assert page_properties["parent_page_id"]["default"] is None
     for name in ("query_section_group", "query_section"):
-        assert tools[name].parameters["properties"]["parent_id"]["pattern"] == r"^$|.*\S.*"
+        assert tools[name].parameters["properties"]["parent_id"]["default"] is None
 
 
 def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
-    assert len(names) == 56
+    assert tuple(server.mcp._tool_manager._tools) == USER_TOOL_NAMES
+    assert len(names) == 52
     assert {
         "query_notebook",
         "query_section_group",
@@ -374,6 +383,8 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
         "list_pages",
         "get_tree",
     }.isdisjoint(names)
+    assert INTERNAL_CAPABILITY_NAMES.isdisjoint(names)
+    assert LEGACY_PUBLIC_NAMES.isdisjoint(names)
     assert {
         "reorder_section",
         "reparent_page",
@@ -427,7 +438,7 @@ def test_raw_xml_switch_does_not_create_a_production_advanced_profile(monkeypatc
     fake = FakeMCP()
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RAW_XML", "true")
     register_tools(fake, server.services)
-    assert len(fake.names) == 56
+    assert len(fake.names) == 52
     assert {
         "find_meta",
         "open_hierarchy",
@@ -462,13 +473,14 @@ def test_reparent_tool_schemas_require_exact_typed_confirmation():
     for name in ("reparent_page", "reparent_section", "reparent_section_group"):
         assert "xml" not in tools[name].parameters["properties"]
         assert "force" not in tools[name].parameters["properties"]
-    assert tools["reparent_page"].parameters["properties"]["include_descendants"] == {
-        "default": False,
-        "title": "Include Descendants",
-        "type": "boolean",
+    assert tools["reparent_page"].parameters["properties"]["page_scope"] == {
+        "default": "page_only",
+        "enum": ["page_only", "indentation_subtree"],
+        "title": "Page Scope",
+        "type": "string",
     }
     for name in ("reparent_section", "reparent_section_group"):
-        assert "include_descendants" not in tools[name].parameters["properties"]
+        assert "page_scope" not in tools[name].parameters["properties"]
     for name in ("reparent_page", "reparent_section", "reparent_section_group"):
         description = tools[name].description.casefold()
         assert "position" in description
@@ -520,10 +532,10 @@ def test_copy_tool_public_schemas_are_single_call_and_require_exact_confirmation
     for name, required in expected_required.items():
         assert set(tools[name].parameters.get("required", [])) == required
     assert "destination_parent_id" not in tools["copy_notebook"].parameters["properties"]
-    assert tools["copy_page"].parameters["properties"]["include_descendants"]["default"] is False
-    assert tools["move_page"].parameters["properties"]["include_descendants"]["default"] is False
+    assert tools["copy_page"].parameters["properties"]["page_scope"]["default"] == "page_only"
+    assert tools["move_page"].parameters["properties"]["page_scope"]["default"] == "page_only"
     for name in ("copy_section", "copy_section_group", "copy_notebook"):
-        assert "include_descendants" not in tools[name].parameters["properties"]
+        assert "page_scope" not in tools[name].parameters["properties"]
     for name in (
         "copy_page",
         "copy_section",
@@ -549,7 +561,7 @@ def test_container_reorder_tool_schemas_require_exact_confirmation():
         "expected_name",
         "expected_parent_id",
     }
-    assert tools["reorder_section"].parameters["properties"]["after_section_id"]["default"] == ""
+    assert tools["reorder_section"].parameters["properties"]["after_section_id"]["default"] is None
     assert "reorder_section_group" not in tools
 
 
@@ -592,16 +604,16 @@ def test_hierarchy_browsing_schemas_are_exact_and_typed():
     tools = server.mcp._tool_manager._tools
     assert tools["list_notebooks"].parameters.get("properties", {}) == {}
     assert tools["list_notebooks"].parameters.get("required", []) == []
-    for name in (
-        "expand_notebook",
-        "expand_section_group",
-        "expand_section",
-        "expand_page",
+    for name, id_key in (
+        ("expand_notebook", "notebook_id"),
+        ("expand_section_group", "section_group_id"),
+        ("expand_section", "section_id"),
+        ("expand_page", "page_id"),
     ):
         schema = tools[name].parameters
-        assert set(schema["properties"]) == {"id"}
-        assert schema["required"] == ["id"]
-        assert schema["properties"]["id"]["minLength"] == 1
+        assert set(schema["properties"]) == {id_key}
+        assert schema["required"] == [id_key]
+        assert schema["properties"][id_key]["minLength"] == 1
     hierarchy_schema = tools["expand_hierarchy"].parameters
     assert set(hierarchy_schema["properties"]) == {
         "root_id",
@@ -670,6 +682,7 @@ def test_open_hierarchy_none_waits_for_two_live_identity_observations(monkeypatc
 @pytest.mark.write_contract
 def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path):
     captured = {}
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO", "true")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         server.services.hierarchy,
@@ -683,7 +696,7 @@ def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path
         return {"path": params["target_path"]}
 
     monkeypatch.setattr(server.services.operations, "call", fake_call)
-    result = asyncio.run(publish_object("page-id", "exports/out.pdf", format="pdf", overwrite=True))
+    result = asyncio.run(export_object_to_pdf("page-id", "exports/out.pdf"))
 
     expected = tmp_path / "exports" / "out.pdf"
     assert result["ok"] is True
@@ -697,6 +710,7 @@ def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path
 
 @pytest.mark.write_contract
 def test_publish_object_fails_if_backend_does_not_create_exact_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO", "true")
     monkeypatch.setattr(
         server.services.hierarchy,
         "resource",
@@ -713,13 +727,11 @@ def test_publish_object_fails_if_backend_does_not_create_exact_file(monkeypatch,
     )
 
     result = asyncio.run(
-        publish_object(
-            "page-id", str(tmp_path / "missing.pdf"), format="pdf", overwrite=False
-        )
+        export_object_to_pdf("page-id", str(tmp_path / "missing.pdf"))
     )
 
     assert result["ok"] is False
-    assert result["code"] == "backend_error"
+    assert result["error"]["code"] == "backend_error"
     assert result["execution"]["kind"] == "filesystem_effect"
     assert result["execution"]["backend_calls"] == 3
     assert not (tmp_path / "missing.pdf").exists()
@@ -727,6 +739,7 @@ def test_publish_object_fails_if_backend_does_not_create_exact_file(monkeypatch,
 
 @pytest.mark.write_contract
 def test_publish_object_rejects_mismatched_backend_path(monkeypatch, tmp_path):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO", "true")
     requested = tmp_path / "requested.pdf"
     other = tmp_path / "other.pdf"
     monkeypatch.setattr(
@@ -746,15 +759,17 @@ def test_publish_object_rejects_mismatched_backend_path(monkeypatch, tmp_path):
     monkeypatch.setattr(server.services.operations, "call", fake_call)
 
     result = asyncio.run(
-        publish_object("page-id", str(requested), format="pdf", overwrite=False)
+        export_object_to_pdf("page-id", str(requested))
     )
 
     assert result["ok"] is False
-    assert result["code"] == "backend_error"
+    assert result["error"]["code"] == "backend_error"
     assert result["execution"]["backend_calls"] == 2
 
 
 def test_sync_and_navigation_preserve_strategy_specific_public_semantics(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_UI_CONTROL", "true")
     monkeypatch.setattr(
         server.services.hierarchy,
         "resource",
@@ -770,20 +785,20 @@ def test_sync_and_navigation_preserve_strategy_specific_public_semantics(monkeyp
         lambda _operation, **_params: {},
     )
 
-    synced = asyncio.run(sync_notebook("notebook-id"))
+    synced = asyncio.run(request_notebook_sync("notebook-id"))
     navigated = asyncio.run(navigate_to("page-id"))
 
     assert synced["ok"] is True
-    assert synced["complete"] is False
-    assert synced["accepted"] is True
-    assert synced["completion_observable"] is False
+    assert synced["result"]["complete"] is False
+    assert synced["result"]["accepted"] is True
+    assert synced["result"]["completion_observable"] is False
     assert synced["execution"]["kind"] == "lifecycle"
     assert (
         synced["execution"]["observed_outcome"]
         == "accepted_completion_unobservable"
     )
     assert navigated["ok"] is True
-    assert navigated["navigated"] is True
+    assert navigated["result"]["navigated"] is True
     assert navigated["execution"]["kind"] == "ui_effect"
     assert navigated["execution"]["observed_outcome"] == "action_accepted"
 
@@ -798,9 +813,8 @@ def test_create_section_returns_refreshed_current_section_id(monkeypatch):
     monkeypatch.setattr(server.services.mutations, "call", lambda operation, **params: {"object_id": "stale-id"})
     monkeypatch.setattr(server.services.hierarchy, "wait_for_created", lambda *args, **kwargs: refreshed)
 
-    result = asyncio.run(create_section("group-id", "New Sec"))
+    result = success_data(asyncio.run(create_section("group-id", "New Sec")))
 
-    assert result["ok"] is True
     assert result["section_id"] == "current-section-id"
 
 
@@ -1014,10 +1028,9 @@ def test_create_page_twice_with_duplicate_title_returns_distinct_allocated_ids(m
 
     monkeypatch.setattr(server.services.mutations, "call", fake_call)
 
-    first = asyncio.run(create_page("section-id", "Duplicate", content="first"))
-    second = asyncio.run(create_page("section-id", "Duplicate", content="second"))
+    first = success_data(asyncio.run(create_page("section-id", "Duplicate", content="first")))
+    second = success_data(asyncio.run(create_page("section-id", "Duplicate", content="second")))
 
-    assert first["ok"] is True and second["ok"] is True
     assert first["page_id"] == "allocated-1"
     assert second["page_id"] == "allocated-2"
     assert first["page_id"] != second["page_id"]
@@ -1042,12 +1055,11 @@ def test_create_page_reports_allocated_id_when_initial_content_write_fails(monke
 
     monkeypatch.setattr(server.services.mutations, "call", fake_call)
 
-    result = asyncio.run(create_page("section-id", "Title"))
+    error = failure_error(asyncio.run(create_page("section-id", "Title")))
 
-    assert result["ok"] is False
-    assert result["code"] == "partial_failure"
-    assert result["created_ids"] == ["allocated-page-id"]
-    assert result["failed_step"] == "initialize_created_page"
+    assert error["code"] == "partial_failure"
+    assert error["details"]["created_ids"] == ["allocated-page-id"]
+    assert error["details"]["failed_step"] == "initialize_created_page"
 
 
 @pytest.mark.write_contract
@@ -1079,14 +1091,13 @@ def test_create_page_rejects_preexisting_allocated_id_before_content_write(monke
 
     monkeypatch.setattr(server.services.mutations, "call", fake_call)
 
-    result = asyncio.run(create_page("section-id", "Duplicate"))
+    error = failure_error(asyncio.run(create_page("section-id", "Duplicate")))
 
-    assert result["ok"] is False
-    assert result["allocated_ids"] == ["existing-page-id"]
-    assert result["created_ids"] == []
-    assert result["source_touched"] is False
-    assert result["topology_touched"] is False
-    assert result["manual_recovery_required"] is False
+    assert error["details"]["allocated_ids"] == ["existing-page-id"]
+    assert error["details"]["created_ids"] == []
+    assert error["details"]["source_touched"] is False
+    assert error["details"]["topology_touched"] is False
+    assert error["details"]["manual_recovery_required"] is False
 
 
 @pytest.mark.write_contract
@@ -1276,11 +1287,14 @@ def test_delete_page_content_rejects_non_deletable_child_with_parent_suggestion(
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
     monkeypatch.setattr(server.services.pages, "xml", lambda *args, **kwargs: page_xml)
 
-    result = asyncio.run(delete_page_content("page-id", "oe-id", "Page", "section-id"))
+    error = failure_error(
+        asyncio.run(
+            delete_page_content_object("page-id", "oe-id", "Page", "section-id")
+        )
+    )
 
-    assert result["ok"] is False
-    assert "not directly deletable" in result["error"]
-    assert "outline-id" in result["error"]
+    assert "not directly deletable" in error["message"]
+    assert "outline-id" in error["message"]
 
 
 @pytest.mark.write_contract
@@ -1320,12 +1334,13 @@ def test_delete_page_content_accepts_removal_of_target_descendant_closure(monkey
 
     monkeypatch.setattr(server.services.mutations, "call", delete_once)
 
-    result = asyncio.run(
-        delete_page_content("page-id", "target-id", "Page", "section-id")
+    result = success_data(
+        asyncio.run(
+            delete_page_content_object("page-id", "target-id", "Page", "section-id")
+        )
     )
 
     assert calls == 1
-    assert result["ok"] is True
     assert result["deleted"] is True
     assert result["reconciliation"]["state"] == "applied"
     assert result["reconciliation"]["mutation_attempts"] == 1
@@ -1370,16 +1385,17 @@ def test_delete_page_content_classifies_non_target_identity_change_as_partial_wi
 
     monkeypatch.setattr(server.services.mutations, "call", fail_once)
 
-    result = asyncio.run(
-        delete_page_content("page-id", "target-id", "Page", "section-id")
+    error = failure_error(
+        asyncio.run(
+            delete_page_content_object("page-id", "target-id", "Page", "section-id")
+        )
     )
 
     assert calls == 1
-    assert result["ok"] is False
-    assert result["code"] == "partial_failure"
-    assert result["observed_outcome"] == "partially_applied"
-    assert result["mutation_replayed"] is False
-    assert result["retry_safety"] == "do_not_replay"
+    assert error["code"] == "partial_failure"
+    assert error["details"]["observed_outcome"] == "partially_applied"
+    assert error["details"]["mutation_replayed"] is False
+    assert error["details"]["retry_safety"] == "do_not_replay"
 
 
 def test_generic_delete_hierarchy_is_removed_from_advanced_registration():

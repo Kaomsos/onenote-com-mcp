@@ -148,13 +148,13 @@ Manual-validation 只操作本次新建的 disposable Notebook，因此 Recipe �
 
 | Operation | Identity policy | Observer / 完整成功事实 | Replay | Partial boundary |
 | --- | --- | --- | --- | --- |
-| `update_page_title` | ID 保持 | 同一 Page 的目标标题 | never | 目标消失或其他受保护语义改变 |
+| `rename_page` | ID 保持 | 同一 Page 的目标标题 | never | 目标消失或其他受保护语义改变 |
 | `rename_resource` | ID 保持 | 同一资源的新名称和原 parent | never | 目标消失或 parent 改变 |
 | `reorder_page` | ID 保持 | Section 内完整 Page 顺序 | never | sibling identity 集合改变 |
 | `reorder_section` | ID 保持 | parent 下 Section 顺序与受保护子树 | never | 直属 child identity 集合改变 |
-| `append_to_page` | Page ID 保持，内容对象可变 | COM success 后 Page 内容摘要离开 frozen pre-state 并稳定 | never | Page identity 不可确认；execute error 后仅摘要变化不足以证明请求内容已应用，判为 indeterminate |
-| `add_image_to_page` | Page ID 保持，内容对象可变 | COM success 后 Page 内容摘要离开 frozen pre-state 并稳定 | never | Page identity 不可确认；execute error 后仅摘要变化不足以证明请求图片已应用，判为 indeterminate |
-| `delete_page_content` | 指定内容对象消失且其余对象集合保持 | live content object ID 集合精确等于 frozen set 减目标 | never | Page identity 改变，或任何非目标内容对象 ID 漂移 |
+| `append_page_content` | Page ID 保持，内容对象可变 | COM success 后 Page 内容摘要离开 frozen pre-state 并稳定 | never | Page identity 不可确认；execute error 后仅摘要变化不足以证明请求内容已应用，判为 indeterminate |
+| `add_page_image_from_file` | Page ID 保持，内容对象可变 | COM success 后 Page 内容摘要离开 frozen pre-state 并稳定 | never | Page identity 不可确认；execute error 后仅摘要变化不足以证明请求图片已应用，判为 indeterminate |
+| `delete_page_content_object` | 指定内容对象消失且其余对象集合保持 | live content object ID 集合精确等于 frozen set 减目标 | never | Page identity 改变，或任何非目标内容对象 ID 漂移 |
 | typed `delete_*`（内部 `delete_hierarchy`） | 目标退出活动层级 | typed resource activity | never | 永久删除只到回收站或状态不完整 |
 | `close_notebook` | Notebook 退出 open 集合 | typed open state | never | open state 无法确定 |
 | `reparent_page` | Page/内容对象允许一对一 remap | 完整 destination、唯一 ID map、scope、内容、无关对象和 bookend | never | 任意 topology/identity/content/promotion 变化 |
@@ -173,6 +173,6 @@ Manual-validation 只操作本次新建的 disposable Notebook，因此 Recipe �
 - `replace_page_body`：先删除多个内容对象再写入，明确非原子；
 - Copy/Move：分配、内容重建、拓扑恢复、保真验证和可选源删除组成多阶段 saga；
 - SectionGroup Reorder：当前后端能力明确不支持；
-- `sync_notebook`、open、publish、navigate：不是本轮定义的 bounded mutation attempt 生态。
+- `request_notebook_sync`、open、export、navigate：不是本轮定义的 bounded mutation attempt 生态。
 
 它们继续使用 operation-specific 编排；Runtime 的统一不机械改写多阶段恢复语义，也不把 attempt executor 推广到非 mutation tool。Create/Replace 以 operation-specific policy 登记，Copy/Move 以 saga 登记，Sync/Open/Publish/Navigate 则使用 Lifecycle、Filesystem Effect 或 UI Effect Strategy。[TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 已通过完整自动化回归，以及用户确认的 Reparent fresh/cache、canonical Rename、扩展 `onenote-convergence` 和 production Close lifecycle handoff 真实证据闭合；当前组合边界以 [`operation_runtime.md`](operation_runtime.md) 为准。

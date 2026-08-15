@@ -26,12 +26,12 @@ class MutationPolicy:
     writes_enabled: bool
     deletes_enabled: bool
     permanent_deletes_enabled: bool
-    experimental_reparent_enabled: bool
-    experimental_reorder_section_enabled: bool
-    experimental_reorder_section_group_enabled: bool
-    experimental_copy_enabled: bool
-    move_page_enabled: bool
-    move_containers_enabled: bool
+    organize_enabled: bool
+    copy_enabled: bool
+    local_file_io_enabled: bool
+    ui_control_enabled: bool
+    notebook_lifecycle_enabled: bool
+    internal_section_group_reorder_enabled: bool
     raw_xml_enabled: bool
 
     @classmethod
@@ -40,18 +40,16 @@ class MutationPolicy:
             writes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_WRITES"),
             deletes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_DELETES"),
             permanent_deletes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES"),
-            experimental_reparent_enabled=env_bool(
-                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT"
+            organize_enabled=env_bool("LOCAL_ONENOTE_ENABLE_ORGANIZE"),
+            copy_enabled=env_bool("LOCAL_ONENOTE_ENABLE_COPY"),
+            local_file_io_enabled=env_bool("LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO"),
+            ui_control_enabled=env_bool("LOCAL_ONENOTE_ENABLE_UI_CONTROL"),
+            notebook_lifecycle_enabled=env_bool(
+                "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE"
             ),
-            experimental_reorder_section_enabled=env_bool(
-                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"
+            internal_section_group_reorder_enabled=env_bool(
+                "LOCAL_ONENOTE_ENABLE_INTERNAL_SECTION_GROUP_REORDER"
             ),
-            experimental_reorder_section_group_enabled=env_bool(
-                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"
-            ),
-            experimental_copy_enabled=env_bool("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY"),
-            move_page_enabled=env_bool("LOCAL_ONENOTE_ENABLE_MOVE_PAGE"),
-            move_containers_enabled=env_bool("LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS"),
             raw_xml_enabled=env_bool("LOCAL_ONENOTE_ENABLE_RAW_XML"),
         )
 
@@ -67,56 +65,58 @@ class MutationPolicy:
                 "Permanent deletes are disabled. Set LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES=true in addition to deletes."
             )
 
-    def require_experimental_reparent(self) -> None:
+    def require_organize(self) -> None:
         self.require_write()
-        if not self.experimental_reparent_enabled:
+        if not self.organize_enabled:
             raise PermissionError(
-                "Reparent is experimental. Validate the typed operation in an isolated notebook, "
-                "then set LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT=true."
+                "Organize operations are disabled. Set "
+                "LOCAL_ONENOTE_ENABLE_ORGANIZE=true in addition to Writes."
             )
 
-    def require_experimental_reorder(self, resource_type: str) -> None:
+    def require_section_reorder(self, resource_type: str = "section") -> None:
         self.require_write()
         if resource_type == "section":
-            enabled = self.experimental_reorder_section_enabled
-            env_name = "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"
-            label = "Section reorder"
-        elif resource_type == "section_group":
-            enabled = self.experimental_reorder_section_group_enabled
-            env_name = "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"
-            label = "SectionGroup reorder"
-        else:
-            raise ValueError("Experimental reorder only supports section or section_group.")
-        if not enabled:
+            return
+        if resource_type != "section_group":
+            raise ValueError("Container reorder only supports section or section_group.")
+        if not self.internal_section_group_reorder_enabled:
             raise PermissionError(
-                f"{label} is experimental. Validate it in an isolated notebook, then set "
-                f"{env_name}=true."
+                "SectionGroup reorder is an unsupported internal diagnostic. Set "
+                "LOCAL_ONENOTE_ENABLE_INTERNAL_SECTION_GROUP_REORDER=true only for "
+                "explicit isolated diagnostic evidence collection."
             )
 
-    def require_experimental_copy(self) -> None:
+    def require_copy(self) -> None:
         self.require_write()
-        if not self.experimental_copy_enabled:
+        if not self.copy_enabled:
             raise PermissionError(
-                "Copy is experimental. Validate it in an isolated notebook, then set "
-                "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY=true."
+                "Copy operations are disabled. Set LOCAL_ONENOTE_ENABLE_COPY=true "
+                "in addition to Writes."
             )
 
-    def require_move_page(self) -> None:
-        self.require_experimental_copy()
+    def require_move(self) -> None:
+        self.require_copy()
         self.require_delete(permanently=False)
-        if not self.move_page_enabled:
+
+    def require_local_file_io(self) -> None:
+        if not self.local_file_io_enabled:
             raise PermissionError(
-                "Page move is disabled. Validate it in an isolated notebook, then set "
-                "LOCAL_ONENOTE_ENABLE_MOVE_PAGE=true."
+                "Local file I/O is disabled. Set "
+                "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO=true to enable explicit local file effects."
             )
 
-    def require_move_containers(self) -> None:
-        self.require_experimental_copy()
-        self.require_delete(permanently=False)
-        if not self.move_containers_enabled:
+    def require_ui_control(self) -> None:
+        if not self.ui_control_enabled:
             raise PermissionError(
-                "Section and SectionGroup move is disabled. Validate it in isolated notebooks, "
-                "then set LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS=true."
+                "UI control is disabled. Set LOCAL_ONENOTE_ENABLE_UI_CONTROL=true "
+                "to enable explicit OneNote GUI actions."
+            )
+
+    def require_notebook_lifecycle(self) -> None:
+        if not self.notebook_lifecycle_enabled:
+            raise PermissionError(
+                "Notebook lifecycle operations are disabled. Set "
+                "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE=true to enable Sync and Close."
             )
 
     def require_raw_xml(self) -> None:

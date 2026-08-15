@@ -9,11 +9,31 @@ from ..services import MutationFailure, MutationPreflightFailure, PartialFailure
 
 
 def ok(**data: Any) -> dict[str, Any]:
-    return {"ok": True, "complete": True, "warnings": [], **data}
+    payload = dict(data)
+    execution = payload.pop("execution", {})
+    warnings = payload.pop("warnings", [])
+    if not isinstance(warnings, list):
+        warnings = [str(warnings)]
+    return {
+        "ok": True,
+        "result": payload,
+        "warnings": warnings,
+        "execution": execution,
+    }
 
 
 def error(message: str, code: str = "operation_failed", **details: Any) -> dict[str, Any]:
-    return {"ok": False, "error": message, "code": code, "complete": False, **details}
+    payload = dict(details)
+    execution = payload.pop("execution", {})
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": payload,
+        },
+        "execution": execution,
+    }
 
 
 def caught(

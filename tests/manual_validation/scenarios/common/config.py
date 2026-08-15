@@ -28,22 +28,22 @@ RELAXED_COPY_CAPABILITIES = {"List", "Tag"}
 READ_TOOLS = {
     "health_check",
     "list_notebooks",
-    "get_notebook",
+    "get_notebook_metadata",
     "expand_notebook",
     "expand_section_group",
     "expand_section",
     "expand_page",
     "expand_hierarchy",
     "get_page_xml",
-    "get_page_objects",
+    "list_page_content_objects",
     "query_notebook",
     "query_section_group",
     "query_section",
     "query_page",
 }
 CREATE_TOOLS = READ_TOOLS | {
-    "add_image_to_page",
-    "append_to_page",
+    "add_page_image_from_file",
+    "append_page_content",
     "create_notebook",
     "create_section_group",
     "create_section",
@@ -68,8 +68,8 @@ REORDER_SECTION_GROUP_TOOLS = READ_TOOLS | {
 }
 REPARENT_SECTION_TOOLS = READ_TOOLS | {"reparent_section"}
 REPARENT_PAGE_TOOLS = READ_TOOLS | {
-    "add_image_to_page",
-    "append_to_page",
+    "add_page_image_from_file",
+    "append_page_content",
     "create_section",
     "create_page",
     "reparent_page",

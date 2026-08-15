@@ -69,6 +69,8 @@ Cache 不保存 working lease，也不与历史 run 建立所有权关系。多�
 
 因此 runner 在创建或打开 working Notebook 前复用生产 `health_check` 的 check-only GUI 门限，真实 `all` 在启动首个 child 前检查一次。缺失或无法证明时 fail closed；runner 不隐式启动 GUI，也不把 sleep、重复激活、ID rebind 或通用 close/reopen 当作修复。完整观察和推断边界见[OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)。
 
+显式 GUI 启动验收刻意不进入本章的 Scenario/Fixture 模型。独立 `tests/manual_validation/launch_onenote_gui_check.py` 不注册 Recipe、Scenario 或 `included_in_all` 资格，也不创建 Notebook；它只在用户交互式前台确认后，以两个顺序且权限冻结的 MCP 进程验证 UI Control 拒绝、单次启动、幂等、health readiness、只读 hierarchy COM 和人工单窗口 verdict。该入口的 MCP calls、bridge audit 和 server stderr 不落对应 runtime 日志文件，只流向前台终端；结构化验收证据仍持久化。OneNote/Office 在隔离 TEMP 中自行生成的 diagnostics/cache 不属于 MCP runtime 日志，也不由入口自动清理。标准 Scenario runner 仍保持“启动前 GUI 已存在”的不变量。
+
 ## 6. Hierarchy 激活、ID 重绑与单次内容取证
 
 Materialized role 只打开一次 exact working path。Lifecycle 在第一次 child COM 调用前冻结受 manifest 约束的请求，在同一个短命 PowerShell/COM session 中按 parent-before-child 批量激活 SectionGroup/Section，并尝试读取 Notebook Pages hierarchy。精确的顶层 `OneNote_RecycleBin` 是 OneNote 管理的系统子树：它继续保留在 opaque byte inventory 和 template 完整性验证中，但不会被构造成用户 SectionGroup/Section 激活请求；排除前仍必须通过 working-tree containment 与 reparse-point 检查，并在 materialization evidence 中记录 content-free 原因。

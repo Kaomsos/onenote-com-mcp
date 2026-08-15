@@ -1,7 +1,12 @@
 """OneNote Page parsing, formatting, image support, and XML construction."""
 
 from .formatting import markdown_to_html, normalize_content
-from .images import ImageDimensionError, image_dimensions, proportional_dimensions
+from .images import (
+    ImageDimensionError,
+    image_dimensions,
+    image_file_format,
+    proportional_dimensions,
+)
 from .parser import (
     DELETABLE_PAGE_OBJECT_TYPES,
     collect_page_objects,
@@ -37,6 +42,7 @@ __all__ = [
     "collect_page_objects",
     "COPYABLE_CONTENT_ROOTS",
     "image_dimensions",
+    "image_file_format",
     "markdown_to_html",
     "normalize_content",
     "proportional_dimensions",

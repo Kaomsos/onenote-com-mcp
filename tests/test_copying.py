@@ -17,7 +17,7 @@ from local_onenote_mcp.page import (
 from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.services.pages import stable_page_content_digest
 from local_onenote_mcp.tools.copying import copy_page
-from local_onenote_mcp.tools.responses import caught, ok
+from local_onenote_mcp.tools.responses import caught
 from tests.destination_position_assertions import assert_destination_position_contract
 
 
@@ -31,17 +31,25 @@ async def plan_copy(
     """Exercise the internal plan builder without restoring a public MCP tool."""
 
     try:
-        return ok(
+        return {
+            "ok": True,
             **server.services.copying._inspect_copy_plan(
-            source_id,
-            destination_parent_id,
-            destination_name,
-            destination_base_folder,
-            include_descendants,
-        )
-        )
+                source_id,
+                destination_parent_id,
+                destination_name,
+                destination_base_folder,
+                include_descendants,
+            ),
+        }
     except Exception as exc:
-        return caught(exc)
+        envelope = caught(exc)
+        return {
+            "ok": False,
+            "complete": False,
+            "code": envelope["error"]["code"],
+            "error": envelope["error"]["message"],
+            **envelope["error"]["details"],
+        }
 
 
 def page_xml(page_id: str, title: str, body: str = "") -> str:
@@ -1538,7 +1546,7 @@ def test_copy_rebuilds_plan_from_live_source_inside_single_call(monkeypatch):
         "parent", "destination-section", "Copied Parent"
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
     observed = {}
     monkeypatch.setattr(
@@ -1568,7 +1576,7 @@ def test_copy_notebook_allows_modified_clock_drift_when_semantic_plan_matches(mo
     confirmations: list[tuple] = []
     executions: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(
         server.services.copying,
         "_confirm_source",
@@ -1618,7 +1626,7 @@ def test_copy_notebook_allows_modified_clock_drift_when_semantic_plan_matches(mo
 def test_copy_rebuilds_plan_from_live_destination_inside_single_call(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
     observed = {}
     monkeypatch.setattr(
@@ -1661,7 +1669,7 @@ def test_copy_rebuilds_plan_from_live_destination_inside_single_call(monkeypatch
 def test_copy_binds_requested_scope_in_internal_plan(monkeypatch, include_descendants):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
     observed = {}
     monkeypatch.setattr(
@@ -1677,7 +1685,9 @@ def test_copy_binds_requested_scope_in_internal_plan(monkeypatch, include_descen
             "Parent",
             "source-section",
             destination_title="Copied Parent",
-            include_descendants=include_descendants,
+            page_scope=(
+                "indentation_subtree" if include_descendants else "page_only"
+            ),
         )
     )
 
@@ -2272,8 +2282,7 @@ def test_move_page_binds_requested_scope_in_internal_plan(
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     observed = {}
     monkeypatch.setattr(
@@ -2319,8 +2328,7 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
     monkeypatch.setattr(server.services.pages, "xml", hierarchy_sensitive_page_xml)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
@@ -2407,8 +2415,7 @@ def test_root_only_move_blocks_delete_when_descendant_promotion_fails(monkeypatc
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
@@ -2462,8 +2469,7 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
     install_plan_fakes(monkeypatch)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2505,8 +2511,7 @@ def test_move_page_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
     state["items"] = [item for item in state["items"] if item["id"] != "child"]
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
@@ -2568,8 +2573,7 @@ def test_move_page_same_section_recomputes_position_after_source_delete(monkeypa
     state["items"] = [item for item in state["items"] if item["id"] != "child"]
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(
         server.services.copying, "_confirm_source", lambda *args, **kwargs: None
     )
@@ -2653,8 +2657,7 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2705,8 +2708,7 @@ def test_move_page_actual_copy_identity_failure_blocks_all_source_deletes(
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     planned = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2773,8 +2775,7 @@ def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch)
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2832,8 +2833,7 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2880,8 +2880,7 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2968,8 +2967,7 @@ def test_move_page_reports_verified_and_remaining_ids_on_delete_failure(monkeypa
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -3022,8 +3020,7 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
     state["items"] = [item for item in state["items"] if item["id"] != "child"]
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
@@ -3261,8 +3258,7 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
     delete_calls = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     monkeypatch.setattr(server.services.copying, "_build_plan", lambda *args, **kwargs: plan)
     monkeypatch.setattr(server.services.copying, "_execute_copy", lambda _plan: copied)

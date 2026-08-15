@@ -84,30 +84,25 @@ def test_static_policy_matrix_is_minimal() -> None:
     assert READ_ONLY_POLICY.as_dict() == {
         "writes_enabled": False,
         "deletes_enabled": False,
-        "permanent_deletes_enabled": False,
-        "experimental_reparent_enabled": False,
-        "experimental_reorder_section_enabled": False,
-        "experimental_reorder_section_group_enabled": False,
-        "experimental_copy_enabled": False,
-        "move_page_enabled": False,
-        "move_containers_enabled": False,
-        "raw_xml_enabled": False,
+        "organize_enabled": False,
+        "copy_enabled": False,
+        "local_file_io_enabled": False,
+        "ui_control_enabled": False,
+        "notebook_lifecycle_enabled": False,
     }
     assert WRITE_POLICY.writes_enabled is True
     assert WRITE_POLICY.deletes_enabled is False
     assert REPARENT_POLICY.writes_enabled is True
-    assert REPARENT_POLICY.experimental_reparent_enabled is True
-    assert REORDER_SECTION_POLICY.experimental_reorder_section_enabled is True
-    assert REORDER_SECTION_POLICY.experimental_reorder_section_group_enabled is False
-    assert REORDER_SECTION_GROUP_POLICY.experimental_reorder_section_group_enabled is True
-    assert REORDER_SECTION_GROUP_POLICY.experimental_reorder_section_enabled is False
+    assert REPARENT_POLICY.organize_enabled is True
+    assert REORDER_SECTION_POLICY.as_dict() == WRITE_POLICY.as_dict()
+    assert REORDER_SECTION_GROUP_POLICY.as_dict() == WRITE_POLICY.as_dict()
     assert DELETE_POLICY.deletes_enabled is True
     assert DELETE_POLICY.writes_enabled is False
-    assert COPY_POLICY.experimental_copy_enabled is True
+    assert COPY_POLICY.copy_enabled is True
     assert COPY_POLICY.deletes_enabled is True
     assert COPY_NO_DELETE_POLICY.deletes_enabled is False
-    assert MOVE_PAGE_POLICY.move_page_enabled is True
-    assert MOVE_CONTAINERS_POLICY.move_containers_enabled is True
+    assert MOVE_PAGE_POLICY.copy_enabled is True
+    assert MOVE_CONTAINERS_POLICY.copy_enabled is True
     for policy in (
         READ_ONLY_POLICY,
         WRITE_POLICY,
@@ -120,8 +115,7 @@ def test_static_policy_matrix_is_minimal() -> None:
         MOVE_PAGE_POLICY,
         MOVE_CONTAINERS_POLICY,
     ):
-        assert policy.permanent_deletes_enabled is False
-        assert policy.raw_xml_enabled is False
+        assert set(policy.as_dict()) == set(POLICY_ENV_NAMES)
 
 def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> None:
     for env_name in POLICY_ENV_NAMES.values():
@@ -134,14 +128,11 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
     env = build_server_env(DELETE_POLICY, tmp_path / "temp", 1_800, audit_path)
     assert env["LOCAL_ONENOTE_ENABLE_WRITES"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_DELETES"] == "true"
-    assert env["LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_MOVE_PAGE"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_RAW_XML"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_ORGANIZE"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_COPY"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_UI_CONTROL"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE"] == "false"
     assert env["TEMP"] == env["TMP"]
     assert env["LOCAL_ONENOTE_MCP_TIMEOUT"] == "1800"
     assert env["LOCAL_ONENOTE_BRIDGE_AUDIT_PATH"] == str(audit_path.resolve())
@@ -171,7 +162,7 @@ def test_bridge_audit_path_cannot_leak_from_parent_environment(monkeypatch, tmp_
     assert "LOCAL_ONENOTE_BRIDGE_AUDIT_PATH" not in env
 
 def test_non_read_only_tool_classification_never_retries_publish_or_copy() -> None:
-    assert is_mutation_tool("publish_object") is True
+    assert is_mutation_tool("export_object_to_pdf") is True
     assert is_mutation_tool("copy_page") is True
     assert is_mutation_tool("move_page") is True
     assert is_mutation_tool("get_page_xml") is False
@@ -238,7 +229,14 @@ def test_client_accepts_success_when_domain_completion_is_unobservable(tmp_path)
         async def call_tool(self, *_args, **_kwargs):
             return SimpleNamespace(
                 isError=False,
-                structuredContent={"result": accepted},
+                structuredContent={
+                    "result": {
+                        "ok": True,
+                        "result": accepted,
+                        "warnings": [],
+                        "execution": {},
+                    }
+                },
                 content=[],
             )
 
@@ -252,7 +250,156 @@ def test_client_accepts_success_when_domain_completion_is_unobservable(tmp_path)
 
     result = asyncio.run(client.call_tool("health_check", {}, retry_read=False))
 
-    assert result == accepted
+    assert result == {
+        **accepted,
+        "warnings": [],
+        "execution": {},
+    }
+
+
+def test_client_preserves_success_envelope_execution_when_flattening_payload(tmp_path) -> None:
+    execution = {
+        "operation": "request_notebook_sync",
+        "kind": "lifecycle",
+        "backend_category": "onenote_com",
+        "observed_outcome": "accepted_completion_unobservable",
+    }
+
+    class FakeSession:
+        async def call_tool(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                isError=False,
+                structuredContent={
+                    "result": {
+                        "ok": True,
+                        "result": {
+                            "accepted": True,
+                            "complete": False,
+                            "completion_observable": False,
+                        },
+                        "warnings": ["completion is not observable"],
+                        "execution": execution,
+                    }
+                },
+                content=[],
+            )
+
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"request_notebook_sync"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+    )
+    client._session = FakeSession()
+
+    result = asyncio.run(
+        client.call_tool("request_notebook_sync", {}, retry_read=False)
+    )
+
+    assert result == {
+        "accepted": True,
+        "complete": False,
+        "completion_observable": False,
+        "ok": True,
+        "warnings": ["completion is not observable"],
+        "execution": execution,
+    }
+
+
+def test_health_preflight_admits_only_exact_fully_stopped_typed_failure(tmp_path) -> None:
+    envelope = {
+        "ok": False,
+        "error": {
+            "code": "onenote_desktop_not_running",
+            "message": "start OneNote and retry",
+            "details": {
+                "onenote_desktop": {
+                    "process_running": False,
+                    "visible_window_present": False,
+                    "ready": False,
+                    "probe": "native_windows_process_and_visible_window",
+                }
+            },
+        },
+        "execution": {
+            "operation": "health_check",
+            "stage": "execute",
+            "backend_calls": 0,
+        },
+    }
+
+    class FakeSession:
+        async def call_tool(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                isError=False,
+                structuredContent={"result": envelope},
+                content=[],
+            )
+
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"health_check"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+        require_desktop_ready=False,
+    )
+    client._session = FakeSession()
+
+    health = asyncio.run(
+        client.call_health_preflight(allow_desktop_not_running=True)
+    )
+
+    assert health["onenote_desktop"]["ready"] is False
+    assert health["expected_failure_envelope"] == envelope
+    assert client.health_failure_envelope == envelope
+
+    with pytest.raises(ClientFailure, match="health_check failed"):
+        asyncio.run(
+            client.call_health_preflight(allow_desktop_not_running=False)
+        )
+
+
+def test_health_preflight_rejects_process_only_state_even_in_cold_start_mode(tmp_path) -> None:
+    class FakeSession:
+        async def call_tool(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                isError=False,
+                structuredContent={
+                    "result": {
+                        "ok": False,
+                        "error": {
+                            "code": "onenote_desktop_not_running",
+                            "message": "not ready",
+                            "details": {
+                                "onenote_desktop": {
+                                    "process_running": True,
+                                    "visible_window_present": False,
+                                    "ready": False,
+                                }
+                            },
+                        },
+                        "execution": {
+                            "operation": "health_check",
+                            "backend_calls": 0,
+                        },
+                    }
+                },
+                content=[],
+            )
+
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"health_check"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+        require_desktop_ready=False,
+    )
+    client._session = FakeSession()
+
+    with pytest.raises(ClientFailure, match="health_check failed"):
+        asyncio.run(
+            client.call_health_preflight(allow_desktop_not_running=True)
+        )
 
 
 def test_call_audit_has_start_and_completion_timestamps(tmp_path) -> None:
@@ -260,7 +407,14 @@ def test_call_audit_has_start_and_completion_timestamps(tmp_path) -> None:
         async def call_tool(self, *_args, **_kwargs):
             return SimpleNamespace(
                 isError=False,
-                structuredContent={"result": {"ok": True, "complete": True}},
+                structuredContent={
+                    "result": {
+                        "ok": True,
+                        "result": {"complete": True},
+                        "warnings": [],
+                        "execution": {},
+                    }
+                },
                 content=[],
             )
 
@@ -275,6 +429,20 @@ def test_call_audit_has_start_and_completion_timestamps(tmp_path) -> None:
     audit = (tmp_path / "calls.jsonl").read_text(encoding="utf-8")
     assert '"started_at"' in audit
     assert '"completed_at"' in audit
+
+
+def test_runtime_log_persistence_can_be_disabled_for_terminal_only_check(tmp_path) -> None:
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"health_check"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+        persist_runtime_logs=False,
+    )
+    client._append_audit({"tool": "health_check", "result": {"ok": True}})
+
+    assert not (tmp_path / "calls.jsonl").exists()
+    assert client._internal_bridge.audit_path is None
 
 
 def test_materialized_scenario_before_snapshot_handoff_is_exact_and_single_use(

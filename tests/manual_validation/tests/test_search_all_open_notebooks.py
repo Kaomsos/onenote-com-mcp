@@ -119,10 +119,11 @@ def test_search_scenario_is_two_role_cache_supported_and_least_privilege() -> No
     )
     assert spec.policy.writes_enabled is True
     assert spec.policy.deletes_enabled is False
-    assert spec.policy.experimental_copy_enabled is False
-    assert spec.policy.move_page_enabled is False
-    assert spec.policy.move_containers_enabled is False
-    assert spec.policy.raw_xml_enabled is False
+    assert spec.policy.copy_enabled is False
+    assert spec.policy.organize_enabled is False
+    assert spec.policy.local_file_io_enabled is False
+    assert spec.policy.ui_control_enabled is False
+    assert spec.policy.notebook_lifecycle_enabled is False
 
 
 def test_search_audit_redacts_query_content_text_and_snippet() -> None:

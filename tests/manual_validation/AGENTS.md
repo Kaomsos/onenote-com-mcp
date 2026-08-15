@@ -27,6 +27,7 @@
 - 每个公开 Scenario 必须显式拥有一个 fixture recipe，并自动提供至少一个稳定 ID 的注册 dry-run case。Recipe 由 Scenario 模块显式 import；不得新增 fixture registry、dry-run scenario 列表或 filesystem discovery。
 - `all` 将已注册 scenario 作为相互独立的子命令串行启动。Scenario 之间不得共享 run directory、Notebook、MCP process、policy、fixture、evidence 或 lifecycle。真实子任务失败后，只有本次 run 的全部 exact lifecycle lease 都已精确关闭并写入 durable failure-finalization evidence 时，父批次才可继续；任一 close 失败、证明缺失或异常子进程退出必须立即停止。dry-run 仍检查全部已注册计划。
 - `clear` 不是 Scenario，也不进入 registry 或 `all`。它只允许 `runs`、`cache`、`all` 三个子 action；不得增加任意 path、glob、fingerprint、instance、run ID、`--force` 或忽略打开状态的参数。
+- `launch_onenote_gui_check.py` 是唯一独立于 `run.py`、Scenario Registry 和 `all` 的真实 GUI effect 验收入口。它只能由用户本人在交互式前台终端运行，不得创建/修改/关闭 Notebook；必须先以 UI Control 关闭的独立 MCP 证明 authorization 零 backend call，再以仅开启 UI Control 的第二个独立 MCP 验证单次启动、重复调用幂等、health readiness 和只读 hierarchy COM。其 runtime calls/bridge/server stderr 日志不得落盘，只能按 `--verbosity` 输出到当前终端；逐阶段结构化验收证据继续写入 owned run。Agent 只可运行其 `--dry-run` 和纯 mock 合同测试。
 - Cache/run schema 切换后，runtime 与 maintenance 只识别 32-hex fingerprint、typed `p`/`a` instance、短 staging 和新 run metadata。不得增加 legacy lookup、payload/index-entry 迁移、fallback 或删除能力；旧 payload 必须由用户在升级前版本中通过 human-gated `clear all` 清理。唯一过渡例外是首次新 cache 初始化可在 durable `clear-all` 成功 summary、空 v1 index、零旧 payload/run 与精确 ownership 全部证明后，仅把旧命令留下的空 marker/index 壳原子 stamp 为新 schema；summary 后创建且由 schema/ownership flags/`started_at`/mtime 共同证明的 v2 run 可共存，证明不完整时仍须 fail closed。
 
 ## 隔离、权限和生命周期

@@ -159,7 +159,7 @@ async def ensure_group(client: MCPStdioClient, parent_id: str, name: str) -> dic
     if existing:
         return existing
     return (
-        await client.call_tool("create_section_group", {"parent_id": parent_id, "group_name": name})
+        await client.call_tool("create_section_group", {"parent_id": parent_id, "name": name})
     )["section_group"]
 
 async def ensure_section(client: MCPStdioClient, parent_id: str, name: str) -> dict[str, Any]:
@@ -180,7 +180,7 @@ async def ensure_section(client: MCPStdioClient, parent_id: str, name: str) -> d
     if existing:
         return existing
     return (
-        await client.call_tool("create_section", {"parent_id": parent_id, "section_name": name})
+        await client.call_tool("create_section", {"parent_id": parent_id, "name": name})
     )["section"]
 
 async def ensure_page(
@@ -189,7 +189,7 @@ async def ensure_page(
     title: str,
     content: str,
 ) -> dict[str, Any]:
-    expanded = await client.call_tool("expand_section", {"id": section_id})
+    expanded = await client.call_tool("expand_section", {"section_id": section_id})
     existing = exactly_one(_tree_items(expanded, "page"), title, "page")
     if existing:
         return existing
@@ -227,7 +227,7 @@ async def ensure_group_with_query(
     return (
         await client.call_tool(
             "create_section_group",
-            {"parent_id": parent_id, "group_name": name},
+            {"parent_id": parent_id, "name": name},
         )
     )["section_group"]
 
@@ -252,7 +252,7 @@ async def ensure_section_with_query(
     return (
         await client.call_tool(
             "create_section",
-            {"parent_id": parent_id, "section_name": name},
+            {"parent_id": parent_id, "name": name},
         )
     )["section"]
 
@@ -337,7 +337,7 @@ async def enforce_page_position(
     after_page_id: str,
     page_level: int,
 ) -> dict[str, Any]:
-    expanded = await client.call_tool("expand_section", {"id": section_id})
+    expanded = await client.call_tool("expand_section", {"section_id": section_id})
     pages = sorted(_tree_items(expanded, "page"), key=lambda item: int(item["order"]))
     page = next((item for item in pages if item["id"] == page_id), None)
     if page is None:
@@ -379,7 +379,7 @@ async def ensure_copy_rich_fixture(
     has_table = any(node.tag.rsplit("}", 1)[-1] == "Table" for node in ET.fromstring(xml).iter())
 
     async def current_page() -> dict[str, Any]:
-        expanded = await client.call_tool("expand_section", {"id": section_id})
+        expanded = await client.call_tool("expand_section", {"section_id": section_id})
         current = next(
             (item for item in _tree_items(expanded, "page") if item.get("id") == page_id),
             None,
@@ -400,7 +400,7 @@ async def ensure_copy_rich_fixture(
                 f"<p>{DISPLAY_EQUATION_MARKER}</p>"
             )
         await client.call_tool(
-            "append_to_page",
+            "append_page_content",
             {
                 "page_id": page_id,
                 "content": (
@@ -431,7 +431,7 @@ async def ensure_copy_rich_fixture(
         if _equation_evidence(interim_xml)["display_equations"] == 0:
             current = await current_page()
             await client.call_tool(
-                "append_to_page",
+                "append_page_content",
                 {
                     "page_id": page_id,
                     "content": (
@@ -451,7 +451,7 @@ async def ensure_copy_rich_fixture(
             )
 
     objects = (
-        await client.call_tool("get_page_objects", {"page_id": page_id})
+        await client.call_tool("list_page_content_objects", {"page_id": page_id})
     ).get("objects", [])
     if not any(item.get("kind") == "Image" for item in objects if isinstance(item, dict)):
         asset_dir = run_dir / "fixture-assets"
@@ -461,11 +461,10 @@ async def ensure_copy_rich_fixture(
             image_path.write_bytes(base64.b64decode(COPY_FIXTURE_PNG))
         current = await current_page()
         await client.call_tool(
-            "add_image_to_page",
+            "add_page_image_from_file",
             {
                 "page_id": page_id,
                 "image_path": str(image_path.resolve()),
-                "image_format": "png",
                 "expected_title": display_name(current),
                 "expected_section_id": section_id,
                 "expected_modified": current.get("modified"),
@@ -480,7 +479,7 @@ async def ensure_copy_rich_fixture(
         (await client.call_tool("get_page_xml", {"page_id": page_id, "page_info": "all"}))["xml"]
     )
     final_objects = (
-        await client.call_tool("get_page_objects", {"page_id": page_id})
+        await client.call_tool("list_page_content_objects", {"page_id": page_id})
     ).get("objects", [])
     has_table = any(node.tag.rsplit("}", 1)[-1] == "Table" for node in ET.fromstring(final_xml).iter())
     has_image = any(
@@ -594,7 +593,7 @@ async def ensure_copy_list_tag_fixture(
         )
 
     async def current_page() -> dict[str, Any]:
-        expanded = await client.call_tool("expand_section", {"id": section_id})
+        expanded = await client.call_tool("expand_section", {"section_id": section_id})
         current = next(
             (item for item in _tree_items(expanded, "page") if item.get("id") == page_id),
             None,
@@ -619,7 +618,7 @@ async def ensure_copy_list_tag_fixture(
     if not fixture_complete:
         current = await current_page()
         await client.call_tool(
-            "append_to_page",
+            "append_page_content",
             {
                 "page_id": page_id,
                 "content": (

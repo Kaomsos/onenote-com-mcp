@@ -281,8 +281,8 @@ def test_display_equation_scenario_is_programmatic_and_owns_source_contract() ->
     assert scenario.fixture_profile.creation_tools == {
         "create_section",
         "create_page",
-        "append_to_page",
-        "add_image_to_page",
+        "append_page_content",
+        "add_page_image_from_file",
     }
     assert scenario.fixture_recipe.build_mode.value == "programmatic"
     assert scenario.fixture_recipe.consumer_scenario is False
@@ -332,7 +332,7 @@ def test_display_equation_scaffold_generates_standalone_block_mathml(
 
     class Client:
         async def call_tool(self, name, arguments):
-            if name == "append_to_page":
+            if name == "append_page_content":
                 calls["display_content"] = arguments["content"]
                 return {
                     "item": {
@@ -486,7 +486,7 @@ def test_inline_equation_scaffold_generates_mathml_without_display_attribute(
 
     class Client:
         async def call_tool(self, name, arguments):
-            if name == "append_to_page":
+            if name == "append_page_content":
                 calls["content"] = arguments["content"]
                 return {"item": {**page_value, "modified": "after"}}
             assert name == "get_page_xml"

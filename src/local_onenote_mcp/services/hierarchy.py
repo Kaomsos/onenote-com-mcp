@@ -40,6 +40,7 @@ DEFAULT_METADATA_QUERY_PAGE_SIZE = 200
 MAX_METADATA_QUERY_PAGE_SIZE = 200
 HIERARCHY_BROWSING_TOOLS = (
     "list_notebooks",
+    "get_hierarchy_path",
     "expand_notebook",
     "expand_section_group",
     "expand_section",

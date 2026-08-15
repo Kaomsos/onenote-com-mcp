@@ -70,6 +70,7 @@ class MutationOperationPolicy:
 @dataclass(frozen=True)
 class OperationSpec:
     name: str
+    category: str
     kind: OperationKind
     capability: str
     coordination: CoordinationMode
@@ -88,6 +89,7 @@ class OperationSpec:
     def __post_init__(self) -> None:
         if (
             not self.name
+            or not self.category
             or not self.capability
             or not self.strategy
             or not self.handler
@@ -222,6 +224,13 @@ class OperationRegistry:
     def bindings(self) -> Mapping[str, OperationBinding]:
         return MappingProxyType(self._bindings)
 
+    def freeze_order(self, names: tuple[str, ...]) -> None:
+        """Freeze the complete registry in one externally reviewed product order."""
+
+        if len(names) != len(set(names)) or set(names) != set(self._bindings):
+            raise RuntimeError("Registry order must name every registered operation exactly once.")
+        self._bindings = {name: self._bindings[name] for name in names}
+
     def names_for_profile(self, profile: str) -> frozenset[str]:
         return frozenset(
             name
@@ -229,17 +238,27 @@ class OperationRegistry:
             if profile in binding.spec.exposures
         )
 
-    def audit_public_tools(self, names: set[str], *, profile: str) -> None:
+    def ordered_names_for_profile(self, profile: str) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name, binding in self._bindings.items()
+            if profile in binding.spec.exposures
+        )
+
+    def audit_public_tools(self, names: tuple[str, ...], *, profile: str) -> None:
         expected = self.names_for_profile(profile)
+        expected_order = self.ordered_names_for_profile(profile)
         actual = frozenset(names)
         missing = sorted(actual - set(self._bindings))
         profile_missing = sorted(actual - expected)
         unregistered_surface = sorted(expected - actual)
-        if missing or profile_missing or unregistered_surface:
+        order_mismatch = names != expected_order
+        if missing or profile_missing or unregistered_surface or order_mismatch:
             raise RuntimeError(
                 "Operation registry/profile audit failed: "
                 f"unregistered={missing}, wrong_profile={profile_missing}, "
-                f"missing_from_surface={unregistered_surface}."
+                f"missing_from_surface={unregistered_surface}, "
+                f"order_mismatch={order_mismatch}."
             )
         for name in actual:
             binding = self._bindings[name]

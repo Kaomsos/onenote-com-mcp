@@ -34,8 +34,8 @@ Source/01-Source-Parent：page_level=1，包含 Rich Text、行内公式、单�
 Source-Destination/02-Source-Child：同标题、不同正文的跨 Section anchor
 Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、不同正文的跨 Notebook anchor
 
-每个目标范围的“不带子树” case 省略 include_descendants，只复制 Parent。
-每个目标范围的“带子树” case 显式使用 include_descendants=true，复制 Parent 与 Child。
+每个目标范围的“不带子树” case 使用 page_scope=page_only，只复制 Parent。
+每个目标范围的“带子树” case 使用 page_scope=indentation_subtree，复制 Parent 与 Child。
 
 六个目标名称分别使用 01/02-Same-Section、03/04-Cross-Section、
 05/06-Cross-Notebook 前缀；

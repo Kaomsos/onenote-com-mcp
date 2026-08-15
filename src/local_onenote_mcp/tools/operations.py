@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from .responses import invoke
 
 
 async def get_hyperlink(
-    object_id: str, page_content_object_id: str = "", web: bool = False
+    object_id: str,
+    page_content_object_id: str | None = None,
+    link_type: Literal["desktop", "web"] = "desktop",
 ) -> dict[str, Any]:
     """Return a desktop or web hyperlink for a typed OneNote object."""
 
@@ -16,34 +18,26 @@ async def get_hyperlink(
         "get_hyperlink",
         object_id=object_id,
         page_content_object_id=page_content_object_id,
-        web=web,
+        link_type=link_type,
     )
 
 
-async def get_parent(object_id: str) -> dict[str, Any]:
-    """Return the typed parent of a OneNote object."""
-
-    return invoke("get_parent", object_id=object_id)
-
-
-async def publish_object(
-    object_id: str, target_path: str, format: str = "pdf", overwrite: bool = False
-) -> dict[str, Any]:
-    """Write a local file and verify that filesystem effect; do not mutate OneNote."""
+async def export_object_to_pdf(object_id: str, target_path: str) -> dict[str, Any]:
+    """With Local File IO, write one new PDF and verify that effect; never overwrite."""
 
     return invoke(
-        "publish_object",
+        "export_object_to_pdf",
         object_id=object_id,
         target_path=target_path,
-        format=format,
-        overwrite=overwrite,
     )
 
 
 async def navigate_to(
-    object_id: str, page_content_object_id: str = "", new_window: bool = False
+    object_id: str,
+    page_content_object_id: str | None = None,
+    new_window: bool = False,
 ) -> dict[str, Any]:
-    """Ask the OneNote UI to navigate to an exact object; report action acceptance only."""
+    """With UI Control, navigate the OneNote GUI to an exact object and report action acceptance only."""
 
     return invoke(
         "navigate_to",
@@ -53,22 +47,16 @@ async def navigate_to(
     )
 
 
-async def navigate_to_url(url: str, new_window: bool = False) -> dict[str, Any]:
-    """Ask the OneNote UI to navigate to a URL; report action acceptance only."""
+async def request_notebook_sync(notebook_id: str) -> dict[str, Any]:
+    """With Notebook Lifecycle, request sync for an exact Notebook; acceptance does not prove completion."""
 
-    return invoke("navigate_to_url", url=url, new_window=new_window)
-
-
-async def sync_notebook(notebook_id: str) -> dict[str, Any]:
-    """Request synchronization; acceptance does not prove that synchronization completed."""
-
-    return invoke("sync_notebook", notebook_id=notebook_id)
+    return invoke("request_notebook_sync", notebook_id=notebook_id)
 
 
 async def close_notebook(
     notebook_id: str, expected_name: str, expected_modified: str | None = None
 ) -> dict[str, Any]:
-    """Close an exact confirmed notebook and converge its observable open state."""
+    """With Notebook Lifecycle, close an exact confirmed Notebook and converge its observable open state."""
 
     return invoke(
         "close_notebook",
@@ -80,10 +68,8 @@ async def close_notebook(
 
 TOOLS = [
     get_hyperlink,
-    get_parent,
-    publish_object,
+    export_object_to_pdf,
     navigate_to,
-    navigate_to_url,
-    sync_notebook,
+    request_notebook_sync,
     close_notebook,
 ]

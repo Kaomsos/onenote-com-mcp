@@ -51,6 +51,7 @@ class OperationsService(BaseService):
         return {"item": item, "parent": parent, "parent_id": parent_id}
 
     def publish(self, object_id: str, target_path: str, format: str = "pdf", overwrite: bool = False) -> dict[str, Any]:
+        MutationPolicy.current().require_local_file_io()
         output = Path(target_path).expanduser()
         if not output.is_absolute():
             output = Path.cwd() / output
@@ -78,6 +79,7 @@ class OperationsService(BaseService):
         return {"item": item, "path": str(output), "format": format.casefold()}
 
     def navigate(self, object_id: str, page_content_object_id: str = "", new_window: bool = False) -> dict[str, Any]:
+        MutationPolicy.current().require_ui_control()
         item = self.hierarchy.resource(object_id)
         self.call(
             "navigate_to",
@@ -88,10 +90,12 @@ class OperationsService(BaseService):
         return {"item": item, "navigated": True}
 
     def navigate_url(self, url: str, new_window: bool = False) -> dict[str, Any]:
+        MutationPolicy.current().require_ui_control()
         self.call("navigate_to_url", url=url, new_window=new_window)
         return {"navigated": True}
 
     def sync_notebook(self, notebook_id: str) -> dict[str, Any]:
+        MutationPolicy.current().require_notebook_lifecycle()
         item = self.hierarchy.resource(notebook_id, "notebook")
         self.call("sync_hierarchy", object_id=notebook_id)
         return {
@@ -113,7 +117,7 @@ class OperationsService(BaseService):
         expected_name: str,
         expected_modified: str | None = None,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_write()
+        MutationPolicy.current().require_notebook_lifecycle()
         item = self.mutations.confirm_resource(
             notebook_id,
             "notebook",

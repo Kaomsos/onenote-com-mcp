@@ -44,29 +44,31 @@ QueryScope = Annotated[
 
 NameEquals = Annotated[
     str,
-    Field(description="Case-insensitive exact metadata name match; empty disables this filter."),
+    StringConstraints(strip_whitespace=True, min_length=1),
+    Field(description="Case-insensitive exact metadata name match; null disables this filter."),
 ]
 NameContains = Annotated[
     str,
-    Field(description="Case-insensitive metadata name substring; empty disables this filter."),
+    StringConstraints(strip_whitespace=True, min_length=1),
+    Field(description="Case-insensitive metadata name substring; null disables this filter."),
 ]
 ModifiedAfter = Annotated[
     str,
     StringConstraints(
-        pattern=r"^$|^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+        pattern=r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
     ),
     Field(description="Strict modified-time lower bound as RFC 3339 with an explicit offset or Z."),
 ]
 ModifiedBefore = Annotated[
     str,
     StringConstraints(
-        pattern=r"^$|^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
+        pattern=r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$"
     ),
     Field(description="Strict modified-time upper bound as RFC 3339 with an explicit offset or Z."),
 ]
 OptionalExactId = Annotated[
     str,
-    StringConstraints(strip_whitespace=True, pattern=r"^$|.*\S.*"),
+    StringConstraints(strip_whitespace=True, min_length=1),
 ]
 QueryOffset = Annotated[
     int,
@@ -96,29 +98,29 @@ async def list_notebooks() -> dict[str, Any]:
     return invoke("list_notebooks")
 
 
-async def get_notebook(notebook_id: str) -> dict[str, Any]:
+async def get_notebook_metadata(notebook_id: str) -> dict[str, Any]:
     """Get stable metadata for one Notebook by ID."""
 
-    return invoke("get_notebook", notebook_id=notebook_id)
+    return invoke("get_notebook_metadata", notebook_id=notebook_id)
 
 
-async def get_section_group(section_group_id: str) -> dict[str, Any]:
+async def get_section_group_metadata(section_group_id: str) -> dict[str, Any]:
     """Get stable metadata for one SectionGroup by ID."""
 
-    return invoke("get_section_group", section_group_id=section_group_id)
+    return invoke("get_section_group_metadata", section_group_id=section_group_id)
 
 
-async def get_section(section_id: str) -> dict[str, Any]:
+async def get_section_metadata(section_id: str) -> dict[str, Any]:
     """Get stable metadata for one Section by ID."""
 
-    return invoke("get_section", section_id=section_id)
+    return invoke("get_section_metadata", section_id=section_id)
 
 
 async def query_notebook(
-    name_equals: NameEquals = "",
-    name_contains: NameContains = "",
-    modified_after: ModifiedAfter = "",
-    modified_before: ModifiedBefore = "",
+    name_equals: NameEquals | None = None,
+    name_contains: NameContains | None = None,
+    modified_after: ModifiedAfter | None = None,
+    modified_before: ModifiedBefore | None = None,
     offset: QueryOffset = 0,
     page_size: QueryPageSize = 200,
 ) -> dict[str, Any]:
@@ -137,14 +139,14 @@ async def query_notebook(
 
 async def query_section_group(
     scope: QueryScope,
-    name_equals: NameEquals = "",
-    name_contains: NameContains = "",
+    name_equals: NameEquals | None = None,
+    name_contains: NameContains | None = None,
     parent_id: Annotated[
         OptionalExactId,
         Field(description="Exact direct Notebook or SectionGroup parent ID within scope."),
-    ] = "",
-    modified_after: ModifiedAfter = "",
-    modified_before: ModifiedBefore = "",
+    ] | None = None,
+    modified_after: ModifiedAfter | None = None,
+    modified_before: ModifiedBefore | None = None,
     include_recycle_bin: Annotated[
         bool,
         Field(description="Include provable recycle-bin descendants without expanding scope."),
@@ -170,14 +172,14 @@ async def query_section_group(
 
 async def query_section(
     scope: QueryScope,
-    name_equals: NameEquals = "",
-    name_contains: NameContains = "",
+    name_equals: NameEquals | None = None,
+    name_contains: NameContains | None = None,
     parent_id: Annotated[
         OptionalExactId,
         Field(description="Exact direct Notebook or SectionGroup parent ID within scope."),
-    ] = "",
-    modified_after: ModifiedAfter = "",
-    modified_before: ModifiedBefore = "",
+    ] | None = None,
+    modified_after: ModifiedAfter | None = None,
+    modified_before: ModifiedBefore | None = None,
     include_recycle_bin: Annotated[
         bool,
         Field(description="Include provable recycle-bin descendants without expanding scope."),
@@ -205,22 +207,24 @@ async def query_page(
     scope: QueryScope,
     title_equals: Annotated[
         str,
-        Field(description="Case-insensitive exact hierarchy Page title; empty disables this filter."),
-    ] = "",
+        StringConstraints(strip_whitespace=True, min_length=1),
+        Field(description="Case-insensitive exact hierarchy Page title; null disables this filter."),
+    ] | None = None,
     title_contains: Annotated[
         str,
+        StringConstraints(strip_whitespace=True, min_length=1),
         Field(description="Case-insensitive hierarchy Page title substring, not Page body text."),
-    ] = "",
+    ] | None = None,
     section_id: Annotated[
         OptionalExactId,
         Field(description="Exact direct Section ID within the verified scope."),
-    ] = "",
+    ] | None = None,
     parent_page_id: Annotated[
         OptionalExactId,
         Field(description="Exact direct indentation-parent Page ID derived within one Section."),
-    ] = "",
-    modified_after: ModifiedAfter = "",
-    modified_before: ModifiedBefore = "",
+    ] | None = None,
+    modified_after: ModifiedAfter | None = None,
+    modified_before: ModifiedBefore | None = None,
     include_recycle_bin: Annotated[
         bool,
         Field(description="Include provable recycle-bin descendants without expanding scope."),
@@ -245,34 +249,34 @@ async def query_page(
     )
 
 
-async def get_path(object_id: str) -> dict[str, Any]:
+async def get_hierarchy_path(object_id: str) -> dict[str, Any]:
     """Get a display path and stable ancestor IDs."""
 
-    return invoke("get_path", object_id=object_id)
+    return invoke("get_hierarchy_path", object_id=object_id)
 
 
-async def expand_notebook(id: ExactHierarchyId) -> dict[str, Any]:
+async def expand_notebook(notebook_id: ExactHierarchyId) -> dict[str, Any]:
     """Expand one exact open Notebook through nested SectionGroups to Section leaves."""
 
-    return invoke("expand_notebook", id=id)
+    return invoke("expand_notebook", notebook_id=notebook_id)
 
 
-async def expand_section_group(id: ExactHierarchyId) -> dict[str, Any]:
+async def expand_section_group(section_group_id: ExactHierarchyId) -> dict[str, Any]:
     """Expand one exact SectionGroup through nested groups to Section leaves."""
 
-    return invoke("expand_section_group", id=id)
+    return invoke("expand_section_group", section_group_id=section_group_id)
 
 
-async def expand_section(id: ExactHierarchyId) -> dict[str, Any]:
+async def expand_section(section_id: ExactHierarchyId) -> dict[str, Any]:
     """Expand one exact Section to its complete Page indentation tree."""
 
-    return invoke("expand_section", id=id)
+    return invoke("expand_section", section_id=section_id)
 
 
-async def expand_page(id: ExactHierarchyId) -> dict[str, Any]:
+async def expand_page(page_id: ExactHierarchyId) -> dict[str, Any]:
     """Expand one exact Page to its complete indentation-descendant subtree."""
 
-    return invoke("expand_page", id=id)
+    return invoke("expand_page", page_id=page_id)
 
 
 async def expand_hierarchy(
@@ -292,14 +296,14 @@ async def expand_hierarchy(
 
 TOOLS = [
     list_notebooks,
-    get_notebook,
-    get_section_group,
-    get_section,
+    get_hierarchy_path,
+    get_notebook_metadata,
+    get_section_group_metadata,
+    get_section_metadata,
     query_notebook,
     query_section_group,
     query_section,
     query_page,
-    get_path,
     expand_notebook,
     expand_section_group,
     expand_section,

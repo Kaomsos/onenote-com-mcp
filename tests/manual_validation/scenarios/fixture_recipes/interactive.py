@@ -426,7 +426,7 @@ class DisplayEquationInteractiveFixtureRecipe(InteractiveFixtureRecipe):
             include_equations=False,
         )
         appended = await context.client.call_tool(
-            "append_to_page",
+            "append_page_content",
             {
                 "page_id": str(page["id"]),
                 "content": (
@@ -768,7 +768,7 @@ class InlineEquationInteractiveFixtureRecipe(DisplayEquationInteractiveFixtureRe
             include_equations=False,
         )
         appended = await context.client.call_tool(
-            "append_to_page",
+            "append_page_content",
             {
                 "page_id": str(page["id"]),
                 "content": (

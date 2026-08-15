@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from .responses import invoke
 
@@ -17,10 +17,10 @@ async def copy_page(
     expected_title: str,
     expected_section_id: str,
     expected_modified: str | None = None,
-    destination_title: str = "",
-    include_descendants: bool = False,
+    destination_title: str | None = None,
+    page_scope: Literal["page_only", "indentation_subtree"] = "page_only",
 ) -> dict[str, Any]:
-    """Copy a Page scope and report the root's observed final position, never a placement guarantee."""
+    """With Writes and Copy, copy one exact Page scope; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "copy_page",
@@ -30,7 +30,7 @@ async def copy_page(
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
         destination_title=destination_title,
-        include_descendants=include_descendants,
+        page_scope=page_scope,
     )
 
 
@@ -40,9 +40,9 @@ async def copy_section(
     expected_name: str,
     expected_parent_id: str,
     expected_modified: str | None = None,
-    destination_name: str = "",
+    destination_name: str | None = None,
 ) -> dict[str, Any]:
-    """Copy a Section tree and report its observed final position, not a placement guarantee."""
+    """With Writes and Copy, recursively copy a Section; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "copy_section",
@@ -61,9 +61,9 @@ async def copy_section_group(
     expected_name: str,
     expected_parent_id: str,
     expected_modified: str | None = None,
-    destination_name: str = "",
+    destination_name: str | None = None,
 ) -> dict[str, Any]:
-    """Copy a SectionGroup tree and report its backend name-sorted observed position."""
+    """With Writes and Copy, recursively copy a SectionGroup; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "copy_section_group",
@@ -80,10 +80,10 @@ async def copy_notebook(
     notebook_id: str,
     expected_name: str,
     expected_modified: str | None = None,
-    destination_name: str = "",
-    destination_base_folder: str = "",
+    destination_name: str | None = None,
+    destination_base_folder: str | None = None,
 ) -> dict[str, Any]:
-    """Copy a Notebook; destination_position is explicitly not applicable."""
+    """With Writes and Copy, recursively copy an exact Notebook; destination position is not applicable."""
 
     return invoke_mutation(
         "copy_notebook",
@@ -101,10 +101,10 @@ async def move_page(
     expected_title: str,
     expected_section_id: str,
     expected_modified: str | None = None,
-    destination_title: str = "",
-    include_descendants: bool = False,
+    destination_title: str | None = None,
+    page_scope: Literal["page_only", "indentation_subtree"] = "page_only",
 ) -> dict[str, Any]:
-    """Move a Page scope and report only the root's observed final position."""
+    """With Writes, Copy, and Deletes, move one Page scope; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "move_page",
@@ -114,7 +114,7 @@ async def move_page(
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
         destination_title=destination_title,
-        include_descendants=include_descendants,
+        page_scope=page_scope,
     )
 
 
@@ -124,9 +124,9 @@ async def move_section(
     expected_name: str,
     expected_parent_id: str,
     expected_modified: str | None = None,
-    destination_name: str = "",
+    destination_name: str | None = None,
 ) -> dict[str, Any]:
-    """Move a Section and report its observed final position, not a placement guarantee."""
+    """With Writes, Copy, and Deletes, move a Section; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "move_section",
@@ -145,9 +145,9 @@ async def move_section_group(
     expected_name: str,
     expected_parent_id: str,
     expected_modified: str | None = None,
-    destination_name: str = "",
+    destination_name: str | None = None,
 ) -> dict[str, Any]:
-    """Move a SectionGroup tree and report its backend name-sorted observed position."""
+    """With Writes, Copy, and Deletes, move a SectionGroup; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "move_section_group",

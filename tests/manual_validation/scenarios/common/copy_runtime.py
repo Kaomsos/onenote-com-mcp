@@ -207,7 +207,9 @@ def copy_execute_arguments(
             "destination_title": spec["destination_name"],
         }
         if spec.get("include_descendants") is not None:
-            arguments["include_descendants"] = spec["include_descendants"]
+            arguments["page_scope"] = (
+                "indentation_subtree" if spec["include_descendants"] else "page_only"
+            )
         return arguments
     if tool == "copy_section":
         id_key = "section_id"
@@ -341,7 +343,7 @@ async def close_copied_notebook(
     """Refresh the exact copied Notebook before binding the close confirmation."""
 
     refreshed = await client.call_tool(
-        "get_notebook",
+        "get_notebook_metadata",
         {"notebook_id": target["id"]},
     )
     close_target = refreshed.get("item")

@@ -155,22 +155,30 @@ class HierarchyNavigationScenario(Scenario):
 
         typed_notebook = (
             await client.call_tool(
-                "expand_notebook", {"id": str(notebook["id"])}, retry_read=False
+                "expand_notebook",
+                {"notebook_id": str(notebook["id"])},
+                retry_read=False,
             )
         )["tree"]
         typed_group = (
             await client.call_tool(
-                "expand_section_group", {"id": str(group["id"])}, retry_read=False
+                "expand_section_group",
+                {"section_group_id": str(group["id"])},
+                retry_read=False,
             )
         )["tree"]
         typed_section = (
             await client.call_tool(
-                "expand_section", {"id": str(section["id"])}, retry_read=False
+                "expand_section",
+                {"section_id": str(section["id"])},
+                retry_read=False,
             )
         )["tree"]
         typed_page = (
             await client.call_tool(
-                "expand_page", {"id": str(parent_page["id"])}, retry_read=False
+                "expand_page",
+                {"page_id": str(parent_page["id"])},
+                retry_read=False,
             )
         )["tree"]
         for tree, root_id in (

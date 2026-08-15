@@ -286,7 +286,7 @@ def test_notebook_copy_close_refreshes_modified_confirmation(tmp_path) -> None:
             self.close_arguments = None
 
         async def call_tool(self, name, arguments):
-            if name == "get_notebook":
+            if name == "get_notebook_metadata":
                 assert arguments == {"notebook_id": "copied-notebook"}
                 return {
                     "item": {
@@ -330,7 +330,7 @@ def test_failed_notebook_copy_closes_exact_created_target(tmp_path) -> None:
 
     class FakeClient:
         async def call_tool(self, name, arguments):
-            if name == "get_notebook":
+            if name == "get_notebook_metadata":
                 assert arguments == {"notebook_id": "copied-notebook"}
                 return {"item": target}
             if name == "close_notebook":
@@ -837,7 +837,11 @@ def _legacy_copy_page_two_case_fixture(
         async def call_tool(self, name, arguments):
             if name == "copy_page":
                 self.copy_arguments.append(dict(arguments))
-                return subtree_copied if arguments.get("include_descendants") else root_copied
+                return (
+                    subtree_copied
+                    if arguments.get("page_scope") == "indentation_subtree"
+                    else root_copied
+                )
             raise AssertionError(name)
 
     run_dir = tmp_path / "run"
@@ -870,9 +874,9 @@ def _legacy_copy_page_two_case_fixture(
     assert result["restored"] is expected_restored
     assert result["worksite_preserved"] is keep_worksite
     assert len(cleanup_calls) == expected_cleanup_calls
-    assert "include_descendants" not in client.copy_arguments[0]
+    assert "page_scope" not in client.copy_arguments[0]
     assert client.copy_arguments[0]["expected_modified"] == source["modified"]
-    assert client.copy_arguments[1]["include_descendants"] is True
+    assert client.copy_arguments[1]["page_scope"] == "indentation_subtree"
     assert client.copy_arguments[1]["expected_modified"] == source["modified"]
     root_before = test_utils.read_json(
         run_dir / "scenarios" / "copy-page" / "before-root-only-default.json"
@@ -1062,7 +1066,7 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                 "order": 100 + index * 2,
             }
             created_pages.append(target)
-            if arguments.get("include_descendants") is True:
+            if arguments.get("page_scope") == "indentation_subtree":
                 id_map["source-child"] = f"target-child-{index}"
                 created_pages.append(
                     {
@@ -1095,10 +1099,10 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                     "sequence_source": "page_order",
                 },
                 "copy_report": {
-                    "planning": {
-                        "include_descendants": arguments.get(
-                            "include_descendants", False
-                        ),
+                        "planning": {
+                            "include_descendants": (
+                                arguments.get("page_scope") == "indentation_subtree"
+                            ),
                         "content_capabilities": [],
                     },
                     "verified": True,
@@ -1141,13 +1145,13 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
     )
 
     assert [arguments["destination_section_id"] for arguments in copy_arguments] == expected_destinations
-    assert [arguments.get("include_descendants") for arguments in copy_arguments] == [
+    assert [arguments.get("page_scope") for arguments in copy_arguments] == [
         None,
-        True,
+        "indentation_subtree",
         None,
-        True,
+        "indentation_subtree",
         None,
-        True,
+        "indentation_subtree",
     ]
     assert [item["destination_scope"] for item in result["case_results"]] == [
         "same-section",
@@ -1273,7 +1277,7 @@ def test_copy_rich_fixture_is_idempotent_and_records_automated_types(tmp_path) -
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
                 return {"xml": state["xml"]}
-            if name == "get_page_objects":
+            if name == "list_page_content_objects":
                 return {"objects": state["objects"]}
             if name == "expand_section":
                 return {
@@ -1284,7 +1288,7 @@ def test_copy_rich_fixture_is_idempotent_and_records_automated_types(tmp_path) -
                         ],
                     }
                 }
-            if name == "append_to_page":
+            if name == "append_page_content":
                 self.mutations.append(name)
                 state["xml"] = (
                     '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
@@ -1294,7 +1298,7 @@ def test_copy_rich_fixture_is_idempotent_and_records_automated_types(tmp_path) -
                     '</one:T></one:OE><one:Table/></one:OEChildren></one:Outline></one:Page>'
                 )
                 return {"appended": True}
-            if name == "add_image_to_page":
+            if name == "add_page_image_from_file":
                 self.mutations.append(name)
                 state["objects"] = [{"kind": "Image", "id": None, "media_type": "png"}]
                 return {"image_path": arguments["image_path"]}
@@ -1304,7 +1308,7 @@ def test_copy_rich_fixture_is_idempotent_and_records_automated_types(tmp_path) -
     _, first = asyncio.run(ensure_copy_rich_fixture(client, page, tmp_path))
     _, second = asyncio.run(ensure_copy_rich_fixture(client, page, tmp_path))
 
-    assert client.mutations == ["append_to_page", "add_image_to_page"]
+    assert client.mutations == ["append_page_content", "add_page_image_from_file"]
     assert first == second
     assert first["automated_content"] == ["rich_text", "table", "image"]
     assert first["manual_content"] == ["ink", "shape", "media"]
@@ -1339,7 +1343,7 @@ def test_list_tag_copy_fixture_is_programmatic_and_idempotent() -> None:
                         ],
                     }
                 }
-            if name == "append_to_page":
+            if name == "append_page_content":
                 self.append_arguments.append(arguments)
                 state["xml"] = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="page-id">
                 <one:TagDef index="0" type="0" symbol="3" name="To Do"/>
@@ -1390,7 +1394,7 @@ def test_list_tag_copy_fixture_fails_closed_when_readback_is_incomplete() -> Non
                         ],
                     }
                 }
-            if name == "append_to_page":
+            if name == "append_page_content":
                 return {"appended": True}
             raise AssertionError(name)
 

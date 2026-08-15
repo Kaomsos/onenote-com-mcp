@@ -154,6 +154,34 @@ class OneNoteDesktopProbeError(OneNoteError):
     retryability = "after_user_action"
 
 
+class OneNoteDesktopExecutableError(OneNoteError):
+    """A trusted registered OneNote Desktop executable could not be resolved."""
+
+    code = "onenote_desktop_executable_unavailable"
+    retryability = "after_user_action"
+
+
+class OneNoteDesktopLaunchError(OneNoteError):
+    """The single explicit OneNote Desktop process launch request failed."""
+
+    code = "onenote_desktop_launch_failed"
+    retryability = "after_user_action"
+
+
+class OneNoteDesktopLaunchTimeoutError(OneNoteError):
+    """The launched process did not reach visible-GUI readiness in budget."""
+
+    code = "onenote_desktop_launch_timeout"
+    retryability = "after_user_action"
+
+
+class OneNoteDesktopWindowUnavailableError(OneNoteError):
+    """OneNote is running but no supported visible top-level GUI is available."""
+
+    code = "onenote_desktop_window_unavailable"
+    retryability = "after_user_action"
+
+
 def bridge_error(
     message: str,
     *,

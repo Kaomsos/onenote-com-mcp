@@ -17,22 +17,21 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from local_onenote_mcp.bridge import OneNoteBridge
+from local_onenote_mcp.constants import PAGE_INFO, XML_SCHEMA_2013
+from local_onenote_mcp.tool_surface import INTERNAL_CAPABILITY_NAMES
+
 from .progress import RunProgressReporter
 
 
 POLICY_ENV_NAMES = {
     "writes_enabled": "LOCAL_ONENOTE_ENABLE_WRITES",
     "deletes_enabled": "LOCAL_ONENOTE_ENABLE_DELETES",
-    "permanent_deletes_enabled": "LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES",
-    "experimental_reparent_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT",
-    "experimental_reorder_section_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION",
-    "experimental_reorder_section_group_enabled": (
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"
-    ),
-    "experimental_copy_enabled": "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-    "move_page_enabled": "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
-    "move_containers_enabled": "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
-    "raw_xml_enabled": "LOCAL_ONENOTE_ENABLE_RAW_XML",
+    "organize_enabled": "LOCAL_ONENOTE_ENABLE_ORGANIZE",
+    "copy_enabled": "LOCAL_ONENOTE_ENABLE_COPY",
+    "local_file_io_enabled": "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO",
+    "ui_control_enabled": "LOCAL_ONENOTE_ENABLE_UI_CONTROL",
+    "notebook_lifecycle_enabled": "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE",
 }
 COPY_BUDGET_ENV = {
     "max_resources": ("LOCAL_ONENOTE_MAX_COPY_RESOURCES", 1_000),
@@ -57,6 +56,7 @@ MUTATION_TOOL_PREFIXES = (
     "copy_",
     "create_",
     "delete_",
+    "export_",
     "merge_",
     "move_",
     "navigate_",
@@ -65,6 +65,7 @@ MUTATION_TOOL_PREFIXES = (
     "reparent_",
     "rename_",
     "reorder_",
+    "request_",
     "replace_",
     "set_",
     "sync_",
@@ -80,29 +81,21 @@ def is_mutation_tool(name: str) -> bool:
 class ScenarioPolicy:
     writes_enabled: bool = False
     deletes_enabled: bool = False
-    permanent_deletes_enabled: bool = False
-    experimental_reparent_enabled: bool = False
-    experimental_reorder_section_enabled: bool = False
-    experimental_reorder_section_group_enabled: bool = False
-    experimental_copy_enabled: bool = False
-    move_page_enabled: bool = False
-    move_containers_enabled: bool = False
-    raw_xml_enabled: bool = False
+    organize_enabled: bool = False
+    copy_enabled: bool = False
+    local_file_io_enabled: bool = False
+    ui_control_enabled: bool = False
+    notebook_lifecycle_enabled: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
             "writes_enabled": self.writes_enabled,
             "deletes_enabled": self.deletes_enabled,
-            "permanent_deletes_enabled": self.permanent_deletes_enabled,
-            "experimental_reparent_enabled": self.experimental_reparent_enabled,
-            "experimental_reorder_section_enabled": self.experimental_reorder_section_enabled,
-            "experimental_reorder_section_group_enabled": (
-                self.experimental_reorder_section_group_enabled
-            ),
-            "experimental_copy_enabled": self.experimental_copy_enabled,
-            "move_page_enabled": self.move_page_enabled,
-            "move_containers_enabled": self.move_containers_enabled,
-            "raw_xml_enabled": self.raw_xml_enabled,
+            "organize_enabled": self.organize_enabled,
+            "copy_enabled": self.copy_enabled,
+            "local_file_io_enabled": self.local_file_io_enabled,
+            "ui_control_enabled": self.ui_control_enabled,
+            "notebook_lifecycle_enabled": self.notebook_lifecycle_enabled,
         }
 
 
@@ -110,37 +103,29 @@ READ_ONLY_POLICY = ScenarioPolicy()
 WRITE_POLICY = ScenarioPolicy(writes_enabled=True)
 REPARENT_POLICY = ScenarioPolicy(
     writes_enabled=True,
-    experimental_reparent_enabled=True,
+    organize_enabled=True,
 )
-REORDER_SECTION_POLICY = ScenarioPolicy(
-    writes_enabled=True,
-    experimental_reorder_section_enabled=True,
-)
-REORDER_SECTION_GROUP_POLICY = ScenarioPolicy(
-    writes_enabled=True,
-    experimental_reorder_section_group_enabled=True,
-)
+REORDER_SECTION_POLICY = ScenarioPolicy(writes_enabled=True)
+REORDER_SECTION_GROUP_POLICY = ScenarioPolicy(writes_enabled=True)
 DELETE_POLICY = ScenarioPolicy(deletes_enabled=True)
 COPY_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
-    experimental_copy_enabled=True,
+    copy_enabled=True,
 )
 COPY_NO_DELETE_POLICY = ScenarioPolicy(
     writes_enabled=True,
-    experimental_copy_enabled=True,
+    copy_enabled=True,
 )
 MOVE_PAGE_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
-    experimental_copy_enabled=True,
-    move_page_enabled=True,
+    copy_enabled=True,
 )
 MOVE_CONTAINERS_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
-    experimental_copy_enabled=True,
-    move_containers_enabled=True,
+    copy_enabled=True,
 )
 
 
@@ -260,6 +245,8 @@ class MCPStdioClient:
         timeout_seconds: int,
         search_budget: dict[str, int] | None = None,
         progress: RunProgressReporter | None = None,
+        require_desktop_ready: bool = True,
+        persist_runtime_logs: bool = True,
     ) -> None:
         self.policy = policy
         self.allowed_tools = set(allowed_tools) | {"health_check"}
@@ -270,11 +257,22 @@ class MCPStdioClient:
             for field, (_env_name, default) in SEARCH_BUDGET_ENV.items()
         }
         self.progress = progress or RunProgressReporter.disabled()
+        self.require_desktop_ready = require_desktop_ready
+        self.persist_runtime_logs = persist_runtime_logs
         self._stack = AsyncExitStack()
         self._session: ClientSession | None = None
         self.process_started = False
         self.available_tools: set[str] = set()
         self.health_result: dict[str, Any] | None = None
+        self.health_failure_envelope: dict[str, Any] | None = None
+        self._internal_bridge = OneNoteBridge(
+            timeout_seconds=timeout_seconds,
+            audit_path=(
+                run_dir / "internal-capability-calls.jsonl"
+                if persist_runtime_logs
+                else None
+            ),
+        )
         self._scenario_before_snapshots: dict[str, dict[str, Any]] = {}
         self._scenario_before_handoff: dict[str, Any] | None = None
         self._scenario_before_handoff_path: Path | None = None
@@ -282,8 +280,13 @@ class MCPStdioClient:
     async def __aenter__(self) -> "MCPStdioClient":
         try:
             self.run_dir.mkdir(parents=True, exist_ok=True)
-            stderr_file = (self.run_dir / "server.stderr.log").open("a", encoding="utf-8")
-            self._stack.callback(stderr_file.close)
+            if self.persist_runtime_logs:
+                stderr_target = (self.run_dir / "server.stderr.log").open(
+                    "a", encoding="utf-8"
+                )
+                self._stack.callback(stderr_target.close)
+            else:
+                stderr_target = sys.stderr
             parameters = StdioServerParameters(
                 command=sys.executable,
                 args=["-m", "local_onenote_mcp.server"],
@@ -292,56 +295,130 @@ class MCPStdioClient:
                     self.policy,
                     self.run_dir / "temp",
                     self.timeout_seconds,
-                    self.run_dir / "bridge-calls.jsonl",
+                    (
+                        self.run_dir / "bridge-calls.jsonl"
+                        if self.persist_runtime_logs
+                        else None
+                    ),
                     self.search_budget,
                 ),
                 encoding="utf-8",
                 encoding_error_handler="replace",
             )
             read_stream, write_stream = await self._stack.enter_async_context(
-                stdio_client(parameters, errlog=stderr_file)
+                stdio_client(parameters, errlog=stderr_target)
             )
             self.process_started = True
             self._session = await self._stack.enter_async_context(ClientSession(read_stream, write_stream))
             await asyncio.wait_for(self._session.initialize(), timeout=self.timeout_seconds)
             listed = await asyncio.wait_for(self._session.list_tools(), timeout=self.timeout_seconds)
             self.available_tools = {tool.name for tool in listed.tools}
-            missing = sorted(self.allowed_tools - self.available_tools)
+            missing = sorted(
+                self.allowed_tools - self.available_tools - INTERNAL_CAPABILITY_NAMES
+            )
             if missing:
                 raise ClientFailure(f"Server is missing required tools: {', '.join(missing)}")
-            health = await self.call_tool("health_check", {}, retry_read=False)
+            health = await self.call_health_preflight(
+                allow_desktop_not_running=not self.require_desktop_ready
+            )
             self.health_result = health
-            desktop = health.get("onenote_desktop")
-            if not isinstance(desktop, dict) or desktop.get("ready") is not True:
-                raise ClientFailure(
-                    "OneNote Desktop health preflight did not prove an existing visible GUI."
-                )
-            actual = health.get("mutation_policy")
-            expected = self.policy.as_dict()
-            if actual != expected:
-                raise ClientFailure(f"Mutation policy mismatch: expected {expected}, received {actual}")
-            if health.get("timeout_seconds") != self.timeout_seconds:
-                raise ClientFailure(
-                    "Server bridge timeout mismatch: "
-                    f"expected {self.timeout_seconds}, received {health.get('timeout_seconds')}"
-                )
-            expected_copy_budget = {
-                field: value for field, (_env_name, value) in COPY_BUDGET_ENV.items()
-            }
-            if health.get("copy_budget") != expected_copy_budget:
-                raise ClientFailure(
-                    "Copy budget mismatch: "
-                    f"expected {expected_copy_budget}, received {health.get('copy_budget')}"
-                )
-            if health.get("search_budget") != self.search_budget:
-                raise ClientFailure(
-                    "Search budget mismatch: "
-                    f"expected {self.search_budget}, received {health.get('search_budget')}"
-                )
+            if self.health_failure_envelope is not None:
+                return self
+            self.validate_health_contract(
+                health,
+                require_desktop_ready=self.require_desktop_ready,
+            )
             return self
         except BaseException:
             await self._stack.aclose()
             raise
+
+    def validate_health_contract(
+        self,
+        health: dict[str, Any],
+        *,
+        require_desktop_ready: bool,
+    ) -> None:
+        """Validate a successful health result against this frozen client profile."""
+
+        desktop = health.get("onenote_desktop")
+        if not isinstance(desktop, dict):
+            raise ClientFailure(
+                "OneNote Desktop health preflight returned malformed readiness evidence."
+            )
+        if require_desktop_ready and desktop.get("ready") is not True:
+            raise ClientFailure(
+                "OneNote Desktop health preflight did not prove an existing visible GUI."
+            )
+        actual = health.get("mutation_policy")
+        expected = self.policy.as_dict()
+        if actual != expected:
+            raise ClientFailure(f"Mutation policy mismatch: expected {expected}, received {actual}")
+        if health.get("timeout_seconds") != self.timeout_seconds:
+            raise ClientFailure(
+                "Server bridge timeout mismatch: "
+                f"expected {self.timeout_seconds}, received {health.get('timeout_seconds')}"
+            )
+        expected_copy_budget = {
+            field: value for field, (_env_name, value) in COPY_BUDGET_ENV.items()
+        }
+        if health.get("copy_budget") != expected_copy_budget:
+            raise ClientFailure(
+                "Copy budget mismatch: "
+                f"expected {expected_copy_budget}, received {health.get('copy_budget')}"
+            )
+        if health.get("search_budget") != self.search_budget:
+            raise ClientFailure(
+                "Search budget mismatch: "
+                f"expected {self.search_budget}, received {health.get('search_budget')}"
+            )
+
+    @staticmethod
+    def _expected_desktop_not_running_health(
+        exc: ClientFailure,
+    ) -> dict[str, Any] | None:
+        envelope = exc.envelope
+        if not isinstance(envelope, dict):
+            return None
+        error = envelope.get("error")
+        if not isinstance(error, dict) or error.get("code") != "onenote_desktop_not_running":
+            return None
+        details = error.get("details")
+        desktop = details.get("onenote_desktop") if isinstance(details, dict) else None
+        execution = envelope.get("execution")
+        if (
+            not isinstance(desktop, dict)
+            or desktop.get("process_running") is not False
+            or desktop.get("visible_window_present") is not False
+            or desktop.get("ready") is not False
+            or not isinstance(execution, dict)
+            or execution.get("operation") != "health_check"
+            or execution.get("backend_calls") != 0
+        ):
+            return None
+        return {
+            "ok": False,
+            "onenote_desktop": dict(desktop),
+            "expected_failure_envelope": envelope,
+        }
+
+    async def call_health_preflight(
+        self,
+        *,
+        allow_desktop_not_running: bool,
+    ) -> dict[str, Any]:
+        """Call health, optionally admitting its exact fully-stopped typed failure."""
+
+        try:
+            health = await self.call_tool("health_check", {}, retry_read=False)
+        except ClientFailure as exc:
+            stopped = self._expected_desktop_not_running_health(exc)
+            if not allow_desktop_not_running or stopped is None:
+                raise
+            self.health_failure_envelope = exc.envelope
+            return stopped
+        self.health_failure_envelope = None
+        return health
 
     async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         self._discard_scenario_before_snapshots("client_exit")
@@ -359,6 +436,8 @@ class MCPStdioClient:
         if self._session is None:
             raise ClientFailure("MCP session is not initialized.")
         arguments = arguments or {}
+        if name == "get_page_xml":
+            return await self._call_internal_page_xml(arguments)
         mutation = is_mutation_tool(name)
         if mutation and self._scenario_before_snapshots:
             pending_count = len(self._scenario_before_snapshots)
@@ -402,13 +481,30 @@ class MCPStdioClient:
                     envelope=envelope,
                 )
                 if envelope.get("ok") is not True:
-                    code = envelope.get("code", "operation_failed")
-                    message = envelope.get("error", "tool call failed")
+                    error_payload = envelope.get("error")
+                    if not isinstance(error_payload, dict):
+                        error_payload = {}
+                    code = error_payload.get("code", "operation_failed")
+                    message = error_payload.get("message", "tool call failed")
                     raise ClientFailure(
                         f"{name} failed ({code}): {message}",
                         envelope=envelope,
                     )
-                return envelope
+                payload = envelope.get("result")
+                if not isinstance(payload, dict):
+                    raise ClientFailure(
+                        f"{name} returned a malformed success result.",
+                        envelope=envelope,
+                    )
+                # Scenario implementations predate the public response envelope and
+                # intentionally consume business-result fields at the top level. Keep
+                # that compatibility surface, but do not discard the envelope metadata:
+                # convergence validation needs the production Operation Runtime record.
+                flattened = dict(payload)
+                flattened["ok"] = True
+                flattened["warnings"] = envelope.get("warnings", [])
+                flattened["execution"] = envelope.get("execution", {})
+                return flattened
             except ClientFailure as exc:
                 if not recorded:
                     record["completed_at"] = datetime.now(timezone.utc).isoformat()
@@ -442,6 +538,68 @@ class MCPStdioClient:
                 if attempt == attempts:
                     break
         raise ClientFailure(f"{name} transport failed after {attempts} attempt(s): {last_error}")
+
+    async def _call_internal_page_xml(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Read raw Page XML solely for isolated validation evidence.
+
+        This capability deliberately bypasses MCP registration. It remains local to the
+        manual-validation harness and is covered by the scenario allowlist and bridge audit.
+        """
+
+        page_id = str(arguments.get("page_id", "")).strip()
+        page_info = str(arguments.get("page_info", "all")).strip().casefold()
+        if not page_id:
+            raise ClientFailure("Internal get_page_xml requires a non-empty page_id.")
+        if page_info not in PAGE_INFO:
+            raise ClientFailure(f"Internal get_page_xml received invalid page_info: {page_info}")
+        started = asyncio.get_running_loop().time()
+        self.progress.tool_started("get_page_xml", 1, mutation=False)
+        record: dict[str, Any] = {
+            "tool": "get_page_xml",
+            "surface": "internal_validation_capability",
+            "attempt": 1,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "arguments": summarize(arguments),
+        }
+        try:
+            payload = await asyncio.to_thread(
+                self._internal_bridge.call,
+                "get_page_content",
+                page_id=page_id,
+                page_info=PAGE_INFO[page_info],
+                schema=XML_SCHEMA_2013,
+            )
+            record["completed_at"] = datetime.now(timezone.utc).isoformat()
+            record["elapsed_seconds"] = round(
+                asyncio.get_running_loop().time() - started,
+                6,
+            )
+            record["result"] = summarize(payload)
+            self._append_audit(record)
+            self.progress.tool_completed(
+                "get_page_xml",
+                1,
+                mutation=False,
+                elapsed_seconds=float(record["elapsed_seconds"]),
+                envelope={"ok": True, "result": payload},
+            )
+            return payload
+        except Exception as exc:
+            record["completed_at"] = datetime.now(timezone.utc).isoformat()
+            record["elapsed_seconds"] = round(
+                asyncio.get_running_loop().time() - started,
+                6,
+            )
+            record["internal_error"] = f"{type(exc).__name__}: {exc}"
+            self._append_audit(record)
+            self.progress.tool_failed(
+                "get_page_xml",
+                1,
+                mutation=False,
+                elapsed_seconds=float(record["elapsed_seconds"]),
+                error_type=type(exc).__name__,
+            )
+            raise ClientFailure(f"Internal get_page_xml failed: {exc}") from exc
 
     def stage_scenario_before_snapshots(
         self,
@@ -554,6 +712,8 @@ class MCPStdioClient:
         write_json(self._scenario_before_handoff_path, self._scenario_before_handoff)
 
     def _append_audit(self, record: dict[str, Any]) -> None:
+        if not self.persist_runtime_logs:
+            return
         with (self.run_dir / "calls.jsonl").open("a", encoding="utf-8", newline="\n") as stream:
             stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
 

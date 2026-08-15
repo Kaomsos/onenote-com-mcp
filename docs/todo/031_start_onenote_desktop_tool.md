@@ -1,16 +1,16 @@
 # 031：显式 `launch_onenote_gui` 工具
 
 > ID：031
-> 状态：进行中
+> 状态：已完成
 > 优先级：P1
 > 类型：生产 MCP / Windows Desktop GUI 控制
-> 更新日期：2026-08-15
+> 更新日期：2026-08-16
 
 ## 当前状态与已确认决策
 
-当前实现仍只有 check-only 的 `health_check`：OneNote Desktop 未运行或没有可见窗口时，读写操作 fail closed，服务器不会隐式启动 GUI。
+`launch_onenote_gui` 已进入 production Registry 和 Session 分类；`health_check` 继续保持 check-only。实现只从 Windows 注册的 OneNote LocalServer 信息解析受信任 `ONENOTE.EXE`，完全未运行时最多发出一次无参数 process launch，然后有界观察进程与可见 GUI 窗口。
 
-用户已经授权把本 TODO 的目标工具冻结为 `launch_onenote_gui`，并纳入 [TODO 034](034_pre_user_testing_tool_surface_convergence.md) 的目标 User profile。本文记录目标合同，**不表示工具已经实现或发布**。
+纯自动化已覆盖 already-running、single launch、process-only、timeout、ProgID→CLSID→LocalServer32 注册目标校验、UI Control 先于 side effect，以及独立 HUMAN-GATED 验收入口的双 policy/交互/证据合同；2026-08-16 全仓 1135 项自动化测试、manual-validation 582 项纯测试及 18/18 个人工场景 dry-run 通过。用户已完成真实桌面启动、未授权拒绝、幂等、健康检查、typed hierarchy COM 读取和单窗口人工验收，本 TODO 完成。
 
 已确认：
 
@@ -27,7 +27,7 @@
 
 因此启动 GUI 必须是用户可见、显式、可授权的独立操作，不能作为任意 COM 调用的副作用，也不能把“COM 对象可创建”误判为“桌面 GUI 已就绪”。
 
-## 目标公开合同
+## 当前公开合同
 
 ### Schema
 
@@ -81,11 +81,11 @@ launch_onenote_gui()
 
 ## 授权与运行时分类
 
-- Exposure：目标 User profile 默认可见；当前尚未注册。
+- Exposure：User profile 默认可见。
 - Category：Session。
 - Effect：GUI control，不是普通 read，也不是 OneNote 内容 mutation。
 - Authorization：`LOCAL_ONENOTE_ENABLE_UI_CONTROL=true`；默认 false。
-- Operation runtime：若工具进入生产 Registry，必须进入 canonical Operation Runtime，并记录 content-free 的 execution metadata。
+- Operation runtime：已进入 canonical Operation Runtime，并记录 content-free 的 execution metadata。
 
 UI Control 权限同时覆盖 `navigate_to`，但授权一个类别不意味着调用时可以隐式执行另一个工具。`health_check` 不需要 UI Control，因为它保持只读探针。
 
@@ -122,7 +122,14 @@ pytest 必须完全 mock 进程枚举、窗口枚举、注册表解析、激活�
 
 ## 用户真实验收
 
-只有用户可以执行涉及真实 OneNote Desktop 的验收：
+只有用户可以执行涉及真实 OneNote Desktop 的验收。当前提供一个不属于 Scenario Registry、也不进入 `run.py all` 的半自动化入口：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --verbosity verbose
+```
+
+真实命令要求交互式前台终端、运行开始确认和最终 GUI 人工 verdict；它依次使用 UI Control 关闭/仅开启 UI Control 的两个冻结 MCP policy，生成 managed `run-*` 结构化证据，不创建 Notebook、不修改 Notebook 内容、不关闭 OneNote。`--verbosity quiet|normal|verbose` 控制终端细节；MCP calls、bridge audit 与 server stderr 只输出到当前终端，不写入对应 runtime 日志文件。OneNote/Office 仍可能在隔离 TEMP 下生成自身管理的 diagnostics/cache；它们不是 MCP runtime 日志，验收入口不尝试重定向、解释或清理。验收内容为：
 
 1. 完全退出 OneNote，调用 `health_check`，确认 fail closed 且没有隐式启动；
 2. 在 UI Control 未授权时调用 `launch_onenote_gui`，确认在启动前被拒绝；
@@ -133,15 +140,21 @@ pytest 必须完全 mock 进程枚举、窗口枚举、注册表解析、激活�
 
 Agent、pytest、CI、hook、timer、watcher 和后台任务都不得执行上述真实启动验收。
 
+### 真实验收证据
+
+用户于 2026-08-16 前台运行 `run-2026-08-16-00-01-03` 并给出 run-bound `ACCEPT`：未授权请求以 `policy_disabled` 在 authorization 阶段拒绝且 `backend_calls=0`；授权调用返回 `status=started`、`launch_attempted=true`、`launch_attempts=1`；第二次调用返回 `status=already_running`、`launch_attempted=false`、`launch_attempts=0`；后续 health 为 ready，`list_notebooks` typed COM 读取通过并观察到 6 个已打开 Notebook；用户确认桌面仅有一个可见 OneNote GUI。最终 `run-state.json` 与 `run-result.json` 均为 `passed`，OneNote 按合同保持运行。
+
+该 run 未生成 `calls.jsonl`、bridge audit 或 `server.stderr.log`。其隔离 TEMP 中由 OneNote/Office 自行生成的 diagnostics/cache 保留为环境现场，不属于 MCP runtime 日志，也不作为工具成功证据。
+
 ## 完成定义
 
 - [x] 用户确认名称、分类、单次启动请求与有界观察语义；
 - [x] 用户授权更新本文及 TODO 034 的目标发布方案；
-- [ ] 工具实现、trusted executable 解析、single-launch convergence 和 typed errors 完成；
-- [ ] 纯合同覆盖完整，且没有真实 OneNote side effect；
-- [ ] Registry、README、design、health capability 和 manual-validation 文档同步到已实现状态；
-- [ ] 用户完成真实启动、幂等、健康检查和必要的 cache consumer 验收；
-- [x] 用户最终批准将 `launch_onenote_gui` 纳入目标 User profile；实际注册仍待实现和验收。
+- [x] 工具实现、trusted executable 解析、single-launch convergence 和 typed errors 完成；
+- [x] 纯合同覆盖完整，且没有真实 OneNote side effect；
+- [x] Registry、README、design、health capability 和 manual-validation 文档同步到已实现状态；
+- [x] 用户完成真实启动、未授权拒绝、幂等、健康检查、typed hierarchy COM 读取和单窗口人工验收；
+- [x] 用户最终批准将 `launch_onenote_gui` 纳入 User profile，且 production Registry 已完成注册。
 
 ## 关联
 

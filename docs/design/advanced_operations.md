@@ -3,15 +3,15 @@
 > 状态：当前实现态
 > 更新日期：2026-08-15
 
-本项目不再提供生产 `advanced` MCP profile。生产 `tools/list` 只有 56 个 task-level typed Tool；低层 COM、raw Page XML 和已证明不受后端支持的能力只能留在 Service、Bridge、纯测试或明确的人工诊断代码中，不能据其内部实现推导出产品能力。
+本项目不提供生产 `advanced` MCP profile。生产 `tools/list` 只有 52 个 task-level typed Tool；低层 COM、raw Page XML 和已证明不受后端支持的能力只能留在 Service、Bridge、纯测试或明确的人工诊断代码中，不能据其内部实现推导出产品能力。
 
-> **发布规划说明：** [TODO 034](../todo/034_pre_user_testing_tool_surface_convergence.md) 计划把 `resolve_identifier`、`get_page_xml`、`navigate_to_url`、`get_special_locations`、`get_parent` 进一步集中到非 MCP 注册的 Internal & Incubating catalog。该 catalog 不是可开启的 profile；当前 56 工具在 Registry 实施变更前仍是事实基线。
+`resolve_identifier`、`get_page_xml`、`navigate_to_url`、`get_special_locations`、`get_parent` 已集中到非 MCP 注册的 Internal & Incubating catalog。该 catalog 不是隐藏 profile，也没有批量 exposure 开关；状态、原因、内部调用者和 promotion requirements 的机器投影在 `tool_surface.py`。
 
 ## 1. Exposure 与授权边界
 
 - `src/local_onenote_mcp/tools/advanced.py` 的生产工具集合为空；`tools/__init__.py` 只注册默认 typed Tool。
 - `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 不参与 Tool 注册，也不会改变 `tools/list`。它只可能满足内部低层 service 自身的 raw mutation 授权检查。
-- `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP=true` 同样只服务保留的内部诊断实现，不会创建 MCP adapter 或 Registry binding。
+- SectionGroup reorder 的保留诊断 Service 不创建 MCP adapter 或 Registry binding，也没有用户授权开关；直接诊断调用除 Writes 外还要求非产品内部门 `LOCAL_ONENOTE_ENABLE_INTERNAL_SECTION_GROUP_REORDER=true`。
 - Registry 中不存在 advanced binding；启动审计只接受默认生产 Tool 的精确集合。
 - 隐藏不等于授权。内部诊断路径仍必须满足其 write/delete/raw policy，并且不能被公开 typed Tool 间接转换为任意 raw payload 入口。
 
@@ -25,7 +25,7 @@
 | `merge_sections` | Section Merge 后端能力探测 | 不注册；没有稳定 typed Merge 产品合同 |
 | `set_filing_location` | filing location 后端能力探测 | 不注册；没有用户级产品合同 |
 | `delete_hierarchy` / `update_hierarchy` | typed Delete、Move、Reorder/Reparent 的受约束 bridge 原语 | 不接受公开任意 ID/XML Tool |
-| `reorder_section_group` | 保存后端不支持结论的诊断 Service 与历史 fixture | 不注册；不能通过 Rename、Copy/Delete 或 raw XML 模拟 |
+| `reorder_section_group` | 保存后端不支持结论的诊断 Service 与历史 fixture | 不注册；内部诊断门默认关闭；不能通过 Rename、Copy/Delete 或 raw XML 模拟 |
 
 `delete_hierarchy` 与任意 hierarchy XML update 不存在公开 service facade 或 MCP adapter。Bridge 中保留固定 COM operation 只允许受约束 typed Service 使用精确 ID或内部构造 XML。
 
@@ -42,12 +42,12 @@
 
 ## 4. 与默认 typed profile 的关系
 
-Page、Section 和 SectionGroup Reparent 已迁移为精确 ID、具名 policy 和具名人工场景保护的 typed Tool。它们不依赖任何 advanced exposure，也不接受调用方提供 hierarchy XML。
+Page、Section 和 SectionGroup Reparent 已迁移为精确 ID、Writes + Organize 和具名人工场景保护的 typed Tool。它们不依赖任何 advanced exposure，也不接受调用方提供 hierarchy XML。
 
 能力评级只针对生产 typed profile：
 
 - `T`：默认注册的稳定 typed 契约；
-- `E`：默认注册、由独立实验 policy 保护的 typed 契约；
+- `E`：默认注册、由具名 effect authorization 保护的 typed 契约；
 - `X`：没有 typed 产品契约、后端不支持或明确不公开；
 - 内部低层/诊断方法：不是 Tool，不进入 `T/E/X` 对象—操作矩阵。
 

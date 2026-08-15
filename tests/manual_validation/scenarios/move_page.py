@@ -107,7 +107,7 @@ async def _execute_move_page(
                 "destination_title": destination_title,
             }
             if include_descendants:
-                move_arguments["include_descendants"] = True
+                move_arguments["page_scope"] = "indentation_subtree"
             moved = await call_with_result_evidence(
                 client,
                 "move_page",

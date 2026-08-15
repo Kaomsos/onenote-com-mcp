@@ -95,11 +95,18 @@ def _profile(
 
 
 DELETE_SCENARIO_POLICY = ScenarioPolicy(writes_enabled=True, deletes_enabled=True)
+CONVERGENCE_SCENARIO_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    deletes_enabled=True,
+    local_file_io_enabled=True,
+    ui_control_enabled=True,
+    notebook_lifecycle_enabled=True,
+)
 CREATE_SCENARIO_TOOLS = READ_TOOLS | {"create_section", "create_page"}
 LAYERED_PAGE_FIXTURE_TOOLS = {
     "create_page",
-    "append_to_page",
-    "add_image_to_page",
+    "append_page_content",
+    "add_page_image_from_file",
     "reorder_page",
 }
 
@@ -125,42 +132,40 @@ SCENARIO_SPECS = {
                 "both anchor Pages resolve to fresh exact IDs in one Section",
                 "Sync reports accepted without observable completion",
                 "Publish creates one exact run-scoped PDF target",
-                "typed and URL Navigate report UI action accepted without persistence claims",
+                "typed navigate_to reports UI action accepted without persistence claims",
                 "public create_notebook returns an exact run-scoped identity and is closed",
                 "Replace Body proves convergence and its non-atomic saga contract",
                 "all mutation responses prove at least two stable live observations",
                 "the disposable probe is non-permanently deleted before production close_notebook",
             ),
         ),
-        DELETE_SCENARIO_POLICY,
+        CONVERGENCE_SCENARIO_POLICY,
         frozenset(
             READ_TOOLS
             | {
                 "create_section",
                 "create_notebook",
                 "create_page",
-                "update_page_title",
+                "rename_page",
                 "replace_page_body",
-                "append_to_page",
-                "delete_page_content",
+                "append_page_content",
+                "delete_page_content_object",
                 "reorder_page",
                 "delete_page",
                 "close_notebook",
-                "sync_notebook",
-                "publish_object",
+                "request_notebook_sync",
+                "export_object_to_pdf",
                 "get_hyperlink",
                 "navigate_to",
-                "navigate_to_url",
             }
         ),
         {
             "fresh_only": True,
             "included_in_all": False,
             "effect_operations": [
-                "sync_notebook",
-                "publish_object",
+                "request_notebook_sync",
+                "export_object_to_pdf",
                 "navigate_to",
-                "navigate_to_url",
             ],
         },
     ),
@@ -350,7 +355,7 @@ SCENARIO_SPECS = {
                 "destination_anchor_page",
                 "destination_anchor_page_b",
             ),
-            {"create_section", "create_page", "append_to_page", "add_image_to_page"},
+            {"create_section", "create_page", "append_page_content", "add_page_image_from_file"},
             content=(
                 "plain_text",
                 "page_identity_remap",
@@ -405,8 +410,8 @@ SCENARIO_SPECS = {
                 "create_section",
                 "create_page",
                 "reorder_page",
-                "append_to_page",
-                "add_image_to_page",
+                "append_page_content",
+                "add_page_image_from_file",
             },
             content=("page_scope", "rich_text", "table", "image", "numbered_pages"),
             checks=(
@@ -1086,7 +1091,7 @@ SCENARIO_SPECS["copy-display-equation"] = ScenarioSpec(
             "Source/01-Source-Parent[prepared rich text, table, image, and one automatic display equation]",
         ),
         ("canvas_section", "canvas_page"),
-        {"create_section", "create_page", "append_to_page", "add_image_to_page"},
+        {"create_section", "create_page", "append_page_content", "add_page_image_from_file"},
         content=("Outline", "RichText", "Table", "Image", "DisplayEquation"),
         checks=(
             "exact Source Parent IDs remain active",
@@ -1098,7 +1103,7 @@ SCENARIO_SPECS["copy-display-equation"] = ScenarioSpec(
     COPY_POLICY,
     frozenset(
         COPY_PAGE_TOOLS
-        | {"create_section", "create_page", "append_to_page", "add_image_to_page"}
+        | {"create_section", "create_page", "append_page_content", "add_page_image_from_file"}
     ),
     {
         "programmatic_display_equation": True,
@@ -1118,7 +1123,7 @@ SCENARIO_SPECS["bootstrap-inline-equation-fixture"] = ScenarioSpec(
             "Source/01-Source-Parent[prepared rich text, table, image, and one automatic inline equation]",
         ),
         ("canvas_section", "canvas_page"),
-        {"create_section", "create_page", "append_to_page", "add_image_to_page"},
+        {"create_section", "create_page", "append_page_content", "add_page_image_from_file"},
         content=("Outline", "RichText", "Table", "Image", "InlineEquation"),
         checks=(
             "exact Source Parent IDs remain active",
@@ -1128,7 +1133,7 @@ SCENARIO_SPECS["bootstrap-inline-equation-fixture"] = ScenarioSpec(
         ),
     ),
     WRITE_POLICY,
-    frozenset(_INTERACTIVE_TOOLS | {"append_to_page", "add_image_to_page"}),
+    frozenset(_INTERACTIVE_TOOLS | {"append_page_content", "add_page_image_from_file"}),
     {
         "interactive_bootstrap": True,
         "programmatic_inline_equation": True,

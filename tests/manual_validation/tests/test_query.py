@@ -93,12 +93,11 @@ def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
     assert "get_page_xml" not in spec.tool_allowlist
     assert spec.policy.writes_enabled is True
     assert spec.policy.deletes_enabled is False
-    assert spec.policy.permanent_deletes_enabled is False
-    assert spec.policy.experimental_reparent_enabled is False
-    assert spec.policy.experimental_copy_enabled is False
-    assert spec.policy.move_page_enabled is False
-    assert spec.policy.move_containers_enabled is False
-    assert spec.policy.raw_xml_enabled is False
+    assert spec.policy.organize_enabled is False
+    assert spec.policy.copy_enabled is False
+    assert spec.policy.local_file_io_enabled is False
+    assert spec.policy.ui_control_enabled is False
+    assert spec.policy.notebook_lifecycle_enabled is False
 
 
 def test_query_physical_token_is_compact_deterministic_and_not_the_uuid() -> None:
@@ -156,14 +155,11 @@ def test_query_metadata_scope_dry_run_is_human_gated_and_least_privilege(capsys)
     assert payload["scenario_spec"]["mutation_policy"] == {
         "writes_enabled": True,
         "deletes_enabled": False,
-        "permanent_deletes_enabled": False,
-        "experimental_reparent_enabled": False,
-        "experimental_reorder_section_enabled": False,
-        "experimental_reorder_section_group_enabled": False,
-        "experimental_copy_enabled": False,
-        "move_page_enabled": False,
-        "move_containers_enabled": False,
-        "raw_xml_enabled": False,
+        "organize_enabled": False,
+        "copy_enabled": False,
+        "local_file_io_enabled": False,
+        "ui_control_enabled": False,
+        "notebook_lifecycle_enabled": False,
     }
 
 

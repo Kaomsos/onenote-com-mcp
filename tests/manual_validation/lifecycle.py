@@ -846,7 +846,6 @@ class NotebookLifecycleWrapper:
             )
         if (
             result.get("ok") is not True
-            or result.get("complete") is not True
             or result.get("closed") is not True
             or not isinstance(item, Mapping)
             or str(item.get("id", "")) != notebook_id

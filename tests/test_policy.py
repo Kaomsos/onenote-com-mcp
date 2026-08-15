@@ -3,17 +3,22 @@ import pytest
 from local_onenote_mcp.policy import CopyBudget, MutationPolicy, SearchBudget
 
 
-def test_mutations_are_disabled_by_default(monkeypatch):
+PUBLIC_GATE_ENV = (
+    "LOCAL_ONENOTE_ENABLE_WRITES",
+    "LOCAL_ONENOTE_ENABLE_DELETES",
+    "LOCAL_ONENOTE_ENABLE_ORGANIZE",
+    "LOCAL_ONENOTE_ENABLE_COPY",
+    "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO",
+    "LOCAL_ONENOTE_ENABLE_UI_CONTROL",
+    "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE",
+)
+
+
+def test_public_authorization_is_disabled_by_default(monkeypatch):
     for name in (
-        "LOCAL_ONENOTE_ENABLE_WRITES",
-        "LOCAL_ONENOTE_ENABLE_DELETES",
+        *PUBLIC_GATE_ENV,
         "LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-        "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
-        "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
+        "LOCAL_ONENOTE_ENABLE_INTERNAL_SECTION_GROUP_REORDER",
         "LOCAL_ONENOTE_ENABLE_RAW_XML",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -22,114 +27,76 @@ def test_mutations_are_disabled_by_default(monkeypatch):
 
     assert policy.writes_enabled is False
     assert policy.deletes_enabled is False
-    assert policy.permanent_deletes_enabled is False
-    assert policy.experimental_copy_enabled is False
-    assert policy.experimental_reorder_section_enabled is False
-    assert policy.experimental_reorder_section_group_enabled is False
-    assert policy.experimental_reparent_enabled is False
-    assert policy.move_page_enabled is False
-    assert policy.move_containers_enabled is False
-    with pytest.raises(PermissionError):
-        policy.require_write()
-    with pytest.raises(PermissionError):
-        policy.require_delete()
-    with pytest.raises(PermissionError):
-        policy.require_experimental_reparent()
-    with pytest.raises(PermissionError):
-        policy.require_experimental_copy()
-    with pytest.raises(PermissionError):
-        policy.require_experimental_reorder("section")
-    with pytest.raises(PermissionError):
-        policy.require_experimental_reorder("section_group")
-    with pytest.raises(PermissionError):
-        policy.require_move_page()
-    with pytest.raises(PermissionError):
-        policy.require_move_containers()
+    assert policy.organize_enabled is False
+    assert policy.copy_enabled is False
+    assert policy.local_file_io_enabled is False
+    assert policy.ui_control_enabled is False
+    assert policy.notebook_lifecycle_enabled is False
+    for requirement in (
+        policy.require_write,
+        policy.require_delete,
+        policy.require_organize,
+        policy.require_copy,
+        policy.require_move,
+        policy.require_local_file_io,
+        policy.require_ui_control,
+        policy.require_notebook_lifecycle,
+    ):
+        with pytest.raises(PermissionError):
+            requirement()
 
 
-def test_move_page_requires_all_three_mutation_capabilities(monkeypatch):
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
+def test_legacy_experimental_and_move_switches_are_not_aliases(monkeypatch):
+    for name in PUBLIC_GATE_ENV:
+        monkeypatch.delenv(name, raising=False)
+    for name in (
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
+        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
+        "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
+        "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
+    ):
+        monkeypatch.setenv(name, "true")
 
-    MutationPolicy.current().require_move_page()
-
-
-def test_move_containers_requires_its_independent_gate(monkeypatch):
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS", "true")
-
-    MutationPolicy.current().require_move_containers()
+    policy = MutationPolicy.current()
+    assert policy.organize_enabled is False
+    assert policy.copy_enabled is False
+    with pytest.raises(PermissionError):
+        policy.require_organize()
+    with pytest.raises(PermissionError):
+        policy.require_copy()
+    with pytest.raises(PermissionError):
+        policy.require_move()
 
 
 @pytest.mark.parametrize(
-    ("writes", "reparent", "allowed"),
-    [
-        (False, False, False),
-        (False, True, False),
-        (True, False, False),
-        (True, True, True),
-    ],
+    ("writes", "organize", "allowed"),
+    [(False, False, False), (False, True, False), (True, False, False), (True, True, True)],
 )
-def test_reparent_permission_matrix(monkeypatch, writes, reparent, allowed):
+def test_organize_permission_matrix(monkeypatch, writes, organize, allowed):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", str(writes))
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", str(reparent))
-
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", str(organize))
     if allowed:
-        MutationPolicy.current().require_experimental_reparent()
+        MutationPolicy.current().require_organize()
     else:
         with pytest.raises(PermissionError):
-            MutationPolicy.current().require_experimental_reparent()
-
-
-def test_legacy_section_only_reparent_switch_is_not_an_implicit_alias(monkeypatch):
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT_SECTION", "true")
-    monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT", raising=False)
-
-    with pytest.raises(PermissionError, match="LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT"):
-        MutationPolicy.current().require_experimental_reparent()
-
-
-@pytest.mark.parametrize(
-    ("resource_type", "env_name"),
-    [
-        ("section", "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"),
-        ("section_group", "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"),
-    ],
-)
-def test_container_reorder_requires_write_and_its_independent_gate(monkeypatch, resource_type, env_name):
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv(env_name, "true")
-
-    MutationPolicy.current().require_experimental_reorder(resource_type)
-
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "false")
-    with pytest.raises(PermissionError):
-        MutationPolicy.current().require_experimental_reorder(resource_type)
+            MutationPolicy.current().require_organize()
 
 
 @pytest.mark.parametrize(
     ("writes", "copy", "allowed"),
-    [
-        (False, False, False),
-        (False, True, False),
-        (True, False, False),
-        (True, True, True),
-    ],
+    [(False, False, False), (False, True, False), (True, False, False), (True, True, True)],
 )
 def test_copy_permission_matrix(monkeypatch, writes, copy, allowed):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", str(writes))
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", str(copy))
-
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", str(copy))
     if allowed:
-        MutationPolicy.current().require_experimental_copy()
+        MutationPolicy.current().require_copy()
     else:
         with pytest.raises(PermissionError):
-            MutationPolicy.current().require_experimental_copy()
+            MutationPolicy.current().require_copy()
 
 
 @pytest.mark.parametrize(
@@ -137,68 +104,80 @@ def test_copy_permission_matrix(monkeypatch, writes, copy, allowed):
     [
         "LOCAL_ONENOTE_ENABLE_WRITES",
         "LOCAL_ONENOTE_ENABLE_DELETES",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-        "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
+        "LOCAL_ONENOTE_ENABLE_COPY",
     ],
 )
-def test_move_page_permission_matrix_rejects_each_missing_gate(monkeypatch, missing):
+def test_move_permission_matrix_rejects_each_missing_gate(monkeypatch, missing):
     for name in (
         "LOCAL_ONENOTE_ENABLE_WRITES",
         "LOCAL_ONENOTE_ENABLE_DELETES",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-        "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
+        "LOCAL_ONENOTE_ENABLE_COPY",
     ):
         monkeypatch.setenv(name, "true")
     monkeypatch.setenv(missing, "false")
-
     with pytest.raises(PermissionError):
-        MutationPolicy.current().require_move_page()
+        MutationPolicy.current().require_move()
+
+
+def test_move_requires_only_writes_copy_and_deletes(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    MutationPolicy.current().require_move()
+
+
+def test_section_reorder_uses_writes_without_an_experimental_gate(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "false")
+    MutationPolicy.current().require_section_reorder()
+
+
+def test_internal_section_group_reorder_keeps_an_independent_non_product_gate(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.delenv(
+        "LOCAL_ONENOTE_ENABLE_INTERNAL_SECTION_GROUP_REORDER", raising=False
+    )
+    with pytest.raises(PermissionError):
+        MutationPolicy.current().require_section_reorder("section_group")
+
+    monkeypatch.setenv(
+        "LOCAL_ONENOTE_ENABLE_INTERNAL_SECTION_GROUP_REORDER", "true"
+    )
+    MutationPolicy.current().require_section_reorder("section_group")
 
 
 @pytest.mark.parametrize(
-    "missing",
+    ("env_name", "method_name"),
     [
-        "LOCAL_ONENOTE_ENABLE_WRITES",
-        "LOCAL_ONENOTE_ENABLE_DELETES",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-        "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
+        ("LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO", "require_local_file_io"),
+        ("LOCAL_ONENOTE_ENABLE_UI_CONTROL", "require_ui_control"),
+        ("LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE", "require_notebook_lifecycle"),
     ],
 )
-def test_move_containers_permission_matrix_rejects_each_missing_gate(monkeypatch, missing):
-    for name in (
-        "LOCAL_ONENOTE_ENABLE_WRITES",
-        "LOCAL_ONENOTE_ENABLE_DELETES",
-        "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
-        "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
-    ):
-        monkeypatch.setenv(name, "true")
-    monkeypatch.setenv(missing, "false")
-
+def test_effect_gate_is_independent_and_default_closed(monkeypatch, env_name, method_name):
+    monkeypatch.delenv(env_name, raising=False)
     with pytest.raises(PermissionError):
-        MutationPolicy.current().require_move_containers()
+        getattr(MutationPolicy.current(), method_name)()
+    monkeypatch.setenv(env_name, "true")
+    getattr(MutationPolicy.current(), method_name)()
 
 
 def test_search_budget_reads_bounded_environment_values(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_MAX_SEARCH_PAGES", "25")
     monkeypatch.setenv("LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS", "5000")
-
     budget = SearchBudget.current()
-
     assert budget.max_pages == 25
     assert budget.max_total_chars == 5000
 
 
 def test_search_candidate_budget_defaults_to_one_thousand(monkeypatch):
     monkeypatch.delenv("LOCAL_ONENOTE_MAX_SEARCH_PAGES", raising=False)
-
     assert SearchBudget.current().max_pages == 1000
 
 
 def test_copy_budget_reads_bounded_environment_values(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_MAX_COPY_PAGES", "25")
     monkeypatch.setenv("LOCAL_ONENOTE_MAX_COPY_TOTAL_XML_BYTES", "5000")
-
     budget = CopyBudget.current()
-
     assert budget.max_pages == 25
     assert budget.max_total_xml_bytes == 5000

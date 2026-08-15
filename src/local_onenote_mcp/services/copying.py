@@ -1208,7 +1208,7 @@ class CopyService(BaseService):
         expected_modified: str | None,
         include_descendants: bool = False,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_experimental_copy()
+        MutationPolicy.current().require_copy()
         self._confirm_source(
             source_id,
             resource_type,
@@ -1398,7 +1398,7 @@ class CopyService(BaseService):
         destination_title: str = "",
         include_descendants: bool = False,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_move_page()
+        MutationPolicy.current().require_move()
         self._confirm_source(
             page_id,
             "page",
@@ -1666,7 +1666,7 @@ class CopyService(BaseService):
     ) -> dict[str, Any]:
         """Execute the fixed Copy→verify→one root Delete container Move pipeline."""
 
-        MutationPolicy.current().require_move_containers()
+        MutationPolicy.current().require_move()
         self._confirm_source(
             source_id,
             resource_type,

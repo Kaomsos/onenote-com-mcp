@@ -132,7 +132,7 @@ class ReparentPageWithLevelScenario(Scenario):
                     "expected_modified": target.get("modified"),
                 }
                 if case["include_descendants"]:
-                    arguments["include_descendants"] = True
+                    arguments["page_scope"] = "indentation_subtree"
                 write_json(out / f"request-{name}.json", arguments)
                 response = await active_client.call_tool("reparent_page", arguments)
                 write_json(out / f"mutation-response-{name}.json", response)

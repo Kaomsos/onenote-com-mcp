@@ -65,14 +65,14 @@ def test_public_attempt_policy_inventory_is_complete_and_references_known_polici
         if binding.spec.attempt_policy_id in MUTATION_ATTEMPT_POLICIES
     }
     assert inventory == {
-        "update_page_title": "update_page_title",
+        "rename_page": "update_page_title",
         "rename_section": "rename_resource",
         "rename_section_group": "rename_resource",
         "reorder_page": "reorder_page",
         "reorder_section": "reorder_section",
-        "append_to_page": "append_to_page",
-        "add_image_to_page": "add_image_to_page",
-        "delete_page_content": "delete_page_content",
+        "append_page_content": "append_to_page",
+        "add_page_image_from_file": "add_image_to_page",
+        "delete_page_content_object": "delete_page_content",
         "delete_page": "delete_hierarchy",
         "delete_section": "delete_hierarchy",
         "delete_section_group": "delete_hierarchy",
@@ -332,7 +332,8 @@ def test_attempt_failures_preserve_stable_response_envelope(
     response = caught(error)
 
     assert response["ok"] is False
-    assert response["complete"] is False
-    assert response["code"] == expected_code
-    assert response["mutation_stage"] in {"preflight", "reconciliation"}
-    assert isinstance(response["mutation_attempted"], bool)
+    assert set(response) == {"ok", "error", "execution"}
+    assert response["error"]["code"] == expected_code
+    details = response["error"]["details"]
+    assert details["mutation_stage"] in {"preflight", "reconciliation"}
+    assert isinstance(details["mutation_attempted"], bool)

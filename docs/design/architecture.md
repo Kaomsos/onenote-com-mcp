@@ -39,15 +39,16 @@ flowchart LR
 ```text
 src/local_onenote_mcp/
 ├─ server.py                 依赖装配与 FastMCP 启动
-├─ operation_catalog.py      56 项 OperationSpec/Strategy/Handler 唯一 Registry
+├─ operation_catalog.py      52 项 OperationSpec/Strategy/Handler 唯一 Registry
+├─ tool_surface.py           User 分类、精确工具集与 Internal catalog
 ├─ tools/
 │  ├─ context.py             当前 OperationRuntime 绑定
 │  ├─ responses.py           Runtime invoke 与 ok/error/caught envelope
-│  ├─ system.py              健康检查、标识符、特殊目录
+│  ├─ system.py              健康检查与显式 GUI launch
 │  ├─ hierarchy.py           层级 List/Get/Query/Path/Tree
 │  ├─ pages.py               Page 内容读取与 Search
 │  ├─ mutations.py           typed Create/Update/Delete
-│  ├─ copying.py             P2 Copy/Page Move
+│  ├─ copying.py             单次调用 Copy/重建式 Move
 │  ├─ operations.py          Export/导航/Sync/Close
 │  ├─ advanced.py            无生产暴露的低层能力边界声明
 │  └─ __init__.py            唯一生产工具集合和注册
@@ -138,10 +139,12 @@ classDiagram
         +current()$ MutationPolicy
         +require_write()
         +require_delete(permanently)
-        +require_experimental_reparent()
-        +require_experimental_copy()
-        +require_move_page()
-        +require_move_containers()
+        +require_organize()
+        +require_copy()
+        +require_move()
+        +require_local_file_io()
+        +require_ui_control()
+        +require_notebook_lifecycle()
         +require_raw_xml()
     }
     class SearchBudget {
@@ -330,15 +333,15 @@ classDiagram
 
 | 工具模块 | 默认注册数 | 调用的 service |
 | --- | ---: | --- |
-| `tools.system` | 3 | Runtime Handler（hierarchy、health projection） |
+| `tools.system` | 2 | Runtime Handler（health、GUI process effect） |
 | `tools.hierarchy` | 14 | Runtime Handler（hierarchy） |
-| `tools.pages` | 6 | pages、search |
+| `tools.pages` | 5 | pages、search |
 | `tools.mutations` | 19 | mutations |
 | `tools.copying` | 7 | copying |
-| `tools.operations` | 7 | operations |
-| 合计 | 56 | — |
+| `tools.operations` | 5 | operations |
+| 合计 | 52 | — |
 
-生产 MCP 只有这一个 56 项 typed profile。`tools.advanced` 不登记 Tool，`LOCAL_ONENOTE_ENABLE_RAW_XML=true` 也不会改变 `tools/list`；`find_meta/open_hierarchy/update_page_xml/merge_sections/set_filing_location` 与 generic hierarchy XML operation 只可作为内部 service/bridge 诊断能力存在。后端不支持的 `reorder_section_group` 同样没有 adapter 或 Registry binding。逐项边界见 [Advanced/低层操作](advanced_operations.md)。
+生产 MCP 只有这一个 52 项 typed User profile。`tool_surface.py` 同时维护五项非注册 Internal & Incubating catalog 与 forbidden set；二者都不能由环境变量、导入顺序或 profile 切换进入 `tools/list`。`tools.advanced` 不登记 Tool；内部 raw safety gate 也不改变 exposure。逐项边界见 [Advanced/低层操作](advanced_operations.md)。
 
 响应映射：
 
@@ -349,7 +352,7 @@ classDiagram
 | `PartialFailure` | `partial_failure`，附带 `partial/completed_steps` |
 | 其他 service/bridge 异常 | `backend_error` |
 
-所有成功和失败 envelope 都增加稳定的 `execution` 投影，包含 operation、最终 stage、kind、backend category、attempt/replay、backend-call 数、allowlist completed steps、retry safety、recommended action 和 cache generation，并固定 `content_exposed=false`。该字段不改变既有业务返回；完整 schema 见 [`operation_runtime.md`](operation_runtime.md)。
+所有成功和失败 envelope 都包含稳定的 `execution` 投影，包含 operation、最终 stage、kind、backend category、attempt/replay、backend-call 数、allowlist completed steps、retry safety、recommended action 和 cache generation，并固定 `content_exposed=false`。业务字段只位于成功 `result` 或失败 `error.details`；完整 schema 见 [`operation_runtime.md`](operation_runtime.md)。
 
 ## 5. 关键调用链
 
@@ -385,7 +388,7 @@ sequenceDiagram
     participant B as OneNoteBridge
 
     T->>M: mutation parameters + expected fields
-    M->>P: require_write/delete/experimental
+    M->>P: require exact write/delete/organize/copy/effect gates
     M->>H: resolve exact ID and confirm before state
     M->>C: contract + execute + operation-specific observer
     C->>B: fixed COM operation / typed XML
@@ -419,7 +422,7 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 
 当前生产代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在。缺失或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote。短命 COM client 冷启动 OneNote 时的已观察平台限制见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)；测试 runner 如何复用该门限由独立的 [Manual Validation 架构](manual_validation_scenario_fixture_architecture.md)定义。
 
-当前尚未实现自动 GUI 启动或 scenario-scoped COM keeper。显式 `launch_onenote_gui` 由 [TODO 031](../todo/031_start_onenote_desktop_tool.md) 跟踪；长期 COM owner 暂不采用。运行前由用户启动 OneNote 仍是当前可执行前置条件，生产 MCP 与 runner 不承诺可靠冷启动自举。
+生产 MCP 已提供显式、无参数、UI Control 授权的 `launch_onenote_gui`；它在进程完全不存在时最多请求一次受信任 `ONENOTE.EXE` launch，再有界观察可见 GUI，不实现 scenario-scoped COM keeper。标准 manual-validation runner 仍要求启动前已有可见 GUI，避免 fixture 场景隐式改变 session；长期 COM owner 暂不采用。
 
 ## 7. 测试与写入隔离
 

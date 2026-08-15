@@ -1836,7 +1836,7 @@ def test_inserted_file_copy_shares_bootstrap_identity_and_has_copy_only_policy()
         == bootstrap.fixture_recipe.default_template_instance_id
     )
     assert consumer.spec.policy.writes_enabled is True
-    assert consumer.spec.policy.experimental_copy_enabled is True
+    assert consumer.spec.policy.copy_enabled is True
     assert consumer.spec.policy.deletes_enabled is False
     assert "copy_page" in consumer.spec.tool_allowlist
     assert "plan_copy" not in consumer.spec.tool_allowlist

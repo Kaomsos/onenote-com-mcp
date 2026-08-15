@@ -164,13 +164,13 @@ def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
         if recipe.consumer_scenario:
             if spec.execution_contract.get("interactive_copy_evidence"):
                 assert spec.policy.writes_enabled is True
-                assert spec.policy.experimental_copy_enabled is True
+                assert spec.policy.copy_enabled is True
                 assert spec.policy.deletes_enabled is False
                 assert "copy_page" in spec.tool_allowlist
                 assert "plan_copy" not in spec.tool_allowlist
             else:
                 assert spec.policy.writes_enabled is False
-                assert spec.policy.experimental_copy_enabled is False
+                assert spec.policy.copy_enabled is False
             runtime_creation_tools = (
                 {"create_section"}
                 if spec.execution_contract.get("same_and_cross_section")

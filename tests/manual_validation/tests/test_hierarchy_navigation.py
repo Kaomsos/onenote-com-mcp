@@ -266,13 +266,13 @@ def test_hierarchy_navigation_recipe_and_policy_are_cacheable_and_least_privileg
     } <= scenario.spec.tool_allowlist
     assert not any(tool.startswith("query_") for tool in scenario.spec.tool_allowlist)
     assert "get_parent" not in scenario.spec.tool_allowlist
-    assert "get_path" not in scenario.spec.tool_allowlist
+    assert "get_hierarchy_path" not in scenario.spec.tool_allowlist
     assert {
         tool for tool in scenario.spec.tool_allowlist if tool.startswith("list_")
     } == {"list_notebooks"}
     assert scenario.spec.policy.writes_enabled is True
     assert scenario.spec.policy.deletes_enabled is False
-    assert scenario.spec.policy.raw_xml_enabled is False
+    assert scenario.spec.policy.copy_enabled is False
 
     assert main(["hierarchy-navigation", "--dry-run", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)

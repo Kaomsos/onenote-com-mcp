@@ -670,7 +670,7 @@ def test_interactive_copy_execute_persists_machine_and_human_evidence(
         assert arguments["page_id"] == "source-page"
         assert arguments["destination_section_id"] == "canvas-section"
         assert "plan_digest" not in arguments
-        assert arguments["include_descendants"] is False
+        assert arguments["page_scope"] == "page_only"
         result = (
             _diagnostic_partial_result()
             if diagnostic_partial

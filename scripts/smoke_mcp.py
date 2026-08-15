@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from hashlib import sha256
 import json
 import sys
 from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+from local_onenote_mcp.tool_surface import USER_TOOL_NAMES, USER_TOOL_NAME_SET
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,7 +25,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--notebook",
         default="",
-        help="Optional Notebook ID, exact path, or unique name to resolve and inspect read-only.",
+        help="Optional exact open Notebook COM ID to inspect read-only.",
+    )
+    parser.add_argument(
+        "--tools-only",
+        action="store_true",
+        help=(
+            "Stop after the MCP tools/list transport check; this does not probe or "
+            "connect to OneNote Desktop."
+        ),
+    )
+    parser.add_argument(
+        "--include-tool-snapshot",
+        action="store_true",
+        help="Include the exact names, descriptions, input schemas, and output schemas in JSON output.",
     )
     return parser.parse_args()
 
@@ -32,6 +48,11 @@ def text_of(result: Any) -> str:
 
 
 def parse_tool_result(result: Any) -> dict[str, Any]:
+    structured = getattr(result, "structuredContent", None)
+    if isinstance(structured, dict):
+        if set(structured) == {"result"} and isinstance(structured["result"], dict):
+            return structured["result"]
+        return structured
     text = text_of(result)
     try:
         return json.loads(text)
@@ -43,6 +64,30 @@ async def call_tool(session: ClientSession, name: str, args: dict[str, Any]) -> 
     return parse_tool_result(await session.call_tool(name, args))
 
 
+def project_tools(tools: list[Any]) -> list[dict[str, Any]]:
+    """Project the public contract fields returned by MCP tools/list."""
+
+    return [
+        {
+            "name": tool.name,
+            "description": tool.description or "",
+            "input_schema": tool.inputSchema,
+            "output_schema": getattr(tool, "outputSchema", None),
+        }
+        for tool in tools
+    ]
+
+
+def snapshot_digest(snapshot: list[dict[str, Any]]) -> str:
+    canonical = json.dumps(
+        snapshot,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
+
+
 async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     params = StdioServerParameters(
         command=args.server_python,
@@ -52,11 +97,11 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             "LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS": "60000",
             "LOCAL_ONENOTE_ENABLE_WRITES": "false",
             "LOCAL_ONENOTE_ENABLE_DELETES": "false",
-            "LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES": "false",
-            "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT": "false",
-            "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION": "false",
-            "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP": "false",
-            "LOCAL_ONENOTE_ENABLE_RAW_XML": "false",
+            "LOCAL_ONENOTE_ENABLE_ORGANIZE": "false",
+            "LOCAL_ONENOTE_ENABLE_COPY": "false",
+            "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO": "false",
+            "LOCAL_ONENOTE_ENABLE_UI_CONTROL": "false",
+            "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE": "false",
         },
     )
     checks: list[dict[str, Any]] = []
@@ -67,82 +112,93 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             await session.initialize()
 
             tools = await session.list_tools()
-            tool_names = {tool.name for tool in tools.tools}
-            required_tools = {
-                "health_check",
-                "resolve_identifier",
-                "list_notebooks",
-                "expand_notebook",
-                "expand_section_group",
-                "expand_section",
-                "expand_page",
-                "expand_hierarchy",
-                "query_notebook",
-                "reparent_page",
-                "reparent_section",
-                "reparent_section_group",
-            }
-            forbidden_default_tools = {
-                "update_page_xml",
-                "update_hierarchy_xml",
-                "delete_hierarchy",
-                "merge_sections",
-                "list_hierarchy",
-                "list_section_groups",
-                "list_sections",
-                "list_pages",
-                "get_tree",
-            }
-            missing_tools = sorted(required_tools - tool_names)
-            unexpectedly_exposed = sorted(forbidden_default_tools & tool_names)
-            tools_ok = not missing_tools and not unexpectedly_exposed
+            snapshot = project_tools(tools.tools)
+            ordered_tool_names = tuple(item["name"] for item in snapshot)
+            tool_names = set(ordered_tool_names)
+            missing_tools = sorted(USER_TOOL_NAME_SET - tool_names)
+            unexpectedly_exposed = sorted(tool_names - USER_TOOL_NAME_SET)
+            duplicate_names = sorted(
+                name for name in tool_names if ordered_tool_names.count(name) > 1
+            )
+            incomplete_contracts = sorted(
+                item["name"]
+                for item in snapshot
+                if not item["description"]
+                or not isinstance(item["input_schema"], dict)
+                or item["input_schema"].get("type") != "object"
+                or not isinstance(item["output_schema"], dict)
+                or item["output_schema"].get("type") != "object"
+            )
+            tools_ok = (
+                ordered_tool_names == USER_TOOL_NAMES
+                and not duplicate_names
+                and not incomplete_contracts
+            )
             checks.append(
                 {
                     "name": "list_tools",
                     "ok": tools_ok,
-                    "tool_count": len(tool_names),
+                    "tool_count": len(ordered_tool_names),
+                    "ordered_names": list(ordered_tool_names),
                     "missing": missing_tools,
                     "unexpectedly_exposed": unexpectedly_exposed,
+                    "duplicate_names": duplicate_names,
+                    "incomplete_contracts": incomplete_contracts,
+                    "snapshot_sha256": snapshot_digest(snapshot),
                 }
             )
             if not tools_ok:
-                failures.append("Default tool profile did not match the typed safe surface.")
+                failures.append(
+                    "MCP tools/list did not match the exact ordered public contract surface."
+                )
+
+            if args.tools_only:
+                result = {
+                    "ok": not failures,
+                    "mode": "transport_tools_only",
+                    "onenote_accessed": False,
+                    "checks": checks,
+                    "failures": failures,
+                }
+                if args.include_tool_snapshot:
+                    result["tool_snapshot"] = snapshot
+                return result
 
             health = await call_tool(session, "health_check", {})
-            policy = health.get("mutation_policy", {})
-            health_ok = health.get("ok") and not any(policy.values())
+            health_result = health.get("result", {})
+            policy = health_result.get("mutation_policy", {})
+            health_ok = health.get("ok") is True and not any(policy.values())
             checks.append({"name": "health_check", "ok": health_ok, "result": health})
             if not health_ok:
                 failures.append("health_check failed or a mutation profile was enabled.")
 
             notebooks = await call_tool(session, "list_notebooks", {})
-            checks.append({"name": "list_notebooks", "ok": notebooks.get("ok"), "count": notebooks.get("count")})
+            notebooks_result = notebooks.get("result", {})
+            checks.append({"name": "list_notebooks", "ok": notebooks.get("ok"), "count": notebooks_result.get("count")})
             if not notebooks.get("ok"):
                 failures.append(f"list_notebooks failed: {notebooks.get('error')}")
 
             if args.notebook:
-                resolved = await call_tool(
-                    session,
-                    "resolve_identifier",
-                    {"identifier": args.notebook, "item_type": "notebook"},
+                typed_tree = await call_tool(
+                    session, "expand_notebook", {"notebook_id": args.notebook}
                 )
-                notebook_id = (resolved.get("item") or {}).get("id", "")
-                checks.append({"name": "resolve_identifier:notebook", "ok": resolved.get("ok"), "id": notebook_id})
-                if not resolved.get("ok"):
-                    failures.append(f"resolve_identifier notebook failed: {resolved.get('error')}")
-                else:
-                    typed_tree = await call_tool(
-                        session, "expand_notebook", {"id": notebook_id}
-                    )
-                    depth_tree = await call_tool(
-                        session, "expand_hierarchy", {"root_id": notebook_id}
-                    )
-                    checks.append({"name": "expand_notebook", "ok": typed_tree.get("ok")})
-                    checks.append({"name": "expand_hierarchy", "ok": depth_tree.get("ok")})
-                    if not typed_tree.get("ok") or not depth_tree.get("ok"):
-                        failures.append("Notebook hierarchy inspection failed.")
+                depth_tree = await call_tool(
+                    session, "expand_hierarchy", {"root_id": args.notebook}
+                )
+                checks.append({"name": "expand_notebook", "ok": typed_tree.get("ok")})
+                checks.append({"name": "expand_hierarchy", "ok": depth_tree.get("ok")})
+                if not typed_tree.get("ok") or not depth_tree.get("ok"):
+                    failures.append("Notebook hierarchy inspection failed.")
 
-    return {"ok": not failures, "mode": "read_only", "checks": checks, "failures": failures}
+    result = {
+        "ok": not failures,
+        "mode": "read_only",
+        "checks": checks,
+        "failures": failures,
+    }
+    if args.include_tool_snapshot:
+        result["tool_snapshot"] = snapshot
+    return result
 
 
 def main() -> int:

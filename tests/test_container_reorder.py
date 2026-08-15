@@ -5,17 +5,42 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from local_onenote_mcp import server
-from local_onenote_mcp.tools.mutations import reorder_section
-from local_onenote_mcp.tools.responses import caught, ok
+from local_onenote_mcp.tools.mutations import reorder_section as public_reorder_section
+from local_onenote_mcp.tools.responses import caught
+
+
+def _flatten_tool_envelope(envelope):
+    """Keep service-semantic assertions independent of the public envelope shape."""
+
+    if envelope["ok"]:
+        return {"ok": True, **envelope["result"]}
+    error = envelope["error"]
+    return {
+        "ok": False,
+        "code": error["code"],
+        "error": error["message"],
+        **error["details"],
+    }
+
+
+async def reorder_section(*args):
+    return _flatten_tool_envelope(await public_reorder_section(*args))
 
 
 async def diagnostic_reorder_section_group(*args):
     """Exercise the retained internal diagnostic service without MCP exposure."""
 
     try:
-        return ok(**server.services.mutations.reorder_section_group(*args))
+        return {"ok": True, **server.services.mutations.reorder_section_group(*args)}
     except Exception as exc:
-        return caught(exc)
+        return _flatten_tool_envelope(caught(exc))
+
+
+@pytest.fixture(autouse=True)
+def _enable_explicit_internal_section_group_reorder_for_diagnostic_tests(monkeypatch):
+    monkeypatch.setenv(
+        "LOCAL_ONENOTE_ENABLE_INTERNAL_SECTION_GROUP_REORDER", "true"
+    )
 
 
 def item(kind, object_id, parent_id, *, name=None, section_id=None, order=None, recycle=False):
@@ -182,7 +207,6 @@ def test_reorder_section_supports_first_forward_backward_and_noop(monkeypatch, t
     before = section_fixture()
     after = reordered_snapshot(before, "section", expected)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "true")
     state = install_backend(monkeypatch, before, after)
 
     result = asyncio.run(reorder_section(target, target[-1], "n", after_id, f"modified-{target}"))
@@ -198,7 +222,6 @@ def test_reorder_section_nested_parent_xml_preserves_ancestor_and_all_direct_chi
     before = section_fixture(nested=True)
     after = reordered_snapshot(before, "section", ["sA", "sC", "sB"])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "true")
     state = install_backend(monkeypatch, before, after)
 
     result = asyncio.run(reorder_section("sC", "C", "g", "sA", "modified-sC"))
@@ -215,7 +238,6 @@ def test_reorder_root_section_xml_preserves_mixed_direct_container_siblings(monk
     before = section_fixture()
     after = reordered_snapshot(before, "section", ["sC", "sA", "sB"])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "true")
     state = install_backend(monkeypatch, before, after)
 
     result = asyncio.run(reorder_section("sC", "C", "n", "", "modified-sC"))
@@ -231,7 +253,6 @@ def test_reorder_section_group_preserves_descendant_tree_and_content(monkeypatch
     before = group_fixture()
     after = reordered_snapshot(before, "section_group", ["gC", "gA", "gB"])
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP", "true")
     state = install_backend(monkeypatch, before, after)
 
     result = asyncio.run(
@@ -250,7 +271,6 @@ def test_reorder_section_group_supports_shared_section_group_parent(monkeypatch)
     before = nested_group_fixture()
     after = nested_group_fixture("ACB")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP", "true")
     state = install_backend(monkeypatch, before, after)
 
     result = asyncio.run(
@@ -285,7 +305,6 @@ def test_reorder_section_group_rejects_non_container_parent(monkeypatch):
     target = next(value for value in before if value["id"] == "nestedC")
     target["parent_id"] = "nestedSectionA"
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP", "true")
     state = install_backend(monkeypatch, before, before)
 
     result = asyncio.run(
@@ -308,7 +327,6 @@ def test_container_reorder_rejects_recycle_bin_target(monkeypatch):
     before = section_fixture()
     next(value for value in before if value["id"] == "sC")["is_in_recycle_bin"] = True
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "true")
     state = install_backend(monkeypatch, before, before)
 
     result = asyncio.run(reorder_section("sC", "C", "n", "", "modified-sC"))
@@ -322,10 +340,10 @@ def test_container_reorder_rejects_recycle_bin_target(monkeypatch):
 @pytest.mark.parametrize(
     ("tool", "gate"),
     [
-        (reorder_section, "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"),
+        (reorder_section, "LOCAL_ONENOTE_ENABLE_WRITES"),
         (
             diagnostic_reorder_section_group,
-            "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
+            "LOCAL_ONENOTE_ENABLE_WRITES",
         ),
     ],
 )
@@ -340,6 +358,25 @@ def test_container_reorder_is_fail_closed_behind_independent_gate(monkeypatch, t
     args = ("sA", "A", "n") if tool is reorder_section else ("gA", "Group A", "n")
 
     result = asyncio.run(tool(*args))
+
+    assert result["ok"] is False
+    assert result["code"] == "policy_disabled"
+
+
+def test_section_group_diagnostic_reorder_is_fail_closed_without_internal_gate(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.delenv(
+        "LOCAL_ONENOTE_ENABLE_INTERNAL_SECTION_GROUP_REORDER", raising=False
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("COM must not be called")),
+    )
+
+    result = asyncio.run(
+        diagnostic_reorder_section_group("gA", "Group A", "n")
+    )
 
     assert result["ok"] is False
     assert result["code"] == "policy_disabled"
@@ -366,7 +403,6 @@ def test_reorder_section_rejects_invalid_predecessor_before_mutation(monkeypatch
         ]
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "true")
     state = install_backend(monkeypatch, before, before)
 
     result = asyncio.run(reorder_section("sC", "C", "n", after_id, "modified-sC"))
@@ -381,7 +417,6 @@ def test_reorder_section_rejects_invalid_predecessor_before_mutation(monkeypatch
 def test_reorder_section_rejects_confirmation_mismatch(monkeypatch, field):
     before = section_fixture()
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "true")
     state = install_backend(monkeypatch, before, before)
     name = "wrong" if field == "name" else "C"
     parent = "wrong" if field == "parent" else "n"
@@ -408,7 +443,6 @@ def test_reorder_section_fails_closed_on_readback_invariant_change(monkeypatch, 
     elif failure == "descendants":
         next(value for value in after if value["id"] == "pC")["order"] = 1
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "true")
     state = install_backend(
         monkeypatch,
         before,
@@ -440,7 +474,6 @@ def test_reorder_section_group_fails_on_descendant_or_content_change(monkeypatch
     if failure == "descendant_parent":
         next(value for value in after if value["id"] == "sC")["parent_id"] = "gA"
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP", "true")
     state = install_backend(
         monkeypatch,
         before,
@@ -463,7 +496,6 @@ def test_reorder_section_group_fails_on_descendant_or_content_change(monkeypatch
 def test_reorder_section_bridge_failure_is_not_retried(monkeypatch):
     before = section_fixture()
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION", "true")
     state = install_backend(monkeypatch, before, before, bridge_error=RuntimeError("bridge failed"))
 
     result = asyncio.run(reorder_section("sC", "C", "n", "sA", "modified-sC"))

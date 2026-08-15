@@ -1,4 +1,4 @@
-"""System diagnostics and identifier-resolution MCP tools."""
+"""Session diagnostics and explicit OneNote GUI launch MCP tools."""
 
 from __future__ import annotations
 
@@ -8,20 +8,14 @@ from .responses import invoke
 
 
 async def health_check() -> dict[str, Any]:
-    """Verify local OneNote COM access and return a small hierarchy summary."""
+    """Check an existing visible OneNote GUI and report content-free runtime capabilities; never launch it."""
     return invoke("health_check")
 
 
-async def resolve_identifier(identifier: str, item_type: str = "") -> dict[str, Any]:
-    """Resolve a OneNote identifier to one live typed object for read-only interaction."""
+async def launch_onenote_gui() -> dict[str, Any]:
+    """With UI Control, launch trusted OneNote Desktop at most once when absent, then observe GUI readiness."""
 
-    return invoke("resolve_identifier", identifier=identifier, item_type=item_type)
-
-
-async def get_special_locations() -> dict[str, Any]:
-    """Return OneNote's local special folders."""
-
-    return invoke("get_special_locations")
+    return invoke("launch_onenote_gui")
 
 
-TOOLS = [health_check, resolve_identifier, get_special_locations]
+TOOLS = [health_check, launch_onenote_gui]

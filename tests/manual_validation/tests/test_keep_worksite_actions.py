@@ -567,7 +567,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         async def call_tool(self, name: str, arguments: dict) -> dict:
             self.calls.append(name)
             assert name == "move_page"
-            include_descendants = arguments.get("include_descendants", False)
+            include_descendants = arguments.get("page_scope") == "indentation_subtree"
             if include_descendants:
                 source_ids = ["subtree", "subtree-child"]
                 target_ids = ["target-subtree", "target-subtree-child"]

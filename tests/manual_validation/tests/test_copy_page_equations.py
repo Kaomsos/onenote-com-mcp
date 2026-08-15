@@ -117,7 +117,7 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
                 return {"xml": state["xml"]}
-            if name == "get_page_objects":
+            if name == "list_page_content_objects":
                 return {"objects": state["objects"]}
             if name == "expand_section":
                 return {
@@ -128,7 +128,7 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
                         ],
                     }
                 }
-            if name == "append_to_page":
+            if name == "append_page_content":
                 self.append_arguments.append(dict(arguments))
                 self.contents.append(arguments["content"])
                 state["xml"] = build_page_update_xml(
@@ -143,7 +143,7 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
                     1,
                 )
                 return {"appended": True}
-            if name == "add_image_to_page":
+            if name == "add_page_image_from_file":
                 self.image_calls += 1
                 state["objects"] = [{"kind": "Image", "media_type": "png"}]
                 return {"image_path": arguments["image_path"]}
@@ -232,7 +232,7 @@ def test_copy_page_rich_fixture_writes_equation_detection_before_failure(tmp_pat
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
                 return {"xml": state["xml"]}
-            if name == "get_page_objects":
+            if name == "list_page_content_objects":
                 return {"objects": state["objects"]}
             if name == "expand_section":
                 return {
@@ -243,7 +243,7 @@ def test_copy_page_rich_fixture_writes_equation_detection_before_failure(tmp_pat
                         ],
                     }
                 }
-            if name == "append_to_page":
+            if name == "append_page_content":
                 self.contents.append(arguments["content"])
                 state["xml"] = build_page_update_xml(
                     "page-id",
@@ -257,7 +257,7 @@ def test_copy_page_rich_fixture_writes_equation_detection_before_failure(tmp_pat
                     1,
                 )
                 return {"appended": True}
-            if name == "add_image_to_page":
+            if name == "add_page_image_from_file":
                 state["objects"] = [{"kind": "Image", "media_type": "png"}]
                 return {"image_path": arguments["image_path"]}
             raise AssertionError(name)
