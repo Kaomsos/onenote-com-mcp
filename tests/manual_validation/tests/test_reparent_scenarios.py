@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -68,6 +69,18 @@ class FakeClient:
             "ok": True,
             "complete": True,
             "id_map": {target_id: current_id},
+            "reconciliation": {
+                "state": "applied",
+                "mutation_stage": "postcondition",
+                "preflight_state": "logical_ready",
+                "persistence_checkpoint": "not_observable",
+                "mutation_attempted": True,
+                "mutation_attempts": 1,
+                "mutation_replayed": False,
+                "observed_outcome": "applied",
+                "retry_safety": "not_needed",
+                "recommended_action": "none",
+            },
         }
         return self.last_response
 
@@ -788,3 +801,32 @@ def test_section_group_typed_call_accepts_notebook_destination() -> None:
     assert name == "reparent_section_group"
     assert arguments["section_group_id"] == "target-2"
     assert arguments["destination_parent_id"] == "notebook"
+
+
+def test_reparent_bridge_audit_requires_one_mutation_and_no_lifecycle_calls(tmp_path) -> None:
+    audit_path = tmp_path / "bridge-calls.jsonl"
+    audit_path.write_text(
+        "\n".join(
+            json.dumps({"operation": operation})
+            for operation in ("get_hierarchy", "update_hierarchy", "get_hierarchy")
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    evidence = reparent_runtime._validate_reparent_bridge_audit(
+        audit_path,
+        0,
+        case="forward",
+    )
+    assert evidence["verified"] is True
+    assert evidence["update_hierarchy_calls"] == 1
+    assert evidence["forbidden_lifecycle_calls"] == []
+
+    with audit_path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"operation": "sync_hierarchy"}) + "\n")
+    with pytest.raises(InvariantFailure, match="forbidden lifecycle"):
+        reparent_runtime._validate_reparent_bridge_audit(
+            audit_path,
+            0,
+            case="forward",
+        )

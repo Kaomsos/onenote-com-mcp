@@ -111,7 +111,7 @@ SCENARIO_SPECS = {
             "fresh-com-convergence",
             (
                 "01-Convergence-Section/{01-Anchor,02-Anchor}",
-                "run-scoped 03-Convergence-Probe is created, updated, reordered, and deleted",
+                "run-scoped 03-Convergence-Probe is created, title/content updated, content-deleted, reordered, and deleted before production Close",
             ),
             (
                 "convergence_section",
@@ -119,11 +119,11 @@ SCENARIO_SPECS = {
                 "second_anchor_page",
             ),
             {"create_section", "create_page", "reorder_page"},
-            content=("plain_text", "page_order", "production_convergence_evidence"),
+            content=("plain_text", "page_content_object", "page_order", "production_convergence_evidence"),
             checks=(
                 "both anchor Pages resolve to fresh exact IDs in one Section",
                 "all mutation responses prove at least two stable live observations",
-                "the disposable probe is non-permanently deleted before lifecycle Close",
+                "the disposable probe is non-permanently deleted before production close_notebook",
             ),
         ),
         DELETE_SCENARIO_POLICY,
@@ -132,9 +132,12 @@ SCENARIO_SPECS = {
             | {
                 "create_section",
                 "create_page",
+                "update_page_title",
                 "append_to_page",
+                "delete_page_content",
                 "reorder_page",
                 "delete_page",
+                "close_notebook",
             }
         ),
         {"fresh_only": True, "included_in_all": False},
@@ -160,12 +163,14 @@ SCENARIO_SPECS = {
         "rename",
         _profile(
             "rename-target",
-            ("selected Group or Group/Section target",),
-            ("one_of(group_a,group_b,content_section)",),
+            (
+                "Rename-Group/Rename-Section",
+            ),
+            ("section_group_target", "section_target"),
             {"create_section_group", "create_section"},
             checks=(
-                "exactly one CLI-selected rename target key is created",
-                "the selected key resolves to a fresh active ID",
+                "one fixed SectionGroup and one nested fixed Section resolve to fresh active IDs",
+                "the scenario renames and restores both targets in one run",
             ),
         ),
         WRITE_POLICY,

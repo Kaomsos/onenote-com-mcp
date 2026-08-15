@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
-from typing import Any
+from typing import Any, Mapping
 
+from ..lifecycle import NotebookLifecycleWrapper
 from ..mcp_stdio_client import MCPStdioClient
 from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
 from ..test_utils import (
@@ -39,19 +40,48 @@ def _require_convergence(result: dict[str, Any], operation: str) -> dict[str, An
     }
 
 
+def _require_attempt_contract(result: dict[str, Any], operation: str) -> dict[str, Any]:
+    reconciliation = result.get("reconciliation")
+    if not isinstance(reconciliation, dict):
+        raise InvariantFailure(f"{operation} omitted mutation attempt evidence.")
+    expected = {
+        "state": "applied",
+        "mutation_stage": "postcondition",
+        "preflight_state": "logical_ready",
+        "mutation_attempted": True,
+        "mutation_attempts": 1,
+        "mutation_replayed": False,
+        "observed_outcome": "applied",
+        "retry_safety": "not_needed",
+        "recommended_action": "none",
+    }
+    mismatched = {
+        key: {"expected": expected_value, "actual": reconciliation.get(key)}
+        for key, expected_value in expected.items()
+        if reconciliation.get(key) != expected_value
+    }
+    if mismatched:
+        raise InvariantFailure(
+            f"{operation} violated the mutation attempt contract: {mismatched}"
+        )
+    return {key: reconciliation[key] for key in expected}
+
+
 @SCENARIO_REGISTRY.register
 class OneNoteConvergenceScenario(Scenario):
     name = "onenote-convergence"
     fixture_recipe = RECIPE
     included_in_all = False
     timeout_default = 300
+    requires_lifecycle_wrappers = True
+    production_close_handoff = True
     help_text = (
-        "HUMAN-GATED: validate production Create, Page update, Reorder, Delete, "
-        "and lifecycle Close convergence on one fresh disposable Notebook."
+        "HUMAN-GATED: validate production Create, Title, Append, content Delete, "
+        "Reorder, hierarchy Delete, and Close on one fresh disposable Notebook."
     )
     worksite_dry_run_action = "preserve-convergence-probe-page"
 
-    async def execute(
+    async def execute_with_lifecycle(
         self,
         args: argparse.Namespace,
         options: RuntimeOptions,
@@ -59,6 +89,7 @@ class OneNoteConvergenceScenario(Scenario):
         *,
         client: MCPStdioClient | None,
         fixture_result: dict[str, Any],
+        wrappers: Mapping[str, NotebookLifecycleWrapper],
     ) -> dict[str, Any]:
         if client is None:
             raise RunnerFailure("OneNote convergence scenario requires its scenario MCP client.")
@@ -90,38 +121,112 @@ class OneNoteConvergenceScenario(Scenario):
         created_item = created.get("page")
         if not isinstance(created_item, dict):
             raise InvariantFailure("Create response omitted the typed Page read-back.")
+        renamed_title = "03-Convergence-Probe-Renamed"
+        titled = await call_with_result_evidence(
+            client,
+            "update_page_title",
+            {
+                "page_id": created_id,
+                "title": renamed_title,
+                "expected_title": created_item["title"],
+                "expected_section_id": section["id"],
+                "expected_modified": created_item.get("modified"),
+            },
+            out / "title-result.json",
+        )
+        evidence["title"] = {
+            "convergence": _require_convergence(titled, "update_page_title"),
+            "attempt": _require_attempt_contract(titled, "update_page_title"),
+        }
+        titled_item = titled.get("item")
+        if not isinstance(titled_item, dict) or titled_item.get("title") != renamed_title:
+            raise InvariantFailure("Title update omitted the exact renamed Page read-back.")
+        objects_before_append = await client.call_tool(
+            "get_page_objects", {"page_id": created_id}
+        )
+        before_object_ids = {
+            str(item["id"])
+            for item in objects_before_append.get("objects", [])
+            if item.get("id")
+        }
         appended = await call_with_result_evidence(
             client,
             "append_to_page",
             {
                 "page_id": created_id,
                 "content": "Second convergence marker",
-                "expected_title": created_item["title"],
+                "expected_title": titled_item["title"],
                 "expected_section_id": section["id"],
-                "expected_modified": created_item.get("modified"),
+                "expected_modified": titled_item.get("modified"),
                 "content_format": "plain",
             },
             out / "append-result.json",
         )
-        evidence["page_update"] = _require_convergence(appended, "append_to_page")
+        evidence["page_update"] = {
+            "convergence": _require_convergence(appended, "append_to_page"),
+            "attempt": _require_attempt_contract(appended, "append_to_page"),
+        }
 
         appended_item = appended.get("item")
         if not isinstance(appended_item, dict):
             raise InvariantFailure("Append response omitted the stable Page identity.")
+        objects_after_append = await client.call_tool(
+            "get_page_objects", {"page_id": created_id}
+        )
+        fresh_deletable = [
+            item
+            for item in objects_after_append.get("objects", [])
+            if item.get("can_delete") is True
+            and item.get("id")
+            and item.get("delete_target_id") == item.get("id")
+            and str(item["id"]) not in before_object_ids
+        ]
+        if len(fresh_deletable) != 1:
+            raise InvariantFailure(
+                "Append must create exactly one fresh deletable content object for the delete contract."
+            )
+        content_object_id = str(fresh_deletable[0]["delete_target_id"])
+        content_deleted = await call_with_result_evidence(
+            client,
+            "delete_page_content",
+            {
+                "page_id": created_id,
+                "object_id": content_object_id,
+                "expected_title": appended_item["title"],
+                "expected_section_id": section["id"],
+                "expected_modified": appended_item.get("modified"),
+            },
+            out / "content-delete-result.json",
+        )
+        evidence["content_delete"] = {
+            "convergence": _require_convergence(
+                content_deleted, "delete_page_content"
+            ),
+            "attempt": _require_attempt_contract(
+                content_deleted, "delete_page_content"
+            ),
+        }
+        after_content_delete = await capture_snapshot(client, notebook_id)
+        current_probe = find_snapshot_item(after_content_delete, created_id)
+        if current_probe is None:
+            raise InvariantFailure("Content delete lost the disposable Page identity.")
         reordered = await call_with_result_evidence(
             client,
             "reorder_page",
             {
                 "page_id": created_id,
-                "expected_title": appended_item["title"],
+                "expected_title": current_probe["title"],
                 "expected_section_id": section["id"],
                 "after_page_id": first["id"],
                 "page_level": 1,
-                "expected_modified": appended_item.get("modified"),
+                "expected_modified": current_probe.get("modified"),
             },
             out / "reorder-result.json",
         )
-        evidence["reorder"] = _require_convergence(reordered, "reorder_page")
+        evidence["reorder"] = {
+            "convergence": _require_convergence(reordered, "reorder_page"),
+            "attempt": _require_attempt_contract(reordered, "reorder_page"),
+        }
         after = await capture_snapshot(client, notebook_id)
         write_json(out / "after.json", after)
         observed = find_snapshot_item(after, created_id)
@@ -162,16 +267,42 @@ class OneNoteConvergenceScenario(Scenario):
             },
             out / "delete-result.json",
         )
-        evidence["delete"] = _require_convergence(deleted, "delete_page")
+        evidence["delete"] = {
+            "convergence": _require_convergence(deleted, "delete_page"),
+            "attempt": _require_attempt_contract(deleted, "delete_page"),
+        }
         restored = await capture_snapshot(client, notebook_id)
         write_json(out / "restored.json", restored)
         assert_restored(before, restored)
+        restored_notebook = find_snapshot_item(restored, notebook_id)
+        if restored_notebook is None:
+            raise InvariantFailure("Restored snapshot omitted the disposable Notebook.")
+        closed = await call_with_result_evidence(
+            client,
+            "close_notebook",
+            {
+                "notebook_id": notebook_id,
+                "expected_name": restored_notebook["name"],
+                "expected_modified": restored_notebook.get("modified"),
+            },
+            out / "close-result.json",
+        )
+        evidence["close"] = {
+            "convergence": _require_convergence(closed, "close_notebook"),
+            "attempt": _require_attempt_contract(closed, "close_notebook"),
+        }
+        lifecycle_close = wrappers["source"].adopt_production_close(closed)
         result = {
             "scenario": self.name,
             "status": "passed",
             "fixture": fixture_result,
             "convergence": evidence,
-            "close_evidence": "recorded by the shared lifecycle wrapper after scenario execution",
+            "close_evidence": evidence["close"],
+            "lifecycle_close_handoff": {
+                "closed": lifecycle_close["closed"],
+                "source_notebook_id": lifecycle_close["source_notebook_id"],
+                "close_origin": lifecycle_close["close_origin"],
+            },
             "restored": True,
             "worksite_preserved": False,
         }

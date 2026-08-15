@@ -201,10 +201,13 @@ def test_registered_named_case_round_trips_through_guarded_cli(
         assert payload["ordered_steps"][0]["allowed_operations"] == [
             "create_fresh_notebook"
         ]
-        assert payload["ordered_steps"][-1]["allowed_operations"] == [
-            "get_exact_notebook",
-            "close_exact_notebook",
-        ]
+        expected_lifecycle_operations = ["get_exact_notebook", "close_exact_notebook"]
+        if scenario.production_close_handoff:
+            expected_lifecycle_operations.insert(0, "adopt_production_close")
+        assert (
+            payload["ordered_steps"][-1]["allowed_operations"]
+            == expected_lifecycle_operations
+        )
     if "--keep-worksite" in case.scenario_args:
         assert payload["worksite"] == {
             "preserved": True,

@@ -76,7 +76,7 @@ def _args(run_dir: Path, scenario: str, *, keep: bool = False) -> argparse.Names
         "keep_notebook": keep,
     }
     if scenario == "rename":
-        values.update(target="content_section", new_name=None)
+        values.update(new_name=None)
     if scenario == "reorder-page":
         values["page_level"] = 2
     return argparse.Namespace(**values)
@@ -88,6 +88,15 @@ def _manifest(run_dir: Path, name: str = "__ISOLATED__") -> dict:
         "schema_version": 1,
         "notebook": {"id": "notebook-id", "name": name},
         "structure": {
+            "section_group_target": {
+                "id": "rename-group",
+                "resource_type": "section_group",
+            },
+            "section_target": {
+                "id": "rename-section",
+                "resource_type": "section",
+                "parent_id": "rename-group",
+            },
             "group_a": {"id": "group-a"},
             "group_b": {"id": "group-b"},
             "content_section": {"id": "content-section"},

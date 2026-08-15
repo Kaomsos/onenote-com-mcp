@@ -655,6 +655,78 @@ def test_close_is_bound_to_exact_lease_and_preserves_files(tmp_path) -> None:
     assert read_json(wrapper.lease_path)["state"] == "closed"
 
 
+def _production_close_result(**overrides):
+    result = {
+        "ok": True,
+        "complete": True,
+        "closed": True,
+        "item": {
+            "id": "notebook-id",
+            "name": "__ISOLATED__",
+            "resource_type": "notebook",
+        },
+        "final_state": None,
+        "convergence": {
+            "converged": True,
+            "attempts": 2,
+            "elapsed_seconds": 0.01,
+            "stable_observations": 2,
+            "identity_remap": {},
+            "transient_errors": [],
+        },
+        "reconciliation": {
+            "state": "applied",
+            "mutation_stage": "postcondition",
+            "mutation_attempted": True,
+            "mutation_attempts": 1,
+            "mutation_replayed": False,
+            "observed_outcome": "applied",
+            "retry_safety": "not_needed",
+            "recommended_action": "none",
+        },
+    }
+    result.update(overrides)
+    return result
+
+
+def test_production_close_handoff_seals_exact_active_lease_without_second_close(
+    tmp_path,
+) -> None:
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+    calls_before = list(bridge.calls)
+    hierarchy.closed = True
+
+    result = wrapper.adopt_production_close(_production_close_result())
+
+    assert result["closed"] is True
+    assert result["source_notebook_id"] == "notebook-id"
+    assert result["close_origin"] == "production_close_notebook"
+    assert bridge.calls == calls_before
+    lease = read_json(wrapper.lease_path)
+    assert lease["state"] == "closed"
+    assert lease["close_result"] == result
+
+
+def test_production_close_handoff_rejects_unbound_or_replayed_evidence(tmp_path) -> None:
+    wrapper, _bridge, _hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+
+    wrong_item = _production_close_result(
+        item={"id": "other-id", "name": "__ISOLATED__"}
+    )
+    with pytest.raises(RestoreFailure, match="exact leased Notebook"):
+        wrapper.adopt_production_close(wrong_item)
+
+    replayed = _production_close_result()
+    replayed["reconciliation"]["mutation_attempts"] = 2
+    replayed["reconciliation"]["mutation_replayed"] = True
+    with pytest.raises(RestoreFailure, match="single-attempt"):
+        wrapper.adopt_production_close(replayed)
+
+    assert read_json(wrapper.lease_path)["state"] == "active"
+
+
 def test_cache_publish_close_syncs_exact_notebook_to_disk_first(tmp_path) -> None:
     wrapper, bridge, _hierarchy = _wrapper(tmp_path)
     wrapper.create_fresh_notebook("__ISOLATED__")
@@ -734,6 +806,7 @@ def test_wrapper_exposes_only_bounded_lifecycle_operations() -> None:
     }
     assert operations == {
         "assert_no_active_working_conflict",
+        "adopt_production_close",
         "create_fresh_notebook",
         "get_exact_notebook",
         "close_exact_notebook",

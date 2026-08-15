@@ -248,9 +248,18 @@ Delete-Sandbox
 
 场景保存 `before.json/create-results.json/after.json`，要求两次 COM allocated/read-back ID 完全一致、互异、均为 fresh Page 且属于 `Duplicate-Title-Target`，两份不同正文可独立回读。默认按两个精确 Page ID 非永久删除并以 `restored.json` 证明恢复；`--keep-worksite` 跳过该清理、保持 Notebook 打开并记录精确 IDs。
 
-`onenote-convergence` 是默认不进入 `all` 的 fresh-only 生产可靠性场景，拒绝 `--use-cache`。它在本次运行新建的 disposable Notebook 中创建两个固定 anchor，然后对唯一 probe Page 依次执行 `create_page → append_to_page → reorder_page → delete_page(permanently=false)`。每一步直接检查生产 Tool 返回的 `convergence`，要求 `converged=true`、`attempts>=2`、`stable_observations>=2`，并保存 allocated/resolved ID、精确 parent/order/postcondition 与 reconciliation 摘要；默认删除 probe 并证明 fixture 恢复，随后由共享 lifecycle wrapper 保存 Close convergence/lease 证据并关闭 Notebook。`--keep-worksite` 只在成功读回后保留 probe 和精确清理说明。Modal UI 不由场景制造、点击或关闭；`0x80042030` 只由纯合同测试验证 typed 分类与禁止自动重放。
+`onenote-convergence` 是默认不进入 `all` 的 fresh-only 生产可靠性场景，拒绝 `--use-cache`。它在本次运行新建的 disposable Notebook 中创建两个固定 anchor，然后对唯一 probe Page 依次执行 `create_page → update_page_title → append_to_page → delete_page_content → reorder_page → delete_page(permanently=false) → close_notebook`。每项受 attempt policy 管理的生产 Tool 都检查 `reconciliation`，要求 `applied`、`mutation_attempts=1`、`mutation_replayed=false`；具有公共 convergence 的步骤还要求 `converged=true`、`attempts>=2`、`stable_observations>=2`。内容对象删除只选择本次 Append 产生且可精确识别的一个 fresh object，删除后其余 object ID 集合必须保持。默认非永久删除 probe、证明 fixture 恢复，并把生产 `close_notebook` 作为最后一个 scenario MCP mutation；只有完整成功、精确 ID/name、双稳定和单次执行证据才能交给窄 lifecycle wrapper，把 active lease 封存为 pre-closed exact lease。Wrapper 不二次调用 Close，handoff 证据不完整时 fail closed。`--keep-worksite` 在生产 Delete/Close 前保留 probe 和精确清理说明。Modal UI 不由场景制造、点击或关闭；`0x80042030` 只由纯合同测试验证 typed 分类与禁止自动重放。
+
+029 收尾的两项真实验证必须由用户在前台显式执行；Agent、pytest 与后台任务不得运行：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py onenote-convergence
+.venv\Scripts\python.exe tests\manual_validation\run.py rename --use-cache
+```
 
 2026-08-13 用户前台真实运行 `run-2026-08-13-15-50-42` 通过：Create、Page update、Reorder、非永久 Delete 均返回 `attempts=2/stable_observations=2`，probe cleanup 后 `restored=true`；共享 lifecycle Close 同样连续稳定两次并关闭 Notebook。随后受影响回归 `run-2026-08-13-15-54-30`（Create）、`run-2026-08-13-15-56-46`（Reorder Page）、`run-2026-08-13-15-58-04`（Delete）、`run-2026-08-13-15-58-25`（六 case Page Copy）与 `run-2026-08-13-16-05-59`（两 case Page Move）全部通过。Copy 六 case 均 verified/lossless、最终 topology 连续稳定两次且 cleanup 后双侧恢复；Move 两 case 均只在 Copy verified/lossless 后非永久删除精确 source，未出现 partial，并关闭双 Notebook。
+
+2026-08-15 用户运行 `run-2026-08-15-13-26-00` 时，Title 与 Append 已通过，但场景在调用内容删除前错误地把公开 `get_page_objects` 的 `id/can_delete/delete_target_id` 当成内部 parser 的 `object_id/delete_supported`，因此误判 fresh deletable Outline 数量并 fail closed；failure finalizer 已精确关闭 Notebook。场景现只消费公开 PageContentObject schema，纯测试使用与真实响应相同的 Outline/OE 形状。同期参数化 `run-2026-08-15-13-26-25` 已证明 SectionGroup Rename 正向、恢复和关闭成功；后续 canonical `rename` 不再暴露 `--target`，而是在一条场景中固定覆盖 Section 与 SectionGroup 两个 case。
 
 Working identity 冲突扫描在短时 open lock 内于打开 working bundle 前后各捕获一次当前 Notebook ID/实际目录 snapshot；全部历史 run-local lease 只与 snapshot 做内存比较，历史 run 数量不得放大 COM 调用次数。Snapshot 获取失败按 MCP/lifecycle failure fail closed，并保留本次 working 现场。
 
@@ -538,7 +547,7 @@ Notebook 直属 child 仍先用 absolute working path 与空 relative ID；Secti
 - `--keep-worksite` 适用于全部公开具名场景，并同时保持源 Notebook 打开。可恢复的 `rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 不执行反向恢复；Page/Section/SectionGroup Copy 不执行回收站 cleanup；Notebook Copy 不关闭副本；其余 action 记录本来就会留下的 fixture、回收站或 Move 状态。`worksite.json` 和 `result.json` 记录精确目标 ID、当前位置/名称/路径以及 `manual_cleanup_required=true`；Page reparent 还记录新旧 ID 历史。未进入批处理的场景均设置 `included_in_all=False`，但仍注册 default/keep dry-run cases；特殊入口 `all` 不接受 `--keep-worksite`。
 - 普通 Scenario 永不删除 run-scoped 本地 Notebook 目录、Notebook Copy 目录、普通 artifact 或失败现场。只有上述用户显式确认的 `clear` maintenance action 可以按逐目标安全门删除受管 payload；该授权不覆盖用户 Notebook 或任意外部路径。
 - `delete` 自动使用本次 manifest 中的 `disposable_group`，不接受外部 target ID，并保持非永久删除。
-- `rename` 另支持 `--target group_a|group_b|content_section` 和 `--new-name`。
+- `rename` 另支持 `--new-name`；未提供时，固定 Section 与 SectionGroup case 分别使用基于原名称的临时名称。场景不暴露 fixture target selector。
 - `reorder-page` 另支持 `--page-level <n>`。
 
 ## Isolated、单进程与最小权限边界
@@ -554,8 +563,8 @@ Notebook 直属 child 仍先用 absolute working path 与空 relative ID；Secti
 | Scenario | Fixture 与权限限制 |
 | --- | --- |
 | `create` | 完整预设 fixture 加空 `Duplicate-Title-Target`；连续两次 `create_page` 验证同标题 fresh allocated/read-back IDs，默认用 typed `delete_page(permanently=false)` 精确清理；不暴露 `create_notebook`，永久删除关闭；`--keep-worksite` 保留两个目标 Page |
-| `onenote-convergence` | fresh-only 的两 anchor 最小 fixture；生产 Create/Page update/Reorder/Delete 均须返回连续两次 live 稳定证据，Close 由共享 lifecycle 取证；不进入 `all`，永久删除/Raw XML/Copy/Move 均关闭 |
-| `rename` | 一个选定 Group/Section；fixture 写入加对应 rename 工具；`--keep-worksite` 保留新名称并记录原名称 |
+| `onenote-convergence` | fresh-only 的两 anchor 最小 fixture；生产 Create/Title/Append/内容对象 Delete/Reorder/非永久 hierarchy Delete/Close 逐项取证，Close 是最后一个 scenario MCP mutation，其完整双稳定单次执行证据由 lifecycle wrapper 精确封存为 pre-closed lease且不二次 Close；不进入 `all`，永久删除/Raw XML/Copy/Move 均关闭 |
+| `rename` | canonical fixture 只包含 `Rename-Group/Rename-Section`；单次运行固定按 Section→SectionGroup 执行 Rename/read-back，再逆序恢复，两种生产 Tool 均有独立 evidence；没有 `--target`；`--keep-worksite` 保留两个新名称并记录两项精确恢复说明 |
 | `reorder-page` | `Description/00-Reorder-Description` 明示操作前 `01,02,03`、正向操作后 `01,03,02`、恢复后 `01,02,03`；`01-Reorder-Page-Section` 下使用 `01-Parent`、`02-Child`、`03-Sibling`，让 UI 顺序和缩进变化可直接肉眼验收；`--keep-worksite` 保留 `01,03,02` 与新 predecessor/level |
 | `reorder-section` | **已注册到 `all`**。`00-Description/00-Reorder-Section-Description` 分别说明 Notebook 父级和 `01-Section-Parent`（SectionGroup）父级的 before/after/restore；两组 Section 及其 Page 均使用 `01/02/03` 编号，UI 可直接核对 `01,02,03 → 01,03,02 → 01,02,03`；只开启 Writes 与 Section Reorder；用户已确认真实 UI 排序证据。正向和逆序恢复分别用静态 `notebook-parent` / `section-group-parent` 标签输出 content-free progress。 |
 | `reorder-section-group` | **功能受限 / 验证失败 / 不注册到 `all`**。保留完整 fixture、mutation 和写后回读实现作为可单独调用的诊断场景；真实后端对 Notebook 直属 Group 返回 UpdateHierarchy 成功但保持按名称固定升序，嵌套操作未执行。dry-run 和运行状态证据写入 `capability_assessment={capability_status: limited, validation_status: failed, ...}`。 |

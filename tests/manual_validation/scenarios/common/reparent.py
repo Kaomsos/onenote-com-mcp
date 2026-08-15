@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 from ...mcp_stdio_client import (
@@ -307,6 +308,95 @@ def _typed_reparent_call(
     raise ValueError(f"Unsupported typed reparent resource type: {resource_type}")
 
 
+def _validate_single_stage_mutation_response(
+    response: dict[str, Any], *, case: str
+) -> dict[str, Any]:
+    reconciliation = response.get("reconciliation")
+    if not isinstance(reconciliation, dict):
+        raise InvariantFailure(
+            f"{case} typed Reparent response is missing its reconciliation contract."
+        )
+    expected = {
+        "state": "applied",
+        "mutation_stage": "postcondition",
+        "preflight_state": "logical_ready",
+        "persistence_checkpoint": "not_observable",
+        "mutation_attempted": True,
+        "mutation_attempts": 1,
+        "mutation_replayed": False,
+        "observed_outcome": "applied",
+        "retry_safety": "not_needed",
+        "recommended_action": "none",
+    }
+    mismatched = {
+        key: {"expected": value, "actual": reconciliation.get(key)}
+        for key, value in expected.items()
+        if reconciliation.get(key) != value
+    }
+    if mismatched:
+        raise InvariantFailure(
+            f"{case} typed Reparent response violates the mutation attempt contract: "
+            + json.dumps(mismatched, ensure_ascii=True, sort_keys=True)
+        )
+    return {key: reconciliation[key] for key in expected}
+
+
+_FORBIDDEN_REPARENT_BRIDGE_OPERATIONS = {
+    "sync_hierarchy",
+    "close_notebook",
+    "open_hierarchy",
+    "open_notebook",
+}
+
+
+def _bridge_audit_cursor(client: MCPStdioClient) -> tuple[Path | None, int]:
+    run_dir = getattr(client, "run_dir", None)
+    if run_dir is None:
+        # Injected pure-test clients have no bridge process or audit file.
+        return None, 0
+    audit_path = Path(run_dir) / "bridge-calls.jsonl"
+    if not audit_path.exists():
+        return audit_path, 0
+    return audit_path, len(
+        [line for line in audit_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    )
+
+
+def _validate_reparent_bridge_audit(
+    audit_path: Path | None,
+    start: int,
+    *,
+    case: str,
+) -> dict[str, Any]:
+    if audit_path is None:
+        return {"verified": False, "reason": "injected_test_client"}
+    if not audit_path.exists():
+        raise InvariantFailure(f"{case} Reparent bridge audit file was not created.")
+    records = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    operations = [str(record.get("operation", "")) for record in records[start:]]
+    forbidden = sorted(_FORBIDDEN_REPARENT_BRIDGE_OPERATIONS.intersection(operations))
+    if forbidden:
+        raise InvariantFailure(
+            f"{case} Reparent invoked forbidden lifecycle bridge operations: "
+            + ", ".join(forbidden)
+        )
+    if operations.count("update_hierarchy") != 1:
+        raise InvariantFailure(
+            f"{case} Reparent must issue exactly one UpdateHierarchy call; "
+            f"observed {operations.count('update_hierarchy')}."
+        )
+    return {
+        "verified": True,
+        "update_hierarchy_calls": 1,
+        "forbidden_lifecycle_calls": [],
+        "bridge_operations": operations,
+    }
+
+
 async def execute_typed_reparent(
     *,
     args: argparse.Namespace,
@@ -366,7 +456,20 @@ async def execute_typed_reparent(
                 operation["source_parent_id"],
                 resource_type,
             )
+            audit_path, audit_cursor = _bridge_audit_cursor(active_client)
             response = await active_client.call_tool(tool_name, arguments)
+            operation.setdefault("restore_bridge_audit", []).append(
+                _validate_reparent_bridge_audit(
+                    audit_path,
+                    audit_cursor,
+                    case=f"{operation['case']} restore",
+                )
+            )
+            operation.setdefault("restore_reconciliation", []).append(
+                _validate_single_stage_mutation_response(
+                    response, case=f"{operation['case']} restore"
+                )
+            )
             restore_snapshot = await capture_snapshot(active_client, notebook_id)
             write_json(out / f"restore-{index}.json", restore_snapshot)
             restored_target_id, _restore_checks = _validate_reparented_snapshot(
@@ -450,7 +553,16 @@ async def execute_typed_reparent(
                 operation["destination_parent_id"],
                 resource_type,
             )
+            audit_path, audit_cursor = _bridge_audit_cursor(active_client)
             response = await active_client.call_tool(tool_name, arguments)
+            operation["forward_bridge_audit"] = _validate_reparent_bridge_audit(
+                audit_path,
+                audit_cursor,
+                case=case,
+            )
+            operation["forward_reconciliation"] = (
+                _validate_single_stage_mutation_response(response, case=case)
+            )
             write_json(out / f"mutation-response-{index}.json", response)
             current_snapshot = await capture_snapshot(active_client, notebook_id)
             write_json(out / f"forward-{index}.json", current_snapshot)

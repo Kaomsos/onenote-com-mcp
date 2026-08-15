@@ -28,6 +28,7 @@ class Scenario:
     worksite_dry_run_action = "preserve-verified-worksite"
     cache_invalidation_probe = False
     requires_lifecycle_wrappers = False
+    production_close_handoff = False
     requires_index_activation_checkpoint = False
 
     @property

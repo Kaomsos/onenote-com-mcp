@@ -32,7 +32,7 @@ def _args(tmp_path: Path, scenario: str) -> argparse.Namespace:
         "keep_worksite": False,
     }
     if scenario == "rename":
-        values.update(target="content_section", new_name=None)
+        values.update(new_name=None)
     if scenario == "reorder-page":
         values["page_level"] = 2
     return argparse.Namespace(**values)

@@ -101,6 +101,7 @@ def build_isolated_dry_run_plan(
     copy_budget: Mapping[str, int],
     worksite_action: str,
     recipe: "RecipeBase",
+    production_close_handoff: bool,
 ) -> dict[str, Any]:
     """Build a serializable plan without creating paths, clients, or lifecycle objects."""
 
@@ -108,6 +109,15 @@ def build_isolated_dry_run_plan(
     consumer_cache_required = bool(recipe.consumer_scenario and not use_cache)
     roles = [role.role for role in recipe.cache_identity.notebook_roles]
     multi_role = len(roles) > 1
+    mutation_target = {
+        "rename": "fixed Section and SectionGroup Rename/read-back/restore cases",
+        "onenote-convergence": (
+            "fixed Title/Append/content Delete/Reorder/hierarchy Delete/Close chain"
+        ),
+    }.get(
+        args.scenario,
+        f"fixture profile {spec.fixture.name} and selected mutation",
+    )
     steps: list[dict[str, Any]] = [
         {
             "step": "create-notebook-bundle" if multi_role else "create-source-notebook",
@@ -123,7 +133,7 @@ def build_isolated_dry_run_plan(
             args.scenario,
             spec.policy,
             set(spec.tool_allowlist),
-            f"fixture profile {spec.fixture.name} and selected mutation",
+            mutation_target,
         ),
         {
             "step": "report",
@@ -137,7 +147,15 @@ def build_isolated_dry_run_plan(
             {
                 "step": "close-notebook-bundle" if multi_role else "close-source-notebook",
                 "trust_boundary": "narrow lifecycle wrapper",
-                "allowed_operations": ["get_exact_notebook", "close_exact_notebook"],
+                "allowed_operations": [
+                    *(
+                        ["adopt_production_close"]
+                        if production_close_handoff
+                        else []
+                    ),
+                    "get_exact_notebook",
+                    "close_exact_notebook",
+                ],
                 "target": (
                     "every exact role lifecycle lease Notebook ID/name/path"
                     if multi_role
@@ -226,7 +244,11 @@ def build_isolated_dry_run_plan(
                 args.scenario,
                 spec.policy,
                 set(spec.tool_allowlist),
-                "selected mutation against only stable rebound live IDs",
+                (
+                    "fixed Section and SectionGroup Rename cases against stable rebound live IDs"
+                    if args.scenario == "rename"
+                    else "selected mutation against only stable rebound live IDs"
+                ),
             ),
         ]
     if interactive_bootstrap:

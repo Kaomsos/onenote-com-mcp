@@ -816,6 +816,110 @@ class NotebookLifecycleWrapper:
                 raise
             raise RestoreFailure(f"Exact source Notebook close failed: {exc}") from exc
 
+    def adopt_production_close(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        """Seal an active lease from exact production Close Tool evidence."""
+
+        lease = self._read_lease()
+        if lease.get("state") != "active":
+            raise RestoreFailure(
+                "Lifecycle lease is not active; refusing production close handoff."
+            )
+        if lease.get("role", self.role) != self.role:
+            raise RestoreFailure(
+                "Lifecycle lease role differs from its frozen wrapper role."
+            )
+        notebook_id = str(lease.get("notebook_id", ""))
+        expected_name = str(lease.get("expected_name", ""))
+        expected_path = Path(str(lease.get("expected_local_path", ""))).resolve()
+        item = result.get("item")
+        final_state = result.get("final_state")
+        convergence = result.get("convergence")
+        reconciliation = result.get("reconciliation")
+        if (
+            not notebook_id
+            or not expected_name
+            or expected_path.parent != self.notebook_root
+            or not expected_path.exists()
+        ):
+            raise RestoreFailure(
+                "Production close handoff does not retain the exact local lease binding."
+            )
+        if (
+            result.get("ok") is not True
+            or result.get("complete") is not True
+            or result.get("closed") is not True
+            or not isinstance(item, Mapping)
+            or str(item.get("id", "")) != notebook_id
+            or display_name(item) != expected_name
+        ):
+            raise RestoreFailure(
+                "Production close handoff does not match the exact leased Notebook."
+            )
+        if final_state is not None and (
+            not isinstance(final_state, Mapping)
+            or str(final_state.get("id", "")) != notebook_id
+            or final_state.get("is_open") is not False
+        ):
+            raise RestoreFailure(
+                "Production close handoff contains an invalid final Notebook state."
+            )
+        if (
+            not isinstance(convergence, Mapping)
+            or convergence.get("converged") is not True
+            or int(convergence.get("attempts", 0)) < 2
+            or int(convergence.get("stable_observations", 0)) < 2
+        ):
+            raise RestoreFailure(
+                "Production close handoff lacks two stable closed-state observations."
+            )
+        if (
+            not isinstance(reconciliation, Mapping)
+            or reconciliation.get("state") != "applied"
+            or reconciliation.get("mutation_attempted") is not True
+            or int(reconciliation.get("mutation_attempts", 0)) != 1
+            or reconciliation.get("mutation_replayed") is not False
+            or reconciliation.get("observed_outcome") != "applied"
+        ):
+            raise RestoreFailure(
+                "Production close handoff violates the single-attempt reconciliation contract."
+            )
+
+        close_result = {
+            "closed": True,
+            "source_notebook_id": notebook_id,
+            "close_before": stable_item(item),
+            "final_state": stable_item(final_state) if final_state else None,
+            "elapsed_seconds": convergence.get("elapsed_seconds"),
+            "convergence": dict(convergence),
+            "reconciliation": {
+                key: reconciliation.get(key)
+                for key in (
+                    "state",
+                    "mutation_stage",
+                    "mutation_attempted",
+                    "mutation_attempts",
+                    "mutation_replayed",
+                    "observed_outcome",
+                    "retry_safety",
+                    "recommended_action",
+                )
+            },
+            "close_origin": "production_close_notebook",
+            "persistence_sync": {
+                "requested": False,
+                "accepted": False,
+                "completion_proof": None,
+            },
+            "filesystem_deleted": False,
+        }
+        lease.update(
+            state="closed",
+            closed_at=utc_now(),
+            close_result=close_result,
+        )
+        write_json(self.lease_path, lease)
+        return close_result
+
 __all__ = [
     "MAX_MATERIALIZED_HIERARCHY_ENTRIES",
     "NotebookLifecycleWrapper",

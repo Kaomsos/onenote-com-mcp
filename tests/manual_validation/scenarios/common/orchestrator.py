@@ -181,6 +181,7 @@ def isolated_dry_run(args: argparse.Namespace, options: RuntimeOptions) -> dict[
         },
         worksite_action=scenario.worksite_dry_run_action,
         recipe=scenario.fixture_recipe,
+        production_close_handoff=scenario.production_close_handoff,
     )
 
 
@@ -1513,7 +1514,17 @@ def record_failure(
         out = scenario_dir(run_dir, args.scenario)
         completed_artifacts = [
             name
-            for name in ("before.json", "plan.json", "copy-result.json", "after.json", "restored.json")
+            for name in (
+                "before.json",
+                "plan.json",
+                "copy-result.json",
+                "after.json",
+                "section-after.json",
+                "section_group-after.json",
+                "section-restored.json",
+                "section_group-restored.json",
+                "restored.json",
+            )
             if (out / name).exists()
         ]
         mutation_result = (
@@ -1532,7 +1543,6 @@ def record_failure(
         }
         manifest = load_manifest(run_dir)
         target_keys = {
-            "rename": getattr(args, "target", "content_section"),
             "reorder-page": "sibling_page",
             "reorder-section": "root_section_c",
             "reorder-section-group": "root_group_c",
@@ -1545,7 +1555,15 @@ def record_failure(
             "copy-notebook": None,
             "move-page": "disposable_page",
         }
-        if args.scenario == "delete":
+        target_ids: list[str] = []
+        if args.scenario == "rename":
+            target_ids = [
+                str(manifest.get("structure", {}).get(key, {}).get("id", ""))
+                for key in ("section_target", "section_group_target")
+            ]
+            target_ids = [value for value in target_ids if value]
+            target_id = target_ids[0] if target_ids else ""
+        elif args.scenario == "delete":
             target_id = getattr(args, "delete_target_id", "")
         elif args.scenario in target_keys:
             target_key = target_keys[args.scenario]
@@ -1556,13 +1574,18 @@ def record_failure(
             )
         else:
             target_id = ""
+        if not target_ids and target_id:
+            target_ids = [str(target_id)]
         notebook_id = manifest.get("notebook", {}).get("id", "")
         last_step = "preflight"
         if "before.json" in completed_artifacts:
             last_step = "capture_before"
         if "copy-result.json" in completed_artifacts:
             last_step = "execute_mutation"
-        if "after.json" in completed_artifacts:
+        if any(
+            name in completed_artifacts
+            for name in ("after.json", "section-after.json", "section_group-after.json")
+        ):
             last_step = "capture_after"
         if "restored.json" in completed_artifacts:
             last_step = "capture_restored"
@@ -1576,6 +1599,7 @@ def record_failure(
             "exit_code": exit_code,
             "error": message,
             "target_id": target_id,
+            "target_ids": target_ids,
             "last_successful_step": last_step,
             "completed_artifacts": completed_artifacts,
             "outcome": mutation_result.get("outcome"),

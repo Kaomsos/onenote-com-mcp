@@ -140,10 +140,13 @@ def test_p2_scenarios_default_to_copy_execute_timeout() -> None:
     assert rename_args.timeout == 180
 
 
-def test_rename_target_uses_current_fixture_key() -> None:
+def test_rename_has_no_fixture_target_selector() -> None:
     parser = build_parser()
-    args = parser.parse_args(["rename", "--target", "content_section", "--dry-run"])
-    assert args.target == "content_section"
+    args = parser.parse_args(["rename", "--dry-run"])
+    assert not hasattr(args, "target")
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["rename", "--target", "section_target", "--dry-run"])
 
 
 def test_keep_worksite_is_available_to_every_named_action_but_not_all() -> None:
