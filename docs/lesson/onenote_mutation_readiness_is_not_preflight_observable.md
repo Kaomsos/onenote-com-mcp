@@ -5,7 +5,7 @@
 > 范围：Windows OneNote Desktop、本地 COM、disposable Page Reparent fresh/cache 人工验证
 > Canonical 设计：[`../design/mutation_readiness_and_call_design.md`](../design/mutation_readiness_and_call_design.md)
 > 当前 Tool 契约：[`../design/tool_contracts.md`](../design/tool_contracts.md)
-> 后续实施：[`../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md`](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md)
+> 实施状态：[`TODO 029`](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 已完成 bounded-attempt 加固；operation-wide 推广由 [`TODO 036`](../todo/036_operation_runtime_control_plane_and_tool_migration.md) 承接
 
 ## 结论
 
@@ -62,7 +62,7 @@ GUI preflight、双稳定 hierarchy 与完整内容读取仍不是对下一次 m
 - 当前 manual runner 不执行 readiness close/reopen；未来若新增由用户显式授权的 lifecycle 能力，也不能隐藏在业务 tool 内。
 - 最内层 HRESULT 用于分类与恢复建议，PowerShell wrapper HRESULT 不能单独决定重试。
 
-当前权威状态模型和调用顺序见 [`mutation_readiness_and_call_design.md`](../design/mutation_readiness_and_call_design.md)。本 Lesson 解释证据和错误假设，不定义公开字段；尚未实现的生产 tool 加固由 [TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 跟踪。
+当前权威状态模型和调用顺序见 [`mutation_readiness_and_call_design.md`](../design/mutation_readiness_and_call_design.md)。本 Lesson 解释证据和错误假设，不定义公开字段；bounded-attempt 生产加固已由 [TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 完成，多阶段 saga、统一 Registry 与全 Tool Runtime 由 [TODO 036](../todo/036_operation_runtime_control_plane_and_tool_migration.md) 跟踪。
 
 ## 适用边界
 

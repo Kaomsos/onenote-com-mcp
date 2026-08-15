@@ -6,7 +6,10 @@ import pytest
 
 from local_onenote_mcp import server
 from local_onenote_mcp.desktop import OneNoteDesktopState
-from local_onenote_mcp.onenote_errors import OneNoteDesktopNotRunningError
+from local_onenote_mcp.onenote_errors import (
+    OneNoteDesktopNotRunningError,
+    OneNoteNotYetSynchronizedError,
+)
 from local_onenote_mcp.policy import SearchBudget
 from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.tools.advanced import merge_sections, open_hierarchy, set_filing_location
@@ -1169,6 +1172,105 @@ def test_delete_page_content_rejects_non_deletable_child_with_parent_suggestion(
     assert result["ok"] is False
     assert "not directly deletable" in result["error"]
     assert "outline-id" in result["error"]
+
+
+@pytest.mark.write_contract
+def test_delete_page_content_accepts_removal_of_target_descendant_closure(monkeypatch):
+    before_xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="page-id">
+    <one:Outline objectID="target-id"><one:OEChildren><one:OE objectID="target-oe"><one:T>target</one:T>
+    <one:Image objectID="target-image" /></one:OE></one:OEChildren></one:Outline>
+    <one:Outline objectID="other-id"><one:OEChildren><one:OE objectID="other-oe"><one:T>other</one:T></one:OE></one:OEChildren></one:Outline>
+    </one:Page>"""
+    after_xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="page-id">
+    <one:Outline objectID="other-id"><one:OEChildren><one:OE objectID="other-oe"><one:T>other</one:T></one:OE></one:OEChildren></one:Outline>
+    </one:Page>"""
+    reads = iter([before_xml, after_xml, after_xml, after_xml])
+    calls = 0
+
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
+    monkeypatch.setattr(server.services.pages, "xml", lambda *args, **kwargs: next(reads))
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda *_args, **_kwargs: {
+            "id": "page-id",
+            "resource_type": "page",
+            "title": "Page",
+            "section_id": "section-id",
+        },
+    )
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None
+    )
+
+    def delete_once(_operation, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"deleted": True}
+
+    monkeypatch.setattr(server.services.mutations, "call", delete_once)
+
+    result = asyncio.run(
+        delete_page_content("page-id", "target-id", "Page", "section-id")
+    )
+
+    assert calls == 1
+    assert result["ok"] is True
+    assert result["deleted"] is True
+    assert result["reconciliation"]["state"] == "applied"
+    assert result["reconciliation"]["mutation_attempts"] == 1
+    assert result["reconciliation"]["mutation_replayed"] is False
+    assert result["convergence"]["converged"] is True
+
+
+@pytest.mark.write_contract
+def test_delete_page_content_classifies_non_target_identity_change_as_partial_without_replay(
+    monkeypatch,
+):
+    before_xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="page-id">
+    <one:Outline objectID="target-id"><one:OEChildren><one:OE objectID="target-oe"><one:T>target</one:T></one:OE></one:OEChildren></one:Outline>
+    <one:Outline objectID="other-id"><one:OEChildren><one:OE objectID="other-oe"><one:T>other</one:T></one:OE></one:OEChildren></one:Outline>
+    </one:Page>"""
+    changed_xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="page-id">
+    <one:Outline objectID="target-id"><one:OEChildren><one:OE objectID="target-oe"><one:T>target</one:T></one:OE></one:OEChildren></one:Outline>
+    </one:Page>"""
+    reads = iter([before_xml, changed_xml])
+    calls = 0
+
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
+    monkeypatch.setattr(server.services.pages, "xml", lambda *args, **kwargs: next(reads))
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda *_args, **_kwargs: {
+            "id": "page-id",
+            "resource_type": "page",
+            "title": "Page",
+            "section_id": "section-id",
+        },
+    )
+
+    def fail_once(_operation, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise OneNoteNotYetSynchronizedError(
+            "safe typed failure", operation="delete_page_content"
+        )
+
+    monkeypatch.setattr(server.services.mutations, "call", fail_once)
+
+    result = asyncio.run(
+        delete_page_content("page-id", "target-id", "Page", "section-id")
+    )
+
+    assert calls == 1
+    assert result["ok"] is False
+    assert result["code"] == "partial_failure"
+    assert result["observed_outcome"] == "partially_applied"
+    assert result["mutation_replayed"] is False
+    assert result["retry_safety"] == "do_not_replay"
 
 
 def test_generic_delete_hierarchy_is_removed_from_advanced_registration():

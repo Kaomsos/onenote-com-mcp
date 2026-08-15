@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..onenote_errors import OneNoteError
-from ..services import PartialFailure
+from ..services import MutationFailure, MutationPreflightFailure, PartialFailure
 
 
 def ok(**data: Any) -> dict[str, Any]:
@@ -18,6 +18,14 @@ def error(message: str, code: str = "operation_failed", **details: Any) -> dict[
 
 
 def caught(exc: Exception) -> dict[str, Any]:
+    if isinstance(exc, MutationPreflightFailure):
+        details = dict(exc.details)
+        details.setdefault("error_type", type(exc).__name__)
+        return error(str(exc), exc.code, **details)
+    if isinstance(exc, MutationFailure):
+        details = dict(exc.details)
+        details.setdefault("error_type", type(exc).__name__)
+        return error(str(exc), exc.code, **details)
     if isinstance(exc, PartialFailure):
         details = dict(exc.details)
         details.setdefault("error_type", type(exc).__name__)

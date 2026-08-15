@@ -28,8 +28,13 @@ from ..page import (
 from ..policy import CopyBudget, MutationPolicy
 from .base import BaseService
 from .convergence import DEFAULT_CONVERGENCE, ConvergenceResult, converge
-from .errors import PartialFailure
+from .errors import MutationFailure, MutationPreflightFailure, PartialFailure
 from .hierarchy import HierarchyService
+from .mutation_control import (
+    MutationAttemptExecutor,
+    MutationAttemptOutcome,
+    mutation_attempt_policy,
+)
 from .pages import PageService, stable_page_content_digest
 from .position import destination_position, unavailable_destination_position
 from .reconciliation import ReconciliationState, reconcile_mutation
@@ -43,6 +48,7 @@ class MutationService(BaseService):
         super().__init__(bridge)
         self.hierarchy = hierarchy
         self.pages = pages
+        self.mutation_attempts = MutationAttemptExecutor()
 
     def _converge(
         self,
@@ -125,6 +131,64 @@ class MutationService(BaseService):
         )
         self._raise_failed_reconciliation(operation, result)
         return result
+
+    def _execute_mutation_attempt(
+        self,
+        *,
+        operation: str,
+        execute,
+        observe,
+        is_pre_state,
+        is_post_state,
+        is_partial_state=None,
+        retry_observation_if=None,
+        observation_retry=None,
+    ) -> MutationAttemptOutcome[Any, Any]:
+        outcome = self.mutation_attempts.execute(
+            mutation_attempt_policy(operation),
+            execute=execute,
+            observe=observe,
+            is_pre_state=is_pre_state,
+            is_post_state=is_post_state,
+            is_partial_state=is_partial_state,
+            retry_observation_if=retry_observation_if,
+            observation_retry=observation_retry,
+        )
+        self._raise_failed_controlled_outcome(outcome)
+        return outcome
+
+    @staticmethod
+    def _raise_failed_controlled_outcome(
+        outcome: MutationAttemptOutcome[Any, Any],
+        *,
+        completed_steps: list[dict[str, Any]] | None = None,
+        extra_details: dict[str, Any] | None = None,
+    ) -> None:
+        if outcome.applied:
+            return
+        result = outcome.reconciliation
+        details = outcome.failure_details()
+        details.update(extra_details or {})
+        if result.state is ReconciliationState.NOT_APPLIED:
+            if isinstance(result.error, OneNoteError):
+                result.error.reconciliation = result.state.value
+                result.error.details.update(details)
+                raise result.error
+            raise MutationFailure(
+                f"{outcome.policy.policy_id} did not apply; live pre-state remained unchanged.",
+                code="mutation_not_applied",
+                partial=False,
+                reconciliation=result.state.value,
+                **details,
+            ) from result.error
+        raise PartialFailure(
+            f"{outcome.policy.policy_id} did not reach a safely verified postcondition.",
+            partial=result.state is ReconciliationState.PARTIALLY_APPLIED,
+            reconciliation=result.state.value,
+            completed_steps=list(completed_steps or []),
+            failed_step=outcome.policy.policy_id,
+            **details,
+        ) from result.error
 
     @staticmethod
     def safe_leaf_name(name: str) -> str:
@@ -561,7 +625,7 @@ class MutationService(BaseService):
             except ValueError:
                 return None
 
-        reconciliation = self._reconciled_idempotent_execute(
+        reconciliation = self._execute_mutation_attempt(
             operation="update_page_title",
             execute=lambda: self.call(
                 "update_page_content",
@@ -610,7 +674,7 @@ class MutationService(BaseService):
             except ValueError:
                 return None
 
-        reconciliation = self._reconciled_idempotent_execute(
+        reconciliation = self._execute_mutation_attempt(
             operation="rename_resource",
             execute=lambda: self.call(
                 "update_hierarchy",
@@ -707,7 +771,7 @@ class MutationService(BaseService):
                 for item in values
             )
 
-        reconciliation = self._reconciled_idempotent_execute(
+        reconciliation = self._execute_mutation_attempt(
             operation="reorder_page",
             execute=lambda: self.call(
                 "update_hierarchy",
@@ -901,16 +965,33 @@ class MutationService(BaseService):
 
         before_direct_signature = direct_signature(active_items)
         expected_direct_signature = (tuple(expected_sibling_ids), frozenset(before_direct_ids))
-        reconciliation = self._reconciled_idempotent_execute(
-            operation=f"reorder_{resource_type}",
-            execute=lambda: self.call(
-                "update_hierarchy", xml=update_xml, schema=XML_SCHEMA_2013
-            ),
-            observe=lambda: self.hierarchy.resources(include_recycle_bin=False),
-            is_pre_state=lambda values: direct_signature(values) == before_direct_signature,
-            is_post_state=lambda values: direct_signature(values) == expected_direct_signature,
-            is_partial_state=lambda values: direct_signature(values)[1]
-            != before_direct_signature[1],
+        execute_reorder = lambda: self.call(
+            "update_hierarchy", xml=update_xml, schema=XML_SCHEMA_2013
+        )
+        reconciliation = (
+            self._execute_mutation_attempt(
+                operation="reorder_section",
+                execute=execute_reorder,
+                observe=lambda: self.hierarchy.resources(include_recycle_bin=False),
+                is_pre_state=lambda values: direct_signature(values)
+                == before_direct_signature,
+                is_post_state=lambda values: direct_signature(values)
+                == expected_direct_signature,
+                is_partial_state=lambda values: direct_signature(values)[1]
+                != before_direct_signature[1],
+            )
+            if resource_type == "section"
+            else self._reconciled_idempotent_execute(
+                operation=f"reorder_{resource_type}",
+                execute=execute_reorder,
+                observe=lambda: self.hierarchy.resources(include_recycle_bin=False),
+                is_pre_state=lambda values: direct_signature(values)
+                == before_direct_signature,
+                is_post_state=lambda values: direct_signature(values)
+                == expected_direct_signature,
+                is_partial_state=lambda values: direct_signature(values)[1]
+                != before_direct_signature[1],
+            )
         )
 
         def validated_snapshot():
@@ -1569,6 +1650,94 @@ class MutationService(BaseService):
             "unrelated_objects_preserved": True,
         }
 
+    def _reparent_snapshot_signature(self, snapshot: dict[str, Any]) -> tuple[Any, ...]:
+        """Project the complete frozen semantic state used to prove not-applied."""
+
+        hierarchy = tuple(
+            sorted(
+                (
+                    str(item.get("id", "")),
+                    self._reparent_confirmation_signature(item),
+                )
+                for item in snapshot["items"]
+            )
+        )
+        page_content = tuple(
+            sorted(
+                (
+                    str(page_id),
+                    self.pages.reparent_digest(xml),
+                )
+                for page_id, xml in snapshot["page_xml"].items()
+            )
+        )
+        return hierarchy, page_content
+
+    def _observe_reparent_state(
+        self,
+        before: dict[str, Any],
+        *,
+        notebook_id: str,
+        object_id: str,
+        resource_type: str,
+        destination_parent_id: str,
+        selected: list[dict[str, Any]],
+        include_descendants: bool,
+        preservation: dict[str, Any],
+        snapshot: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Observe one full Reparent state for both success and error paths."""
+
+        snapshot = snapshot or self._capture_reparent_snapshot(notebook_id)
+        validated: tuple[dict[str, Any], dict[str, str], dict[str, bool]] | None = None
+        validation_error: Exception | None = None
+        try:
+            if resource_type == "page":
+                validated = self._validate_reparent_page_scope(
+                    before,
+                    snapshot,
+                    selected=selected,
+                    destination_section_id=destination_parent_id,
+                    include_descendants=include_descendants,
+                )
+            else:
+                validated = self._validate_reparent_snapshots(
+                    before,
+                    snapshot,
+                    target_id=object_id,
+                    destination_parent_id=destination_parent_id,
+                    resource_type=resource_type,
+                )
+        except Exception as exc:
+            validation_error = exc
+
+        exact_pre_state = (
+            not preservation.get("promoted")
+            and self._reparent_snapshot_signature(snapshot)
+            == self._reparent_snapshot_signature(before)
+        )
+        ambiguous_destination = False
+        if resource_type == "page" and validated is None:
+            _position, _source_ids, destination_ids = self._partial_reparent_page_position(
+                before,
+                snapshot,
+                selected_source_ids=[str(item["id"]) for item in selected],
+                destination_section_id=destination_parent_id,
+            )
+            ambiguous_destination = len(destination_ids) > 1
+        changed = not exact_pre_state
+        partial = bool(preservation.get("promoted")) or (
+            changed and not ambiguous_destination
+        )
+        return {
+            "snapshot": snapshot,
+            "validated": validated,
+            "validation_error": validation_error,
+            "exact_pre_state": exact_pre_state,
+            "partial": partial,
+            "ambiguous_destination": ambiguous_destination,
+        }
+
     def _partial_reparent_page_position(
         self,
         before: dict[str, Any],
@@ -1636,7 +1805,7 @@ class MutationService(BaseService):
             destination_ids,
         )
 
-    def _reparent(
+    def _reparent_impl(
         self,
         object_id: str,
         resource_type: str,
@@ -1771,39 +1940,17 @@ class MutationService(BaseService):
                 destination,
                 catalog=active_items,
             )
+        operation = f"reparent_{resource_type}"
+        execution_result: dict[str, Any] | None = None
+        execution_error: Exception | None = None
         try:
-            self.call(
+            execution_result = self.call(
                 "update_hierarchy",
                 xml=xml,
                 schema=XML_SCHEMA_2013,
             )
         except Exception as exc:
-            if resource_type == "page" and preservation.get("promoted"):
-                failure_snapshot: dict[str, Any] | None = None
-                try:
-                    failure_snapshot = self._capture_reparent_snapshot(notebook_id)
-                except Exception:
-                    pass
-                partial_position, active_source_ids, observed_destination_ids = (
-                    self._partial_reparent_page_position(
-                        before,
-                        failure_snapshot,
-                        selected_source_ids=[str(item["id"]) for item in complete_scope[:1]],
-                        destination_section_id=destination_parent_id,
-                    )
-                )
-                raise PartialFailure(
-                    "Excluded descendants were promoted, but the selected Page was not reparented.",
-                    partial=True,
-                    outcome="descendants_promoted_reparent_not_completed",
-                    reparent_attempted=True,
-                    destination_position=partial_position,
-                    active_source_ids=active_source_ids,
-                    observed_destination_ids=observed_destination_ids,
-                    preserved_descendants=preservation,
-                    reparent_error=str(exc),
-                ) from exc
-            raise
+            execution_error = exc
 
         last_topology: dict[str, Any] | None = None
         last_topology_error: RuntimeError | None = None
@@ -1825,6 +1972,8 @@ class MutationService(BaseService):
             last_topology = {"items": items, "current": current, "id_map": id_map}
             return last_topology
 
+        stable: ConvergenceResult[Any] | None = None
+        topology_read_error: Exception | None = None
         try:
             stable = converge(
                 observe_reparent_topology,
@@ -1840,17 +1989,8 @@ class MutationService(BaseService):
                 transient=transient_read_error,
             )
         except Exception as exc:
-            raise PartialFailure(
-                "Reparent mutation succeeded, but hierarchy convergence could not be read.",
-                partial=True,
-                outcome="reparent_readback_incomplete",
-                reparent_attempted=True,
-                readback_phase="hierarchy_convergence",
-                readback_error=f"{type(exc).__name__}: {exc}",
-                mutation_replayed=False,
-                manual_recovery_required=True,
-            ) from exc
-        if not stable.converged or stable.value is None:
+            topology_read_error = exc
+        if stable is not None and (not stable.converged or stable.value is None):
             diagnostic = (
                 str(last_topology_error)
                 if last_topology_error is not None
@@ -1860,40 +2000,7 @@ class MutationService(BaseService):
                     f"{DEFAULT_CONVERGENCE.required_stable_observations} stable observations"
                 )
             )
-            details: dict[str, Any] = {
-                "partial": True,
-                "outcome": "reparent_readback_incomplete",
-                "reparent_attempted": True,
-                "readback_phase": "hierarchy_convergence",
-                "readback_error": diagnostic,
-                "convergence": stable.summary(),
-                "mutation_replayed": False,
-                "manual_recovery_required": True,
-            }
-            if resource_type == "page":
-                details.update(
-                    outcome="reparent_subtree_incomplete",
-                    include_descendants=bool(include_descendants),
-                    destination_position=unavailable_destination_position(
-                        "page", "destination_snapshot_unavailable"
-                    ),
-                    active_source_ids=[],
-                    observed_destination_ids=[],
-                    preserved_descendants=preservation,
-                )
-                if last_topology is not None:
-                    topology_current = last_topology["current"]
-                    details["destination_position"] = destination_position(
-                        last_topology["items"], str(topology_current["id"])
-                    )
-                    details["observed_destination_ids"] = [
-                        str(topology_current["id"])
-                    ]
-            raise PartialFailure(
-                "Reparent mutation succeeded, but hierarchy convergence did not complete: "
-                + diagnostic,
-                **details,
-            )
+            topology_read_error = RuntimeError(diagnostic)
 
         after: dict[str, Any] | None = None
         capture_error: Exception | None = None
@@ -1914,18 +2021,33 @@ class MutationService(BaseService):
                 break
         if after is None:
             assert capture_error is not None
-            details = {
-                "partial": True,
+            reconciliation = self.mutation_attempts.reconcile_observation(
+                mutation_attempt_policy(operation),
+                observation=None,
+                is_pre_state=lambda _value: False,
+                is_post_state=lambda _value: False,
+                execution_result=execution_result,
+                execution_error=execution_error,
+                execution_succeeded=execution_error is None,
+                observation_error=capture_error,
+                observation_attempts=capture_attempts,
+            )
+            details: dict[str, Any] = {
                 "outcome": "reparent_readback_incomplete",
                 "reparent_attempted": True,
                 "readback_phase": "full_evidence_capture",
-                "readback_error": f"{type(capture_error).__name__}: {capture_error}",
+                "readback_error_type": type(capture_error).__name__,
                 "capture_attempts": capture_attempts,
-                "convergence": stable.summary(),
+                "convergence": stable.summary() if stable is not None else {
+                    "converged": False,
+                    "attempts": 0,
+                    "stable_observations": 0,
+                    "transient_errors": [],
+                    "identity_remap": {},
+                },
                 "mutation_replayed": False,
-                "manual_recovery_required": True,
             }
-            if resource_type == "page":
+            if resource_type == "page" and stable is not None and stable.value is not None:
                 topology_current = stable.value["current"]
                 topology_items = stable.value["items"]
                 topology_by_id = {
@@ -1955,40 +2077,76 @@ class MutationService(BaseService):
                     observed_destination_ids=[str(topology_current["id"])],
                     preserved_descendants=preservation,
                 )
-            raise PartialFailure(
-                "Reparent mutation succeeded, but full evidence capture failed: "
-                + str(capture_error),
-                **details,
-            ) from capture_error
+            self._raise_failed_controlled_outcome(
+                reconciliation,
+                completed_steps=(
+                    [{"operation": "promote_reparent_descendants"}]
+                    if preservation.get("promoted")
+                    else []
+                ),
+                extra_details=details,
+            )
+            raise AssertionError("indeterminate Reparent outcome did not raise")
 
-        try:
-            if resource_type == "page":
-                current, id_map, verified = self._validate_reparent_page_scope(
-                    before,
-                    after,
-                    selected=(complete_scope if include_descendants else complete_scope[:1]),
-                    destination_section_id=destination_parent_id,
-                    include_descendants=include_descendants,
-                )
-            else:
-                current, id_map, verified = self._validate_reparent_snapshots(
-                    before,
-                    after,
-                    target_id=object_id,
-                    destination_parent_id=destination_parent_id,
-                    resource_type=resource_type,
-                )
-        except Exception as exc:
+        observed_state = self._observe_reparent_state(
+            before,
+            notebook_id=notebook_id,
+            object_id=object_id,
+            resource_type=resource_type,
+            destination_parent_id=destination_parent_id,
+            selected=(
+                complete_scope
+                if resource_type == "page" and include_descendants
+                else selected
+            ),
+            include_descendants=include_descendants,
+            preservation=preservation,
+            snapshot=after,
+        )
+        if (
+            last_topology is not None
+            and self._reparent_hierarchy_signature(last_topology["items"])
+            != self._reparent_hierarchy_signature(after["items"])
+        ):
+            observed_state.update(
+                validated=None,
+                validation_error=RuntimeError(
+                    "Reparent topology and full-evidence observations did not agree."
+                ),
+                exact_pre_state=False,
+                partial=False,
+                evidence_inconsistent=True,
+            )
+        reconciliation = self.mutation_attempts.reconcile_observation(
+            mutation_attempt_policy(operation),
+            observation=observed_state,
+            is_pre_state=lambda value: bool(value["exact_pre_state"]),
+            is_post_state=lambda value: value["validated"] is not None,
+            is_partial_state=lambda value: bool(value["partial"]),
+            execution_result=execution_result,
+            execution_error=execution_error,
+            execution_succeeded=execution_error is None,
+            observation_attempts=capture_attempts,
+        )
+        if not reconciliation.applied:
             details = {
-                "partial": True,
                 "outcome": "reparent_readback_incomplete",
                 "reparent_attempted": True,
                 "readback_phase": "invariant_validation",
-                "readback_error": str(exc),
+                "readback_error_type": (
+                    type(observed_state["validation_error"]).__name__
+                    if observed_state["validation_error"] is not None
+                    else None
+                ),
                 "capture_attempts": capture_attempts,
-                "convergence": stable.summary(),
+                "convergence": stable.summary() if stable is not None else {
+                    "converged": False,
+                    "attempts": 0,
+                    "stable_observations": 0,
+                    "transient_errors": [],
+                    "identity_remap": {},
+                },
                 "mutation_replayed": False,
-                "manual_recovery_required": True,
             }
             if resource_type == "page":
                 partial_position, active_source_ids, observed_destination_ids = (
@@ -2007,28 +2165,87 @@ class MutationService(BaseService):
                     )
                 )
                 details.update(
-                    outcome="reparent_subtree_incomplete",
+                    outcome=(
+                        "descendants_promoted_reparent_not_completed"
+                        if preservation.get("promoted")
+                        else "reparent_subtree_incomplete"
+                    ),
                     include_descendants=bool(include_descendants),
                     destination_position=partial_position,
                     active_source_ids=active_source_ids,
                     observed_destination_ids=observed_destination_ids,
                     preserved_descendants=preservation,
                 )
+            self._raise_failed_controlled_outcome(
+                reconciliation,
+                completed_steps=(
+                    [{"operation": "promote_reparent_descendants"}]
+                    if preservation.get("promoted")
+                    else []
+                ),
+                extra_details=details,
+            )
+            raise AssertionError("failed Reparent outcome did not raise")
+
+        validated = observed_state["validated"]
+        assert validated is not None
+        current, id_map, verified = validated
+        if stable is None or not stable.converged or stable.value is None:
             raise PartialFailure(
-                "Reparent mutation succeeded, but invariant validation failed: " + str(exc),
-                **details,
+                "Reparent postcondition was observed, but hierarchy convergence was indeterminate.",
+                partial=False,
+                reconciliation="indeterminate",
+                mutation_stage="postcondition",
+                mutation_attempted=True,
+                mutation_attempts=1,
+                mutation_replayed=False,
+                observed_outcome="indeterminate",
+                preflight_state="logical_ready",
+                persistence_checkpoint="not_observable",
+                retry_safety="do_not_replay",
+                recommended_action="query_current_state_with_read_only_tools_before_recovery",
+                manual_recovery_required=True,
+                readback_phase="hierarchy_convergence",
+                readback_error_type=(
+                    type(topology_read_error).__name__
+                    if topology_read_error is not None
+                    else "ConvergenceIncomplete"
+                ),
+                convergence=stable.summary() if stable is not None else None,
+            ) from topology_read_error
+        try:
+            observed_destination_position = destination_position(
+                after["items"],
+                str(current["id"]),
+            )
+        except RuntimeError as exc:
+            raise PartialFailure(
+                "Reparent postcondition converged, but its destination position could not be projected.",
+                partial=False,
+                reconciliation="indeterminate",
+                mutation_stage="postcondition",
+                mutation_attempted=True,
+                mutation_attempts=1,
+                mutation_replayed=False,
+                observed_outcome="indeterminate",
+                preflight_state="logical_ready",
+                persistence_checkpoint="not_observable",
+                retry_safety="do_not_replay",
+                recommended_action="query_current_state_with_read_only_tools_before_recovery",
+                manual_recovery_required=True,
+                readback_phase="destination_position",
+                readback_error_type=type(exc).__name__,
+                convergence=stable.summary(),
             ) from exc
         return {
             "item": current,
-            "destination_position": destination_position(
-                after["items"],
-                str(current["id"]),
-            ),
+            "destination_position": observed_destination_position,
             "previous_parent_id": expected_parent_id,
             "destination_parent_id": destination_parent_id,
             "id_map": id_map,
             "verified": verified,
             "convergence": stable.summary(),
+            "reconciliation": reconciliation.summary(),
             **(
                 {
                     "include_descendants": bool(include_descendants),
@@ -2041,6 +2258,121 @@ class MutationService(BaseService):
                 "Experimental COM behavior verified only for the documented isolated OneNote/Office scenarios."
             ],
         }
+
+    def _reparent(
+        self,
+        object_id: str,
+        resource_type: str,
+        destination_parent_id: str,
+        expected_name: str,
+        expected_parent_id: str,
+        expected_modified: str | None,
+        include_descendants: bool = False,
+    ) -> dict[str, Any]:
+        policy = mutation_attempt_policy(f"reparent_{resource_type}")
+        try:
+            return self._reparent_impl(
+                object_id,
+                resource_type,
+                destination_parent_id,
+                expected_name,
+                expected_parent_id,
+                expected_modified,
+                include_descendants,
+            )
+        except MutationFailure:
+            raise
+        except OneNoteError as exc:
+            if "mutation_stage" not in exc.details:
+                exc.reconciliation = "not_applied"
+                exc.details.update(
+                    mutation_stage="preflight",
+                    mutation_attempted=False,
+                    mutation_attempts=0,
+                    mutation_replayed=False,
+                    observed_outcome="not_applied",
+                    preflight_state="rejected",
+                    persistence_checkpoint=policy.persistence_checkpoint,
+                    retry_safety="new_call_after_read_only_refresh",
+                    recommended_action="refresh_typed_ids_and_confirmation_fields",
+                    manual_recovery_required=False,
+                )
+            raise
+        except PermissionError as exc:
+            raise MutationFailure(
+                str(exc),
+                code="policy_disabled",
+                partial=False,
+                reconciliation="not_applied",
+                mutation_stage="policy",
+                mutation_attempted=False,
+                mutation_attempts=0,
+                mutation_replayed=False,
+                observed_outcome="not_applied",
+                preflight_state="not_started",
+                persistence_checkpoint=policy.persistence_checkpoint,
+                retry_safety="enable_required_policy",
+                recommended_action="enable_the_documented_reparent_policy_then_submit_a_new_call",
+                manual_recovery_required=False,
+            ) from exc
+        except PartialFailure as exc:
+            attempted = bool(
+                exc.details.get(
+                    "mutation_attempted",
+                    exc.details.get("reparent_attempted", False),
+                )
+            )
+            exc.details.setdefault(
+                "mutation_stage", "execute" if attempted else "preflight"
+            )
+            exc.details.setdefault("mutation_attempted", attempted)
+            exc.details.setdefault("mutation_attempts", 1 if attempted else 0)
+            exc.details.setdefault("mutation_replayed", False)
+            exc.details.setdefault("observed_outcome", "partially_applied")
+            exc.details.setdefault("preflight_state", "logical_ready")
+            exc.details.setdefault(
+                "persistence_checkpoint", policy.persistence_checkpoint
+            )
+            exc.details.setdefault("retry_safety", "do_not_replay")
+            exc.details.setdefault(
+                "recommended_action",
+                "query_current_ids_and_locations_then_recover_manually",
+            )
+            exc.details.setdefault("manual_recovery_required", True)
+            raise
+        except ValueError as exc:
+            raise MutationPreflightFailure(
+                str(exc),
+                mutation_stage="preflight",
+                mutation_attempted=False,
+                mutation_attempts=0,
+                mutation_replayed=False,
+                observed_outcome="not_applied",
+                preflight_state="rejected",
+                persistence_checkpoint=policy.persistence_checkpoint,
+                retry_safety="correct_request",
+                recommended_action="refresh_typed_ids_and_confirmation_fields",
+                manual_recovery_required=False,
+                preflight_error_type=type(exc).__name__,
+            ) from exc
+        except RuntimeError as exc:
+            raise MutationFailure(
+                str(exc),
+                code="mutation_preflight_failed",
+                partial=False,
+                reconciliation="not_applied",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+                mutation_attempts=0,
+                mutation_replayed=False,
+                observed_outcome="not_applied",
+                preflight_state="rejected",
+                persistence_checkpoint=policy.persistence_checkpoint,
+                retry_safety="new_call_after_read_only_refresh",
+                recommended_action="refresh_typed_ids_and_confirmation_fields",
+                manual_recovery_required=False,
+                preflight_error_type=type(exc).__name__,
+            ) from exc
 
     def reparent_page(
         self,
@@ -2124,7 +2456,7 @@ class MutationService(BaseService):
             existing_tag_definitions=tag_definitions_from_page_xml(before_xml),
         )
         observe = lambda: self.pages.digest(self.pages.xml(page_id, "all"))
-        reconciliation = self._reconciled_idempotent_execute(
+        reconciliation = self._execute_mutation_attempt(
             operation="append_to_page",
             execute=lambda: self.call(
                 "update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False
@@ -2198,7 +2530,7 @@ class MutationService(BaseService):
             height=resolved_height,
         )
         observe = lambda: self.pages.digest(self.pages.xml(page_id, "all"))
-        reconciliation = self._reconciled_idempotent_execute(
+        reconciliation = self._execute_mutation_attempt(
             operation="add_image_to_page",
             execute=lambda: self.call(
                 "update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False
@@ -2339,6 +2671,11 @@ class MutationService(BaseService):
             expected_modified=expected_modified,
         )
         objects = collect_page_objects(self.pages.xml(page_id, "all"))
+        before_object_ids = frozenset(
+            str(item["object_id"])
+            for item in objects
+            if item.get("object_id")
+        )
         matched = next((obj for obj in objects if obj.get("object_id") == object_id), None)
         if matched and not matched.get("delete_supported"):
             suggested_id = matched.get("delete_object_id")
@@ -2354,24 +2691,73 @@ class MutationService(BaseService):
             )
         if matched is None or not matched.get("delete_supported"):
             raise ValueError("object_id is not a currently verified deletable page content object.")
-        def observe():
-            return collect_page_objects(self.pages.xml(page_id, "all"))
 
-        reconciliation = self._reconciled_idempotent_execute(
+        deleted_object_ids = {
+            str(item["object_id"])
+            for item in objects
+            if item.get("object_id")
+            and (
+                item.get("object_id") == object_id
+                or item.get("delete_object_id") == object_id
+            )
+        }
+        while True:
+            descendants = {
+                str(item["object_id"])
+                for item in objects
+                if item.get("object_id")
+                and item.get("parent_object_id") in deleted_object_ids
+            }
+            expanded = deleted_object_ids | descendants
+            if expanded == deleted_object_ids:
+                break
+            deleted_object_ids = expanded
+        expected_object_ids = before_object_ids - deleted_object_ids
+
+        def observe():
+            try:
+                page = self.hierarchy.resource(page_id, "page")
+            except ValueError:
+                return {"page": None, "object_ids": frozenset()}
+            current_objects = collect_page_objects(self.pages.xml(page_id, "all"))
+            return {
+                "page": page,
+                "object_ids": frozenset(
+                    str(item["object_id"])
+                    for item in current_objects
+                    if item.get("object_id")
+                ),
+            }
+
+        def identity_matches(value):
+            page = value["page"]
+            return (
+                page is not None
+                and display_name(page) == expected_title
+                and page.get("section_id") == expected_section_id
+            )
+
+        reconciliation = self._execute_mutation_attempt(
             operation="delete_page_content",
             execute=lambda: self.call(
                 "delete_page_content", page_id=page_id, object_id=object_id, force=False
             ),
             observe=observe,
-            is_pre_state=lambda values: any(item.get("object_id") == object_id for item in values),
-            is_post_state=lambda values: not any(item.get("object_id") == object_id for item in values),
+            is_pre_state=lambda value: identity_matches(value)
+            and value["object_ids"] == before_object_ids,
+            is_post_state=lambda value: identity_matches(value)
+            and value["object_ids"] == expected_object_ids,
+            is_partial_state=lambda value: not identity_matches(value)
+            or value["object_ids"] not in {before_object_ids, expected_object_ids},
         )
         stable = self._converge(
             operation="delete_page_content",
             observe=observe,
-            accept=lambda values: not any(item.get("object_id") == object_id for item in values),
-            project_identity=lambda values: tuple(
-                sorted(str(item.get("object_id")) for item in values if item.get("object_id"))
+            accept=lambda value: identity_matches(value)
+            and value["object_ids"] == expected_object_ids,
+            project_identity=lambda value: (
+                None if value["page"] is None else str(value["page"]["id"]),
+                tuple(sorted(value["object_ids"])),
             ),
             failure_message="Delete was accepted, but the Page content object remained visible.",
         )
@@ -2409,7 +2795,8 @@ class MutationService(BaseService):
         postcondition = lambda value: value is None or (
             not permanently and value.get("is_in_recycle_bin") is True
         )
-        reconciliation = reconcile_mutation(
+        reconciliation = self._execute_mutation_attempt(
+            operation="delete_hierarchy",
             execute=lambda: self.call(
                 "delete_hierarchy", object_id=object_id, permanently=permanently
             ),
@@ -2420,9 +2807,7 @@ class MutationService(BaseService):
             is_partial_state=lambda value: value is not None
             and value.get("is_in_recycle_bin") is True
             and permanently,
-            retry_if_unchanged=False,
         )
-        self._raise_failed_reconciliation("delete_hierarchy", reconciliation)
         stable = self._converge(
             operation="delete_hierarchy",
             observe=observe,

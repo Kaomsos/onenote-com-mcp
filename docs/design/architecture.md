@@ -54,13 +54,14 @@ src/local_onenote_mcp/
 │  ├─ coordination.py        进程内读写协调与 cache generation hook
 │  ├─ convergence.py         deadline/连续稳定观察
 │  ├─ reconciliation.py      mutation 后置状态对账
+│  ├─ mutation_control.py    有界 mutation attempt 规约、执行裁决与结果账本
 │  ├─ hierarchy.py           HierarchyService
 │  ├─ pages.py               PageService
 │  ├─ search.py              SearchService
 │  ├─ mutations.py           MutationService
 │  ├─ copying.py             CopyService
 │  ├─ operations.py          OperationsService
-│  └─ errors.py              PartialFailure
+│  └─ errors.py              MutationFailure/MutationPreflightFailure/PartialFailure
 ├─ domain/
 │  ├─ resource.py            Resource
 │  ├─ notebook.py            Notebook
@@ -121,6 +122,10 @@ classDiagram
     class OperationsService
     class CopyService
     class DestinationPositionProjector
+    class MutationAttemptExecutor
+    class MutationAttemptPolicy
+    class MutationAttemptOutcome
+    class RecoveryDecision
     class OneNoteBridge {
         +int timeout_seconds
         +call(operation, params) dict
@@ -151,6 +156,11 @@ classDiagram
     BaseService <|-- OperationsService
     BaseService <|-- CopyService
     MutationService --> DestinationPositionProjector
+    MutationService *-- MutationAttemptExecutor
+    OperationsService --> MutationAttemptExecutor
+    MutationAttemptExecutor --> MutationAttemptPolicy
+    MutationAttemptExecutor --> MutationAttemptOutcome
+    MutationAttemptOutcome *-- RecoveryDecision
     CopyService --> DestinationPositionProjector
     ServiceContainer *-- HierarchyService
     ServiceContainer *-- PageService
@@ -186,6 +196,9 @@ classDiagram
 | `ReadWriteCoordinator` | `services.coordination` | 允许纯读共享；mutation 从 confirmation 到稳定回读持有独占权。writer 等待有界，异常必释放；generation/invalidator 是 TODO 024 cache 的接入点。 |
 | `ConvergenceResult` | `services.convergence` | 用 monotonic deadline、可注入 clock/sleeper、连续稳定观察和 content-free history 表达 read-after-write 收敛。 |
 | `ReconciliationResult` | `services.reconciliation` | 将 live 后置状态分类为 `not_applied/applied/partially_applied/indeterminate`；仅精确 pre-state 且 typed retryability 允许时有界重放一次幂等动作。 |
+| `MutationAttemptPolicy` | `services.mutation_control` | 为一个有界 principal attempt 声明 replay、identity、observer、partial boundary、execute-error postcondition 是否足够、persistence checkpoint 与禁止的 backend operation；未知 policy fail closed。 |
+| `MutationAttemptExecutor` | `services.mutation_control` | 依据显式 policy 限制 execute attempts，驱动统一 reconciliation，并将 typed error 与观察事实转换为统一 attempt outcome；不替代 operation-specific observer，也不声称拥有 operation 全生命周期。 |
+| `MutationAttemptOutcome` / `RecoveryDecision` | `services.mutation_control` | 形成 content-free 的阶段、尝试次数、replay、四态结果、identity policy、重试安全与下一步建议。 |
 | `HierarchyService` | `services.hierarchy` | 获取 typed snapshot，完成 List/Get/Query/Path/Tree、ID/路径解析、层级更新 XML。 |
 | `PageService` | `services.pages` | 读取 Page XML/text/object/binary，确认 Page，计算内容摘要。 |
 | `SearchService` | `services.search` | 以 root 或一个精确 Notebook/SectionGroup/Section 为原生 COM 起点执行 index-only `FindPages`；一次调用共享 hierarchy catalog、候选预算、当前页 hydration 和总耗时预算。 |
@@ -197,6 +210,7 @@ classDiagram
 | `CopyBudget` | `policy` | 限制 Copy 的对象/Page 数、完整 XML 字节和计划/执行时间。 |
 | `OneNoteBridge` | `bridge` | 通过临时 JSON 与固定 PowerShell 脚本执行白名单 COM 操作。 |
 | `PartialFailure` | `services.errors` | 携带非原子多步 mutation 已完成步骤。 |
+| `MutationFailure` / `MutationPreflightFailure` | `services.errors` | 为纳入 attempt control 的 operation 提供未应用、preflight 与统一失败字段；typed OneNote backend error 仍保留原类型和 HRESULT。 |
 | `OneNoteError` | `onenote_errors` | 保留 operation、最内层 signed/unsigned HRESULT、content-free category、retryability、partial 和 reconciliation；bridge audit 另记 PowerShell wrapper HRESULT、异常深度和最内层异常类型。按 Microsoft OneNote error table 分类 modal、not-yet-synchronized、timeout、object/file unavailable，未知值保持 fail-closed。 |
 
 `ServiceContainer.build()` 的创建顺序体现了依赖：先 `HierarchyService`，再 `PageService`，随后 `SearchService` 和 `MutationService`，最后创建依赖 mutation 的 `OperationsService` 与 `CopyService`。
@@ -207,7 +221,7 @@ classDiagram
 
 默认 convergence 合同为 4 秒 monotonic deadline、0.5 秒观察间隔、最多 16 次观察，并至少要求两个连续、accepted 且 stable identity 相同的 live 观察。history 只记录 attempt/accepted/stable 和 typed transient category，不保存 Page XML、正文、binary、路径或请求参数。异常默认立即传播；只有调用点显式提供 transient predicate，且 typed HRESULT 属于 not-yet-synchronized、timeout 或 read-only object/file unavailable 时才延迟重读。Create 的 stable identity 包含 allocated→resolved ID；Page mutation 使用内容摘要；Reorder/Reparent/Copy 使用各自业务层定义的 topology/fidelity projection；Delete/Close 使用活动态或 open-state 后置条件。
 
-COM error 不等于 mutation 未发生。`reconciliation.py` 先读 live 状态：postcondition 已成立即按 `applied` 继续收敛；精确 pre-state 且操作声明为幂等、错误类型允许重试时最多重放同一目标一次；部分变化或不可读状态返回 partial/indeterminate。只有 `hrNotYetSynchronized (0x8004201D)` 与 `hrTimeOut (0x80042023)` 可进入幂等 mutation 重放判断；object/file unavailable 只属于 read-after-delay，不能证明 mutation 可重放。Modal UI (`0x80042030`) 只提示用户关闭阻塞对话框，绝不自动重放副作用 mutation。
+COM error 不等于 mutation 未发生。`reconciliation.py` 提供纯四态分类原语；`mutation_control.py` 在其上增加 principal attempt 的显式 policy、execute-attempt 上限、identity policy、统一 outcome 与 typed recovery。当前 `MUTATION_ATTEMPT_POLICIES` 中所有生产 policy 都固定 `replay=never`：postcondition 已成立仍可按 `applied` 继续收敛，完整 pre-state 未变则返回 `not_applied` 并要求新的调用。基础原语保留“精确 pre-state + typed transient”有界重放能力，但在完整 pre-state 尚不能由 policy 证明前不得登记为生产策略。`MUTATION_ATTEMPT_POLICY_BINDINGS` 只是 029 的可执行 tool→policy inventory，不是全 Tool Registry；Operation Runtime、operation-wide backend-call accounting 与多阶段 saga 归 [TODO 036](../todo/036_operation_runtime_control_plane_and_tool_migration.md)。
 
 OneNote COM 不提供只读的 mutation-ready predicate。稳定 live preflight 只能证明 `logical_ready`，不能从 `SyncHierarchy` accepted、可读 Page XML、文件属性或固定等待推导下一次 native mutation 必然成功。正确的状态流是“logical preflight → operation policy 允许的单次/有界 execute → live reconciliation → stable postcondition”；manual validation 不再用 close/reopen 猜测 mutation readiness，生产业务 tool 也不会隐式施加该生命周期副作用。完整状态模型与当前/目标实现边界见 [`mutation_readiness_and_call_design.md`](mutation_readiness_and_call_design.md)。
 
@@ -360,19 +374,24 @@ sequenceDiagram
     participant T as tools.mutations
     participant M as MutationService
     participant P as MutationPolicy
+    participant C as MutationAttemptExecutor
     participant H as HierarchyService/PageService
     participant B as OneNoteBridge
 
     T->>M: mutation parameters + expected fields
     M->>P: require_write/delete/experimental
     M->>H: resolve exact ID and confirm before state
-    M->>B: fixed COM operation / typed XML
-    B-->>M: operation result
-    M->>H: fresh read-back
-    M-->>T: verified result or PartialFailure
+    M->>C: contract + execute + operation-specific observer
+    C->>B: fixed COM operation / typed XML
+    B-->>C: operation result or typed error
+    C->>H: fresh live observation
+    H-->>C: pre/post/partial/insufficient evidence
+    C-->>M: MutationAttemptOutcome + RecoveryDecision
+    M->>H: stable convergence / full invariant
+    M-->>T: verified result or structured mutation failure
 ```
 
-Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可选 modified 是乐观确认字段。写后必须验证同 ID、名称、父级、顺序或内容摘要。`replace_page_body` 是明确的非原子多步操作。
+Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可选 modified 是乐观确认字段。写后必须验证同 ID、名称、父级、顺序或内容摘要。当前 attempt policy inventory 与逐 operation policy 见 [`mutation_readiness_and_call_design.md`](mutation_readiness_and_call_design.md)；`replace_page_body` 是明确的非原子多步操作，不进入该 inventory。
 
 ### 5.3 Search
 

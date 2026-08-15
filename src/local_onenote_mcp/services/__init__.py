@@ -4,7 +4,18 @@ from .container import ServiceContainer
 from .copying import CopyService
 from .coordination import ReadWriteCoordinator
 from .convergence import ConvergenceConfig, ConvergenceResult, converge
-from .errors import PartialFailure
+from .errors import MutationFailure, MutationPreflightFailure, PartialFailure
+from .mutation_control import (
+    MUTATION_ATTEMPT_POLICY_BINDINGS,
+    MUTATION_ATTEMPT_POLICIES,
+    MutationAttemptExecutor,
+    MutationAttemptOutcome,
+    MutationAttemptPolicy,
+    MutationIdentityPolicy,
+    MutationReplayPolicy,
+    RecoveryDecision,
+    mutation_attempt_policy,
+)
 from .reconciliation import ReconciliationResult, ReconciliationState, reconcile_mutation
 from .hierarchy import (
     DEFAULT_METADATA_QUERY_PAGE_SIZE,
@@ -46,6 +57,17 @@ __all__ = [
     "destination_position",
     "unavailable_destination_position",
     "PartialFailure",
+    "MutationFailure",
+    "MutationPreflightFailure",
+    "MUTATION_ATTEMPT_POLICY_BINDINGS",
+    "MUTATION_ATTEMPT_POLICIES",
+    "MutationAttemptExecutor",
+    "MutationAttemptOutcome",
+    "MutationAttemptPolicy",
+    "MutationIdentityPolicy",
+    "MutationReplayPolicy",
+    "RecoveryDecision",
+    "mutation_attempt_policy",
     "ReconciliationResult",
     "ReconciliationState",
     "reconcile_mutation",

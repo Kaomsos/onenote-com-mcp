@@ -1,7 +1,7 @@
 # OneNote Mutation Readiness 状态模型与调用设计
 
-> 状态：平台限制与状态模型为当前有效设计；生产 `reparent_page` 的完整执行异常对账加固尚未实施，由 [TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 跟踪
-> 更新日期：2026-08-13
+> 状态：有界 mutation attempt 原语与 Reparent 四态对账已实现；operation-wide Runtime 与多阶段 saga 归 TODO 036
+> 更新日期：2026-08-15
 > 适用范围：Local OneNote MCP 的生产 mutation tools；manual-validation 的 disposable lifecycle 只作为受控特例
 
 本文定义 OneNote COM mutation 的 readiness 边界、状态名称和调用顺序。公开参数、返回 envelope、HRESULT 与通用 reconciliation 仍以 [`tool_contracts.md`](tool_contracts.md) 为准，总体 service/coordination 架构以 [`architecture.md`](architecture.md) 为准。
@@ -53,6 +53,53 @@ GUI preflight、稳定 hierarchy 与完整内容基线都只属于 `logical_read
 4. **Converge and validate**：`applied` 仍须满足连续稳定 hierarchy、完整内容 evidence、bookend 和无关对象 invariant；读取瞬态错误只允许重读 evidence，不重放 mutation。
 5. **Return actionable state**：成功与失败都只返回 content-free、Agent 可行动的结果；partial/indeterminate 明确禁止盲目重试。
 
+### 3.1 控制面对象与定位
+
+TODO 029 交付的是一个 bounded attempt vertical slice，不是完整 Operation Runtime。纳入范围的 operation 将其 principal backend attempt 交给下列对象；业务 service 仍可以拥有 attempt 前后的 operation-specific 步骤：
+
+| 对象 | 定位 | 不负责什么 |
+| --- | --- | --- |
+| `MutationPolicy` | 权限门禁：Writes/Delete/实验能力是否被本机配置显式授权 | 不判断 COM 是否 ready，不判断操作结果 |
+| `ReadWriteCoordinator` | 并发边界：从 confirmation 到最终回读持有进程内独占 lease | 不提供跨进程事务，不解释业务 postcondition |
+| `MutationAttemptPolicy` | attempt 规约：声明 replay、identity、observer、partial boundary 和禁止的 backend operation | 不描述完整 operation 阶段，不执行 COM，不读取 OneNote |
+| `MutationAttemptExecutor` | attempt 执行与裁决者：按规约限制 execute attempts，驱动共享 reconciliation，并把 typed evidence 转成统一 outcome | 不拥有 admission/coordination/saga，不猜测业务对象是否真的移动、删除或改名 |
+| operation-specific observer | 事实观察者：用 live typed evidence 判定 exact pre-state、完整 post-state 或 partial state | 不决定权限，不自行重放 mutation |
+| `MutationAttemptOutcome` | attempt 结果账本：固化 attempts、replay、observed outcome、阶段和 identity policy | 不等同 operation-wide outcome；不包含正文、XML、binary、路径或原始参数 |
+| `RecoveryDecision` | 恢复建议：从四态与 typed error 推导调用方下一步 | 不从错误消息字符串或 wrapper HRESULT 猜测 |
+
+更准确地说，029 只抽取了 mutation principal attempt 的静态 policy、执行裁决、observer 接口与结果账本。`MUTATION_ATTEMPT_POLICY_BINDINGS` 是冻结的 tool→policy inventory，用于自动化完整性检查；它不是公开 Tool Registry，也不承诺 operation 全部 backend calls 都受 executor 计数。统一 admission、authorization、coordination、deadline、全 operation outcome、Registry 与 saga 由 [TODO 036](../todo/036_operation_runtime_control_plane_and_tool_migration.md) 承接。
+
+### 3.2 对象协作流程
+
+```mermaid
+sequenceDiagram
+    participant Tool as "MCP Tool"
+    participant Gate as "MutationPolicy"
+    participant Coord as "ReadWriteCoordinator"
+    participant Service as "Operation Service"
+    participant Contract as "MutationAttemptPolicy"
+    participant Control as "MutationAttemptExecutor"
+    participant COM as "OneNote COM"
+    participant Observer as "Operation-specific observer"
+
+    Tool->>Coord: 申请 mutation 独占 lease
+    Tool->>Service: typed ID + confirmation
+    Service->>Gate: 检查独立权限
+    Service->>Service: 冻结 live typed pre-state
+    Service->>Contract: 取得显式 operation policy
+    Service->>Control: execute + observe + pre/post/partial predicates
+    Control->>COM: 按 policy 执行一次或严格有界重放
+    COM-->>Control: 成功或 typed error
+    Control->>Observer: 读取 live actual state
+    Observer-->>Control: pre / post / partial / evidence insufficient
+    Control-->>Service: MutationAttemptOutcome + RecoveryDecision
+    Service->>Service: 连续稳定验证与业务 invariant
+    Service-->>Tool: 成功 envelope 或结构化失败
+    Tool-->>Coord: 释放独占 lease
+```
+
+executor 不把 COM success 当成完成，也不把 COM exception 当成未发生。它只消费 observer 给出的事实。虽然基础原语支持“policy 明确允许 + 完整 exact pre-state + typed transient”时至多重放一次，但当前生产 policy 全部为 `never`；读证失败最多重读 evidence，不重放 mutation。
+
 ### Page Reparent 专项约束
 
 `reparent_page` 允许 Page 与内容对象发生一对一 ID remap，默认 root-only 路线还可能先执行 descendant promotion。因此：
@@ -92,16 +139,37 @@ Manual-validation 只操作本次新建的 disposable Notebook，因此 Recipe �
 
 通用 reconciliation 基础设施允许个别真正幂等的 mutation 在严格条件下重试，不代表 Page Reparent 获得重放许可。每个 operation 必须独立声明 replay policy；未知、partial 或 identity-remapping mutation 默认不重放。
 
-## 6. 当前实现与目标实现边界
+## 6. Bounded attempt policy 矩阵
 
-当前已经成立的合同包括：typed confirmation、进程内写协调、连续稳定 read-back、Reparent 两阶段 hierarchy/full-evidence 验证、最内层 HRESULT 诊断，以及生产 Reparent 不依赖 `SyncHierarchy` 或自动 close/reopen。Manual validation 已移除基于旧归因加入的 disposable persistence checkpoint；`reparent-page` fresh/cache 现在共用 OneNote Desktop preflight、首次 live identity 和相同的 typed 验证边界。
+本轮只收拢一个有界 principal execute step。审查发现多个 observer 只冻结了 digest 或目标局部状态，不能证明完整 operation pre-state，因此所有当前生产 policy 统一为 `replay=never`。基础原语中的 conditional replay 仅保留给未来能够冻结并验证完整 exact pre-state 的显式策略；登记前必须有独立合同与故障注入测试。
 
-尚未完成、由 [TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 跟踪的生产加固包括：
+| Operation | Identity policy | Observer / 完整成功事实 | Replay | Partial boundary |
+| --- | --- | --- | --- | --- |
+| `update_page_title` | ID 保持 | 同一 Page 的目标标题 | never | 目标消失或其他受保护语义改变 |
+| `rename_resource` | ID 保持 | 同一资源的新名称和原 parent | never | 目标消失或 parent 改变 |
+| `reorder_page` | ID 保持 | Section 内完整 Page 顺序 | never | sibling identity 集合改变 |
+| `reorder_section` | ID 保持 | parent 下 Section 顺序与受保护子树 | never | 直属 child identity 集合改变 |
+| `append_to_page` | Page ID 保持，内容对象可变 | COM success 后 Page 内容摘要离开 frozen pre-state 并稳定 | never | Page identity 不可确认；execute error 后仅摘要变化不足以证明请求内容已应用，判为 indeterminate |
+| `add_image_to_page` | Page ID 保持，内容对象可变 | COM success 后 Page 内容摘要离开 frozen pre-state 并稳定 | never | Page identity 不可确认；execute error 后仅摘要变化不足以证明请求图片已应用，判为 indeterminate |
+| `delete_page_content` | 指定内容对象消失且其余对象集合保持 | live content object ID 集合精确等于 frozen set 减目标 | never | Page identity 改变，或任何非目标内容对象 ID 漂移 |
+| typed `delete_*`（内部 `delete_hierarchy`） | 目标退出活动层级 | typed resource activity | never | 永久删除只到回收站或状态不完整 |
+| `close_notebook` | Notebook 退出 open 集合 | typed open state | never | open state 无法确定 |
+| `reparent_page` | Page/内容对象允许一对一 remap | 完整 destination、唯一 ID map、scope、内容、无关对象和 bookend | never | 任意 topology/identity/content/promotion 变化 |
+| `reparent_section` | ID 保持 | 完整 destination、子树内容、无关对象和 bookend | never | 任意 topology/identity/content 变化 |
+| `reparent_section_group` | ID 保持 | 完整 destination、递归子树、无关对象和 bookend | never | 任意 topology/identity/content 变化 |
 
-- Page Reparent execute 异常后的四态 reconciliation；
-- `applied` reconciled success；
-- `not_applied/partially_applied/indeterminate` 的稳定错误字段与恢复建议；
-- 主 Reparent 单次调用、无 Sync/Close/Open/filesystem probe 的负合同；
-- 对其他 MCP mutation tools 的 readiness/replay policy 审计矩阵。
+三类 Reparent 的主 `UpdateHierarchy` attempt 还声明禁止 `sync_hierarchy`、`close_notebook`、`open_hierarchy` 与 filesystem readiness probe。Page root-only 路线可能在 principal attempt 前执行 operation-specific descendant promotion；该步骤不计入 `mutation_attempts`，但会进入 operation failure 的 `completed_steps`。一旦 promotion 已发生，之后的失败整体至少是 `partially_applied`。
 
-在 TODO 完成前，本文的状态模型是设计约束，但不能把上述目标字段或错误分支表述为已经实现的公开响应。
+## 7. 当前实现与暂不收拢的边界
+
+当前已经成立：typed confirmation、进程内写协调、统一 bounded-attempt policy/executor/outcome、连续稳定 read-back、Reparent 成功/异常共享 observer 的四态对账、execute-error reconciled success、最内层 HRESULT 恢复建议，以及生产 Reparent 不依赖 `SyncHierarchy` 或自动 close/reopen。Manual validation 会对每次正向与恢复调用检查 reconciliation 响应和 bridge audit。
+
+以下操作刻意不进入 `MUTATION_ATTEMPT_POLICY_BINDINGS`：
+
+- Create：包含 allocated identity、可能 remap 与创建后内容写入；
+- `replace_page_body`：先删除多个内容对象再写入，明确非原子；
+- Copy/Move：分配、内容重建、拓扑恢复、保真验证和可选源删除组成多阶段 saga；
+- SectionGroup Reorder：当前后端能力明确不支持；
+- `sync_notebook`、open、publish、navigate：不是本轮定义的 bounded mutation attempt 生态。
+
+它们继续使用现有 operation-specific 编排；本轮不会为了“统一”机械改写多阶段恢复语义，也不会把 attempt executor 推广到非 mutation tool。[TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 已通过完整自动化回归，以及用户确认的 Reparent fresh/cache、canonical Rename、扩展 `onenote-convergence` 和 production Close lifecycle handoff 真实证据闭合。多阶段 saga、统一 Registry 与全 Tool Operation Runtime 明确由 [TODO 036](../todo/036_operation_runtime_control_plane_and_tool_migration.md) 承接。

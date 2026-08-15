@@ -16,7 +16,7 @@ from ..policy import MutationPolicy
 from .base import BaseService
 from .hierarchy import HierarchyService
 from .mutations import MutationService
-from .reconciliation import reconcile_mutation
+from .mutation_control import mutation_attempt_policy
 
 
 class OperationsService(BaseService):
@@ -117,16 +117,16 @@ class OperationsService(BaseService):
                 return None
 
         postcondition = lambda value: value is None or value.get("is_open") is False
-        reconciliation = reconcile_mutation(
+        reconciliation = self.mutations.mutation_attempts.execute(
+            mutation_attempt_policy("close_notebook"),
             execute=lambda: self.call(
                 "close_notebook", notebook_id=notebook_id, force=False
             ),
             observe=observe,
             is_pre_state=lambda value: value is not None and value.get("is_open") is not False,
             is_post_state=postcondition,
-            retry_if_unchanged=False,
         )
-        self.mutations._raise_failed_reconciliation("close_notebook", reconciliation)
+        self.mutations._raise_failed_controlled_outcome(reconciliation)
         stable = self.mutations._converge(
             operation="close_notebook",
             observe=observe,

@@ -12,7 +12,19 @@
 
 本 TODO 推广统一执行模型，但不把所有 Tool 强行建模为 mutation。Runtime 下至少区分 Read、Mutation、Lifecycle、Filesystem Effect 与 UI Effect；只有真正改变 OneNote 持久状态的操作使用 `logical_ready → execute according to operation policy → reconcile actual outcome → converge → validate postcondition` 的完整 mutation 状态机。
 
-本 TODO 不吸收或替代 [TODO 029](029_mcp_mutation_readiness_and_reconciliation_hardening.md)。TODO 029 继续以 `reparent_page` 完成 execute-once、四态 reconciliation、reconciled success、恢复建议和生命周期负合同；其结果应成为 `MutationExecutionStrategy` 的首个完整纵向切片。Operation Runtime 的全 Tool 推广不得成为 TODO 029 闭环的前置阻塞。
+本 TODO 不吸收或替代 [TODO 029](029_mcp_mutation_readiness_and_reconciliation_hardening.md)。TODO 029 以 `reparent_page` 完成 execute-once、四态 reconciliation、reconciled success、恢复建议和生命周期负合同，并交付 `MutationAttemptPolicy/Executor/Outcome` 作为 principal-attempt 原语。036 负责把这些原语组合进 operation-wide `MutationExecutionStrategy`，增加 admission、coordination、deadline、全 backend-call accounting、Registry、saga 与统一 Outcome。Operation Runtime 的全 Tool 推广不得成为 TODO 029 闭环的前置阻塞。
+
+### 029 交接基线（2026-08-15）
+
+TODO 029 已完成，不再是 036 的前置阻塞。036 启动时应直接复用而非重建以下基线：
+
+- [`mutation_control.py`](../../src/local_onenote_mcp/services/mutation_control.py) 的 `MutationAttemptPolicy/Executor/Outcome` 与四态 reconciliation；
+- [`operations.py`](../../src/local_onenote_mcp/services/operations.py) 的 `MUTATION_ATTEMPT_POLICY_BINDINGS`，仅作为迁移 inventory 输入，最终由唯一 Registry 取代；
+- [`mutation_readiness_and_call_design.md`](../design/mutation_readiness_and_call_design.md) 与 [`tool_contracts.md`](../design/tool_contracts.md) 的 execute-once、identity、replay、recovery 和 content-free 合同；
+- `1000 passed` 的完整纯测试基线，以及用户确认的 Reparent fresh/cache、canonical Rename、完整 convergence/production Close handoff 真实证据；
+- production Close→pre-closed lease handoff 的约束：只消费 exact ID/name、双稳定、单次执行且未重放的 durable evidence，Runtime 迁移不得重新引入二次 Close。
+
+这份交接只证明 036 可以从阶段 A 开始，不代表 Operation Runtime、Registry 或任一迁移阶段已经实现；本 TODO 因此仍保持“待办”。
 
 ## 背景与当前缺口
 
@@ -61,7 +73,7 @@ MCP Tool Adapter
 | `ExecutionStrategy` | Read、Mutation、Lifecycle、Filesystem Effect、UI Effect 的不同流程模板。 |
 | `OperationHandler` | operation-specific 业务实现；继续拥有 typed hierarchy、Page、Copy/Move 等语义。 |
 | `OperationOutcome` | transport-independent 成功/失败、阶段、retry safety、recommended action 与 safe diagnostics。 |
-| `MutationContract` / `MutationOutcome` | `OperationSpec`/`OperationOutcome` 的 mutation 专项扩展，承载 logical preflight、identity、attempt/replay、四态对账和 postcondition。 |
+| `MutationExecutionStrategy` | 复用 029 的 `MutationAttemptPolicy/Executor/Outcome`，并在 operation 范围承载 logical preflight、identity、attempt/replay、四态对账、saga/checkpoint 与 postcondition；不得把 attempt outcome 冒充完整 operation outcome。 |
 
 首版可以使用 dataclass、Protocol、纯函数和少量 Strategy，避免为每个阶段创建独立 Service。Runtime 不直接构造 OneNote XML、不解释 Page 内容、不拥有 Copy fidelity，也不记录原始参数或 bridge payload。
 
@@ -158,7 +170,8 @@ finalize
 
 ### 阶段 D：Mutation Strategy 推广
 
-- [ ] 复用 TODO 029 已验证的 MutationContract/Outcome 或等价原语，不维护第二套状态模型；
+- [ ] 复用 TODO 029 已验证的 `MutationAttemptPolicy/Executor/Outcome` 与四态原语，不维护第二套 attempt 状态模型；
+- [ ] 将 029 的 `MUTATION_ATTEMPT_POLICY_BINDINGS` 作为迁移 inventory 输入而非最终 Registry；Registry 上线后由唯一登记取代该临时映射，避免双重权威来源；
 - [ ] 先迁移 Rename、Page title、Delete、Close 等边界较清晰的 operation；
 - [ ] 再迁移 Create、Reorder 和三类 Reparent；
 - [ ] 最后迁移 Copy/Move，并保留其 plan/preview 决策、identity map、Saga completed steps、Copy gate 与 source-delete 负合同；

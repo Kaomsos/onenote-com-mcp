@@ -25,7 +25,7 @@
 {
   "ok": false,
   "complete": false,
-  "code": "validation_error | policy_disabled | backend_error | partial_failure | onenote_*",
+  "code": "validation_error | policy_disabled | mutation_not_applied | backend_error | partial_failure | onenote_*",
   "error": "safe message",
   "error_type": "stable typed error name",
   "hresult": "0x80042030",
@@ -35,7 +35,9 @@
 }
 ```
 
-List 与 Query 返回 `items/count`；对象读取返回 `item`；Expand 返回 `tree={item,children[]}`。稳定 mutation 成功响应可含 `convergence={converged,attempts,elapsed_seconds,stable_observations,identity_remap,transient_errors}` 与 `reconciliation={state,execute_attempts,had_backend_error}`。默认要求至少两个连续一致的 live postcondition；这些摘要不含 Page XML、正文、binary、secret、完整路径或原始参数。
+List 与 Query 返回 `items/count`；对象读取返回 `item`；Expand 返回 `tree={item,children[]}`。稳定 mutation 成功响应可含 `convergence={converged,attempts,elapsed_seconds,stable_observations,identity_remap,transient_errors}`。纳入 bounded-attempt control 的 mutation 还返回 `reconciliation={state,execute_attempts,had_backend_error,execution_succeeded,mutation_stage,preflight_state,persistence_checkpoint,mutation_attempted,mutation_attempts,mutation_replayed,observed_outcome,execute_error_reconciled,retry_safety,recommended_action,manual_recovery_required,observation_attempts,identity_policy}`。其中 `mutation_attempts` 只计 principal attempt，不表示完整 operation 的所有 backend calls；例如 root-only Page Reparent 可先执行具名 descendant promotion。默认要求至少两个连续一致的 live postcondition；这些摘要不含 Page XML、正文、binary、secret、完整路径或原始参数。
+
+受 attempt policy 管理的 mutation 失败至少保留 `mutation_stage/mutation_attempted/mutation_attempts/mutation_replayed/observed_outcome/preflight_state/persistence_checkpoint/retry_safety/recommended_action/manual_recovery_required/observation_attempts`。`not_applied` 的普通失败 code 为 `mutation_not_applied`；若底层存在 typed OneNote error，则保留该 error 的 `onenote_*` code、最内层 HRESULT 与 retryability，并 additive 地附上上述字段。`partially_applied/indeterminate` 使用 `partial_failure`，禁止盲目重放。preflight validation 仍保持 `validation_error`，但 Reparent 会明确返回 `mutation_stage="preflight"`、`mutation_attempted=false` 与 `mutation_replayed=false`。
 
 Typed backend error 保留规范十六进制 `hresult`（并可含 `hresult_signed`）、operation 和 content-free backend category。分类依据 [Microsoft OneNote error codes](https://learn.microsoft.com/en-us/office/client-developer/onenote/error-codes-onenote)：`0x80042030` 固定为 `onenote_modal_ui_blocked/after_user_action`；`0x8004201D` 为 `onenote_not_yet_synchronized/read_after_delay`；`0x80042023` 为 `onenote_operation_timeout/reconcile_before_retry`；文档列出的 object/file does-not-exist HRESULT 归为 `onenote_object_unavailable` 或 `onenote_file_unavailable`，仅允许 read-after-delay。未知 HRESULT 保持 `onenote_backend_error/unknown`。只有 not-yet-synchronized/timeout 加精确 unchanged pre-state 才可能重放声明为幂等的 mutation；object/file unavailable 或 modal 不能作为 mutation replay 依据。`partial_failure` 明确 `partial/reconciliation/manual_recovery_required`；convergence timeout 也明确 `partial=true/reconciliation=indeterminate`，partial 或 indeterminate 禁止盲目重做 Copy/Move/Create 或删除 source。
 
@@ -87,6 +89,8 @@ Typed backend error 保留规范十六进制 `hresult`（并可含 `hresult_sign
 | `get_binary_content` | `page_id`, `callback_id` | 已复核的 `object`、`base64`。 |
 | `search_pages` | `query`, `scope`, `offset=0`, `page_size=200`, `include_snippets=true`, `include_recycle_bin=false` | `pages`, `count`, `total_matches`, `offset`, `page_size`, `has_more`, `next_offset`, `pagination_consistency`, `scope`, `search_backend`, `scan_budget`。 |
 
+公开 `PageContentObject` 固定投影为 `id/page_id/kind/parent_object_id/container_object_id/callback_id/media_type/can_delete/delete_target_id`。调用方只能在 `can_delete=true` 时把非空 `delete_target_id` 传给 `delete_page_content.object_id`；`object_id/delete_supported/delete_object_id` 是 Page XML parser 的内部字段，不属于 MCP Tool 响应合同。
+
 `scope` 是 `mode="root"` 或 `mode="start_node" + start_node_id` 的严格判别联合，两个对象分支都禁止额外字段。root 对 COM `FindPages` 传空 `start_id`；start node 只接受一个精确、属于已打开 Notebook 的 Notebook/SectionGroup/Section ID，不接受 Page、名称、路径或离散 ID 数组。每次公开调用只执行一次 `FindPages`，固定 `include_unindexed=false`、`display=false`，index 失败不回退。结果按原始 XML 顺序处理，并用同一次完整 catalog 补全和证明归属；范围外、已关闭、无法证明归属和不符合回收站参数的 Page 被排除。
 
 分页是无状态 `live_index`：`offset >= 0`，`page_size` 默认和最大均为 200，每一页重新执行 `FindPages`，不承诺跨页冻结快照。过滤后的完整候选集必须先通过 `LOCAL_ONENOTE_MAX_SEARCH_PAGES`，随后才执行切片；因此较大 offset 不能绕过候选预算。snippet 只 hydration 当前页。空 hierarchy 和越界 offset 均返回成功空页；空 `start_id` 与 Desktop `Ctrl+E` 的完全等价性仍需真实环境逐版本验证。
@@ -114,7 +118,7 @@ Typed backend error 保留规范十六进制 `hresult`（并可含 `hresult_sign
 
 Create 的 COM 返回 ID 是第一身份来源。回读对象必须同时满足预期 type、friendly path、active state 与计划父级；Page 必须属于请求的 Section。只有 COM 返回 ID 在 hierarchy 中不可见、同一路径恰有一个新出现的 typed 对象时，才以 `identity_remapped=true` 接受一对一 remap。重复 path、既有对象 ID、错误 type/parent 或 recycle-bin 对象一律拒绝；失败响应保留 `allocated_ids`，不得按标题或 path 任选旧对象。合法的同 Section 重名 Page 因此返回互异的精确 Page IDs。
 
-Create、Page title/content mutation、Rename、Reorder、Reparent、Copy topology/fidelity、Delete 和 Close 的成功必须经过公共连续稳定门。COM error 后只有同一精确目标仍处于冻结 pre-state、没有 fresh allocated/created object、动作明确幂等且 typed error 允许时，才可在本次 Tool 内重放一次；未知或 modal error 不重放。
+Create、Page title/content mutation、Rename、Reorder、Reparent、Copy topology/fidelity、Delete 和 Close 的成功必须经过公共连续稳定门。Bounded-attempt control 当前覆盖 Page title、Append/Image、Rename、Page/Section Reorder、三类 Reparent、Page 内容对象 Delete、三类 typed hierarchy Delete 与 Close；每项必须先命中显式 attempt policy。当前全部生产 policy 固定 `replay=never`，COM error 后 observer 仍可能证明完整 postcondition 并形成 reconciled success，但 exact pre-state 只会返回可行动的 `not_applied`，不会在同一 Tool 调用内重放。Append/Image 的通用内容摘要只能在 COM success 后证明“页面发生并稳定了变化”，execute error 后的摘要变化不足以归因于本次请求，因此判为 indeterminate。`delete_page_content` 还要求非目标对象 ID 集合不漂移。Create、`replace_page_body`、Copy/Move 属于多阶段或 allocated-identity workflow，继续使用各自编排；其 operation-wide saga 和统一 Runtime 归 TODO 036。完整矩阵见 [`mutation_readiness_and_call_design.md`](mutation_readiness_and_call_design.md)。
 
 ## 5. Rename、Reorder 与 Reparent
 
@@ -135,7 +139,7 @@ Rename 与 Page Reorder 要求写开关。Section Reorder 还要求 `LOCAL_ONENO
 
 Reparent 统一表示同一 Notebook 内的容器换父级，不包含 Copy/Delete，也不能跨 Notebook。三个 typed 工具默认注册，但执行同时要求 Writes 与 `LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REPARENT=true`。service 在任何 COM mutation 前完成精确 ID/类型、confirmation、活动对象、同 Notebook 和目标类型检查；调用方提供的可选 `expected_modified` 在首次 live confirmation 时仍严格绑定。后续完整证据 capture 与首次确认之间使用 typed identity、名称/标题、parent、Notebook/Section、Page level/parent Page/order 等语义投影复核，不因 OneNote 单独推进目标或 destination 的 `modified`/派生聚合字段而误拒绝；任一受保护关系变化仍在 mutation 前 fail closed。SectionGroup 额外拒绝自身/后代目标。Page 可从任意合法缩进 level 选择根对象：默认 root-only 路线先验证排除后代整体提升，再换父级所选 Page；显式 subtree 路线一次提交完整缩进范围并验证完整单射 `id_map`、相对拓扑和内容。任何路线的目标根均归一化为 level 1。调用方必须从 `item.id`/`id_map` 继续。所有验证均受现有 hierarchy/Page/XML budget 限制。底层 bridge `update_hierarchy` 只由这些受约束 service 及 Reorder 内部编排，生产 MCP 不存在接受外部任意 hierarchy XML 的工具。
 
-Reparent service 不把 `SyncHierarchy` 请求接受当成 fixture 已持久化的前置条件，也不在生产 mutation 内负责 Notebook close/reopen 生命周期。OneNote COM 没有无副作用的 mutation-ready predicate；调用方进入工具前可证明的是 `logical_ready`，不是下一次 `UpdateHierarchy` 必然成功。工具冻结完整基线后只调用一次 Reparent mutation，再以两次稳定 hierarchy、完整内容 snapshot 与 bookend invariant 验证。状态模型、execute-once 与 reconciliation 调用设计见 [`mutation_readiness_and_call_design.md`](mutation_readiness_and_call_design.md)；尚未实现的生产加固由 [TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 跟踪。人工验证 Runner 同样不再用 close/reopen 建立 readiness；它依赖 OneNote Desktop preflight、首次 live identity、typed hierarchy 双稳定和完整内容门限，该 Runner 行为不改变公开工具参数或响应。
+Reparent service 不把 `SyncHierarchy` 请求接受当成 fixture 已持久化的前置条件，也不在生产 mutation 内负责 Notebook close/reopen 生命周期。OneNote COM 没有无副作用的 mutation-ready predicate；调用方进入工具前可证明的是 `logical_ready`，不是下一次 `UpdateHierarchy` 必然成功。工具冻结完整基线后只调用一次主 Reparent mutation；成功和异常共用同一个 operation-specific observer，以两次稳定 hierarchy、完整内容 snapshot 与 bookend invariant 分类 `applied/not_applied/partially_applied/indeterminate`。execute 抛错但完整 postcondition 成立时按成功返回，并标记 `execute_error_reconciled=true`；partial/indeterminate 明确要求只读查询或人工恢复。状态模型、控制面对象和 operation policy 见 [`mutation_readiness_and_call_design.md`](mutation_readiness_and_call_design.md)。人工验证 Runner 对每次正向和恢复调用核验 response contract，并从 production bridge audit 证明恰好一次 `update_hierarchy` 且没有 Sync/Close/Open；该 Runner 行为不改变公开工具参数或响应。
 
 十个 Reparent/Copy/Move 执行工具统一返回 `destination_position`。Page 的 `index/sibling_count` 来自最终 Section 按 `order` 的完整扁平 Page 序列，且只描述 fresh 目标根，不返回 `page_level`、`parent_page_id` 或后代位置；Section/SectionGroup 在最终父级的同类型直属 children 中计算；Notebook Copy 返回固定 `not_applicable`。Move 必须在源删除后重新投影。该字段只描述最终观察状态，不是位置请求、默认落点保证或隐式 Reorder。
 
