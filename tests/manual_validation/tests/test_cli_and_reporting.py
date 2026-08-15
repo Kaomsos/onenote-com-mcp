@@ -96,32 +96,13 @@ def test_page_reorder_uses_explicit_reorder_page_entry_only() -> None:
         parser.parse_args(["reorder", "--dry-run"])
 
 
-def test_section_group_reorder_dry_run_marks_failed_limited_capability(
-    tmp_path, capsys
-) -> None:
-    run_dir = tmp_path / "section-group-reorder"
+def test_unsupported_section_group_reorder_has_no_public_scenario() -> None:
+    parser = build_parser()
 
-    assert main(
-        [
-            "reorder-section-group",
-            "--run-dir",
-            str(run_dir),
-            "--dry-run",
-            "--json",
-        ]
-    ) == 0
+    assert "reorder-section-group" not in SCENARIO_REGISTRY.public_names
+    with pytest.raises(SystemExit):
+        parser.parse_args(["reorder-section-group", "--dry-run"])
 
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["capability_assessment"] == {
-        "capability_status": "limited",
-        "validation_status": "failed",
-        "reason": (
-            "The backend keeps SectionGroups in fixed ascending name order and "
-            "did not apply the requested sibling order after UpdateHierarchy returned success."
-        ),
-    }
-    assert payload["server_started"] is False
-    assert not run_dir.exists()
 
 def test_p2_scenarios_default_to_copy_execute_timeout() -> None:
     parser = build_parser()
@@ -249,8 +230,8 @@ def test_dry_run_does_not_start_mcp(tmp_path, capsys) -> None:
     assert not (tmp_path / "run").exists()
 
 
-@pytest.mark.parametrize("scenario", ["reorder-section", "reorder-section-group"])
-def test_container_reorder_dry_run_requires_no_environment_metadata(scenario, tmp_path, capsys) -> None:
+def test_container_reorder_dry_run_requires_no_environment_metadata(tmp_path, capsys) -> None:
+    scenario = "reorder-section"
     run_dir = tmp_path / scenario
     args = build_parser().parse_args(
         [scenario, "--run-dir", str(run_dir), "--dry-run", "--json"]

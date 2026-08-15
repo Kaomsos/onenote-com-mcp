@@ -1838,7 +1838,8 @@ def test_inserted_file_copy_shares_bootstrap_identity_and_has_copy_only_policy()
     assert consumer.spec.policy.writes_enabled is True
     assert consumer.spec.policy.experimental_copy_enabled is True
     assert consumer.spec.policy.deletes_enabled is False
-    assert {"plan_copy", "copy_page"} <= consumer.spec.tool_allowlist
+    assert "copy_page" in consumer.spec.tool_allowlist
+    assert "plan_copy" not in consumer.spec.tool_allowlist
     assert not any(tool.startswith("delete_") for tool in consumer.spec.tool_allowlist)
     assert consumer.spec.fixture.creation_tools.isdisjoint(consumer.spec.tool_allowlist)
 

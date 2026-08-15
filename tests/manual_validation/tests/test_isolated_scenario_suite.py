@@ -24,7 +24,10 @@ from tests.manual_validation.scenarios.fixture_recipes import delete as delete_f
 from tests.manual_validation.scenarios.fixture_recipes.copy_page import DESCRIPTION as COPY_PAGE_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reorder_page import DESCRIPTION as REORDER_PAGE_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reorder_section import DESCRIPTION as REORDER_SECTION_DESCRIPTION
-from tests.manual_validation.scenarios.fixture_recipes.reorder_section_group import DESCRIPTION as REORDER_SECTION_GROUP_DESCRIPTION
+from tests.manual_validation.scenarios.fixture_recipes.reorder_section_group import (
+    DESCRIPTION as REORDER_SECTION_GROUP_DESCRIPTION,
+    RECIPE as REORDER_SECTION_GROUP_RECIPE,
+)
 from tests.manual_validation.scenarios.fixture_recipes.reparent_section import DESCRIPTION as REPARENT_SECTION_DESCRIPTION
 
 
@@ -154,7 +157,8 @@ def test_fixture_profiles_are_scenario_specific() -> None:
 
 
 def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
-    for name, spec in SCENARIO_SPECS.items():
+    for name in SCENARIO_REGISTRY.public_names:
+        spec = SCENARIO_SPECS[name]
         missing = spec.fixture.creation_tools - spec.tool_allowlist
         recipe = SCENARIO_REGISTRY.get(name).fixture_recipe
         if recipe.consumer_scenario:
@@ -162,7 +166,8 @@ def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
                 assert spec.policy.writes_enabled is True
                 assert spec.policy.experimental_copy_enabled is True
                 assert spec.policy.deletes_enabled is False
-                assert {"plan_copy", "copy_page"} <= spec.tool_allowlist
+                assert "copy_page" in spec.tool_allowlist
+                assert "plan_copy" not in spec.tool_allowlist
             else:
                 assert spec.policy.writes_enabled is False
                 assert spec.policy.experimental_copy_enabled is False
@@ -781,8 +786,14 @@ def test_fixture_validator_proves_numbered_section_groups_for_both_parents() -> 
                 ]
             )
 
-    checks = _validate_fixture_snapshot(
-        "reorder-section-group", {"items": items}, structure, None
+    checks = list(
+        REORDER_SECTION_GROUP_RECIPE.validate(
+            FixtureValidationContext(
+                args=argparse.Namespace(scenario="reorder-section-group"),
+                snapshot={"items": items},
+            ),
+            FixtureBuildResult(structure, {}),
+        )
     )
     assert (
         "SectionGroup fixture covers both legal parent types: Notebook and SectionGroup"
@@ -794,8 +805,12 @@ def test_fixture_validator_proves_numbered_section_groups_for_both_parents() -> 
         "parent_id"
     ] = "root-group-a"
     with pytest.raises(runtime.InvariantFailure, match="Notebook and SectionGroup parents"):
-        _validate_fixture_snapshot(
-            "reorder-section-group", {"items": items}, structure, None
+        REORDER_SECTION_GROUP_RECIPE.validate(
+            FixtureValidationContext(
+                args=argparse.Namespace(scenario="reorder-section-group"),
+                snapshot={"items": items},
+            ),
+            FixtureBuildResult(structure, {}),
         )
 
 

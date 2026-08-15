@@ -48,6 +48,10 @@ def _copy_report(
     validated: bool = False,
 ) -> dict:
     return {
+        "planning": {
+            "include_descendants": False,
+            "content_capabilities": ["Outline", capability],
+        },
         "verified": True,
         "lossless": validated,
         "copy_contract_satisfied": validated,
@@ -142,7 +146,8 @@ def test_copy_consumers_share_bootstrap_identity_and_never_get_delete(
     assert scenario.fixture_recipe.consumer_scenario is True
     assert scenario.included_in_all is False
     assert scenario.spec.policy == COPY_NO_DELETE_POLICY
-    assert {"plan_copy", "copy_page"} <= scenario.spec.tool_allowlist
+    assert "copy_page" in scenario.spec.tool_allowlist
+    assert "plan_copy" not in scenario.spec.tool_allowlist
     assert not any(tool.startswith("delete_") for tool in scenario.spec.tool_allowlist)
     assert scenario.spec.execution_contract["capability"] == capability
     if scenario_name == "interactive-copy-media-file":
@@ -653,17 +658,6 @@ def test_interactive_copy_execute_persists_machine_and_human_evidence(
     async def fake_snapshot(_client, _notebook_id: str) -> dict:
         return next(snapshots)
 
-    async def fake_plan(_client, _arguments, **_kwargs) -> dict:
-        return {
-            "plan_digest": "stable-plan",
-            "include_descendants": False,
-            "source": {
-                **before["items"][0],
-                "modified": "recorded-modified",
-            },
-            "content_capabilities": ["Outline", "InkDrawing"],
-        }
-
     copy_report = _copy_report("InkDrawing")
     copy_report["id_map"] = {"source-page": "target-page"}
     copy_report["page_results"][0].update(
@@ -675,7 +669,7 @@ def test_interactive_copy_execute_persists_machine_and_human_evidence(
         assert tool == "copy_page"
         assert arguments["page_id"] == "source-page"
         assert arguments["destination_section_id"] == "canvas-section"
-        assert arguments["plan_digest"] == "stable-plan"
+        assert "plan_digest" not in arguments
         assert arguments["include_descendants"] is False
         result = (
             _diagnostic_partial_result()
@@ -708,7 +702,6 @@ def test_interactive_copy_execute_persists_machine_and_human_evidence(
             }
 
     monkeypatch.setattr(interactive_copy, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(interactive_copy, "stable_copy_plan", fake_plan)
     monkeypatch.setattr(interactive_copy, "call_with_result_evidence", fake_copy)
     monkeypatch.setattr(interactive_copy, "_bounded_input", fake_input)
     monkeypatch.setattr(interactive_copy, "run_safe_timestamp", lambda _args: "recorded")
@@ -785,14 +778,6 @@ def test_rejected_partial_copy_captures_xml_structure_before_reraising(
     async def fake_snapshot(_client, _notebook_id: str) -> dict:
         return before
 
-    async def fake_plan(_client, _arguments, **_kwargs) -> dict:
-        return {
-            "plan_digest": "stable-plan",
-            "include_descendants": False,
-            "source": {**before["items"][0], "modified": "recorded-modified"},
-            "content_capabilities": ["Outline", "InkDrawing"],
-        }
-
     rejected = {
         "code": "partial_failure",
         "partial": True,
@@ -828,7 +813,6 @@ def test_rejected_partial_copy_captures_xml_structure_before_reraising(
             }
 
     monkeypatch.setattr(interactive_copy, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(interactive_copy, "stable_copy_plan", fake_plan)
     monkeypatch.setattr(interactive_copy, "call_with_result_evidence", fake_copy)
     monkeypatch.setattr(interactive_copy, "run_safe_timestamp", lambda _args: "recorded")
     manifest = {
@@ -986,24 +970,6 @@ def _legacy_display_equation_copy_chain_keeps_one_known_com_break_bounded(
     async def fake_snapshot(_client, _notebook_id):
         return next(snapshots)
 
-    async def fake_plan(_client, arguments, **_kwargs):
-        source_id = arguments["source_id"]
-        return {
-            "plan_digest": f"plan-{source_id}",
-            "include_descendants": False,
-            "source": {
-                "id": source_id,
-                "modified": f"modified-{source_id}",
-            },
-            "content_capabilities": [
-                "DisplayEquation",
-                "Image",
-                "Outline",
-                "RichText",
-                "Table",
-            ],
-        }
-
     copy_number = 0
 
     async def fake_copy(_client, _tool, arguments, evidence_path):
@@ -1012,6 +978,16 @@ def _legacy_display_equation_copy_chain_keeps_one_known_com_break_bounded(
         source_id = arguments["page_id"]
         target_id = f"target-{copy_number}"
         report = {
+            "planning": {
+                "include_descendants": False,
+                "content_capabilities": [
+                    "DisplayEquation",
+                    "Image",
+                    "Outline",
+                    "RichText",
+                    "Table",
+                ],
+            },
             "verified": True,
             "lossless": True,
             "issues": [],
@@ -1060,7 +1036,6 @@ def _legacy_display_equation_copy_chain_keeps_one_known_com_break_bounded(
             return {"xml": xml_by_id[arguments["page_id"]]}
 
     monkeypatch.setattr(interactive_copy, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(interactive_copy, "stable_copy_plan", fake_plan)
     monkeypatch.setattr(interactive_copy, "call_with_result_evidence", fake_copy)
     monkeypatch.setattr(interactive_copy, "_bounded_input", fake_input)
     monkeypatch.setattr(interactive_copy, "run_safe_timestamp", lambda _args: "recorded")
@@ -1177,20 +1152,6 @@ def test_media_copy_executes_same_and_cross_section_cases_in_one_run(
     async def fake_snapshot(_client, _notebook_id: str) -> dict:
         return next(snapshots)
 
-    plan_destinations = []
-
-    async def fake_plan(_client, arguments, **_kwargs) -> dict:
-        plan_destinations.append(arguments["destination_parent_id"])
-        return {
-            "plan_digest": f"plan-{arguments['destination_parent_id']}",
-            "include_descendants": False,
-            "source": {
-                **next(item for item in before["items"] if item.get("id") == "source-page"),
-                "modified": "recorded-modified",
-            },
-            "content_capabilities": ["Outline", "MediaFile"],
-        }
-
     calls = []
 
     async def fake_call(_client, tool: str, arguments: dict, evidence_path) -> dict:
@@ -1238,7 +1199,6 @@ def test_media_copy_executes_same_and_cross_section_cases_in_one_run(
             return {"xml": media_xml}
 
     monkeypatch.setattr(interactive_copy, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(interactive_copy, "stable_copy_plan", fake_plan)
     monkeypatch.setattr(interactive_copy, "call_with_result_evidence", fake_call)
     monkeypatch.setattr(interactive_copy, "_bounded_input", fake_input)
     monkeypatch.setattr(interactive_copy, "run_safe_timestamp", lambda _args: "recorded")
@@ -1269,7 +1229,6 @@ def test_media_copy_executes_same_and_cross_section_cases_in_one_run(
     )
 
     assert calls == ["copy_page", "create_section", "copy_page"]
-    assert plan_destinations == ["canvas-section", "destination-section"]
     assert result["target_ids"] == ["same-target", "cross-target"]
     assert result["same_section_validated"] is True
     assert result["cross_section_validated"] is True

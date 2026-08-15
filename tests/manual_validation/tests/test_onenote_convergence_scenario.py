@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
 from tests.manual_validation.runtime import RuntimeOptions
@@ -41,6 +42,40 @@ def _attempt() -> dict:
         "manual_recovery_required": False,
         "observation_attempts": 1,
         "identity_policy": "preserved",
+    }
+
+
+def _replace_saga() -> dict:
+    return {
+        "state": "applied",
+        "execute_attempts": 1,
+        "had_backend_error": False,
+        "execution_succeeded": True,
+    }
+
+
+def _execution(
+    operation: str,
+    kind: str,
+    backend: str,
+    observed_outcome: str,
+    *,
+    attempts: int = 0,
+) -> dict:
+    return {
+        "operation": operation,
+        "stage": "finalize",
+        "kind": kind,
+        "backend_category": backend,
+        "attempts": attempts,
+        "replayed": False,
+        "backend_calls": 1,
+        "completed_steps": [],
+        "observed_outcome": observed_outcome,
+        "retry_safety": "not_needed",
+        "recommended_action": "none",
+        "cache_generation": {"before": 1, "after": 1},
+        "content_exposed": False,
     }
 
 
@@ -98,7 +133,7 @@ def _snapshot(*, include_probe: bool = False, probe_order: int = 2) -> dict:
     }
 
 
-def test_convergence_scenario_exercises_missing_public_attempt_contracts(
+def test_convergence_scenario_exercises_public_control_plane_contracts(
     monkeypatch, tmp_path
 ) -> None:
     before = _snapshot()
@@ -125,6 +160,95 @@ def test_convergence_scenario_exercises_missing_public_attempt_contracts(
         async def call_tool(self, name: str, arguments: dict) -> dict:
             self.calls.append(name)
             self.arguments.append(dict(arguments))
+            if name == "sync_notebook":
+                return {
+                    "ok": True,
+                    "complete": False,
+                    "accepted": True,
+                    "completion_observable": False,
+                    "sync_requested": True,
+                    "execution": _execution(
+                        name,
+                        "lifecycle",
+                        "onenote_com",
+                        "accepted_completion_unobservable",
+                    ),
+                }
+            if name == "create_notebook":
+                target = Path(arguments["base_folder"]) / arguments["name_or_path"]
+                return {
+                    "ok": True,
+                    "complete": True,
+                    "path": str(target),
+                    "notebook_id": "created-notebook-id",
+                    "allocated_id": "created-notebook-id",
+                    "item": {
+                        "id": "created-notebook-id",
+                        "resource_type": "notebook",
+                        "name": "__operation-runtime-created__",
+                        "modified": "created-n1",
+                    },
+                    "convergence": _convergence(),
+                    "reconciliation": _attempt(),
+                    "execution": _execution(
+                        name,
+                        "mutation",
+                        "onenote_com",
+                        "applied",
+                        attempts=1,
+                    ),
+                }
+            if name == "publish_object":
+                target = Path(arguments["target_path"])
+                target.write_bytes(b"fake-pdf")
+                return {
+                    "ok": True,
+                    "complete": True,
+                    "path": str(target),
+                    "format": "pdf",
+                    "execution": _execution(
+                        name,
+                        "filesystem_effect",
+                        "filesystem",
+                        "filesystem_effect_completed",
+                    ),
+                }
+            if name == "navigate_to":
+                return {
+                    "ok": True,
+                    "complete": True,
+                    "navigated": True,
+                    "execution": _execution(
+                        name,
+                        "ui_effect",
+                        "windows_ui",
+                        "action_accepted",
+                    ),
+                }
+            if name == "get_hyperlink":
+                return {
+                    "ok": True,
+                    "complete": True,
+                    "hyperlink": "onenote:#exact-anchor",
+                    "execution": _execution(
+                        name,
+                        "read",
+                        "onenote_com",
+                        "completed",
+                    ),
+                }
+            if name == "navigate_to_url":
+                return {
+                    "ok": True,
+                    "complete": True,
+                    "navigated": True,
+                    "execution": _execution(
+                        name,
+                        "ui_effect",
+                        "windows_ui",
+                        "action_accepted",
+                    ),
+                }
             if name == "create_page":
                 return {
                     "page_id": "probe-id",
@@ -176,11 +300,17 @@ def test_convergence_scenario_exercises_missing_public_attempt_contracts(
                     "title": "03-Convergence-Probe-Renamed",
                     "modified": "m2",
                 }
-            elif name == "append_to_page":
+            elif name == "replace_page_body":
                 item = {
                     "id": "probe-id",
                     "title": "03-Convergence-Probe-Renamed",
                     "modified": "m3",
+                }
+            elif name == "append_to_page":
+                item = {
+                    "id": "probe-id",
+                    "title": "03-Convergence-Probe-Renamed",
+                    "modified": "m4",
                 }
             elif name == "reorder_page":
                 item = {"id": "probe-id", "order": 1}
@@ -189,7 +319,10 @@ def test_convergence_scenario_exercises_missing_public_attempt_contracts(
             elif name == "delete_page":
                 item = None
             elif name == "close_notebook":
-                item = {"id": "notebook-id", "name": "Disposable"}
+                item = {
+                    "id": arguments["notebook_id"],
+                    "name": arguments["expected_name"],
+                }
             else:
                 raise AssertionError(f"unexpected tool call: {name}")
             result = {
@@ -197,9 +330,23 @@ def test_convergence_scenario_exercises_missing_public_attempt_contracts(
                 "complete": True,
                 "convergence": _convergence(),
                 "reconciliation": _attempt(),
+                "execution": _execution(
+                    name,
+                    "lifecycle" if name == "close_notebook" else "mutation",
+                    "onenote_com",
+                    "applied",
+                    attempts=1,
+                ),
             }
             if name == "close_notebook":
                 result.update(closed=True, final_state=None)
+            if name == "replace_page_body":
+                result.update(
+                    replaced=True,
+                    partial=False,
+                    deleted_objects=["base-outline-id"],
+                    reconciliation=_replace_saga(),
+                )
             if item is not None:
                 result["item"] = item
             return result
@@ -238,8 +385,16 @@ def test_convergence_scenario_exercises_missing_public_attempt_contracts(
 
     assert result["status"] == "passed"
     assert client.calls == [
+        "sync_notebook",
+        "create_notebook",
+        "close_notebook",
+        "publish_object",
+        "navigate_to",
+        "get_hyperlink",
+        "navigate_to_url",
         "create_page",
         "update_page_title",
+        "replace_page_body",
         "get_page_objects",
         "append_to_page",
         "get_page_objects",
@@ -253,11 +408,31 @@ def test_convergence_scenario_exercises_missing_public_attempt_contracts(
     assert set(result["convergence"]) == {
         "create",
         "title",
+        "replace_body",
         "page_update",
         "content_delete",
         "reorder",
         "delete",
         "close",
+        "operation_effects",
+        "notebook_create_close",
+    }
+    expected_replace_execution = _execution(
+        "replace_page_body",
+        "mutation",
+        "onenote_com",
+        "applied",
+        attempts=1,
+    )
+    expected_replace_execution.pop("completed_steps")
+    assert result["convergence"]["replace_body"]["saga"] == {
+        "state": "applied",
+        "execute_attempts": 1,
+        "had_backend_error": False,
+        "execution_succeeded": True,
+        "partial": False,
+        "deleted_object_count": 1,
+        "operation_execution": expected_replace_execution,
     }
     assert len(lifecycle.close_results) == 1
     assert result["lifecycle_close_handoff"] == {

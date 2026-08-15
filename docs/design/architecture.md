@@ -2,18 +2,19 @@
 
 > 状态：当前实现态
 > 更新日期：2026-08-15
-> 相关契约：[对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md) · [Windows Fixture Cache 路径配额目标设计](windows_fixture_cache_path_budget.md)
+> 相关契约：[Operation Runtime](operation_runtime.md) · [对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md) · [Windows Fixture Cache 路径配额目标设计](windows_fixture_cache_path_budget.md)
 
 ## 1. 架构结论
 
-项目采用“装配入口 → MCP 工具适配层 → 应用服务层 → mapper/领域模型 → COM bridge”的分层结构。`server.py` 只创建对象和注册工具；业务规则不再放在 server 中。
+项目采用“装配入口 → MCP 工具适配层 → Operation Control Plane → 应用服务层 → mapper/领域模型 → backend”的分层结构。`server.py` 只创建对象和注册工具；业务规则不再放在 server 中。
 
 ```mermaid
 flowchart LR
     Client["MCP Client"] --> FastMCP["FastMCP / stdio"]
     FastMCP --> Server["server.py\ncomposition root"]
     Server --> Tools["tools/\n参数与 envelope 适配"]
-    Tools --> Services["services/\n用例、策略执行、回读验证"]
+    Tools --> Runtime["OperationRuntime + Registry\n协调、策略、Outcome"]
+    Runtime --> Services["services/\n用例、policy、回读验证"]
     Services --> Hierarchy["hierarchy.py\n唯一层级解析器"]
     Services --> Page["page/\nPage 内容子系统"]
     Hierarchy --> Domain["domain/\n唯一公开对象模型"]
@@ -28,7 +29,8 @@ flowchart LR
 
 - `domain/` 是 Notebook、SectionGroup、Section、Page、PageContentObject 的唯一静态模型；服务层和工具层不得复制 DTO。
 - `hierarchy.py` 是层级 XML 的唯一解析入口；`page/` 只解析 Page 内容 XML。
-- `tools/` 只做同步服务到 async MCP 的适配和统一响应，不直接调用 COM。
+- `tools/` 只提交 operation 名称和参数，并映射统一响应；不直接取得 Service、协调 lease 或调用 COM。
+- `OperationRuntime` 和 canonical Registry 统一 operation 分类、coordination、deadline、cache generation、backend-call accounting、安全审计与 Outcome；不解释 OneNote 内容或 Copy fidelity。
 - `services/` 承担用例编排、策略检查、XML 构造调用和 mutation 回读验证。
 - `bridge.py` 不理解领域对象，只接受固定 operation 和 JSON 参数。
 
@@ -37,21 +39,23 @@ flowchart LR
 ```text
 src/local_onenote_mcp/
 ├─ server.py                 依赖装配与 FastMCP 启动
+├─ operation_catalog.py      56 项 OperationSpec/Strategy/Handler 唯一 Registry
 ├─ tools/
-│  ├─ context.py             当前 ServiceContainer 绑定
-│  ├─ responses.py           ok/error/caught/invoke envelope
+│  ├─ context.py             当前 OperationRuntime 绑定
+│  ├─ responses.py           Runtime invoke 与 ok/error/caught envelope
 │  ├─ system.py              健康检查、标识符、特殊目录
 │  ├─ hierarchy.py           层级 List/Get/Query/Path/Tree
 │  ├─ pages.py               Page 内容读取与 Search
 │  ├─ mutations.py           typed Create/Update/Delete
 │  ├─ copying.py             P2 Copy/Page Move
 │  ├─ operations.py          Export/导航/Sync/Close
-│  ├─ advanced.py            启动时可选的开发 profile
-│  └─ __init__.py            默认/高级工具集合和注册
+│  ├─ advanced.py            无生产暴露的低层能力边界声明
+│  └─ __init__.py            唯一生产工具集合和注册
 ├─ services/
 │  ├─ base.py                BaseService
 │  ├─ container.py           ServiceContainer
 │  ├─ coordination.py        进程内读写协调与 cache generation hook
+│  ├─ operation_runtime.py   Spec/Registry/Execution/Outcome 与分类型 Strategy
 │  ├─ convergence.py         deadline/连续稳定观察
 │  ├─ reconciliation.py      mutation 后置状态对账
 │  ├─ mutation_control.py    有界 mutation attempt 规约、执行裁决与结果账本
@@ -88,8 +92,8 @@ src/local_onenote_mcp/
 允许的主依赖方向为：
 
 ```text
-server → tools → services → hierarchy/page/policy → domain
-                           └──────────────────────→ bridge → COM
+server → tools → OperationRuntime/Registry → services → hierarchy/page/policy → domain
+                                                   └──────────────────────────→ bridge → COM
 ```
 
 反向依赖被禁止。例如 `domain/` 不导入 service，`hierarchy.py` 不导入 bridge 或 MCP，service 不导入 tool。
@@ -203,7 +207,7 @@ classDiagram
 | `PageService` | `services.pages` | 读取 Page XML/text/object/binary，确认 Page，计算内容摘要。 |
 | `SearchService` | `services.search` | 以 root 或一个精确 Notebook/SectionGroup/Section 为原生 COM 起点执行 index-only `FindPages`；一次调用共享 hierarchy catalog、候选预算、当前页 hydration 和总耗时预算。 |
 | `MutationService` | `services.mutations` | typed 创建、修改、删除；策略检查、乐观确认和操作后回读均在此。 |
-| `CopyService` | `services.copying` | 无状态 Copy 计划、默认单页/显式 Page 子树范围、递归容器复制、Page XML 保真报告和 Move 删除门。 |
+| `CopyService` | `services.copying` | 在同一次 Copy/Move operation 内建立 live 内部计划；负责默认单页/显式 Page 子树范围、递归容器复制、Page XML 保真报告和 Move 删除门。 |
 | `OperationsService` | `services.operations` | 特殊目录、超链接、父级、导出、导航、同步、关闭及高级应用操作。 |
 | `MutationPolicy` | `policy` | 从环境变量生成不可变权限快照。 |
 | `SearchBudget` | `policy` | 从环境变量生成不可变搜索预算。 |
@@ -217,11 +221,11 @@ classDiagram
 
 ### 3.2 COM 收敛与进程内协调
 
-所有公开 Tool 都在 `tools.responses.invoke` 进入同一个进程级协调器。纯读调用取得共享 lease；mutation 从 confirmation 开始，跨越 cache invalidation/generation、COM execute、reconciliation 和连续稳定 read-back，直到成功或 fail-closed 分类完成才释放独占 lease。首版不承诺跨 MCP 进程、用户在 Desktop 中的直接编辑或 OneNote 自身同步被事务化。
+所有公开 Tool 都由 `tools.responses.invoke` 提交给同一个 `OperationRuntime`。Runtime 从 Registry 读取静态 Spec、authorization policy 和分类型 Strategy；先执行 authorizer，再取得进程级协调器 lease：Read 使用 shared；OneNote mutation 和 lifecycle 使用 exclusive，并在进入时恰好推进一次 cache generation。权限拒绝因此发生在 backend、lease 和 generation invalidation 之前，Service 内原有门限继续纵深防御。operation 从 live preflight 跨越 execute、reconciliation、连续稳定 read-back 和 finalize 后才释放 lease；异常、timeout、finalize failure 与取消路径同样释放。首版不承诺跨 MCP 进程、用户在 Desktop 中的直接编辑或 OneNote 自身同步被事务化。完整阶段、Outcome 与 content-free audit 合同见 [`operation_runtime.md`](operation_runtime.md)。
 
 默认 convergence 合同为 4 秒 monotonic deadline、0.5 秒观察间隔、最多 16 次观察，并至少要求两个连续、accepted 且 stable identity 相同的 live 观察。history 只记录 attempt/accepted/stable 和 typed transient category，不保存 Page XML、正文、binary、路径或请求参数。异常默认立即传播；只有调用点显式提供 transient predicate，且 typed HRESULT 属于 not-yet-synchronized、timeout 或 read-only object/file unavailable 时才延迟重读。Create 的 stable identity 包含 allocated→resolved ID；Page mutation 使用内容摘要；Reorder/Reparent/Copy 使用各自业务层定义的 topology/fidelity projection；Delete/Close 使用活动态或 open-state 后置条件。
 
-COM error 不等于 mutation 未发生。`reconciliation.py` 提供纯四态分类原语；`mutation_control.py` 在其上增加 principal attempt 的显式 policy、execute-attempt 上限、identity policy、统一 outcome 与 typed recovery。当前 `MUTATION_ATTEMPT_POLICIES` 中所有生产 policy 都固定 `replay=never`：postcondition 已成立仍可按 `applied` 继续收敛，完整 pre-state 未变则返回 `not_applied` 并要求新的调用。基础原语保留“精确 pre-state + typed transient”有界重放能力，但在完整 pre-state 尚不能由 policy 证明前不得登记为生产策略。`MUTATION_ATTEMPT_POLICY_BINDINGS` 只是 029 的可执行 tool→policy inventory，不是全 Tool Registry；Operation Runtime、operation-wide backend-call accounting 与多阶段 saga 归 [TODO 036](../todo/036_operation_runtime_control_plane_and_tool_migration.md)。
+COM error 不等于 mutation 未发生。`reconciliation.py` 提供纯四态分类原语；`mutation_control.py` 在其上增加 principal attempt 的显式 policy、execute-attempt 上限、identity policy、统一 attempt outcome 与 typed recovery。当前 `MUTATION_ATTEMPT_POLICIES` 中所有生产 policy 都固定 `replay=never`：postcondition 已成立仍可按 `applied` 继续收敛，完整 pre-state 未变则返回 `not_applied` 并要求新的调用。基础原语保留“精确 pre-state + typed transient”有界重放能力，但在完整 pre-state 尚不能由 policy 证明前不得登记为生产策略。Tool→attempt policy 已并入 canonical Operation Registry；Runtime 从嵌套 reconciliation 吸收 attempt/replay/outcome，但不维护第二套 principal-attempt 模型。Copy/Move 的 operation-wide saga 也登记在同一 Registry。
 
 OneNote COM 不提供只读的 mutation-ready predicate。稳定 live preflight 只能证明 `logical_ready`，不能从 `SyncHierarchy` accepted、可读 Page XML、文件属性或固定等待推导下一次 native mutation 必然成功。正确的状态流是“logical preflight → operation policy 允许的单次/有界 execute → live reconciliation → stable postcondition”；manual validation 不再用 close/reopen 猜测 mutation readiness，生产业务 tool 也不会隐式施加该生命周期副作用。完整状态模型与当前/目标实现边界见 [`mutation_readiness_and_call_design.md`](mutation_readiness_and_call_design.md)。
 
@@ -322,19 +326,19 @@ classDiagram
 
 ## 4. MCP 工具适配层
 
-`tools/` 当前由模块级 async 函数组成，不引入“工具类”。`tools.context` 在启动时绑定一个 `ServiceContainer`；每个工具读取对应 service，调用同步用例，再由 `responses.invoke()` 转为统一 envelope。
+`tools/` 当前由模块级 async 函数组成，不引入“工具类”。`tools.context` 在启动时只绑定一个 `OperationRuntime`；每个工具调用 `responses.invoke(operation, **arguments)`，Registry 再分派到现有同步 Service Handler。公开 adapter 不直接访问 `ServiceContainer` 或 Bridge。
 
 | 工具模块 | 默认注册数 | 调用的 service |
 | --- | ---: | --- |
-| `tools.system` | 3 | hierarchy、operations |
-| `tools.hierarchy` | 11 | hierarchy |
+| `tools.system` | 3 | Runtime Handler（hierarchy、health projection） |
+| `tools.hierarchy` | 14 | Runtime Handler（hierarchy） |
 | `tools.pages` | 6 | pages、search |
-| `tools.mutations` | 20 | mutations |
+| `tools.mutations` | 19 | mutations |
 | `tools.copying` | 7 | copying |
 | `tools.operations` | 7 | operations |
-| 合计 | 54 | — |
+| 合计 | 56 | — |
 
-`tools.advanced` 另有 6 个开发 profile 工具，仅当进程启动时 `LOCAL_ONENOTE_ENABLE_RAW_XML=true` 才注册。注册并不代表取得写权限；service 仍会再次执行 write/delete/raw policy。公开 `update_hierarchy_xml` 已从所有生产 profile 移除，内部 bridge `update_hierarchy` 只由受约束 service 编排。逐工具合同见 [Advanced/低层操作](advanced_operations.md)。
+生产 MCP 只有这一个 56 项 typed profile。`tools.advanced` 不登记 Tool，`LOCAL_ONENOTE_ENABLE_RAW_XML=true` 也不会改变 `tools/list`；`find_meta/open_hierarchy/update_page_xml/merge_sections/set_filing_location` 与 generic hierarchy XML operation 只可作为内部 service/bridge 诊断能力存在。后端不支持的 `reorder_section_group` 同样没有 adapter 或 Registry binding。逐项边界见 [Advanced/低层操作](advanced_operations.md)。
 
 响应映射：
 
@@ -344,6 +348,8 @@ classDiagram
 | `PermissionError` | `policy_disabled` |
 | `PartialFailure` | `partial_failure`，附带 `partial/completed_steps` |
 | 其他 service/bridge 异常 | `backend_error` |
+
+所有成功和失败 envelope 都增加稳定的 `execution` 投影，包含 operation、最终 stage、kind、backend category、attempt/replay、backend-call 数、allowlist completed steps、retry safety、recommended action 和 cache generation，并固定 `content_exposed=false`。该字段不改变既有业务返回；完整 schema 见 [`operation_runtime.md`](operation_runtime.md)。
 
 ## 5. 关键调用链
 

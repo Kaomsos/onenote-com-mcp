@@ -6,7 +6,6 @@ from .coordination import ReadWriteCoordinator
 from .convergence import ConvergenceConfig, ConvergenceResult, converge
 from .errors import MutationFailure, MutationPreflightFailure, PartialFailure
 from .mutation_control import (
-    MUTATION_ATTEMPT_POLICY_BINDINGS,
     MUTATION_ATTEMPT_POLICIES,
     MutationAttemptExecutor,
     MutationAttemptOutcome,
@@ -32,6 +31,24 @@ from .hierarchy import (
 )
 from .mutations import MutationService
 from .operations import OperationsService
+from .operation_runtime import (
+    BackendCategory,
+    CoordinationMode,
+    FilesystemEffectExecutionStrategy,
+    LifecycleExecutionStrategy,
+    MutationExecutionStrategy,
+    MutationOperationPolicy,
+    OperationExecution,
+    OperationKind,
+    OperationOutcome,
+    OperationRegistry,
+    OperationRuntime,
+    OperationSpec,
+    OperationStage,
+    ReadExecutionStrategy,
+    StaticExecutionStrategy,
+    UIEffectExecutionStrategy,
+)
 from .pages import PageService
 from .position import destination_position, unavailable_destination_position
 from .search import (
@@ -53,13 +70,28 @@ __all__ = [
     "ConvergenceResult",
     "converge",
     "OperationsService",
+    "OperationRuntime",
+    "OperationRegistry",
+    "OperationSpec",
+    "OperationExecution",
+    "OperationOutcome",
+    "OperationKind",
+    "OperationStage",
+    "CoordinationMode",
+    "BackendCategory",
+    "MutationOperationPolicy",
+    "ReadExecutionStrategy",
+    "MutationExecutionStrategy",
+    "LifecycleExecutionStrategy",
+    "FilesystemEffectExecutionStrategy",
+    "UIEffectExecutionStrategy",
+    "StaticExecutionStrategy",
     "PageService",
     "destination_position",
     "unavailable_destination_position",
     "PartialFailure",
     "MutationFailure",
     "MutationPreflightFailure",
-    "MUTATION_ATTEMPT_POLICY_BINDINGS",
     "MUTATION_ATTEMPT_POLICIES",
     "MutationAttemptExecutor",
     "MutationAttemptOutcome",

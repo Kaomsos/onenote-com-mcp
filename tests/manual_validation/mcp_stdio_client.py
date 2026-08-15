@@ -401,9 +401,9 @@ class MCPStdioClient:
                     elapsed_seconds=float(record["elapsed_seconds"]),
                     envelope=envelope,
                 )
-                if envelope.get("ok") is not True or envelope.get("complete") is not True:
+                if envelope.get("ok") is not True:
                     code = envelope.get("code", "operation_failed")
-                    message = envelope.get("error", "tool call did not complete")
+                    message = envelope.get("error", "tool call failed")
                     raise ClientFailure(
                         f"{name} failed ({code}): {message}",
                         envelope=envelope,

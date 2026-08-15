@@ -54,7 +54,7 @@ Record/Replay 先在受控环境记录真实请求、响应或 Agent 工具轨�
 
 Plan/Execute 两阶段把“将要做什么”和“真正执行”分开。Terraform `plan` 会读取远端现状并生成可审查的变更计划，但不会执行变更；其文档也提醒，最终 apply 前应重新检查计划，因为目标状态可能已经变化。[HashiCorp：terraform plan](https://developer.hashicorp.com/terraform/cli/commands/plan) Kubernetes 的 server-side dry-run 更进一步：请求会经过真实鉴权、默认值、校验和 admission 流程，只在最终持久化前停止。[Kubernetes API Concepts：Dry-run](https://kubernetes.io/docs/reference/using-api/api-concepts/#dry-run)
 
-OneNote COM 并没有等价的 server-side dry-run，因此本项目不能虚构一个“调用了真实 Move 但不会落盘”的模式。不过 Copy 已经采用了可审计的 `plan_copy → copy_*` 流程：计划阶段读取真实源树和完整 Page XML，估算预算、检查名称冲突，并把源快照、目标快照和选项绑定进 `plan_digest`；执行阶段重新计算摘要，状态有变化就在任何 mutation 前拒绝。它验证不了最终写入语义，却能显著缩小真实执行前仍未发现的风险。
+OneNote COM 并没有等价的 server-side dry-run，因此本项目不能虚构一个“调用了真实 Move 但不会落盘”的模式。项目早期曾把 Copy 实现成公开 `plan_copy → copy_*` 两阶段协议；当前实现已把同等安全检查收回单次受控 operation：`copy_*`/`move_*` 在 mutation 前内部读取真实源树和完整 Page XML，估算预算、检查名称冲突并绑定调用专属 live 计划，但 Agent 不再搬运 `plan_digest`。本版本也没有公开 Preview。这个内部 planning 验证不了最终写入语义，却能显著缩小真实执行前仍未发现的风险；最终保证仍来自执行后的 fidelity、topology 和 reconciliation。
 
 ### 5. 逐调用审批与监督执行
 
@@ -76,7 +76,7 @@ Canary 或渐进暴露则适合功能通过隔离实测之后的发布阶段。A
 | --- | --- | --- | --- | --- |
 | L0 安全不变量 | 危险能力是否默认不可达 | 权限矩阵、策略测试、静态检查、入口检查 | 无真实权限 | 验证 mutation 默认关闭、永久删除不能被场景开启 |
 | L1 离线逻辑与契约 | Agent 和工具是否按约定决策 | Test Double、Fake、契约测试、错误注入 | 无真实权限 | Mock bridge、`write_contract`、计划过期与部分失败测试 |
-| L2 真实输入与无副作用预检 | 面对真实结构时，计划是否仍然合理 | 只读探测、Record/Replay、Plan、Preview、可用时的 server-side dry-run | 只读或不持久化权限 | 读取 hierarchy/Page XML、Copy 预算、冲突检查和 `plan_digest` |
+| L2 真实输入与无副作用预检 | 面对真实结构时，计划是否仍然合理 | 只读探测、Record/Replay、内部 Planning、可用时的 server-side dry-run | 只读或不持久化权限 | 读取 hierarchy/Page XML、Copy 预算和冲突检查；当前不公开 Preview 或执行 token |
 | L3 隔离真实副作用 | 真实后端是否产生并保留预期语义 | Disposable sandbox、门控式实后端验证、自动回读和恢复 | 场景级短期最小权限 | 专用 Notebook、独立 MCP 子进程、before/after/restored 证据 |
 | L4 受控发布 | 已验证能力在更真实分布下是否仍然安全 | Shadow、监督执行、Canary、能力开关和可回滚发布 | 逐步扩大的受控权限 | 实验能力默认关闭，按操作类型和 Office 版本逐级开放 |
 

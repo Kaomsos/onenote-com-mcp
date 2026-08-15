@@ -5,7 +5,17 @@ import xml.etree.ElementTree as ET
 import pytest
 
 from local_onenote_mcp import server
-from local_onenote_mcp.tools.mutations import reorder_section, reorder_section_group
+from local_onenote_mcp.tools.mutations import reorder_section
+from local_onenote_mcp.tools.responses import caught, ok
+
+
+async def diagnostic_reorder_section_group(*args):
+    """Exercise the retained internal diagnostic service without MCP exposure."""
+
+    try:
+        return ok(**server.services.mutations.reorder_section_group(*args))
+    except Exception as exc:
+        return caught(exc)
 
 
 def item(kind, object_id, parent_id, *, name=None, section_id=None, order=None, recycle=False):
@@ -224,7 +234,9 @@ def test_reorder_section_group_preserves_descendant_tree_and_content(monkeypatch
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP", "true")
     state = install_backend(monkeypatch, before, after)
 
-    result = asyncio.run(reorder_section_group("gC", "Group C", "n", "", "modified-gC"))
+    result = asyncio.run(
+        diagnostic_reorder_section_group("gC", "Group C", "n", "", "modified-gC")
+    )
 
     assert result["ok"] is True
     assert [value["id"] for value in result["siblings"]] == ["gC", "gA", "gB"]
@@ -242,7 +254,7 @@ def test_reorder_section_group_supports_shared_section_group_parent(monkeypatch)
     state = install_backend(monkeypatch, before, after)
 
     result = asyncio.run(
-        reorder_section_group(
+        diagnostic_reorder_section_group(
             "nestedC",
             "Nested Group C",
             "parent",
@@ -277,7 +289,7 @@ def test_reorder_section_group_rejects_non_container_parent(monkeypatch):
     state = install_backend(monkeypatch, before, before)
 
     result = asyncio.run(
-        reorder_section_group(
+        diagnostic_reorder_section_group(
             "nestedC",
             "Nested Group C",
             "nestedSectionA",
@@ -311,7 +323,10 @@ def test_container_reorder_rejects_recycle_bin_target(monkeypatch):
     ("tool", "gate"),
     [
         (reorder_section, "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION"),
-        (reorder_section_group, "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP"),
+        (
+            diagnostic_reorder_section_group,
+            "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
+        ),
     ],
 )
 def test_container_reorder_is_fail_closed_behind_independent_gate(monkeypatch, tool, gate):
@@ -434,7 +449,9 @@ def test_reorder_section_group_fails_on_descendant_or_content_change(monkeypatch
     )
 
     result = asyncio.run(
-        reorder_section_group("gC", "Group C", "n", "", "modified-gC")
+        diagnostic_reorder_section_group(
+            "gC", "Group C", "n", "", "modified-gC"
+        )
     )
 
     assert result["ok"] is False

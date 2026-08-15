@@ -24,6 +24,7 @@ from .convergence import DEFAULT_CONVERGENCE, converge
 from .errors import PartialFailure
 from .hierarchy import HierarchyService
 from .mutations import MutationService
+from .operation_runtime import record_backend_call
 from .pages import PageService, stable_page_content_digest
 from .position import destination_position, unavailable_destination_position
 
@@ -331,6 +332,7 @@ class CopyService(BaseService):
             )["path"]
             base_path = Path(base).expanduser().resolve(strict=False)
             target_path = base_path / name
+            record_backend_call("filesystem:copy_notebook_target_exists")
             if target_path.exists():
                 raise ValueError(f"Notebook destination already exists: {target_path}")
             return {
@@ -544,7 +546,8 @@ class CopyService(BaseService):
         }
 
     @staticmethod
-    def _public_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    def _inspection_plan(plan: dict[str, Any]) -> dict[str, Any]:
+        """Project an internal plan for tests and diagnostics, never MCP exposure."""
         warnings = sorted({issue["reason"] for issue in plan["preview_issues"]})
         if plan["operation"] in MOVE_RESOURCE_TYPES:
             warnings.append(
@@ -584,7 +587,7 @@ class CopyService(BaseService):
             "warnings": warnings,
         }
 
-    def plan_copy(
+    def _inspect_copy_plan(
         self,
         source_id: str,
         destination_parent_id: str = "",
@@ -592,7 +595,7 @@ class CopyService(BaseService):
         destination_base_folder: str = "",
         include_descendants: bool = False,
     ) -> dict[str, Any]:
-        return self._public_plan(
+        return self._inspection_plan(
             self._build_plan(
                 source_id,
                 destination_parent_id,
@@ -602,7 +605,7 @@ class CopyService(BaseService):
             )
         )
 
-    def plan_move_page(
+    def _inspect_move_page_plan(
         self,
         page_id: str,
         destination_section_id: str,
@@ -618,7 +621,7 @@ class CopyService(BaseService):
         )
         if plan["source"]["resource_type"] != "page":
             raise ValueError("page_id must identify a Page.")
-        return self._public_plan(plan)
+        return self._inspection_plan(plan)
 
     def _plan_move_container(
         self,
@@ -637,9 +640,9 @@ class CopyService(BaseService):
         )
         if plan["source"]["resource_type"] != resource_type:
             raise ValueError(f"source ID must identify a {resource_type}.")
-        return self._public_plan(plan)
+        return self._inspection_plan(plan)
 
-    def plan_move_section(
+    def _inspect_move_section_plan(
         self,
         section_id: str,
         destination_parent_id: str,
@@ -649,7 +652,7 @@ class CopyService(BaseService):
             section_id, "section", destination_parent_id, destination_name
         )
 
-    def plan_move_section_group(
+    def _inspect_move_section_group_plan(
         self,
         section_group_id: str,
         destination_parent_id: str,
@@ -1053,6 +1056,14 @@ class CopyService(BaseService):
             target_root = refreshed_by_id.get(id_map[source["id"]], created_items[source["id"]])
             warnings = sorted({issue["reason"] for issue in issues})
             copy_report = {
+                "planning": {
+                    "internal": True,
+                    "operation": plan["operation"],
+                    "include_descendants": plan["include_descendants"],
+                    "estimated": dict(plan["estimated"]),
+                    "content_capabilities": list(plan["content_capabilities"]),
+                    "lossless_candidate": bool(plan["lossless_candidate"]),
+                },
                 "id_map": id_map,
                 "allocated_ids": list(allocated_ids),
                 "resolved_target_ids": list(resolved_target_ids),
@@ -1195,7 +1206,6 @@ class CopyService(BaseService):
         expected_name: str,
         expected_parent_id: str | None,
         expected_modified: str | None,
-        plan_digest: str,
         include_descendants: bool = False,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_experimental_copy()
@@ -1215,8 +1225,6 @@ class CopyService(BaseService):
         )
         if plan["source"]["resource_type"] != resource_type:
             raise ValueError(f"source_id must identify a {resource_type}.")
-        if not plan_digest or plan_digest != plan["plan_digest"]:
-            raise ValueError("Copy plan is missing or stale. Run plan_copy again before mutation.")
         copied = self._execute_copy(plan)
         if expected_modified is not None and plan["source"].get("modified") != expected_modified:
             copied["warnings"] = [
@@ -1386,7 +1394,6 @@ class CopyService(BaseService):
         destination_section_id: str,
         expected_title: str,
         expected_section_id: str,
-        plan_digest: str,
         expected_modified: str | None = None,
         destination_title: str = "",
         include_descendants: bool = False,
@@ -1406,10 +1413,6 @@ class CopyService(BaseService):
             operation="move_page",
             include_descendants=include_descendants,
         )
-        if not plan_digest or plan_digest != plan["plan_digest"]:
-            raise ValueError(
-                "Move plan is missing or stale. Run plan_move_page again."
-            )
         source_clock_drifted = (
             expected_modified is not None
             and plan["source"].get("modified") != expected_modified
@@ -1658,7 +1661,6 @@ class CopyService(BaseService):
         destination_parent_id: str,
         expected_name: str,
         expected_parent_id: str,
-        plan_digest: str,
         expected_modified: str | None = None,
         destination_name: str = "",
     ) -> dict[str, Any]:
@@ -1680,15 +1682,6 @@ class CopyService(BaseService):
             operation=operation,
             include_descendants=True,
         )
-        if not plan_digest or plan_digest != plan["plan_digest"]:
-            planner = (
-                "plan_move_section"
-                if resource_type == "section"
-                else "plan_move_section_group"
-            )
-            raise ValueError(
-                f"Move plan is missing or stale. Run {planner} again before mutation."
-            )
         source_clock_drifted = (
             expected_modified is not None
             and plan["source"].get("modified") != expected_modified
@@ -1968,7 +1961,6 @@ class CopyService(BaseService):
         destination_parent_id: str,
         expected_name: str,
         expected_parent_id: str,
-        plan_digest: str,
         expected_modified: str | None = None,
         destination_name: str = "",
     ) -> dict[str, Any]:
@@ -1978,7 +1970,6 @@ class CopyService(BaseService):
             destination_parent_id,
             expected_name,
             expected_parent_id,
-            plan_digest,
             expected_modified,
             destination_name,
         )
@@ -1989,7 +1980,6 @@ class CopyService(BaseService):
         destination_parent_id: str,
         expected_name: str,
         expected_parent_id: str,
-        plan_digest: str,
         expected_modified: str | None = None,
         destination_name: str = "",
     ) -> dict[str, Any]:
@@ -1999,7 +1989,6 @@ class CopyService(BaseService):
             destination_parent_id,
             expected_name,
             expected_parent_id,
-            plan_digest,
             expected_modified,
             destination_name,
         )

@@ -7,7 +7,6 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ..settings import MAX_TEXT_CHARS
-from .context import get_services
 from .responses import invoke
 
 
@@ -35,31 +34,31 @@ SearchScope = Annotated[
 async def get_page(page_id: str) -> dict[str, Any]:
     """Get Page metadata only."""
 
-    return invoke(lambda: get_services().pages.get(page_id))
+    return invoke("get_page", page_id=page_id)
 
 
 async def get_page_xml(page_id: str, page_info: str = "basic") -> dict[str, Any]:
     """Return raw OneNote XML for one Page."""
 
-    return invoke(lambda: get_services().pages.get_xml(page_id, page_info))
+    return invoke("get_page_xml", page_id=page_id, page_info=page_info)
 
 
 async def get_page_text(page_id: str, max_chars: int = MAX_TEXT_CHARS) -> dict[str, Any]:
     """Return visible text extracted from one Page."""
 
-    return invoke(lambda: get_services().pages.get_text(page_id, max_chars))
+    return invoke("get_page_text", page_id=page_id, max_chars=max_chars)
 
 
 async def get_page_objects(page_id: str) -> dict[str, Any]:
     """List typed PageContentObjects."""
 
-    return invoke(lambda: get_services().pages.get_objects(page_id))
+    return invoke("get_page_objects", page_id=page_id)
 
 
 async def get_binary_content(page_id: str, callback_id: str) -> dict[str, Any]:
     """Read validated binary Page content."""
 
-    return invoke(lambda: get_services().pages.get_binary(page_id, callback_id))
+    return invoke("get_binary_content", page_id=page_id, callback_id=callback_id)
 
 
 async def search_pages(
@@ -73,14 +72,13 @@ async def search_pages(
     """Search the live OneNote index below the root or one exact hierarchy node."""
 
     return invoke(
-        lambda: get_services().search.search(
-            query,
-            scope.model_dump(),
-            offset,
-            page_size,
-            include_snippets,
-            include_recycle_bin,
-        )
+        "search_pages",
+        query=query,
+        scope=scope.model_dump(),
+        offset=offset,
+        page_size=page_size,
+        include_snippets=include_snippets,
+        include_recycle_bin=include_recycle_bin,
     )
 
 

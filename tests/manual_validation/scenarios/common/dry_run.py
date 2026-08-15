@@ -112,7 +112,7 @@ def build_isolated_dry_run_plan(
     mutation_target = {
         "rename": "fixed Section and SectionGroup Rename/read-back/restore cases",
         "onenote-convergence": (
-            "fixed Title/Append/content Delete/Reorder/hierarchy Delete/Close chain"
+            "fixed Notebook Create/Close, effect, Page Replace/Append/Delete/Reorder, and source Close chain"
         ),
     }.get(
         args.scenario,

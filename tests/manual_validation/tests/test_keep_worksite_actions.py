@@ -566,26 +566,6 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
 
         async def call_tool(self, name: str, arguments: dict) -> dict:
             self.calls.append(name)
-            if name == "plan_move_page":
-                include_descendants = arguments.get("include_descendants", False)
-                ids = (
-                    ["subtree", "subtree-child"]
-                    if include_descendants
-                    else ["root-only"]
-                )
-                response = {
-                    "plan_digest": f"digest-{include_descendants}",
-                    "include_descendants": include_descendants,
-                    "snapshots": {
-                        "source": {
-                            "resources": [
-                                next(item for item in state["source"] if item["id"] == value)
-                                for value in ids
-                            ]
-                        }
-                    },
-                }
-                return response
             assert name == "move_page"
             include_descendants = arguments.get("include_descendants", False)
             if include_descendants:
@@ -671,12 +651,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         )
     )
 
-    assert client.calls == [
-        "plan_move_page",
-        "move_page",
-        "plan_move_page",
-        "move_page",
-    ]
+    assert client.calls == ["move_page", "move_page"]
     assert result["status"] == "passed"
     assert result["source_deleted_nonpermanently"] is True
     assert [case["effective_include_descendants"] for case in result["case_results"]] == [

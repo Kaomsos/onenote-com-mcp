@@ -83,7 +83,6 @@ REPARENT_SECTION_GROUP_TOOLS = READ_TOOLS | {
 COPY_CLEANUP_TOOLS = {"delete_section_group", "delete_section", "delete_page"}
 DELETE_TOOLS = READ_TOOLS | COPY_CLEANUP_TOOLS
 COPY_TOOLS = READ_TOOLS | {
-    "plan_copy",
     "copy_page",
     "copy_section",
     "copy_section_group",
@@ -92,19 +91,16 @@ COPY_TOOLS = READ_TOOLS | {
     "delete_section_group",
 }
 COPY_PRESERVE_TOOLS = COPY_TOOLS - COPY_CLEANUP_TOOLS
-COPY_PAGE_TOOLS = READ_TOOLS | {"plan_copy", "copy_page", "delete_page"}
+COPY_PAGE_TOOLS = READ_TOOLS | {"copy_page", "delete_page"}
 COPY_PAGE_PRESERVE_TOOLS = COPY_PAGE_TOOLS - {"delete_page"}
-COPY_NOTEBOOK_TOOLS = READ_TOOLS | {"plan_copy", "copy_notebook", "close_notebook"}
+COPY_NOTEBOOK_TOOLS = READ_TOOLS | {"copy_notebook", "close_notebook"}
 COPY_NOTEBOOK_PRESERVE_TOOLS = COPY_NOTEBOOK_TOOLS - {"close_notebook"}
 MOVE_PAGE_TOOLS = READ_TOOLS | {
-    "plan_move_page",
     "move_page",
 }
 MOVE_SECTION_TOOLS = READ_TOOLS | {
-    "plan_move_section",
     "move_section",
 }
 MOVE_SECTION_GROUP_TOOLS = READ_TOOLS | {
-    "plan_move_section_group",
     "move_section_group",
 }

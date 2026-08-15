@@ -157,119 +157,27 @@ def test_result_evidence_is_written_for_structured_partial_failure(tmp_path) -> 
     assert test_utils.read_json(evidence) == partial
 
 
-def test_copy_plan_fails_closed_when_read_only_snapshots_never_stabilize(
-    tmp_path,
-) -> None:
-    class FakeClient:
-        def __init__(self):
-            self.calls = 0
-
-        async def call_tool(self, name, _arguments):
-            assert name == "plan_copy"
-            self.calls += 1
-            return {
-                "plan_digest": f"digest-{self.calls}",
-                "source_snapshot_digest": f"source-{self.calls}",
-                "source": {"id": "source", "modified": f"m{self.calls}"},
-            }
-
-    client = FakeClient()
-    attempts_path = tmp_path / "plan-attempts.json"
-    with pytest.raises(InvariantFailure, match="did not stabilize"):
-        asyncio.run(
-            copy_runtime.stable_copy_plan(
-                client,
-                {"source_id": "source"},
-                attempts_path=attempts_path,
-                plan_path=tmp_path / "plan.json",
-            )
-        )
-
-    assert client.calls == 3
-    evidence = test_utils.read_json(attempts_path)
-    assert evidence["stabilized"] is False
-    assert len(evidence["attempts"]) == 3
-
-
-def test_plan_bound_before_snapshot_binds_source_and_destination_evidence() -> None:
-    before = {
-        "items": [
-            {"id": "source", "resource_type": "page", "modified": "old-source"},
-            {
-                "id": "destination",
-                "resource_type": "section",
-                "parent_id": "notebook",
-                "notebook_id": "destination-notebook",
-                "name": "Destination",
-                "modified": "old-destination",
-            },
-        ],
-        "page_hashes": {"source": "stable"},
-    }
-    planned = {
-        "source": {"id": "source"},
-        "source_snapshot_digest": "source-digest",
-        "include_descendants": False,
-        "snapshots": {
-            "source": {
-                "resources": [
-                    {"id": "source", "resource_type": "page", "modified": "plan-source"}
-                ],
-                "page_hashes": {"source": "raw-source"},
-            },
-            "destination": {
-                "resource_type": "section",
-                "parent": {
-                    "id": "destination",
-                    "resource_type": "section",
-                    "parent_id": "notebook",
-                    "notebook_id": "destination-notebook",
-                    "name": "Destination",
-                    "modified": "plan-destination",
-                },
-                "name": "01-Same-Section-Root-Only-Copy",
-                "base_folder": "",
-                "target_path": "",
-                "existing_children": [],
-            },
+def test_copy_execute_arguments_are_single_call_without_cross_call_state() -> None:
+    arguments = copy_runtime.copy_execute_arguments(
+        {
+            "tool": "copy_page",
+            "destination": {"id": "destination"},
+            "destination_name": "Copied",
+            "include_descendants": False,
         },
-    }
-
-    bound = copy_runtime.plan_bound_before_snapshot(before, planned)
-
-    by_id = {item["id"]: item for item in bound["items"]}
-    assert by_id["source"]["modified"] == "plan-source"
-    assert by_id["destination"]["modified"] == "plan-destination"
-    assert bound["plan_binding"]["destination_id"] == "destination"
-    assert bound["plan_binding"]["destination_parent_snapshot"]["notebook_id"] == (
-        "destination-notebook"
-    )
-    assert bound["plan_binding"]["destination_snapshot"]["name"] == (
-        "01-Same-Section-Root-Only-Copy"
+        {
+            "id": "source",
+            "title": "Source",
+            "section_id": "source-section",
+            "modified": "observed",
+        },
     )
 
-
-def test_plan_bound_before_snapshot_rejects_flat_destination_resource_shape() -> None:
-    before = {
-        "items": [
-            {"id": "source", "resource_type": "page"},
-            {"id": "destination", "resource_type": "section"},
-        ],
-        "page_hashes": {"source": "stable"},
-    }
-    planned = {
-        "source": {"id": "source"},
-        "snapshots": {
-            "source": {
-                "resources": [{"id": "source", "resource_type": "page"}],
-                "page_hashes": {"source": "raw-source"},
-            },
-            "destination": {"id": "destination", "resource_type": "section"},
-        },
-    }
-
-    with pytest.raises(InvariantFailure, match="typed parent snapshot"):
-        copy_runtime.plan_bound_before_snapshot(before, planned)
+    assert arguments["page_id"] == "source"
+    assert arguments["expected_modified"] == "observed"
+    assert "plan_digest" not in arguments
+    assert "operation_id" not in arguments
+    assert "token" not in arguments
 
 def test_notebook_copy_requires_exact_manifest_allowlisted_root(tmp_path) -> None:
     manifest = {
@@ -551,26 +459,6 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
             "page_objects": {},
         }
 
-    plan_destinations = iter(
-        [
-            same_destination if scenario_name == "copy-section" else source_notebook,
-            cross_destination if scenario_name == "copy-section" else destination_notebook,
-        ]
-    )
-
-    async def stable_plan(_client, arguments, **_paths):
-        destination = next(plan_destinations)
-        return {
-            "plan_digest": f"digest-{arguments['destination_parent_id']}",
-            "source_snapshot_digest": "source-digest",
-            "source": source,
-            "snapshots": {
-                "source": {"resources": [source], "page_hashes": {}},
-                "destination": {"parent": destination},
-            },
-            "content_capabilities": ["Outline", "RichText"],
-        }
-
     cleanup_order = []
 
     async def cleanup(_client, _snapshot, copied):
@@ -578,8 +466,6 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
         return [copied["item"]["id"]]
 
     monkeypatch.setattr(copy_runtime, "_capture_notebook_bundle", capture_bundle)
-    monkeypatch.setattr(copy_runtime, "stable_copy_plan", stable_plan)
-    monkeypatch.setattr(copy_runtime, "plan_bound_before_snapshot", lambda before, _plan: before)
     monkeypatch.setattr(copy_runtime, "assert_copy_fixture_capabilities", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(copy_runtime, "assert_copy_mapping", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(copy_runtime, "assert_pages_unchanged", lambda *_args, **_kwargs: None)
@@ -631,6 +517,10 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
                     "sequence_source": "hierarchy_child_order",
                 },
                 "copy_report": {
+                    "planning": {
+                        "include_descendants": True,
+                        "content_capabilities": ["Outline", "RichText"],
+                    },
                     "verified": True,
                     "lossless": True,
                     "id_map": {"source-container": target_id},
@@ -723,7 +613,8 @@ def test_keep_worksite_copy_spec_removes_cleanup_permissions(tmp_path) -> None:
     ]
     assert spec["policy"].deletes_enabled is False
     assert not {"delete_page", "delete_section", "delete_section_group"} & spec["tools"]
-    assert {"expand_hierarchy", "copy_page", "plan_copy"} <= spec["tools"]
+    assert {"expand_hierarchy", "copy_page"} <= spec["tools"]
+    assert "plan_copy" not in spec["tools"]
     assert not {"copy_section", "copy_section_group", "copy_notebook"} & spec["tools"]
 
 
@@ -893,6 +784,18 @@ def _legacy_copy_page_two_case_fixture(
         "item": root_target,
         "created_ids": ["root-target"],
         "copy_report": {
+            "planning": {
+                "include_descendants": False,
+                "content_capabilities": [
+                    "DisplayEquation",
+                    "Image",
+                    "List",
+                    "Outline",
+                    "RichText",
+                    "Table",
+                    "Tag",
+                ],
+            },
             "verified": True,
             "lossless": False,
             "id_map": {"source-page": "root-target"},
@@ -902,6 +805,18 @@ def _legacy_copy_page_two_case_fixture(
         "item": subtree_target,
         "created_ids": ["subtree-target", "subtree-child"],
         "copy_report": {
+            "planning": {
+                "include_descendants": True,
+                "content_capabilities": [
+                    "DisplayEquation",
+                    "Image",
+                    "List",
+                    "Outline",
+                    "RichText",
+                    "Table",
+                    "Tag",
+                ],
+            },
             "verified": True,
             "lossless": True,
             "id_map": {
@@ -918,42 +833,8 @@ def _legacy_copy_page_two_case_fixture(
 
         def __init__(self):
             self.copy_arguments = []
-            self.plan_arguments = []
-            self.plan_calls = 0
 
         async def call_tool(self, name, arguments):
-            if name == "plan_copy":
-                self.plan_calls += 1
-                self.plan_arguments.append(dict(arguments))
-                include_descendants = arguments.get("include_descendants", False)
-                case_name = "subtree" if include_descendants else "root"
-                modified = f"plan-bound-{case_name}-modified"
-                planned_source = {**source, "modified": modified}
-                resources = [planned_source]
-                raw_hashes = {"source-page": f"raw-{case_name}-hash"}
-                if include_descendants:
-                    resources.append(source_child)
-                    raw_hashes["source-child"] = "raw-child-hash"
-                return {
-                    "plan_digest": f"{case_name}-digest",
-                    "source_snapshot_digest": f"{case_name}-source-digest",
-                    "source": planned_source,
-                    "snapshots": {
-                        "source": {
-                            "resources": resources,
-                            "page_hashes": raw_hashes,
-                        }
-                    },
-                    "content_capabilities": [
-                        "Image",
-                        "List",
-                        "Outline",
-                        "RichText",
-                        "Table",
-                        "Tag",
-                    ],
-                    "include_descendants": include_descendants,
-                }
             if name == "copy_page":
                 self.copy_arguments.append(dict(arguments))
                 return subtree_copied if arguments.get("include_descendants") else root_copied
@@ -989,39 +870,26 @@ def _legacy_copy_page_two_case_fixture(
     assert result["restored"] is expected_restored
     assert result["worksite_preserved"] is keep_worksite
     assert len(cleanup_calls) == expected_cleanup_calls
-    assert client.plan_calls == 4
-    assert "include_descendants" not in client.plan_arguments[0]
-    assert client.plan_arguments[2]["include_descendants"] is True
     assert "include_descendants" not in client.copy_arguments[0]
-    assert client.copy_arguments[0]["expected_modified"] == "plan-bound-root-modified"
+    assert client.copy_arguments[0]["expected_modified"] == source["modified"]
     assert client.copy_arguments[1]["include_descendants"] is True
-    assert client.copy_arguments[1]["expected_modified"] == "plan-bound-subtree-modified"
+    assert client.copy_arguments[1]["expected_modified"] == source["modified"]
     root_before = test_utils.read_json(
         run_dir / "scenarios" / "copy-page" / "before-root-only-default.json"
     )
-    assert root_before["plan_binding"] == {
-        "raw_page_hashes": {"source-page": "raw-root-hash"},
-        "source_id": "source-page",
-        "source_snapshot_digest": "root-source-digest",
-        "include_descendants": False,
-    }
+    assert "plan_binding" not in root_before
     subtree_before = test_utils.read_json(
         run_dir / "scenarios" / "copy-page" / "before-full-subtree.json"
     )
-    assert subtree_before["plan_binding"]["include_descendants"] is True
+    assert "plan_binding" not in subtree_before
     assert "root-target" in subtree_before["page_hashes"]
-    for case_name, digest in (
-        ("root-only-default", "root-digest"),
-        ("full-subtree", "subtree-digest"),
-    ):
-        plan_attempts = test_utils.read_json(
-            run_dir / "scenarios" / "copy-page" / f"plan-attempts-{case_name}.json"
-        )
-        assert plan_attempts["stabilized"] is True
-        assert [attempt["plan_digest"] for attempt in plan_attempts["attempts"]] == [
-            digest,
-            digest,
-        ]
+    planning_evidence = test_utils.read_json(
+        run_dir / "scenarios" / "copy-page" / "internal-planning.json"
+    )
+    assert [
+        case["planning"]["include_descendants"]
+        for case in planning_evidence["cases"]
+    ] == [False, True]
     assert [case["mapped_page_count"] for case in result["case_results"]] == [1, 2]
     if keep_worksite:
         worksite = test_utils.read_json(run_dir / "scenarios" / "copy-page" / "worksite.json")
@@ -1170,44 +1038,6 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
             "page_objects": {page_id: [{"id": f"object-{page_id}"}] for page_id in hashes},
         }
 
-    async def fake_plan(_client, arguments, **_kwargs):
-        include_descendants = arguments.get("include_descendants", False)
-        resources = [source, child] if include_descendants else [source]
-        destination_by_id = {
-            item["id"]: item
-            for item in (source_section, cross_section, cross_notebook_section)
-        }
-        destination_parent = destination_by_id[arguments["destination_parent_id"]]
-        return {
-            "plan_digest": f"digest-{arguments['destination_parent_id']}-{include_descendants}",
-            "source_snapshot_digest": "source-digest",
-            "source": source,
-            "snapshots": {
-                "source": {
-                    "resources": resources,
-                    "page_hashes": {item["id"]: "raw" for item in resources},
-                },
-                "destination": {
-                    "resource_type": destination_parent["resource_type"],
-                    "parent": destination_parent,
-                    "name": arguments["destination_name"],
-                    "base_folder": "",
-                    "target_path": "",
-                    "existing_children": [],
-                },
-            },
-            "content_capabilities": [
-                "DisplayEquation",
-                "Image",
-                "List",
-                "Outline",
-                "RichText",
-                "Table",
-                "Tag",
-            ],
-            "include_descendants": include_descendants,
-        }
-
     copy_arguments: list[dict] = []
 
     class FakeClient:
@@ -1264,7 +1094,16 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                     "sibling_count": len(siblings),
                     "sequence_source": "page_order",
                 },
-                "copy_report": {"verified": True, "id_map": id_map},
+                "copy_report": {
+                    "planning": {
+                        "include_descendants": arguments.get(
+                            "include_descendants", False
+                        ),
+                        "content_capabilities": [],
+                    },
+                    "verified": True,
+                    "id_map": id_map,
+                },
             }
 
     async def fake_cleanup(_client, _snapshot, copied):
@@ -1273,7 +1112,6 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
         return deleted
 
     monkeypatch.setattr(copy_runtime, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(copy_runtime, "stable_copy_plan", fake_plan)
     monkeypatch.setattr(copy_runtime, "assert_copy_fixture_capabilities", lambda *_a, **_k: None)
     monkeypatch.setattr(copy_runtime, "assert_copy_mapping", lambda *_a, **_k: None)
     monkeypatch.setattr(copy_runtime, "cleanup_copy", fake_cleanup)

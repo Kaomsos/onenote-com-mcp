@@ -35,6 +35,7 @@ from .mutation_control import (
     MutationAttemptOutcome,
     mutation_attempt_policy,
 )
+from .operation_runtime import record_backend_call
 from .pages import PageService, stable_page_content_digest
 from .position import destination_position, unavailable_destination_position
 from .reconciliation import ReconciliationState, reconcile_mutation
@@ -2514,12 +2515,15 @@ class MutationService(BaseService):
         )
         before_hash = self.pages.digest(self.pages.xml(page_id, "all"))
         path = Path(image_path)
+        record_backend_call("filesystem:image_source_is_file")
         if not path.is_file():
             raise ValueError(f"Image file not found: {image_path}")
         fmt = image_format or path.suffix.lstrip(".")
         if not fmt:
             raise ValueError("image_format is required when image_path has no extension.")
+        record_backend_call("filesystem:image_dimension_read")
         resolved_width, resolved_height = proportional_dimensions(path, width, height)
+        record_backend_call("filesystem:image_source_read")
         xml = build_image_page_update_xml(
             page_id,
             image_base64=base64.b64encode(path.read_bytes()).decode("ascii"),

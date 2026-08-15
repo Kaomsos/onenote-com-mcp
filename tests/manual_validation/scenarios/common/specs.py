@@ -111,7 +111,8 @@ SCENARIO_SPECS = {
             "fresh-com-convergence",
             (
                 "01-Convergence-Section/{01-Anchor,02-Anchor}",
-                "run-scoped 03-Convergence-Probe is created, title/content updated, content-deleted, reordered, and deleted before production Close",
+                "a second run-scoped Notebook is created through the public Tool and closed",
+                "run-scoped 03-Convergence-Probe is created, title/body/content updated, content-deleted, reordered, and deleted before production Close",
             ),
             (
                 "convergence_section",
@@ -122,6 +123,11 @@ SCENARIO_SPECS = {
             content=("plain_text", "page_content_object", "page_order", "production_convergence_evidence"),
             checks=(
                 "both anchor Pages resolve to fresh exact IDs in one Section",
+                "Sync reports accepted without observable completion",
+                "Publish creates one exact run-scoped PDF target",
+                "typed and URL Navigate report UI action accepted without persistence claims",
+                "public create_notebook returns an exact run-scoped identity and is closed",
+                "Replace Body proves convergence and its non-atomic saga contract",
                 "all mutation responses prove at least two stable live observations",
                 "the disposable probe is non-permanently deleted before production close_notebook",
             ),
@@ -131,16 +137,32 @@ SCENARIO_SPECS = {
             READ_TOOLS
             | {
                 "create_section",
+                "create_notebook",
                 "create_page",
                 "update_page_title",
+                "replace_page_body",
                 "append_to_page",
                 "delete_page_content",
                 "reorder_page",
                 "delete_page",
                 "close_notebook",
+                "sync_notebook",
+                "publish_object",
+                "get_hyperlink",
+                "navigate_to",
+                "navigate_to_url",
             }
         ),
-        {"fresh_only": True, "included_in_all": False},
+        {
+            "fresh_only": True,
+            "included_in_all": False,
+            "effect_operations": [
+                "sync_notebook",
+                "publish_object",
+                "navigate_to",
+                "navigate_to_url",
+            ],
+        },
     ),
     "create": ScenarioSpec(
         "create",
@@ -1035,7 +1057,7 @@ for _scenario_name, _bootstrap_name, _capability in (
     ("interactive-copy-media-file", "bootstrap-media-file-fixture", "MediaFile"),
     ("interactive-copy-ui-shape", "bootstrap-shape-fixture", "UIShape"),
 ):
-    _copy_tools = READ_TOOLS | {"plan_copy", "copy_page"}
+    _copy_tools = READ_TOOLS | {"copy_page"}
     if _scenario_name == "interactive-copy-media-file":
         _copy_tools |= {"create_section"}
     SCENARIO_SPECS[_scenario_name] = ScenarioSpec(
@@ -1118,7 +1140,7 @@ SCENARIO_SPECS["interactive-copy-inline-equation"] = ScenarioSpec(
     "interactive-copy-inline-equation",
     SCENARIO_SPECS["bootstrap-inline-equation-fixture"].fixture,
     COPY_NO_DELETE_POLICY,
-    frozenset(READ_TOOLS | {"plan_copy", "copy_page"}),
+    frozenset(READ_TOOLS | {"copy_page"}),
     {
         "interactive_copy_evidence": True,
         "capability": "InlineEquation",

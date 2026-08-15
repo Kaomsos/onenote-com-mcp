@@ -12,6 +12,9 @@ class BaseService:
         self.bridge = bridge
 
     def call(self, operation: str, **params: Any) -> dict[str, Any]:
+        from .operation_runtime import record_backend_call
+
+        record_backend_call(operation)
         return self.bridge.call(operation, **params)
 
     @staticmethod

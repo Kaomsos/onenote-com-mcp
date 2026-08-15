@@ -17,6 +17,7 @@ from .base import BaseService
 from .hierarchy import HierarchyService
 from .mutations import MutationService
 from .mutation_control import mutation_attempt_policy
+from .operation_runtime import record_backend_call
 
 
 class OperationsService(BaseService):
@@ -54,8 +55,10 @@ class OperationsService(BaseService):
         if not output.is_absolute():
             output = Path.cwd() / output
         output = output.resolve(strict=False)
+        record_backend_call("filesystem:publish_target_exists")
         if output.exists() and not overwrite:
             raise ValueError(f"Target already exists: {target_path}")
+        record_backend_call("filesystem:publish_parent_mkdir")
         output.parent.mkdir(parents=True, exist_ok=True)
         item = self.hierarchy.resource(object_id)
         if item["resource_type"] not in {"notebook", "section", "page"}:
@@ -66,7 +69,13 @@ class OperationsService(BaseService):
             target_path=str(output),
             format=self.enum("format", format, PUBLISH_FORMATS),
         )
-        return {"item": item, "path": result["path"], "format": format.casefold()}
+        returned = Path(str(result.get("path", ""))).expanduser().resolve(strict=False)
+        if returned != output:
+            raise RuntimeError("Publish returned a path different from the exact requested target.")
+        record_backend_call("filesystem:publish_target_is_file")
+        if not output.is_file():
+            raise RuntimeError("Publish returned without creating the exact target file.")
+        return {"item": item, "path": str(output), "format": format.casefold()}
 
     def navigate(self, object_id: str, page_content_object_id: str = "", new_window: bool = False) -> dict[str, Any]:
         item = self.hierarchy.resource(object_id)
@@ -89,6 +98,8 @@ class OperationsService(BaseService):
             "item": item,
             "sync_requested": True,
             "accepted": True,
+            "complete": False,
+            "completion_observable": False,
             "converged": False,
             "convergence": {
                 "converged": False,

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from .context import get_services
 from .responses import invoke
 
 
@@ -13,51 +12,69 @@ async def get_hyperlink(
 ) -> dict[str, Any]:
     """Return a desktop or web hyperlink for a typed OneNote object."""
 
-    return invoke(lambda: get_services().operations.hyperlink(object_id, page_content_object_id, web))
+    return invoke(
+        "get_hyperlink",
+        object_id=object_id,
+        page_content_object_id=page_content_object_id,
+        web=web,
+    )
 
 
 async def get_parent(object_id: str) -> dict[str, Any]:
     """Return the typed parent of a OneNote object."""
 
-    return invoke(lambda: get_services().operations.parent(object_id))
+    return invoke("get_parent", object_id=object_id)
 
 
 async def publish_object(
     object_id: str, target_path: str, format: str = "pdf", overwrite: bool = False
 ) -> dict[str, Any]:
-    """Publish a notebook, section, or page to a local file."""
+    """Write a local file and verify that filesystem effect; do not mutate OneNote."""
 
-    return invoke(lambda: get_services().operations.publish(object_id, target_path, format, overwrite))
+    return invoke(
+        "publish_object",
+        object_id=object_id,
+        target_path=target_path,
+        format=format,
+        overwrite=overwrite,
+    )
 
 
 async def navigate_to(
     object_id: str, page_content_object_id: str = "", new_window: bool = False
 ) -> dict[str, Any]:
-    """Navigate the OneNote desktop application to an object."""
+    """Ask the OneNote UI to navigate to an exact object; report action acceptance only."""
 
-    return invoke(lambda: get_services().operations.navigate(object_id, page_content_object_id, new_window))
+    return invoke(
+        "navigate_to",
+        object_id=object_id,
+        page_content_object_id=page_content_object_id,
+        new_window=new_window,
+    )
 
 
 async def navigate_to_url(url: str, new_window: bool = False) -> dict[str, Any]:
-    """Navigate OneNote to a OneNote URL."""
+    """Ask the OneNote UI to navigate to a URL; report action acceptance only."""
 
-    return invoke(lambda: get_services().operations.navigate_url(url, new_window))
+    return invoke("navigate_to_url", url=url, new_window=new_window)
 
 
 async def sync_notebook(notebook_id: str) -> dict[str, Any]:
-    """Request synchronization for a typed notebook."""
+    """Request synchronization; acceptance does not prove that synchronization completed."""
 
-    return invoke(lambda: get_services().operations.sync_notebook(notebook_id), mutation=True)
+    return invoke("sync_notebook", notebook_id=notebook_id)
 
 
 async def close_notebook(
     notebook_id: str, expected_name: str, expected_modified: str | None = None
 ) -> dict[str, Any]:
-    """Close a confirmed notebook and verify the resulting state."""
+    """Close an exact confirmed notebook and converge its observable open state."""
 
     return invoke(
-        lambda: get_services().operations.close_notebook(notebook_id, expected_name, expected_modified),
-        mutation=True,
+        "close_notebook",
+        notebook_id=notebook_id,
+        expected_name=expected_name,
+        expected_modified=expected_modified,
     )
 
 

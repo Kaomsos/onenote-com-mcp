@@ -54,7 +54,6 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         assert f"{scenario.name}.keep-worksite" in {case.case_id for case in scenario_cases}
     excluded = set(SCENARIO_REGISTRY.public_names) - set(get_all_scenario_names())
     assert excluded == {
-        "reorder-section-group",
         "bootstrap-inserted-file-fixture",
         "bootstrap-ink-drawing-fixture",
         "bootstrap-media-file-fixture",

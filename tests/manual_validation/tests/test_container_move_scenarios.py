@@ -96,17 +96,6 @@ def test_container_move_scenario_checks_verified_copy_and_one_root_delete(
             ]
             source_ids = [item["id"] for item in source_subtree]
             id_map = {value: f"target-{value}" for value in source_ids}
-            if name.startswith("plan_move_"):
-                return {
-                    "operation": f"move_{resource_type}",
-                    "plan_digest": "digest",
-                    "move_notebooks": {
-                        "source_notebook_id": "source-notebook",
-                        "destination_notebook_id": "destination-notebook",
-                        "cross_notebook": True,
-                    },
-                    "snapshots": {"source": {"resources": source_subtree}},
-                }
             assert name == f"move_{resource_type}"
             destination_name = arguments["destination_name"]
             for item in source_subtree:

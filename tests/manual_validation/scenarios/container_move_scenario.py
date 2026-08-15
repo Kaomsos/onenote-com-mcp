@@ -29,7 +29,6 @@ class ContainerMoveScenario(Scenario):
     """A strict cross-Notebook Copy→one non-permanent root Delete validation."""
 
     resource_type = ""
-    plan_tool = ""
     move_tool = ""
     tool_allowlist: set[str]
     timeout_default = 1_800
@@ -98,27 +97,6 @@ class ContainerMoveScenario(Scenario):
             source_ids = [str(item["id"]) for item in selected]
             destination_name = f"Moved-{self.resource_type}-{run_safe_timestamp(args)}"
 
-            plan_arguments = {
-                f"{self.resource_type}_id": current_source["id"],
-                "destination_parent_id": destination_notebook_id,
-                "destination_name": destination_name,
-            }
-            planned = await active_client.call_tool(self.plan_tool, plan_arguments)
-            write_json(out / "plan.json", planned)
-            planned_ids = [
-                str(item["id"])
-                for item in planned.get("snapshots", {}).get("source", {}).get("resources", [])
-            ]
-            if planned.get("operation") != f"move_{self.resource_type}" or planned_ids != source_ids:
-                raise InvariantFailure("Container Move plan selected the wrong typed subtree.")
-            move_notebooks = planned.get("move_notebooks", {})
-            if move_notebooks != {
-                "source_notebook_id": source_notebook_id,
-                "destination_notebook_id": destination_notebook_id,
-                "cross_notebook": True,
-            }:
-                raise InvariantFailure("Container Move plan did not bind the two Notebook roles.")
-
             move_arguments = {
                 f"{self.resource_type}_id": current_source["id"],
                 "destination_parent_id": destination_notebook_id,
@@ -126,7 +104,6 @@ class ContainerMoveScenario(Scenario):
                 "expected_parent_id": current_source["parent_id"],
                 "expected_modified": current_source.get("modified"),
                 "destination_name": destination_name,
-                "plan_digest": planned["plan_digest"],
             }
             moved = await call_with_result_evidence(
                 active_client,

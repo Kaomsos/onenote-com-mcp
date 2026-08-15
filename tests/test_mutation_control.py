@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from local_onenote_mcp import server as _server
 from local_onenote_mcp.onenote_errors import (
     OneNoteFileUnavailableError,
     OneNoteModalUIBlockedError,
@@ -10,7 +11,6 @@ from local_onenote_mcp.onenote_errors import (
     OneNoteOperationTimeoutError,
 )
 from local_onenote_mcp.services.mutation_control import (
-    MUTATION_ATTEMPT_POLICY_BINDINGS,
     MUTATION_ATTEMPT_POLICIES,
     MutationAttemptExecutor,
     MutationAttemptPolicy,
@@ -20,6 +20,7 @@ from local_onenote_mcp.services.mutation_control import (
     mutation_attempt_policy,
 )
 from local_onenote_mcp.services.errors import MutationFailure, MutationPreflightFailure
+from local_onenote_mcp.tools.context import get_runtime
 from local_onenote_mcp.tools.responses import caught
 
 
@@ -57,26 +58,29 @@ def test_attempt_policy_catalog_is_explicit_and_excludes_multistage_and_nonmutat
 
 
 def test_public_attempt_policy_inventory_is_complete_and_references_known_policies() -> None:
-    assert set(MUTATION_ATTEMPT_POLICY_BINDINGS) == {
-        "update_page_title",
-        "rename_section",
-        "rename_section_group",
-        "reorder_page",
-        "reorder_section",
-        "append_to_page",
-        "add_image_to_page",
-        "delete_page_content",
-        "delete_page",
-        "delete_section",
-        "delete_section_group",
-        "close_notebook",
-        "reparent_page",
-        "reparent_section",
-        "reparent_section_group",
+    bindings = get_runtime().registry.bindings
+    inventory = {
+        name: binding.spec.attempt_policy_id
+        for name, binding in bindings.items()
+        if binding.spec.attempt_policy_id in MUTATION_ATTEMPT_POLICIES
     }
-    assert set(MUTATION_ATTEMPT_POLICY_BINDINGS.values()).issubset(
-        MUTATION_ATTEMPT_POLICIES
-    )
+    assert inventory == {
+        "update_page_title": "update_page_title",
+        "rename_section": "rename_resource",
+        "rename_section_group": "rename_resource",
+        "reorder_page": "reorder_page",
+        "reorder_section": "reorder_section",
+        "append_to_page": "append_to_page",
+        "add_image_to_page": "add_image_to_page",
+        "delete_page_content": "delete_page_content",
+        "delete_page": "delete_hierarchy",
+        "delete_section": "delete_hierarchy",
+        "delete_section_group": "delete_hierarchy",
+        "close_notebook": "close_notebook",
+        "reparent_page": "reparent_page",
+        "reparent_section": "reparent_section",
+        "reparent_section_group": "reparent_section_group",
+    }
 
 
 def test_reparent_policy_is_execute_once_and_forbids_readiness_side_effects() -> None:

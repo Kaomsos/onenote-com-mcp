@@ -16,8 +16,32 @@ from local_onenote_mcp.page import (
 )
 from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.services.pages import stable_page_content_digest
-from local_onenote_mcp.tools.copying import copy_page, plan_copy
+from local_onenote_mcp.tools.copying import copy_page
+from local_onenote_mcp.tools.responses import caught, ok
 from tests.destination_position_assertions import assert_destination_position_contract
+
+
+async def plan_copy(
+    source_id: str,
+    destination_parent_id: str = "",
+    destination_name: str = "",
+    destination_base_folder: str = "",
+    include_descendants: bool = False,
+):
+    """Exercise the internal plan builder without restoring a public MCP tool."""
+
+    try:
+        return ok(
+            **server.services.copying._inspect_copy_plan(
+            source_id,
+            destination_parent_id,
+            destination_name,
+            destination_base_folder,
+            include_descendants,
+        )
+        )
+    except Exception as exc:
+        return caught(exc)
 
 
 def page_xml(page_id: str, title: str, body: str = "") -> str:
@@ -1413,8 +1437,8 @@ def test_include_descendants_does_not_change_container_copy_scope(monkeypatch):
 @pytest.mark.parametrize(
     ("planner", "args"),
     [
-        ("plan_copy", ("parent", "destination-section", "Copy")),
-        ("plan_move_page", ("parent", "destination-section", "Move")),
+        ("_inspect_copy_plan", ("parent", "destination-section", "Copy")),
+        ("_inspect_move_page_plan", ("parent", "destination-section", "Move")),
     ],
 )
 def test_page_plan_tools_do_not_predict_destination_position(monkeypatch, planner, args):
@@ -1428,8 +1452,8 @@ def test_page_plan_tools_do_not_predict_destination_position(monkeypatch, planne
 @pytest.mark.parametrize(
     ("source_id", "planner"),
     [
-        ("source-container-section", "plan_move_section"),
-        ("source-group", "plan_move_section_group"),
+        ("source-container-section", "_inspect_move_section_plan"),
+        ("source-group", "_inspect_move_section_group_plan"),
     ],
 )
 def test_container_move_plans_do_not_predict_destination_position(
@@ -1508,16 +1532,19 @@ def test_plan_budget_rejects_subtree_before_reading_page_xml(monkeypatch):
 
 
 @pytest.mark.write_contract
-def test_copy_rejects_stale_plan_before_create(monkeypatch):
+def test_copy_rebuilds_plan_from_live_source_inside_single_call(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="Before")
-    planned = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    prior = server.services.copying._build_plan(
+        "parent", "destination-section", "Copied Parent"
+    )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
+    observed = {}
     monkeypatch.setattr(
-        server.services.mutations,
-        "create_page",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("No mutation is allowed")),
+        server.services.copying,
+        "_execute_copy",
+        lambda plan: observed.update(plan) or {"warnings": []},
     )
     state["body"] = "After"
 
@@ -1527,13 +1554,13 @@ def test_copy_rejects_stale_plan_before_create(monkeypatch):
             "destination-section",
             "Parent",
             "source-section",
-            planned["plan_digest"],
             destination_title="Copied Parent",
         )
     )
 
-    assert result["ok"] is False
-    assert "stale" in result["error"]
+    assert result["ok"] is True
+    assert observed["plan_digest"] != prior["plan_digest"]
+    assert observed["page_xml"]["parent"] == page_xml("parent", "Parent", "After")
 
 
 @pytest.mark.write_contract
@@ -1577,7 +1604,6 @@ def test_copy_notebook_allows_modified_clock_drift_when_semantic_plan_matches(mo
         "Source Notebook",
         None,
         "planned-clock",
-        "semantic-plan",
     )
 
     assert confirmations == [
@@ -1589,16 +1615,16 @@ def test_copy_notebook_allows_modified_clock_drift_when_semantic_plan_matches(mo
 
 
 @pytest.mark.write_contract
-def test_copy_rejects_changed_destination_snapshot_before_create(monkeypatch):
+def test_copy_rebuilds_plan_from_live_destination_inside_single_call(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
-    planned = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
+    observed = {}
     monkeypatch.setattr(
-        server.services.mutations,
-        "create_page",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("No mutation is allowed")),
+        server.services.copying,
+        "_execute_copy",
+        lambda plan: observed.update(plan) or {"warnings": []},
     )
     state["items"].append(
         {
@@ -1620,36 +1646,28 @@ def test_copy_rejects_changed_destination_snapshot_before_create(monkeypatch):
             "destination-section",
             "Parent",
             "source-section",
-            planned["plan_digest"],
             destination_title="Copied Parent",
         )
     )
 
-    assert result["ok"] is False
-    assert "stale" in result["error"]
+    assert result["ok"] is True
+    assert [
+        item["id"] for item in observed["destination"]["existing_children"]
+    ] == ["new-destination-child"]
 
 
 @pytest.mark.write_contract
-@pytest.mark.parametrize(("planned_scope", "executed_scope"), [(True, False), (False, True)])
-def test_copy_rejects_include_descendants_mismatch_before_create(
-    monkeypatch, planned_scope, executed_scope
-):
+@pytest.mark.parametrize("include_descendants", [False, True])
+def test_copy_binds_requested_scope_in_internal_plan(monkeypatch, include_descendants):
     install_plan_fakes(monkeypatch, body="")
-    planned = asyncio.run(
-        plan_copy(
-            "parent",
-            "destination-section",
-            "Copied Parent",
-            include_descendants=planned_scope,
-        )
-    )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
+    observed = {}
     monkeypatch.setattr(
-        server.services.mutations,
-        "create_page",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("No mutation is allowed")),
+        server.services.copying,
+        "_execute_copy",
+        lambda plan: observed.update(plan) or {"warnings": []},
     )
 
     result = asyncio.run(
@@ -1658,14 +1676,15 @@ def test_copy_rejects_include_descendants_mismatch_before_create(
             "destination-section",
             "Parent",
             "source-section",
-            planned["plan_digest"],
             destination_title="Copied Parent",
-            include_descendants=executed_scope,
+            include_descendants=include_descendants,
         )
     )
 
-    assert result["ok"] is False
-    assert "stale" in result["error"]
+    assert result["ok"] is True
+    assert observed["include_descendants"] is include_descendants
+    expected_ids = ["parent", "child"] if include_descendants else ["parent"]
+    assert [item["id"] for item in observed["resources"]] == expected_ids
 
 
 def test_partial_create_reports_created_ids_without_rollback(monkeypatch):
@@ -2216,10 +2235,10 @@ def test_video_preview_player_marker_loss_fails_strict_copy_readback(monkeypatch
 def test_move_page_scope_defaults_to_root_and_binds_preserved_descendants(monkeypatch):
     install_plan_fakes(monkeypatch, body="")
 
-    root_only = server.services.copying.plan_move_page(
+    root_only = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
     )
-    subtree = server.services.copying.plan_move_page(
+    subtree = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
 
@@ -2246,9 +2265,9 @@ def test_move_page_scope_defaults_to_root_and_binds_preserved_descendants(monkey
 
 
 @pytest.mark.write_contract
-@pytest.mark.parametrize("planned_scope,executed_scope", [(False, True), (True, False)])
-def test_move_page_rejects_scope_mismatch_before_copy(
-    monkeypatch, planned_scope, executed_scope
+@pytest.mark.parametrize("include_descendants", [False, True])
+def test_move_page_binds_requested_scope_in_internal_plan(
+    monkeypatch, include_descendants
 ):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
@@ -2256,28 +2275,33 @@ def test_move_page_rejects_scope_mismatch_before_copy(
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
-        "parent",
-        "destination-section",
-        "Moved Parent",
-        planned_scope,
-    )
+    observed = {}
     monkeypatch.setattr(
         server.services.copying,
         "_execute_copy",
-        lambda value: (_ for _ in ()).throw(AssertionError("stale Move must not copy")),
+        lambda plan: observed.update(plan)
+        or {
+            "item": {"id": "target-parent"},
+            "id_map": {"parent": "target-parent"},
+            "copy_report": {"copy_contract_satisfied": False},
+            "created_ids": ["target-parent"],
+            "completed_steps": [],
+            "warnings": [],
+        },
     )
 
-    with pytest.raises(ValueError, match="missing or stale"):
+    with pytest.raises(PartialFailure) as raised:
         server.services.copying.move_page(
             "parent",
             "destination-section",
             "Parent",
             "source-section",
-            plan["plan_digest"],
             destination_title="Moved Parent",
-            include_descendants=executed_scope,
+            include_descendants=include_descendants,
         )
+
+    assert raised.value.details["outcome"] == "copy_only"
+    assert observed["include_descendants"] is include_descendants
 
 
 @pytest.mark.write_contract
@@ -2298,7 +2322,7 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
     )
     monkeypatch.setattr(
@@ -2361,7 +2385,6 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
         "destination-section",
         "Parent",
         "source-section",
-        plan["plan_digest"],
         destination_title="Moved Parent",
     )
 
@@ -2387,7 +2410,7 @@ def test_root_only_move_blocks_delete_when_descendant_promotion_fails(monkeypatc
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
     )
     monkeypatch.setattr(
@@ -2424,7 +2447,6 @@ def test_root_only_move_blocks_delete_when_descendant_promotion_fails(monkeypatc
             "destination-section",
             "Parent",
             "source-section",
-            plan["plan_digest"],
             destination_title="Moved Parent",
         )
 
@@ -2443,7 +2465,7 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
     monkeypatch.setattr(
@@ -2468,7 +2490,6 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
             "destination-section",
             "Parent",
             "source-section",
-            plan["plan_digest"],
             destination_title="Moved Parent",
             include_descendants=True,
         )
@@ -2487,7 +2508,7 @@ def test_move_page_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
     )
     def execute_copy(_value):
@@ -2532,7 +2553,6 @@ def test_move_page_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
         "destination-section",
         "Parent",
         "source-section",
-        plan["plan_digest"],
         destination_title="Moved Parent",
     )
 
@@ -2553,7 +2573,7 @@ def test_move_page_same_section_recomputes_position_after_source_delete(monkeypa
     monkeypatch.setattr(
         server.services.copying, "_confirm_source", lambda *args, **kwargs: None
     )
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "source-section", "Moved Parent"
     )
     copy_stage_position: dict = {}
@@ -2615,7 +2635,6 @@ def test_move_page_same_section_recomputes_position_after_source_delete(monkeypa
         "source-section",
         "Parent",
         "source-section",
-        plan["plan_digest"],
         destination_title="Moved Parent",
     )
 
@@ -2637,7 +2656,7 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
     report = {
@@ -2668,7 +2687,6 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
             "destination-section",
             "Parent",
             "source-section",
-            plan["plan_digest"],
             destination_title="Moved Parent",
             include_descendants=True,
         )
@@ -2690,7 +2708,7 @@ def test_move_page_actual_copy_identity_failure_blocks_all_source_deletes(
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    planned = server.services.copying.plan_move_page(
+    planned = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
 
@@ -2740,7 +2758,6 @@ def test_move_page_actual_copy_identity_failure_blocks_all_source_deletes(
             "destination-section",
             "Parent",
             "source-section",
-            planned["plan_digest"],
             destination_title="Moved Parent",
             include_descendants=True,
         )
@@ -2759,7 +2776,7 @@ def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
     monkeypatch.setattr(
@@ -2800,7 +2817,6 @@ def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch)
             "destination-section",
             "Parent",
             "source-section",
-            plan["plan_digest"],
             destination_title="Moved Parent",
             include_descendants=True,
         )
@@ -2819,7 +2835,7 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
 
@@ -2850,7 +2866,6 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
             "destination-section",
             "Parent",
             "source-section",
-            plan["plan_digest"],
             destination_title="Moved Parent",
             include_descendants=True,
         )
@@ -2868,7 +2883,7 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
     def execute_copy(_value):
@@ -2930,7 +2945,6 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
         "destination-section",
         "Parent",
         "source-section",
-        plan["plan_digest"],
         destination_title="Moved Parent",
         include_descendants=True,
     )
@@ -2957,7 +2971,7 @@ def test_move_page_reports_verified_and_remaining_ids_on_delete_failure(monkeypa
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
     monkeypatch.setattr(
@@ -2989,7 +3003,6 @@ def test_move_page_reports_verified_and_remaining_ids_on_delete_failure(monkeypa
             "destination-section",
             "Parent",
             "source-section",
-            plan["plan_digest"],
             destination_title="Moved Parent",
             include_descendants=True,
         )
@@ -3012,7 +3025,7 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE_PAGE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying.plan_move_page(
+    plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
     )
     def execute_copy(_value):
@@ -3052,7 +3065,6 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
         "destination-section",
         "Parent",
         "source-section",
-        plan["plan_digest"],
         destination_title="Moved Parent",
     )
 
@@ -3124,11 +3136,11 @@ def container_move_items() -> list[dict]:
 @pytest.mark.parametrize(
     ("resource_type", "source_id", "planner", "execute_tool"),
     [
-        ("section", "source-container-section", "plan_move_section", "move_section"),
+        ("section", "source-container-section", "_inspect_move_section_plan", "move_section"),
         (
             "section_group",
             "source-group",
-            "plan_move_section_group",
+            "_inspect_move_section_group_plan",
             "move_section_group",
         ),
     ],
@@ -3170,8 +3182,8 @@ def test_container_move_plan_is_cross_notebook_and_move_specific(
 @pytest.mark.parametrize(
     ("source_id", "planner", "suggestion"),
     [
-        ("source-container-section", "plan_move_section", "reparent_section"),
-        ("source-group", "plan_move_section_group", "reparent_section_group"),
+        ("source-container-section", "_inspect_move_section_plan", "reparent_section"),
+        ("source-group", "_inspect_move_section_group_plan", "reparent_section_group"),
     ],
 )
 def test_container_move_rejects_same_notebook_before_mutation(
@@ -3296,7 +3308,6 @@ def test_container_move_uses_one_nonpermanent_root_delete(monkeypatch, resource_
         "destination-notebook",
         "Source",
         "source-notebook",
-        "move-digest",
         "m1",
         "Moved",
     )
@@ -3331,7 +3342,6 @@ def test_container_move_uses_shared_copy_contract_without_lossless_gate(monkeypa
         "destination-notebook",
         "Source",
         "source-notebook",
-        "move-digest",
         "m1",
         "Moved",
     )
@@ -3363,7 +3373,6 @@ def test_container_move_accepts_destination_modified_clock_drift(monkeypatch):
         "destination-notebook",
         "Source",
         "source-notebook",
-        "move-digest",
         "m1",
         "Moved",
     )
@@ -3401,7 +3410,6 @@ def test_container_move_accepts_source_modified_clock_drift_and_rebinds_delete(m
         "destination-notebook",
         "Source",
         "source-notebook",
-        "move-digest",
         "m1",
         "Moved",
     )
@@ -3436,7 +3444,6 @@ def test_container_move_reports_destination_semantic_drift_after_source_delete(m
             "destination-notebook",
             "Source",
             "source-notebook",
-            "move-digest",
             "m1",
             "Moved",
         )
@@ -3469,7 +3476,6 @@ def test_container_move_does_not_delete_when_source_revalidation_changes(monkeyp
             "destination-notebook",
             "Source",
             "source-notebook",
-            "move-digest",
             "m1",
             "Moved",
         )
@@ -3507,7 +3513,6 @@ def test_container_move_reports_remaining_descendant_without_extra_deletes(monke
             "destination-notebook",
             "Source",
             "source-notebook",
-            "move-digest",
             "m1",
             "Moved",
         )

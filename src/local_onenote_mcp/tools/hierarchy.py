@@ -6,7 +6,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from .context import get_services
 from .responses import invoke
 
 
@@ -94,25 +93,25 @@ ExactHierarchyId = Annotated[
 async def list_notebooks() -> dict[str, Any]:
     """List currently open Notebook metadata in stable hierarchy order."""
 
-    return invoke(get_services().hierarchy.list_notebooks)
+    return invoke("list_notebooks")
 
 
 async def get_notebook(notebook_id: str) -> dict[str, Any]:
     """Get stable metadata for one Notebook by ID."""
 
-    return invoke(lambda: {"item": get_services().hierarchy.resource(notebook_id, "notebook")})
+    return invoke("get_notebook", notebook_id=notebook_id)
 
 
 async def get_section_group(section_group_id: str) -> dict[str, Any]:
     """Get stable metadata for one SectionGroup by ID."""
 
-    return invoke(lambda: {"item": get_services().hierarchy.resource(section_group_id, "section_group")})
+    return invoke("get_section_group", section_group_id=section_group_id)
 
 
 async def get_section(section_id: str) -> dict[str, Any]:
     """Get stable metadata for one Section by ID."""
 
-    return invoke(lambda: {"item": get_services().hierarchy.resource(section_id, "section")})
+    return invoke("get_section", section_id=section_id)
 
 
 async def query_notebook(
@@ -126,15 +125,13 @@ async def query_notebook(
     """Find open Notebook hierarchy metadata at the live root; this never reads Page body text. offset/page_size paginate after filtering and do not reduce GetHierarchy retrieval or metadata scanning."""
 
     return invoke(
-        lambda: get_services().hierarchy.metadata_query(
-            "notebook",
-            name_equals=name_equals,
-            name_contains=name_contains,
-            modified_after=modified_after,
-            modified_before=modified_before,
-            offset=offset,
-            page_size=page_size,
-        )
+        "query_notebook",
+        name_equals=name_equals,
+        name_contains=name_contains,
+        modified_after=modified_after,
+        modified_before=modified_before,
+        offset=offset,
+        page_size=page_size,
     )
 
 
@@ -158,18 +155,16 @@ async def query_section_group(
     """Find SectionGroup hierarchy metadata below open Notebooks or one exact Notebook/SectionGroup ID; this never reads Page body text. offset/page_size paginate after filtering and do not reduce GetHierarchy retrieval or metadata scanning."""
 
     return invoke(
-        lambda: get_services().hierarchy.metadata_query(
-            "section_group",
-            scope.model_dump(),
-            name_equals=name_equals,
-            name_contains=name_contains,
-            parent_id=parent_id,
-            modified_after=modified_after,
-            modified_before=modified_before,
-            include_recycle_bin=include_recycle_bin,
-            offset=offset,
-            page_size=page_size,
-        )
+        "query_section_group",
+        scope=scope.model_dump(),
+        name_equals=name_equals,
+        name_contains=name_contains,
+        parent_id=parent_id,
+        modified_after=modified_after,
+        modified_before=modified_before,
+        include_recycle_bin=include_recycle_bin,
+        offset=offset,
+        page_size=page_size,
     )
 
 
@@ -193,18 +188,16 @@ async def query_section(
     """Find Section hierarchy metadata below open Notebooks or one exact Notebook/SectionGroup ID; parent_id is direct and Page body text is never read. offset/page_size paginate after filtering and do not reduce GetHierarchy retrieval or metadata scanning."""
 
     return invoke(
-        lambda: get_services().hierarchy.metadata_query(
-            "section",
-            scope.model_dump(),
-            name_equals=name_equals,
-            name_contains=name_contains,
-            parent_id=parent_id,
-            modified_after=modified_after,
-            modified_before=modified_before,
-            include_recycle_bin=include_recycle_bin,
-            offset=offset,
-            page_size=page_size,
-        )
+        "query_section",
+        scope=scope.model_dump(),
+        name_equals=name_equals,
+        name_contains=name_contains,
+        parent_id=parent_id,
+        modified_after=modified_after,
+        modified_before=modified_before,
+        include_recycle_bin=include_recycle_bin,
+        offset=offset,
+        page_size=page_size,
     )
 
 
@@ -238,50 +231,48 @@ async def query_page(
     """Find Page hierarchy metadata by title, Section, indentation parent, or modification time below open Notebooks or one exact Notebook/SectionGroup/Section ID; use search_pages for Page body text. offset/page_size paginate after filtering and do not reduce GetHierarchy retrieval or metadata scanning."""
 
     return invoke(
-        lambda: get_services().hierarchy.metadata_query(
-            "page",
-            scope.model_dump(),
-            name_equals=title_equals,
-            name_contains=title_contains,
-            section_id=section_id,
-            parent_page_id=parent_page_id,
-            modified_after=modified_after,
-            modified_before=modified_before,
-            include_recycle_bin=include_recycle_bin,
-            offset=offset,
-            page_size=page_size,
-        )
+        "query_page",
+        scope=scope.model_dump(),
+        title_equals=title_equals,
+        title_contains=title_contains,
+        section_id=section_id,
+        parent_page_id=parent_page_id,
+        modified_after=modified_after,
+        modified_before=modified_before,
+        include_recycle_bin=include_recycle_bin,
+        offset=offset,
+        page_size=page_size,
     )
 
 
 async def get_path(object_id: str) -> dict[str, Any]:
     """Get a display path and stable ancestor IDs."""
 
-    return invoke(lambda: get_services().hierarchy.path(object_id))
+    return invoke("get_path", object_id=object_id)
 
 
 async def expand_notebook(id: ExactHierarchyId) -> dict[str, Any]:
     """Expand one exact open Notebook through nested SectionGroups to Section leaves."""
 
-    return invoke(lambda: get_services().hierarchy.expand_typed(id, "notebook"))
+    return invoke("expand_notebook", id=id)
 
 
 async def expand_section_group(id: ExactHierarchyId) -> dict[str, Any]:
     """Expand one exact SectionGroup through nested groups to Section leaves."""
 
-    return invoke(lambda: get_services().hierarchy.expand_typed(id, "section_group"))
+    return invoke("expand_section_group", id=id)
 
 
 async def expand_section(id: ExactHierarchyId) -> dict[str, Any]:
     """Expand one exact Section to its complete Page indentation tree."""
 
-    return invoke(lambda: get_services().hierarchy.expand_typed(id, "section"))
+    return invoke("expand_section", id=id)
 
 
 async def expand_page(id: ExactHierarchyId) -> dict[str, Any]:
     """Expand one exact Page to its complete indentation-descendant subtree."""
 
-    return invoke(lambda: get_services().hierarchy.expand_typed(id, "page"))
+    return invoke("expand_page", id=id)
 
 
 async def expand_hierarchy(
@@ -292,9 +283,10 @@ async def expand_hierarchy(
     """Expand any exact hierarchy root to a numeric depth without reading Page body text."""
 
     return invoke(
-        lambda: get_services().hierarchy.expand_hierarchy(
-            root_id, max_depth, include_recycle_bin
-        )
+        "expand_hierarchy",
+        root_id=root_id,
+        max_depth=max_depth,
+        include_recycle_bin=include_recycle_bin,
     )
 
 

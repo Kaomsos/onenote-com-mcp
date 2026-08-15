@@ -192,10 +192,8 @@ def copy_spec(
 def copy_execute_arguments(
     spec: dict[str, Any],
     source: dict[str, Any],
-    plan_digest: str,
 ) -> dict[str, Any]:
     common = {
-        "plan_digest": plan_digest,
         "expected_modified": source.get("modified"),
     }
     tool = spec["tool"]
@@ -231,202 +229,6 @@ def copy_execute_arguments(
         "expected_parent_id": source["parent_id"],
         "destination_name": spec["destination_name"],
     }
-
-
-def plan_bound_before_snapshot(
-    before: dict[str, Any],
-    planned: dict[str, Any],
-) -> dict[str, Any]:
-    """Align runner evidence with the source and destination protected by plan_digest."""
-
-    planned_source = planned.get("source")
-    snapshots = planned.get("snapshots", {})
-    source_snapshot = snapshots.get("source")
-    destination_snapshot = snapshots.get("destination")
-    if not isinstance(planned_source, dict) or not planned_source.get("id"):
-        raise InvariantFailure("Copy plan is missing its typed source snapshot.")
-    if not isinstance(source_snapshot, dict):
-        raise InvariantFailure("Copy plan is missing source snapshot evidence.")
-    if not isinstance(destination_snapshot, dict):
-        raise InvariantFailure("Copy plan is missing destination snapshot evidence.")
-    destination_parent = destination_snapshot.get("parent")
-    destination_is_notebook_root = (
-        destination_snapshot.get("resource_type") == "notebook_root"
-        and destination_parent is None
-    )
-    if not destination_is_notebook_root and (
-        not isinstance(destination_parent, dict) or not destination_parent.get("id")
-    ):
-        raise InvariantFailure(
-            "Copy plan destination is missing its typed parent snapshot evidence."
-        )
-    planned_resources = source_snapshot.get("resources")
-    planned_page_hashes = source_snapshot.get("page_hashes")
-    planned_page_xml_hashes = source_snapshot.get("page_xml_hashes")
-    if not isinstance(planned_resources, list) or not isinstance(planned_page_hashes, dict):
-        raise InvariantFailure("Copy plan source snapshot is incomplete.")
-    if planned_page_xml_hashes is not None and not isinstance(
-        planned_page_xml_hashes, dict
-    ):
-        raise InvariantFailure("Copy plan raw Page XML hash evidence is invalid.")
-
-    before_ids = {
-        str(item["id"])
-        for item in before.get("items", [])
-        if isinstance(item, dict) and item.get("id")
-    }
-    planned_by_id = {
-        str(item["id"]): item
-        for item in planned_resources
-        if isinstance(item, dict) and item.get("id")
-    }
-    missing = sorted(set(planned_by_id) - before_ids)
-    if missing:
-        raise InvariantFailure(
-            f"Copy plan source resources are missing from runner before evidence: {missing}"
-        )
-    if str(planned_source["id"]) not in planned_by_id:
-        raise InvariantFailure("Copy plan source root is missing from its resource snapshot.")
-    current_destination = None
-    if isinstance(destination_parent, dict):
-        current_destination = find_snapshot_item(before, str(destination_parent["id"]))
-        if current_destination is None:
-            raise InvariantFailure(
-                "Copy plan destination parent is missing from runner before evidence."
-            )
-    stable_destination_fields = (
-        "resource_type",
-        "parent_id",
-        "notebook_id",
-        "name",
-        "title",
-    )
-    if isinstance(destination_parent, dict) and any(
-        field in destination_parent
-        and current_destination.get(field) != destination_parent.get(field)
-        for field in stable_destination_fields
-    ):
-        raise InvariantFailure(
-            "Copy plan destination parent snapshot differs from runner before evidence."
-        )
-
-    items = []
-    for item in before.get("items", []):
-        planned_item = planned_by_id.get(str(item.get("id", "")))
-        if planned_item is None:
-            if (
-                isinstance(destination_parent, dict)
-                and str(item.get("id", "")) == str(destination_parent["id"])
-            ):
-                rebound_destination = dict(item)
-                if "modified" in destination_parent:
-                    rebound_destination["modified"] = destination_parent.get("modified")
-                items.append(rebound_destination)
-            else:
-                items.append(item)
-            continue
-        rebound = dict(item)
-        if "modified" in planned_item:
-            rebound["modified"] = planned_item.get("modified")
-        items.append(rebound)
-
-    return {
-        **before,
-        "items": items,
-        "page_hashes": dict(before.get("page_hashes", {})),
-        "plan_binding": {
-            "source_id": planned_source["id"],
-            "source_snapshot_digest": planned.get("source_snapshot_digest"),
-            "destination_id": (
-                destination_parent["id"]
-                if isinstance(destination_parent, dict)
-                else None
-            ),
-            "destination_snapshot": dict(destination_snapshot),
-            "destination_parent_snapshot": (
-                dict(destination_parent)
-                if isinstance(destination_parent, dict)
-                else None
-            ),
-            "raw_page_hashes": (
-                planned_page_xml_hashes
-                if isinstance(planned_page_xml_hashes, dict)
-                else planned_page_hashes
-            ),
-            "include_descendants": planned.get("include_descendants"),
-        },
-    }
-
-
-async def stable_copy_plan(
-    client: MCPStdioClient,
-    arguments: dict[str, Any],
-    *,
-    attempts_path: Path,
-    plan_path: Path,
-    max_attempts: int = 3,
-) -> dict[str, Any]:
-    """Require two consecutive identical read-only plans before Copy mutation."""
-
-    previous_digest: str | None = None
-    attempts: list[dict[str, Any]] = []
-    for attempt in range(1, max_attempts + 1):
-        planned = await client.call_tool("plan_copy", arguments)
-        write_json(plan_path, planned)
-        digest = str(planned.get("plan_digest", ""))
-        source = planned.get("source", {})
-        snapshots = planned.get("snapshots", {})
-        destination = (
-            snapshots.get("destination", {}) if isinstance(snapshots, dict) else {}
-        )
-        destination_parent = (
-            destination.get("parent") if isinstance(destination, dict) else None
-        )
-        source_snapshot = (
-            snapshots.get("source", {}) if isinstance(snapshots, dict) else {}
-        )
-        attempts.append(
-            {
-                "attempt": attempt,
-                "plan_digest": digest,
-                "source_snapshot_digest": planned.get("source_snapshot_digest"),
-                "source_modified": (
-                    source.get("modified") if isinstance(source, dict) else None
-                ),
-                "destination_id": (
-                    destination_parent.get("id")
-                    if isinstance(destination_parent, dict)
-                    else None
-                ),
-                "include_descendants": planned.get("include_descendants"),
-                "source_page_hashes": (
-                    source_snapshot.get("page_hashes")
-                    if isinstance(source_snapshot, dict)
-                    else None
-                ),
-                "source_raw_xml_hashes": (
-                    source_snapshot.get("page_xml_hashes")
-                    if isinstance(source_snapshot, dict)
-                    else None
-                ),
-            }
-        )
-        stabilized = bool(digest) and digest == previous_digest
-        write_json(
-            attempts_path,
-            {
-                "maximum_attempts": max_attempts,
-                "stabilized": stabilized,
-                "attempts": attempts,
-            },
-        )
-        if stabilized:
-            return planned
-        previous_digest = digest
-    raise InvariantFailure(
-        "Copy source/destination plan did not stabilize across consecutive read-only "
-        "snapshots; mutation was not attempted."
-    )
 
 
 async def cleanup_copy(
@@ -830,7 +632,7 @@ async def execute_copy_page(
         current_snapshot = original_before
         copied_results: list[dict[str, Any]] = []
         case_results: list[dict[str, Any]] = []
-        plan_index: list[dict[str, Any]] = []
+        execution_index: list[dict[str, Any]] = []
 
         for case_index, case in enumerate(cases, start=1):
             case_name = str(case["name"])
@@ -850,40 +652,8 @@ async def execute_copy_page(
                 "collision_anchor": dict(case["collision_anchor"]),
                 "include_descendants": include_descendants,
             }
-            plan_arguments = {
-                "source_id": pre_plan_source["id"],
-                "destination_parent_id": case_spec["destination"]["id"],
-                "destination_name": case_spec["destination_name"],
-            }
-            if include_descendants is not None:
-                plan_arguments["include_descendants"] = include_descendants
-            planned = await stable_copy_plan(
-                client,
-                plan_arguments,
-                attempts_path=out / f"plan-attempts-{case_name}.json",
-                plan_path=out / f"plan-{case_name}.json",
-            )
-            if planned.get("include_descendants") is not effective_scope:
-                raise InvariantFailure(
-                    f"Page Copy plan scope differs from case '{case_name}'."
-                )
-            if effective_scope:
-                assert_copy_fixture_capabilities(
-                    planned,
-                    {*RELAXED_COPY_CAPABILITIES, "DisplayEquation"},
-                )
-            else:
-                assert_copy_fixture_capabilities(
-                    planned,
-                    {*ROOT_PAGE_COPY_CAPABILITIES, "DisplayEquation"},
-                    include_automated_defaults=False,
-                )
-            case_before = plan_bound_before_snapshot(current_snapshot, planned)
+            case_before = current_snapshot
             write_json(out / f"before-{case_name}.json", case_before)
-            if find_snapshot_item(case_before, str(planned["source"]["id"])) is None:
-                raise InvariantFailure(
-                    f"Plan-bound Copy source is missing before case '{case_name}'."
-                )
             collision_anchor = dict(case_spec["collision_anchor"])
             anchor_before = find_snapshot_item(
                 case_before, str(collision_anchor["id"])
@@ -892,18 +662,33 @@ async def execute_copy_page(
                 raise InvariantFailure(
                     f"Copy case '{case_name}' is missing its same-title collision anchor."
                 )
-            current_source = dict(planned["source"])
+            current_source = dict(pre_plan_source)
             copied = await call_with_result_evidence(
                 client,
                 "copy_page",
                 copy_execute_arguments(
                     case_spec,
                     current_source,
-                    str(planned["plan_digest"]),
                 ),
                 out / f"copy-result-{case_name}.json",
             )
             report = copied.get("copy_report", {})
+            planning = report.get("planning", {})
+            if planning.get("include_descendants") is not effective_scope:
+                raise InvariantFailure(
+                    f"Page Copy internal planning scope differs for case '{case_name}'."
+                )
+            if effective_scope:
+                assert_copy_fixture_capabilities(
+                    planning,
+                    {*RELAXED_COPY_CAPABILITIES, "DisplayEquation"},
+                )
+            else:
+                assert_copy_fixture_capabilities(
+                    planning,
+                    {*ROOT_PAGE_COPY_CAPABILITIES, "DisplayEquation"},
+                    include_automated_defaults=False,
+                )
             if report.get("verified") is not True:
                 raise InvariantFailure(
                     f"Copy case '{case_name}' did not report verified read-back."
@@ -994,13 +779,12 @@ async def execute_copy_page(
                 "destination_position": position_evidence,
             }
             case_results.append(case_result)
-            plan_index.append(
+            execution_index.append(
                 {
                     "case": case_name,
                     "parameter": case_result["parameter"],
                     "effective_include_descendants": effective_scope,
-                    "plan_digest": planned["plan_digest"],
-                    "source_snapshot_digest": planned.get("source_snapshot_digest"),
+                    "planning": planning,
                 }
             )
             current_snapshot = case_after
@@ -1012,7 +796,7 @@ async def execute_copy_page(
                 elapsed_seconds=time.perf_counter() - case_started,
             )
 
-        write_json(out / "plans.json", {"cases": plan_index})
+        write_json(out / "internal-planning.json", {"cases": execution_index})
         write_json(out / "after.json", current_snapshot)
         target_ids = [
             str(target_id)
@@ -1113,22 +897,6 @@ async def execute_copy_display_equation(
                     f"DisplayEquation chain source is missing before hop {hop}."
                 )
             destination_title = f"{hop + 1:02d}-DisplayEquation-Copy-Hop-{hop}-" + run_safe_timestamp(args)
-            planned = await stable_copy_plan(
-                active_client,
-                {
-                    "source_id": current_source_id,
-                    "destination_parent_id": section_id,
-                    "destination_name": destination_title,
-                    "include_descendants": False,
-                },
-                attempts_path=out / f"plan-attempts-hop-{hop}.json",
-                plan_path=out / f"plan-hop-{hop}.json",
-            )
-            assert_copy_fixture_capabilities(
-                planned,
-                {*ROOT_PAGE_COPY_CAPABILITIES, "DisplayEquation"},
-                include_automated_defaults=False,
-            )
             protected_page_ids = [
                 str(item["id"])
                 for item in current_snapshot.get("items", ())
@@ -1146,12 +914,16 @@ async def execute_copy_display_equation(
                         "destination_name": destination_title,
                         "include_descendants": False,
                     },
-                    dict(planned["source"]),
-                    str(planned["plan_digest"]),
+                    dict(current_source),
                 ),
                 out / f"copy-result-hop-{hop}.json",
             )
             report = copied.get("copy_report", {})
+            assert_copy_fixture_capabilities(
+                report.get("planning", {}),
+                {*ROOT_PAGE_COPY_CAPABILITIES, "DisplayEquation"},
+                include_automated_defaults=False,
+            )
             page_results = report.get("page_results", ())
             page_result = page_results[0] if len(page_results) == 1 else {}
             equivalence = (
@@ -1361,7 +1133,7 @@ async def execute_copy_container(
         current_snapshot = original_before
         copied_results: list[dict[str, Any]] = []
         case_results: list[dict[str, Any]] = []
-        plan_index: list[dict[str, Any]] = []
+        execution_index: list[dict[str, Any]] = []
 
         for case_index, case in enumerate(cases, start=1):
             case_name = str(case["name"])
@@ -1377,32 +1149,21 @@ async def execute_copy_container(
                 "destination": dict(case["destination"]),
                 "destination_name": str(case["destination_name"]),
             }
-            plan_arguments = {
-                "source_id": pre_plan_source["id"],
-                "destination_parent_id": case_spec["destination"]["id"],
-                "destination_name": case_spec["destination_name"],
-            }
-            planned = await stable_copy_plan(
-                active_client,
-                plan_arguments,
-                attempts_path=out / f"plan-attempts-{case_name}.json",
-                plan_path=out / f"plan-{case_name}.json",
-            )
-            assert_copy_fixture_capabilities(planned, RELAXED_COPY_CAPABILITIES)
-            case_before = plan_bound_before_snapshot(current_snapshot, planned)
+            case_before = current_snapshot
             write_json(out / f"before-{case_name}.json", case_before)
-            current_source = dict(planned["source"])
+            current_source = dict(pre_plan_source)
             copied = await call_with_result_evidence(
                 active_client,
                 spec["tool"],
                 copy_execute_arguments(
                     case_spec,
                     current_source,
-                    str(planned["plan_digest"]),
                 ),
                 out / f"copy-result-{case_name}.json",
             )
             report = copied.get("copy_report", {})
+            planning = report.get("planning", {})
+            assert_copy_fixture_capabilities(planning, RELAXED_COPY_CAPABILITIES)
             target = copied.get("item")
             expected_type = (
                 "section" if spec["tool"] == "copy_section" else "section_group"
@@ -1455,11 +1216,10 @@ async def execute_copy_container(
                     "destination_position": position_evidence,
                 }
             )
-            plan_index.append(
+            execution_index.append(
                 {
                     "case": case_name,
-                    "plan_digest": planned["plan_digest"],
-                    "source_snapshot_digest": planned.get("source_snapshot_digest"),
+                    "planning": planning,
                 }
             )
             current_snapshot = case_after
@@ -1471,7 +1231,7 @@ async def execute_copy_container(
                 elapsed_seconds=time.perf_counter() - case_started,
             )
 
-        write_json(out / "plans.json", {"cases": plan_index})
+        write_json(out / "internal-planning.json", {"cases": execution_index})
         write_json(out / "after.json", current_snapshot)
         target_ids = [
             str(target_id)
@@ -1572,44 +1332,24 @@ async def execute_copy(
         pre_plan_source = find_snapshot_item(before, spec["source"]["id"])
         if pre_plan_source is None:
             raise RunnerFailure("Manifest Copy source is not active in the current snapshot.")
-        plan_arguments = {
-            "source_id": pre_plan_source["id"],
-            "destination_name": spec["destination_name"],
-        }
-        if spec["destination"] is not None:
-            plan_arguments["destination_parent_id"] = spec["destination"]["id"]
-        if spec.get("destination_base_folder"):
-            plan_arguments["destination_base_folder"] = spec["destination_base_folder"]
-        if "include_descendants" in spec:
-            plan_arguments["include_descendants"] = spec["include_descendants"]
-        planned = await stable_copy_plan(
-            client,
-            plan_arguments,
-            attempts_path=out / "plan-attempts.json",
-            plan_path=out / "plan.json",
-        )
-        if spec["tool"] == "copy_page":
-            if planned.get("include_descendants") is not spec["include_descendants"]:
-                raise InvariantFailure(
-                    "Page Copy plan scope differs from the scenario's fixed execution scope."
+        current = dict(pre_plan_source)
+        operation_context = {
+            "destination": {
+                "target_path": (
+                    str(
+                        Path(spec["destination_base_folder"])
+                        / spec["destination_name"]
+                    )
+                    if spec.get("destination_base_folder")
+                    else ""
                 )
-            assert_copy_fixture_capabilities(
-                planned,
-                ROOT_PAGE_COPY_CAPABILITIES,
-                include_automated_defaults=False,
-            )
-        else:
-            assert_copy_fixture_capabilities(planned, RELAXED_COPY_CAPABILITIES)
-        before = plan_bound_before_snapshot(before, planned)
-        write_json(out / "before.json", before)
-        if find_snapshot_item(before, str(planned["source"]["id"])) is None:
-            raise InvariantFailure("Plan-bound Copy source is missing from before evidence.")
-        current = dict(planned["source"])
+            }
+        }
         try:
             copied = await call_with_result_evidence(
                 client,
                 spec["tool"],
-                copy_execute_arguments(spec, current, planned["plan_digest"]),
+                copy_execute_arguments(spec, current),
                 out / "copy-result.json",
             )
         except Exception:
@@ -1622,7 +1362,7 @@ async def execute_copy(
                 await _finalize_failed_copied_notebook(
                     client,
                     partial,
-                    planned,
+                    operation_context,
                     out,
                     keep_open=bool(
                         getattr(args, "keep_notebook", False)
@@ -1639,13 +1379,27 @@ async def execute_copy(
                 before,
                 current,
                 copied,
-                planned,
+                operation_context,
                 spec,
                 out,
                 keep_worksite=keep_worksite,
             )
 
-        if copied.get("copy_report", {}).get("verified") is not True:
+        report = copied.get("copy_report", {})
+        planning = report.get("planning", {})
+        if spec["tool"] == "copy_page":
+            if planning.get("include_descendants") is not spec["include_descendants"]:
+                raise InvariantFailure(
+                    "Page Copy internal planning scope differs from the scenario's fixed scope."
+                )
+            assert_copy_fixture_capabilities(
+                planning,
+                ROOT_PAGE_COPY_CAPABILITIES,
+                include_automated_defaults=False,
+            )
+        else:
+            assert_copy_fixture_capabilities(planning, RELAXED_COPY_CAPABILITIES)
+        if report.get("verified") is not True:
             raise InvariantFailure("Copy response did not report successful read-back verification.")
 
         after = await capture_snapshot(client, notebook_id)

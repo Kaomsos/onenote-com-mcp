@@ -6,35 +6,33 @@ and read-back verification belong to :mod:`local_onenote_mcp.services`.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 
-from .context import get_services
 from .responses import invoke as _invoke
 
 
-def invoke(action: Callable[[], dict[str, Any]]) -> dict[str, Any]:
-    """Hold the mutation lease across confirmation, COM, and stable read-back."""
+def invoke(operation: str, **arguments: Any) -> dict[str, Any]:
+    """Dispatch one typed mutation through the Operation Runtime."""
 
-    return _invoke(action, mutation=True)
+    return _invoke(operation, **arguments)
 
 
 async def create_notebook(name_or_path: str, base_folder: str = "") -> dict[str, Any]:
     """Create a notebook and verify it through the typed hierarchy model."""
 
-    return invoke(lambda: get_services().mutations.create_notebook(name_or_path, base_folder))
+    return invoke("create_notebook", name_or_path=name_or_path, base_folder=base_folder)
 
 
 async def create_section(parent_id: str, section_name: str) -> dict[str, Any]:
     """Create a section below a notebook or section group."""
 
-    return invoke(lambda: get_services().mutations.create_section(parent_id, section_name))
+    return invoke("create_section", parent_id=parent_id, section_name=section_name)
 
 
 async def create_section_group(parent_id: str, group_name: str) -> dict[str, Any]:
     """Create a section group below a notebook or section group."""
 
-    return invoke(lambda: get_services().mutations.create_section_group(parent_id, group_name))
+    return invoke("create_section_group", parent_id=parent_id, group_name=group_name)
 
 
 async def create_page(
@@ -47,9 +45,12 @@ async def create_page(
     """Create a page and verify its typed hierarchy identity."""
 
     return invoke(
-        lambda: get_services().mutations.create_page(
-            section_id, title, content, content_format, new_page_style
-        )
+        "create_page",
+        section_id=section_id,
+        title=title,
+        content=content,
+        content_format=content_format,
+        new_page_style=new_page_style,
     )
 
 
@@ -63,9 +64,12 @@ async def update_page_title(
     """Update a page title after optimistic confirmation."""
 
     return invoke(
-        lambda: get_services().mutations.update_page_title(
-            page_id, title, expected_title, expected_section_id, expected_modified
-        )
+        "update_page_title",
+        page_id=page_id,
+        title=title,
+        expected_title=expected_title,
+        expected_section_id=expected_section_id,
+        expected_modified=expected_modified,
     )
 
 
@@ -79,14 +83,12 @@ async def rename_section_group(
     """Rename a section group after optimistic confirmation."""
 
     return invoke(
-        lambda: get_services().mutations.rename_resource(
-            section_group_id,
-            "section_group",
-            new_name,
-            expected_name,
-            expected_parent_id,
-            expected_modified,
-        )
+        "rename_section_group",
+        section_group_id=section_group_id,
+        new_name=new_name,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        expected_modified=expected_modified,
     )
 
 
@@ -100,9 +102,12 @@ async def rename_section(
     """Rename a section after optimistic confirmation."""
 
     return invoke(
-        lambda: get_services().mutations.rename_resource(
-            section_id, "section", new_name, expected_name, expected_parent_id, expected_modified
-        )
+        "rename_section",
+        section_id=section_id,
+        new_name=new_name,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        expected_modified=expected_modified,
     )
 
 
@@ -117,14 +122,13 @@ async def reorder_page(
     """Reorder a page within its section and verify the resulting order."""
 
     return invoke(
-        lambda: get_services().mutations.reorder_page(
-            page_id,
-            expected_title,
-            expected_section_id,
-            after_page_id,
-            page_level,
-            expected_modified,
-        )
+        "reorder_page",
+        page_id=page_id,
+        expected_title=expected_title,
+        expected_section_id=expected_section_id,
+        after_page_id=after_page_id,
+        page_level=page_level,
+        expected_modified=expected_modified,
     )
 
 
@@ -138,33 +142,12 @@ async def reorder_section(
     """Experimentally reorder a section among same-parent Section siblings."""
 
     return invoke(
-        lambda: get_services().mutations.reorder_section(
-            section_id,
-            expected_name,
-            expected_parent_id,
-            after_section_id,
-            expected_modified,
-        )
-    )
-
-
-async def reorder_section_group(
-    section_group_id: str,
-    expected_name: str,
-    expected_parent_id: str,
-    after_section_group_id: str = "",
-    expected_modified: str | None = None,
-) -> dict[str, Any]:
-    """Experimentally reorder a SectionGroup among same-parent Group siblings."""
-
-    return invoke(
-        lambda: get_services().mutations.reorder_section_group(
-            section_group_id,
-            expected_name,
-            expected_parent_id,
-            after_section_group_id,
-            expected_modified,
-        )
+        "reorder_section",
+        section_id=section_id,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        after_section_id=after_section_id,
+        expected_modified=expected_modified,
     )
 
 
@@ -178,13 +161,12 @@ async def reparent_section(
     """Reparent a Section and report its observed position, not a placement guarantee."""
 
     return invoke(
-        lambda: get_services().mutations.reparent_section(
-            section_id,
-            destination_parent_id,
-            expected_name,
-            expected_parent_id,
-            expected_modified,
-        )
+        "reparent_section",
+        section_id=section_id,
+        destination_parent_id=destination_parent_id,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        expected_modified=expected_modified,
     )
 
 
@@ -206,14 +188,13 @@ async def reparent_page(
     """
 
     return invoke(
-        lambda: get_services().mutations.reparent_page(
-            page_id,
-            destination_section_id,
-            expected_title,
-            expected_section_id,
-            expected_modified,
-            include_descendants,
-        )
+        "reparent_page",
+        page_id=page_id,
+        destination_section_id=destination_section_id,
+        expected_title=expected_title,
+        expected_section_id=expected_section_id,
+        expected_modified=expected_modified,
+        include_descendants=include_descendants,
     )
 
 
@@ -227,13 +208,12 @@ async def reparent_section_group(
     """Reparent a SectionGroup and report its backend name-sorted observed position."""
 
     return invoke(
-        lambda: get_services().mutations.reparent_section_group(
-            section_group_id,
-            destination_parent_id,
-            expected_name,
-            expected_parent_id,
-            expected_modified,
-        )
+        "reparent_section_group",
+        section_group_id=section_group_id,
+        destination_parent_id=destination_parent_id,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        expected_modified=expected_modified,
     )
 
 
@@ -250,16 +230,15 @@ async def append_to_page(
     """Append content to a confirmed page."""
 
     return invoke(
-        lambda: get_services().mutations.append_to_page(
-            page_id,
-            content,
-            expected_title,
-            expected_section_id,
-            expected_modified,
-            content_format,
-            x,
-            y,
-        )
+        "append_to_page",
+        page_id=page_id,
+        content=content,
+        expected_title=expected_title,
+        expected_section_id=expected_section_id,
+        expected_modified=expected_modified,
+        content_format=content_format,
+        x=x,
+        y=y,
     )
 
 
@@ -278,18 +257,17 @@ async def add_image_to_page(
     """Add a local image to a confirmed page."""
 
     return invoke(
-        lambda: get_services().mutations.add_image_to_page(
-            page_id,
-            image_path,
-            expected_title,
-            expected_section_id,
-            expected_modified,
-            image_format,
-            x,
-            y,
-            width,
-            height,
-        )
+        "add_image_to_page",
+        page_id=page_id,
+        image_path=image_path,
+        expected_title=expected_title,
+        expected_section_id=expected_section_id,
+        expected_modified=expected_modified,
+        image_format=image_format,
+        x=x,
+        y=y,
+        width=width,
+        height=height,
     )
 
 
@@ -305,15 +283,14 @@ async def replace_page_body(
     """Replace supported page body objects and report partial failures."""
 
     return invoke(
-        lambda: get_services().mutations.replace_page_body(
-            page_id,
-            content,
-            expected_title,
-            expected_section_id,
-            expected_modified,
-            title,
-            content_format,
-        )
+        "replace_page_body",
+        page_id=page_id,
+        content=content,
+        expected_title=expected_title,
+        expected_section_id=expected_section_id,
+        expected_modified=expected_modified,
+        title=title,
+        content_format=content_format,
     )
 
 
@@ -327,9 +304,12 @@ async def delete_page_content(
     """Delete one verified deletable page content object."""
 
     return invoke(
-        lambda: get_services().mutations.delete_page_content(
-            page_id, object_id, expected_title, expected_section_id, expected_modified
-        )
+        "delete_page_content",
+        page_id=page_id,
+        object_id=object_id,
+        expected_title=expected_title,
+        expected_section_id=expected_section_id,
+        expected_modified=expected_modified,
     )
 
 
@@ -343,14 +323,12 @@ async def delete_section_group(
     """Delete a confirmed section group under the active deletion policy."""
 
     return invoke(
-        lambda: get_services().mutations.delete_resource(
-            section_group_id,
-            "section_group",
-            expected_name,
-            expected_parent_id,
-            expected_modified,
-            permanently,
-        )
+        "delete_section_group",
+        section_group_id=section_group_id,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        expected_modified=expected_modified,
+        permanently=permanently,
     )
 
 
@@ -364,14 +342,12 @@ async def delete_section(
     """Delete a confirmed section under the active deletion policy."""
 
     return invoke(
-        lambda: get_services().mutations.delete_resource(
-            section_id,
-            "section",
-            expected_name,
-            expected_parent_id,
-            expected_modified,
-            permanently,
-        )
+        "delete_section",
+        section_id=section_id,
+        expected_name=expected_name,
+        expected_parent_id=expected_parent_id,
+        expected_modified=expected_modified,
+        permanently=permanently,
     )
 
 
@@ -385,9 +361,12 @@ async def delete_page(
     """Delete a confirmed page under the active deletion policy."""
 
     return invoke(
-        lambda: get_services().mutations.delete_page(
-            page_id, expected_title, expected_section_id, expected_modified, permanently
-        )
+        "delete_page",
+        page_id=page_id,
+        expected_title=expected_title,
+        expected_section_id=expected_section_id,
+        expected_modified=expected_modified,
+        permanently=permanently,
     )
 
 
@@ -401,7 +380,6 @@ TOOLS = [
     rename_section,
     reorder_page,
     reorder_section,
-    reorder_section_group,
     reparent_page,
     reparent_section,
     reparent_section_group,

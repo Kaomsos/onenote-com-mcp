@@ -463,31 +463,6 @@ MUTATION_ATTEMPT_POLICIES = MappingProxyType(
 )
 
 
-# Temporary executable inventory for the TODO 029 -> TODO 036 handoff.  Keys
-# are public operation/tool IDs; values are attempt-policy IDs.  The future
-# OperationRegistry will own this mapping together with kind, handler,
-# coordination, capability, backend, budget, cache, and audit policy.
-MUTATION_ATTEMPT_POLICY_BINDINGS = MappingProxyType(
-    {
-        "update_page_title": "update_page_title",
-        "rename_section": "rename_resource",
-        "rename_section_group": "rename_resource",
-        "reorder_page": "reorder_page",
-        "reorder_section": "reorder_section",
-        "append_to_page": "append_to_page",
-        "add_image_to_page": "add_image_to_page",
-        "delete_page_content": "delete_page_content",
-        "delete_page": "delete_hierarchy",
-        "delete_section": "delete_hierarchy",
-        "delete_section_group": "delete_hierarchy",
-        "close_notebook": "close_notebook",
-        "reparent_page": "reparent_page",
-        "reparent_section": "reparent_section",
-        "reparent_section_group": "reparent_section_group",
-    }
-)
-
-
 def mutation_attempt_policy(policy_id: str) -> MutationAttemptPolicy:
     try:
         return MUTATION_ATTEMPT_POLICIES[policy_id]

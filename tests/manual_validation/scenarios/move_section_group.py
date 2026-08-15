@@ -16,7 +16,6 @@ class MoveSectionGroupScenario(ContainerMoveScenario):
         "and one non-permanent source root deletion."
     )
     resource_type = "section_group"
-    plan_tool = "plan_move_section_group"
     move_tool = "move_section_group"
     tool_allowlist = MOVE_SECTION_GROUP_TOOLS
 

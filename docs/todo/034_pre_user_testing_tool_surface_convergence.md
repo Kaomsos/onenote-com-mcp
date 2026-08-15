@@ -8,19 +8,17 @@
 
 ## 背景
 
-当前生产 registry 默认注册 61 个工具，按源码模块分为 System、Hierarchy、Pages、Mutations、Copying 和 Operations；另有 5 个 Advanced 工具在启用 `LOCAL_ONENOTE_ENABLE_RAW_XML` 时整体注册。现有工具已经覆盖 OneNote 的层级发现、内容读取、创建、编辑、Copy/Move、删除、导出、GUI 导航和生命周期操作，但“实现模块的分类”还没有完全收敛为“用户任务的清晰产品面”。
+当前生产 Registry 登记并注册 56 个默认 typed 工具，按源码模块分为 System、Hierarchy、Pages、Mutations、Copying 和 Operations；不存在生产 Advanced profile。全部公开 Tool 已进入 canonical Operation Runtime。TODO 035/036 已先行落实本 TODO 的两个硬边界：`reorder_section_group` 已从 adapter/Registry 移除，五个原 Advanced Tool 与 Raw XML 注册开关也不再形成生产 exposure；但 TODO 034 对其余工具的用户任务审计、最终 profile 冻结和用户测试批准仍未完成。
 
 进入用户测试前仍有以下问题需要一次解决：
 
-- `reorder_section_group` 已有真实证据证明后端不支持，当前却仍出现在默认 `tools/list` 中，只能在执行时拒绝；
-- `find_meta`、`open_hierarchy`、`update_page_xml`、`merge_sections`、`set_filing_location` 风险和用途不同，却由一个 Raw XML 开关整体带入 Advanced profile；
 - `resolve_identifier`、`get_*`、`query_*`、`expand_*`、`get_parent/get_path` 等入口之间存在相邻能力，Agent 和用户缺少一张明确的“什么时候用哪一个”决策表；
 - Page 元数据、正文、对象、binary 与 raw XML 虽已拆分，但 raw 表示、typed 表示和完整性诊断的用户边界仍需明确；
 - Export、GUI Navigation、Sync、Close 与 OneNote 内容操作混在同一个默认 profile，是否属于首轮用户测试的核心任务尚未逐项审查；
 - policy 默认拒绝只能控制“能否执行”，不能回答“客户端是否有必要看见”。当前缺少独立的 exposure contract；
 - README、Tool description、`health_check` capability、自动化注册断言和 manual-validation allowlist 尚未共同投影一份冻结的用户测试工具清单。
 
-本 TODO 是用户测试的准入门，不把当前 61/66 的数量本身视为目标。最终工具数可以减少，也可以因必要的 typed 入口调整而变化；唯一标准是用户任务覆盖完整、入口选择清晰、暴露面最小且安全门限不退化。
+本 TODO 是用户测试的准入门，不把当前 56 的数量本身视为目标。最终工具数可以继续减少，也可以因必要的 typed 入口调整而变化；唯一标准是用户任务覆盖完整、入口选择清晰、暴露面最小且安全门限不退化。
 
 ## 目标
 
@@ -50,12 +48,12 @@
 | System | 3 | 健康检查、标识解析、特殊位置 |
 | Hierarchy | 14 | Notebook discovery、精确读取、Query、Path、Expand |
 | Pages | 6 | Page 元数据、XML、文本、内容对象、binary、Search |
-| Mutations | 20 | Create、Rename、Reorder、Reparent、Page 内容写入、Delete |
-| Copying | 11 | Copy plan/execute 与三类重建式 Move plan/execute |
+| Mutations | 19 | Create、Rename、受支持 Reorder、Reparent、Page 内容写入、Delete |
+| Copying | 7 | 四类单次 Copy 与三类单次重建式 Move；planning 完全在 operation 内部 |
 | Operations | 7 | Hyperlink、Parent、Publish、GUI Navigate、Sync、Close |
-| Advanced | 5 | Meta/Open/raw Page XML/Merge/Filing Location；默认不注册 |
+| Advanced | 0 | 不存在生产 profile；低层方法仅保留为内部诊断能力 |
 
-基线合计为默认 61 个、可选 Advanced 5 个。实施期间若其他 TODO 已改变 registry，应先更新本节和审计输入，不能按旧数量机械删改。
+当前基线合计为默认 56 个、Advanced 0 个，共 56 个 Registry binding。四个旧 Plan Tool 已由 TODO 035 从所有生产注册路径移除；本轮不交付 Preview。后端不支持的 `reorder_section_group` 与五个原 Advanced Tool 均有 forbidden/环境变量旁路负合同。实施期间若其他 TODO 改变 Registry，应先更新本节和审计输入，不能按旧数量机械删改。
 
 ## 用户任务与能力覆盖
 
@@ -71,7 +69,7 @@
 8. 创建 Notebook、SectionGroup、Section 和 Page；
 9. 修改标题/名称、Page 正文和受支持内容对象；
 10. 调整 Page/Section 的同父级顺序以及三类同 Notebook Reparent；
-11. Copy 与跨 Notebook 重建式 Move，并在 mutation 前生成确定性 plan；
+11. Copy 与跨 Notebook 重建式 Move，并在同一次 mutation operation 内生成确定性 live plan；
 12. 非永久删除和独立授权的永久删除；
 13. 生成 OneNote hyperlink；
 14. 导出本地文件、驱动 GUI 导航、请求 Sync、关闭 Notebook；
@@ -139,7 +137,7 @@ target_profile
 ### Mutation、Copy 与 Move
 
 - 对 Create、Rename、Reorder、Reparent、Page content mutation、Delete 建立对象—操作对称性；后端确实不对称时明确写成能力限制，不增加虚假对称工具；
-- 审查 `plan_copy` 的通用入口与三个 typed `plan_move_*` 是否有清晰的一致模型。Plan 是 mutation 安全协议的一部分时不得仅为减少工具数而移除；
+- Copy/Move 工具面已由 TODO 035 冻结：四个公开 Plan Tool 删除，七个执行工具单次调用，安全 planning 进入同一受控 operation；不得重新引入 Agent 管理的 digest/token 或默认 Preview；
 - 实验性但已注册的 mutation 工具是否进入首轮用户测试，必须同时依据产品范围、policy、合同和当前真实证据，不得只看默认是否可执行；
 - `close_notebook`、`sync_notebook` 等 lifecycle 操作不能因不修改 Page 内容就被误分类为普通只读工具。
 
@@ -217,7 +215,7 @@ target_profile
 - 不在本 TODO 中新增 OneNote 产品能力，也不实现 TODO 031 的 `start_onenote_app`；若其先完成，按相同矩阵重新审查。
 - 不为追求较小数量把多个高风险操作合并成接受任意 action/raw payload 的 generic tool。
 - 不用名称匹配、宽范围扫描或 raw XML 替代被移除的 typed tool。
-- 不削弱 mutation policy、confirmation、预算、收敛、对账、Copy plan digest 或 partial failure 合同。
+- 不削弱 mutation policy、confirmation、预算、收敛、对账、Copy 内部 live planning 或 partial failure 合同。
 - 不引入 Microsoft Graph、Azure、OAuth、遥测、远程内容处理或直接 `.one` 文件编辑。
 - 不把真实 OneNote mutation 接入 pytest、CI、hook、package/install、import、timer、watcher 或后台任务。
 - 不执行真实 `run.py <scenario>` 或 `run.py all`；真实验收命令始终交给用户。
@@ -239,8 +237,8 @@ target_profile
 - [ ] 当前全部工具完成逐项审计，并记录 keep/rename_or_merge/hide/remove 结论及理由；
 - [ ] 用户任务最小调用链、对象—操作矩阵和最终 profile 设计完成并获得用户确认；
 - [ ] 默认用户 registry 已按冻结清单实现，所有不必要入口和注册旁路被移除；
-- [ ] `reorder_section_group` 及所有底层 raw hierarchy operation 不存在于任何生产 profile；
-- [ ] Advanced 工具不再由单一 Raw XML 开关整体暴露，首轮用户 profile 不包含任何 Advanced 工具；
+- [x] `reorder_section_group` 及所有底层 raw hierarchy operation 不存在于任何生产 profile；
+- [x] Advanced 工具不再由单一 Raw XML 开关整体暴露，首轮用户 profile 不包含任何 Advanced 工具；
 - [ ] 保留工具的名称、schema、description、effect、policy 和 response envelope 已统一；
 - [ ] 自动化 registry/schema/policy/文档投影合同与完整 pytest 通过；
 - [ ] 所有受影响 mutation scenario 仍具名存在，用户确认必要的当前版本真实隔离回归通过；

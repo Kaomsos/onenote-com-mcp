@@ -174,7 +174,6 @@ def test_non_read_only_tool_classification_never_retries_publish_or_copy() -> No
     assert is_mutation_tool("publish_object") is True
     assert is_mutation_tool("copy_page") is True
     assert is_mutation_tool("move_page") is True
-    assert is_mutation_tool("plan_copy") is False
     assert is_mutation_tool("get_page_xml") is False
 
 def test_audit_summary_redacts_page_payloads() -> None:
@@ -225,6 +224,36 @@ def test_client_failure_preserves_structured_partial_envelope(tmp_path) -> None:
 
     assert isinstance(caught.value, ClientFailure)
     assert caught.value.envelope == partial
+
+
+def test_client_accepts_success_when_domain_completion_is_unobservable(tmp_path) -> None:
+    accepted = {
+        "ok": True,
+        "complete": False,
+        "accepted": True,
+        "completion_observable": False,
+    }
+
+    class FakeSession:
+        async def call_tool(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                isError=False,
+                structuredContent={"result": accepted},
+                content=[],
+            )
+
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"health_check"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+    )
+    client._session = FakeSession()
+
+    result = asyncio.run(client.call_tool("health_check", {}, retry_read=False))
+
+    assert result == accepted
+
 
 def test_call_audit_has_start_and_completion_timestamps(tmp_path) -> None:
     class FakeSession:

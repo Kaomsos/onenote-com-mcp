@@ -36,7 +36,6 @@ SCENARIO_MODULES = {
     "rename": "RenameScenario",
     "reorder_page": "ReorderPageScenario",
     "reorder_section": "ReorderSectionScenario",
-    "reorder_section_group": "ReorderSectionGroupScenario",
     "reparent_section": "ReparentSectionScenario",
     "reparent_page": "ReparentPageScenario",
     "reparent_page_with_level": "ReparentPageWithLevelScenario",
@@ -238,16 +237,6 @@ def test_all_membership_and_reviewed_capabilities_are_exact() -> None:
         "query",
     )
 
-    section_group_reorder = SCENARIO_REGISTRY.get("reorder-section-group")
-    assert section_group_reorder.included_in_all is False
-    assert section_group_reorder.capability_assessment == {
-        "capability_status": "limited",
-        "validation_status": "failed",
-        "reason": (
-            "The backend keeps SectionGroups in fixed ascending name order and "
-            "did not apply the requested sibling order after UpdateHierarchy returned success."
-        ),
-    }
     for name in (
         "reparent-page",
         "reparent-page-with-level",

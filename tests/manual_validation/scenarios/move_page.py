@@ -96,24 +96,6 @@ async def _execute_move_page(
                 f"{index:02d}-Moved-{'Subtree' if include_descendants else 'Root-Only'}-"
                 f"{run_safe_timestamp(args)}"
             )
-            plan_arguments = {
-                "page_id": current_source["id"],
-                "destination_section_id": destination["id"],
-                "destination_title": destination_title,
-            }
-            if include_descendants:
-                plan_arguments["include_descendants"] = True
-            planned = await client.call_tool("plan_move_page", plan_arguments)
-            write_json(out / f"plan-{case_name}.json", planned)
-            if planned.get("include_descendants") is not include_descendants:
-                raise InvariantFailure(f"Move plan scope differs for case '{case_name}'.")
-            planned_ids = [
-                str(item["id"])
-                for item in planned.get("snapshots", {}).get("source", {}).get("resources", [])
-            ]
-            if planned_ids != expected_source_ids:
-                raise InvariantFailure(f"Move plan selected the wrong Pages for case '{case_name}'.")
-
             before = current_snapshot
             write_json(out / f"before-{case_name}.json", before)
             move_arguments = {
@@ -123,7 +105,6 @@ async def _execute_move_page(
                 "expected_section_id": current_source["section_id"],
                 "expected_modified": current_source.get("modified"),
                 "destination_title": destination_title,
-                "plan_digest": planned["plan_digest"],
             }
             if include_descendants:
                 move_arguments["include_descendants"] = True

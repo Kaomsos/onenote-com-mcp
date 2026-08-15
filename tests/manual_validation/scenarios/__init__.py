@@ -25,7 +25,6 @@ from .create import CreateScenario
 from .rename import RenameScenario
 from .reorder_page import ReorderPageScenario
 from .reorder_section import ReorderSectionScenario
-from .reorder_section_group import ReorderSectionGroupScenario
 from .reparent_section import ReparentSectionScenario
 from .reparent_page import ReparentPageScenario
 from .reparent_page_with_level import ReparentPageWithLevelScenario
@@ -191,7 +190,6 @@ __all__ = [
     "RenameScenario",
     "ReorderPageScenario",
     "ReorderSectionScenario",
-    "ReorderSectionGroupScenario",
     "ReparentSectionScenario",
     "ReparentPageScenario",
     "ReparentPageWithLevelScenario",

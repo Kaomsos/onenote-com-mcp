@@ -10,6 +10,7 @@
 > Move 同步：2026-08-11 用户确认更新后的 Page root-only/subtree 以及跨 Notebook Section/SectionGroup 三个 Move 场景全部通过；证据分别来自 `run-2026-08-11-20-29-19`、`run-2026-08-11-20-31-28`、`run-2026-08-11-20-33-29`。
 > 浏览契约同步：2026-08-15 已实现唯一 Notebook root List、四个 typed Expand 与通用 `expand_hierarchy`；真实 fresh/cache 场景仍待用户验收。
 > Query 实施同步：`query_notebook`、`query_section_group`、`query_section`、`query_page` 已完成 root/单一起点、open-only、最浅 scope、live pagination 与 human-gated 真实验收；后续 Notebook 结构浏览工具重组由 TODO 033 跟踪。
+> Operation Runtime 同步（2026-08-15）：全部生产 Tool 已进入 canonical Registry/Runtime；Copy/Move 已改为单次公开调用和内部 planning，以下历史 `plan_digest` 描述由当前 Tool contract 取代。
 
 ## 核心阅读入口
 
@@ -18,19 +19,19 @@
 - [当前设计架构](../design/architecture.md)：分层、依赖方向和运行时生命周期；
 - [OneNote 对象模型](../design/object_model.md)：静态字段、关系和 mutation 一致性；
 - [工具参数与返回格式](../design/tool_contracts.md)：公开工具、policy、预算和响应 envelope；
-- [Advanced/低层操作](../design/advanced_operations.md)：开发 profile、raw XML 与受控能力探针边界；
+- [内部低层与诊断操作](../design/advanced_operations.md)：无生产 exposure 的 raw XML 与受控能力探针边界；
 - [隔离 mutation 验证](../dev/isolated_mutation_validation.md)：真实 OneNote 验证的权限与证据边界。
 
 本次复审将两个维度分开：
 
-1. **实现状态**回答能力是否存在于默认 typed、实验性或 advanced profile；
+1. **实现状态**回答能力是否存在于默认 typed、实验性或仅内部诊断实现；
 2. **证据状态**回答能力只有自动化合同，还是已有用户确认的真实 OneNote 证据。
 
 不得用“已经实现”推导“所有 OneNote/Office 版本均已验证”，也不得用某个底层 COM/raw XML 操作推导稳定对象能力已经交付。
 
 ## 1. 结论先行
 
-2026-08-04 审计提出的核心方向——“对象模型优先，COM adapter 居后”——已经成为当前架构，而不再只是重构建议。默认 MCP profile 现有 61 个工具，另有 6 个只在显式启用时注册的 advanced 工具。Notebook、SectionGroup、Section、Page 和 PageContentObject 已有独立 typed model；业务规则从 `server.py` 移入 services；默认 mutation 使用精确 ID、confirmation fields、独立 policy 和操作后回读。
+2026-08-04 审计提出的核心方向——“对象模型优先，COM adapter 居后”——已经成为当前架构，而不再只是重构建议。当前 MCP 只有 56 个生产 typed Tool，不存在 production advanced profile。Notebook、SectionGroup、Section、Page 和 PageContentObject 已有独立 typed model；业务规则从 `server.py` 移入 services；默认 mutation 使用精确 ID、confirmation fields、独立 policy 和操作后回读。
 
 原审计列出的主要产品边界也大多已经落实：
 
@@ -63,11 +64,11 @@
 | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | 四层对象压成扁平`HierarchyItem`，未知 XML attribute 直接扩散 | 五个 domain model 与白名单 hierarchy mapper 已实现                                                                                                                                                                                                      | 已解决                                      |
 | `server.py` 同时承担工具、业务规则和 XML 编排                | 已拆为 composition root、tools、services、domain/page/hierarchy 和 bridge                                                                                                                                                                               | 已解决                                      |
-| mutation 可用 ID、路径或唯一名称定位                           | 默认 typed mutation 使用精确 ID 和 confirmation fields；名称/路径仅用于只读辅助或 advanced 工具                                                                                                                                                         | 已解决                                      |
+| mutation 可用 ID、路径或唯一名称定位                           | 默认 typed mutation 使用精确 ID 和 confirmation fields；名称/路径仅用于只读辅助或不公开的内部诊断                                                                                                                                                         | 已解决                                      |
 | 无独立 Writes/Deletes/Permanent Deletes/raw XML 开关           | 风险能力使用相互独立、默认关闭的 policy                                                                                                                                                                                                                 | 已解决                                      |
-| Notebook 被 generic Delete 工具错误承诺                        | typed Delete 不提供 Notebook；advanced generic Delete 也显式拒绝 Notebook                                                                                                                                                                               | 已解决                                      |
+| Notebook 被 generic Delete 工具错误承诺                        | typed Delete 不提供 Notebook；generic Delete 不存在生产 MCP exposure                                                                                                                                                                                     | 已解决                                      |
 | Search 只限制返回命中数，不限制候选与 hydration 成本           | 已增加严格 scope、分页前候选数、当前页单页字符、总字符和时间预算                                                                                                                                                                                        | 已解决；仍不是字节预算                      |
-| raw Page/Hierarchy XML 默认暴露                                | raw Page XML 只在 6-tool advanced profile 显式启用；raw hierarchy MCP 工具已从所有生产 profile 移除，内部 bridge operation 仅供受约束 service 使用                                                                                                      | 已解决                                      |
+| raw Page/Hierarchy XML 默认暴露                                | raw Page/Hierarchy XML 均无生产 MCP exposure；内部 bridge operation 仅供受约束 typed service 或明确诊断代码使用                                                                                                                                            | 已解决                                      |
 | `replace_page_body` 容易被理解为原子 Replace                 | 当前合同明确为非原子，失败返回`partial_failure/completed_steps`                                                                                                                                                                                       | 已解决；尚无独立执行计划                    |
 | SectionGroup 缺 typed List/Get，四层缺 Query/Get Tree          | 精确 Get、四层 typed Query、唯一 Notebook root List、四个 typed Expand 与通用深度 Expand 已实现；Query 与层级浏览入口已分离                                                                                                                             | 已解决；最终真实 List/Expand 场景待用户验收 |
 | Rename、Reorder、Reparent、Move 和 Copy 缺稳定能力边界         | Rename 已 typed；Page/Section Reorder 有明确契约，SectionGroup Reorder 因后端固定名称升序而拒绝；三类同 Notebook Reparent 已 typed、独立门控并由用户确认当前环境真实通过；四层 Copy、Page Move 和跨 Notebook 容器 Move 已实验实现且取得当前环境真实证据 | 能力与证据边界已明确                        |
@@ -186,11 +187,11 @@ Section → Page → PageContentObject
 
 精确参数、返回字段和环境变量见 [工具参数与返回格式](../design/tool_contracts.md)。矩阵中的 `T/E` 只表示工具和合同存在，不表示每个真实 OneNote 环境均已验证。
 
-## 5. Advanced/低层操作
+## 5. 内部低层与诊断操作
 
-Advanced profile 用于开发、诊断和受控能力探测，不属于默认 typed 对象模型，也不参与对象—操作矩阵评级。Page 与 SectionGroup Reparent 的既有底层证据已封装到 typed 工具和迁移后的具名场景；advanced profile 不再包含 raw hierarchy mutation。
+生产 MCP 不存在 Advanced profile。开发、诊断和受控能力探测方法只保留在 Service、Bridge、纯测试或人工诊断代码中，不属于默认 typed 对象模型，也不参与对象—操作矩阵评级。Page 与 SectionGroup Reparent 的既有底层证据已封装到 typed 工具和迁移后的具名场景。
 
-6 个 advanced 工具的注册条件、逐工具用途、policy 门限以及 raw hierarchy 移除边界，统一由 [Advanced/低层操作](../design/advanced_operations.md) 定义；本评估不再复制该设计合同。
+原 Advanced 方法的内部用途、policy 门限以及生产 exposure 负边界，统一由 [内部低层与诊断操作](../design/advanced_operations.md) 定义；本评估不再复制该设计合同。
 
 ## 6. 已实现的安全与动态契约
 
@@ -210,9 +211,9 @@ Advanced profile 用于开发、诊断和受控能力探测，不属于默认 ty
 - 实验 Copy；
 - Page Move；
 - Section/SectionGroup Move（共用独立容器 Move 开关）；
-- raw XML/advanced profile。
+- 内部 raw XML 诊断授权；该开关不创建 Tool exposure。
 
-注册工具不等于取得执行权限。Permanent Delete 不能替代普通 Delete 开关，Move 需要 Writes、Deletes、Copy 和对应自身开关的完整闭包；Page 与容器 Move 的开关互不替代。SectionGroup Reorder 不属于可授权的实验能力：后端只提供固定名称升序，遗留开关必须保持关闭。默认 typed 工具不暴露 `force`；Notebook Delete 在 typed 和 advanced generic 路径均被拒绝。
+注册工具不等于取得执行权限。Permanent Delete 不能替代普通 Delete 开关，Move 需要 Writes、Deletes、Copy 和对应自身开关的完整闭包；Page 与容器 Move 的开关互不替代。SectionGroup Reorder 不属于生产实验能力：后端只提供固定名称升序，保留开关仅供内部诊断。默认 typed 工具不暴露 `force`，也不存在 generic Notebook Delete MCP 路径。
 
 ### 6.3 Query 与 Search
 
@@ -260,7 +261,7 @@ Search 具有以下当前边界：
 
 四层 Copy、Page Move 和跨 Notebook Section/SectionGroup Move 已不再是概念性 P2 路线，而是默认注册、独立门控的实验工具。Move 语义天然包含重建；生产合同与当前环境真实证据共同确认以下编排：
 
-- `plan_copy` 与 execute 工具使用无状态 `plan_digest` 绑定源、目标、选项和预算；
+- 当前 `copy_*`/`move_*` 单次公开调用在同一 operation 内建立 live 内部计划，绑定源、目标、选项和预算；旧公开 Plan/`plan_digest` 已移除；
 - Copy 预算限制层级对象、Page、内容对象、单页/总 XML 字节以及计划/执行时间；
 - Page Copy 默认选择根 Page，可显式选择完整缩进子树，并返回所选范围的 old→new `id_map`；
 - 名称冲突拒绝覆盖、合并或自动后缀；

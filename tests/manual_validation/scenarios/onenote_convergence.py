@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Any, Mapping
 
 from ..lifecycle import NotebookLifecycleWrapper
@@ -64,7 +65,104 @@ def _require_attempt_contract(result: dict[str, Any], operation: str) -> dict[st
         raise InvariantFailure(
             f"{operation} violated the mutation attempt contract: {mismatched}"
         )
-    return {key: reconciliation[key] for key in expected}
+    runtime = _require_runtime_execution(
+        result,
+        operation,
+        kind="lifecycle" if operation == "close_notebook" else "mutation",
+        backend="onenote_com",
+        observed_outcome="applied",
+        attempts=1,
+    )
+    return {
+        **{key: reconciliation[key] for key in expected},
+        "operation_execution": runtime,
+    }
+
+
+def _require_replace_saga_contract(result: dict[str, Any]) -> dict[str, Any]:
+    operation = "replace_page_body"
+    reconciliation = result.get("reconciliation")
+    if not isinstance(reconciliation, dict):
+        raise InvariantFailure(f"{operation} omitted saga reconciliation evidence.")
+    expected = {
+        "state": "applied",
+        "execute_attempts": 1,
+        "had_backend_error": False,
+        "execution_succeeded": True,
+    }
+    mismatched = {
+        key: {"expected": value, "actual": reconciliation.get(key)}
+        for key, value in expected.items()
+        if reconciliation.get(key) != value
+    }
+    deleted_objects = result.get("deleted_objects")
+    if result.get("partial") is not False:
+        mismatched["partial"] = {"expected": False, "actual": result.get("partial")}
+    if not isinstance(deleted_objects, list) or not deleted_objects:
+        mismatched["deleted_objects"] = {
+            "expected": "at least one fixture body object",
+            "actual": deleted_objects,
+        }
+    if mismatched:
+        raise InvariantFailure(
+            f"{operation} violated the non-atomic saga contract: {mismatched}"
+        )
+    return {
+        **expected,
+        "partial": False,
+        "deleted_object_count": len(deleted_objects),
+        "operation_execution": _require_runtime_execution(
+            result,
+            operation,
+            kind="mutation",
+            backend="onenote_com",
+            observed_outcome="applied",
+            attempts=1,
+        ),
+    }
+
+
+def _require_runtime_execution(
+    result: Mapping[str, Any],
+    operation: str,
+    *,
+    kind: str,
+    backend: str,
+    observed_outcome: str,
+    attempts: int,
+) -> dict[str, Any]:
+    execution = result.get("execution")
+    if not isinstance(execution, Mapping):
+        raise InvariantFailure(f"{operation} omitted Operation Runtime evidence.")
+    expected = {
+        "operation": operation,
+        "stage": "finalize",
+        "kind": kind,
+        "backend_category": backend,
+        "attempts": attempts,
+        "replayed": False,
+        "observed_outcome": observed_outcome,
+        "content_exposed": False,
+    }
+    mismatched = {
+        key: {"expected": value, "actual": execution.get(key)}
+        for key, value in expected.items()
+        if execution.get(key) != value
+    }
+    if mismatched:
+        raise InvariantFailure(
+            f"{operation} violated the Operation Runtime contract: {mismatched}"
+        )
+    backend_calls = execution.get("backend_calls")
+    if not isinstance(backend_calls, int) or backend_calls < 1:
+        raise InvariantFailure(f"{operation} did not account for its backend calls.")
+    return {
+        **expected,
+        "backend_calls": backend_calls,
+        "retry_safety": execution.get("retry_safety"),
+        "recommended_action": execution.get("recommended_action"),
+        "cache_generation": dict(execution.get("cache_generation", {})),
+    }
 
 
 @SCENARIO_REGISTRY.register
@@ -76,8 +174,9 @@ class OneNoteConvergenceScenario(Scenario):
     requires_lifecycle_wrappers = True
     production_close_handoff = True
     help_text = (
-        "HUMAN-GATED: validate production Create, Title, Append, content Delete, "
-        "Reorder, hierarchy Delete, and Close on one fresh disposable Notebook."
+        "HUMAN-GATED: validate production Notebook/Page Create, Replace, Title, "
+        "Append, content Delete, Reorder, navigation, hierarchy Delete, and Close "
+        "on fresh disposable data."
     )
     worksite_dry_run_action = "preserve-convergence-probe-page"
 
@@ -102,6 +201,163 @@ class OneNoteConvergenceScenario(Scenario):
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)
 
+        synced = await call_with_result_evidence(
+            client,
+            "sync_notebook",
+            {"notebook_id": notebook_id},
+            out / "sync-result.json",
+        )
+        if (
+            synced.get("accepted") is not True
+            or synced.get("complete") is not False
+            or synced.get("completion_observable") is not False
+        ):
+            raise InvariantFailure(
+                "sync_notebook must report accepted without claiming completion."
+            )
+        effect_evidence = {
+            "sync": _require_runtime_execution(
+                synced,
+                "sync_notebook",
+                kind="lifecycle",
+                backend="onenote_com",
+                observed_outcome="accepted_completion_unobservable",
+                attempts=0,
+            )
+        }
+
+        created_notebook_name = "__operation-runtime-created__"
+        created_notebook_path = (
+            options.run_dir / "notebooks" / created_notebook_name
+        ).resolve()
+        created_notebook = await call_with_result_evidence(
+            client,
+            "create_notebook",
+            {
+                "name_or_path": created_notebook_name,
+                "base_folder": str(created_notebook_path.parent),
+            },
+            out / "create-notebook-result.json",
+        )
+        created_notebook_item = created_notebook.get("item")
+        if (
+            not isinstance(created_notebook_item, Mapping)
+            or created_notebook_item.get("resource_type") != "notebook"
+            or not created_notebook_item.get("id")
+            or str(created_notebook_item.get("id")) == notebook_id
+            or Path(str(created_notebook.get("path", ""))).resolve()
+            != created_notebook_path
+        ):
+            raise InvariantFailure(
+                "create_notebook did not return the exact fresh run-scoped Notebook."
+            )
+        notebook_create_evidence = {
+            "convergence": _require_convergence(
+                created_notebook, "create_notebook"
+            ),
+            "operation_execution": _require_runtime_execution(
+                created_notebook,
+                "create_notebook",
+                kind="mutation",
+                backend="onenote_com",
+                observed_outcome="applied",
+                attempts=1,
+            ),
+        }
+        closed_created_notebook = await call_with_result_evidence(
+            client,
+            "close_notebook",
+            {
+                "notebook_id": str(created_notebook_item["id"]),
+                "expected_name": str(created_notebook_item["name"]),
+                "expected_modified": created_notebook_item.get("modified"),
+            },
+            out / "close-created-notebook-result.json",
+        )
+        if closed_created_notebook.get("closed") is not True:
+            raise InvariantFailure(
+                "The run-scoped Notebook created through create_notebook was not closed."
+            )
+        notebook_create_evidence["close"] = {
+            "convergence": _require_convergence(
+                closed_created_notebook, "close_notebook"
+            ),
+            "attempt": _require_attempt_contract(
+                closed_created_notebook, "close_notebook"
+            ),
+        }
+
+        published_path = (out / "published-anchor.pdf").resolve()
+        published = await call_with_result_evidence(
+            client,
+            "publish_object",
+            {
+                "object_id": first["id"],
+                "target_path": str(published_path),
+                "format": "pdf",
+                "overwrite": False,
+            },
+            out / "publish-result.json",
+        )
+        if (
+            Path(str(published.get("path", ""))).resolve() != published_path
+            or not published_path.is_file()
+        ):
+            raise InvariantFailure(
+                "publish_object did not create the exact run-scoped filesystem target."
+            )
+        effect_evidence["publish"] = _require_runtime_execution(
+            published,
+            "publish_object",
+            kind="filesystem_effect",
+            backend="filesystem",
+            observed_outcome="filesystem_effect_completed",
+            attempts=0,
+        )
+
+        navigated = await call_with_result_evidence(
+            client,
+            "navigate_to",
+            {"object_id": first["id"], "new_window": False},
+            out / "navigate-result.json",
+        )
+        if navigated.get("navigated") is not True:
+            raise InvariantFailure("navigate_to did not report action acceptance.")
+        effect_evidence["navigate"] = _require_runtime_execution(
+            navigated,
+            "navigate_to",
+            kind="ui_effect",
+            backend="windows_ui",
+            observed_outcome="action_accepted",
+            attempts=0,
+        )
+
+        hyperlink = await call_with_result_evidence(
+            client,
+            "get_hyperlink",
+            {"object_id": first["id"], "page_content_object_id": "", "web": False},
+            out / "hyperlink-result.json",
+        )
+        navigation_url = str(hyperlink.get("hyperlink", ""))
+        if not navigation_url:
+            raise InvariantFailure("get_hyperlink omitted the exact navigation URL.")
+        navigated_url = await call_with_result_evidence(
+            client,
+            "navigate_to_url",
+            {"url": navigation_url, "new_window": False},
+            out / "navigate-url-result.json",
+        )
+        if navigated_url.get("navigated") is not True:
+            raise InvariantFailure("navigate_to_url did not report action acceptance.")
+        effect_evidence["navigate_url"] = _require_runtime_execution(
+            navigated_url,
+            "navigate_to_url",
+            kind="ui_effect",
+            backend="windows_ui",
+            observed_outcome="action_accepted",
+            attempts=0,
+        )
+
         created = await call_with_result_evidence(
             client,
             "create_page",
@@ -116,7 +372,11 @@ class OneNoteConvergenceScenario(Scenario):
         created_id = str(created.get("page_id", ""))
         if not created_id or created_id != str(created.get("allocated_id", "")):
             raise InvariantFailure("Create did not preserve its exact fresh allocated Page ID.")
-        evidence = {"create": _require_convergence(created, "create_page")}
+        evidence = {
+            "operation_effects": effect_evidence,
+            "notebook_create_close": notebook_create_evidence,
+            "create": _require_convergence(created, "create_page"),
+        }
 
         created_item = created.get("page")
         if not isinstance(created_item, dict):
@@ -141,6 +401,34 @@ class OneNoteConvergenceScenario(Scenario):
         titled_item = titled.get("item")
         if not isinstance(titled_item, dict) or titled_item.get("title") != renamed_title:
             raise InvariantFailure("Title update omitted the exact renamed Page read-back.")
+
+        replaced = await call_with_result_evidence(
+            client,
+            "replace_page_body",
+            {
+                "page_id": created_id,
+                "content": "Replacement convergence probe body",
+                "expected_title": titled_item["title"],
+                "expected_section_id": section["id"],
+                "expected_modified": titled_item.get("modified"),
+                "title": None,
+                "content_format": "plain",
+            },
+            out / "replace-body-result.json",
+        )
+        evidence["replace_body"] = {
+            "convergence": _require_convergence(replaced, "replace_page_body"),
+            "saga": _require_replace_saga_contract(replaced),
+        }
+        replaced_item = replaced.get("item")
+        if (
+            replaced.get("replaced") is not True
+            or not isinstance(replaced_item, dict)
+            or replaced_item.get("title") != renamed_title
+        ):
+            raise InvariantFailure(
+                "replace_page_body omitted its verified Page identity or replacement result."
+            )
         objects_before_append = await client.call_tool(
             "get_page_objects", {"page_id": created_id}
         )
@@ -155,9 +443,9 @@ class OneNoteConvergenceScenario(Scenario):
             {
                 "page_id": created_id,
                 "content": "Second convergence marker",
-                "expected_title": titled_item["title"],
+                "expected_title": replaced_item["title"],
                 "expected_section_id": section["id"],
-                "expected_modified": titled_item.get("modified"),
+                "expected_modified": replaced_item.get("modified"),
                 "content_format": "plain",
             },
             out / "append-result.json",

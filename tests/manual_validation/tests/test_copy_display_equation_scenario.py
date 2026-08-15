@@ -97,27 +97,6 @@ def test_programmatic_display_equation_runs_three_verified_hops_and_restores(
     async def fake_capture(_client, _notebook_id):
         return next(snapshots)
 
-    async def fake_plan(_client, arguments, **_kwargs):
-        source_id = str(arguments["source_id"])
-        source = next(
-            item
-            for item in _snapshot(
-                ["source", "target-1", "target-2", "target-3"]
-            )["items"]
-            if item.get("id") == source_id
-        )
-        return {
-            "plan_digest": f"plan-{source_id}",
-            "source": source,
-            "content_capabilities": [
-                "DisplayEquation",
-                "Image",
-                "Outline",
-                "RichText",
-                "Table",
-            ],
-        }
-
     async def fake_copy(_client, _tool, arguments, evidence_path):
         nonlocal copy_index
         copy_index += 1
@@ -131,6 +110,16 @@ def test_programmatic_display_equation_runs_three_verified_hops_and_restores(
                 "section_id": "section",
             },
             "copy_report": {
+                "planning": {
+                    "include_descendants": False,
+                    "content_capabilities": [
+                        "DisplayEquation",
+                        "Image",
+                        "Outline",
+                        "RichText",
+                        "Table",
+                    ],
+                },
                 "id_map": {source_id: target_id},
                 "verified": True,
                 "lossless": True,
@@ -165,7 +154,6 @@ def test_programmatic_display_equation_runs_three_verified_hops_and_restores(
 
     monkeypatch.setattr(copy_runtime, "scenario_client", fake_scenario_client)
     monkeypatch.setattr(copy_runtime, "capture_snapshot", fake_capture)
-    monkeypatch.setattr(copy_runtime, "stable_copy_plan", fake_plan)
     monkeypatch.setattr(copy_runtime, "call_with_result_evidence", fake_copy)
     monkeypatch.setattr(copy_runtime, "cleanup_copy", fake_cleanup)
     monkeypatch.setattr(copy_runtime, "assert_copy_mapping", lambda *_a, **_k: None)

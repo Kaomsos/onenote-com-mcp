@@ -1,6 +1,6 @@
 # OneNote Mutation Readiness 状态模型与调用设计
 
-> 状态：有界 mutation attempt 原语与 Reparent 四态对账已实现；operation-wide Runtime 与多阶段 saga 归 TODO 036
+> 状态：有界 mutation attempt 原语与 Reparent 四态对账已实现，并由 operation-wide Runtime/Registry 组合
 > 更新日期：2026-08-15
 > 适用范围：Local OneNote MCP 的生产 mutation tools；manual-validation 的 disposable lifecycle 只作为受控特例
 
@@ -67,13 +67,14 @@ TODO 029 交付的是一个 bounded attempt vertical slice，不是完整 Operat
 | `MutationAttemptOutcome` | attempt 结果账本：固化 attempts、replay、observed outcome、阶段和 identity policy | 不等同 operation-wide outcome；不包含正文、XML、binary、路径或原始参数 |
 | `RecoveryDecision` | 恢复建议：从四态与 typed error 推导调用方下一步 | 不从错误消息字符串或 wrapper HRESULT 猜测 |
 
-更准确地说，029 只抽取了 mutation principal attempt 的静态 policy、执行裁决、observer 接口与结果账本。`MUTATION_ATTEMPT_POLICY_BINDINGS` 是冻结的 tool→policy inventory，用于自动化完整性检查；它不是公开 Tool Registry，也不承诺 operation 全部 backend calls 都受 executor 计数。统一 admission、authorization、coordination、deadline、全 operation outcome、Registry 与 saga 由 [TODO 036](../todo/036_operation_runtime_control_plane_and_tool_migration.md) 承接。
+更准确地说，029 只抽取了 mutation principal attempt 的静态 policy、执行裁决、observer 接口与结果账本。当前 Tool→attempt policy inventory 已迁移到 canonical [`OperationRegistry`](operation_runtime.md)，不再维护第二份 `MUTATION_ATTEMPT_POLICY_BINDINGS`。Registry 负责静态 operation policy，`OperationRuntime` 负责 admission、coordination、deadline、全 operation outcome、backend-call accounting 与 saga；029 executor 继续只计算 principal attempt，并由 Runtime 从嵌套 reconciliation 吸收其 outcome。
 
 ### 3.2 对象协作流程
 
 ```mermaid
 sequenceDiagram
     participant Tool as "MCP Tool"
+    participant Runtime as "OperationRuntime"
     participant Gate as "MutationPolicy"
     participant Coord as "ReadWriteCoordinator"
     participant Service as "Operation Service"
@@ -82,8 +83,9 @@ sequenceDiagram
     participant COM as "OneNote COM"
     participant Observer as "Operation-specific observer"
 
-    Tool->>Coord: 申请 mutation 独占 lease
-    Tool->>Service: typed ID + confirmation
+    Tool->>Runtime: operation + typed arguments
+    Runtime->>Coord: 按 Registry 申请 exclusive lease
+    Runtime->>Service: Handler(typed ID + confirmation)
     Service->>Gate: 检查独立权限
     Service->>Service: 冻结 live typed pre-state
     Service->>Contract: 取得显式 operation policy
@@ -94,8 +96,9 @@ sequenceDiagram
     Observer-->>Control: pre / post / partial / evidence insufficient
     Control-->>Service: MutationAttemptOutcome + RecoveryDecision
     Service->>Service: 连续稳定验证与业务 invariant
-    Service-->>Tool: 成功 envelope 或结构化失败
-    Tool-->>Coord: 释放独占 lease
+    Service-->>Runtime: 业务结果或结构化失败
+    Runtime-->>Tool: OperationOutcome + execution projection
+    Runtime-->>Coord: 所有出口释放独占 lease
 ```
 
 executor 不把 COM success 当成完成，也不把 COM exception 当成未发生。它只消费 observer 给出的事实。虽然基础原语支持“policy 明确允许 + 完整 exact pre-state + typed transient”时至多重放一次，但当前生产 policy 全部为 `never`；读证失败最多重读 evidence，不重放 mutation。
@@ -164,7 +167,7 @@ Manual-validation 只操作本次新建的 disposable Notebook，因此 Recipe �
 
 当前已经成立：typed confirmation、进程内写协调、统一 bounded-attempt policy/executor/outcome、连续稳定 read-back、Reparent 成功/异常共享 observer 的四态对账、execute-error reconciled success、最内层 HRESULT 恢复建议，以及生产 Reparent 不依赖 `SyncHierarchy` 或自动 close/reopen。Manual validation 会对每次正向与恢复调用检查 reconciliation 响应和 bridge audit。
 
-以下操作刻意不进入 `MUTATION_ATTEMPT_POLICY_BINDINGS`：
+以下操作刻意不交给 029 principal-attempt executor，但仍在 Operation Registry 中具名登记：
 
 - Create：包含 allocated identity、可能 remap 与创建后内容写入；
 - `replace_page_body`：先删除多个内容对象再写入，明确非原子；
@@ -172,4 +175,4 @@ Manual-validation 只操作本次新建的 disposable Notebook，因此 Recipe �
 - SectionGroup Reorder：当前后端能力明确不支持；
 - `sync_notebook`、open、publish、navigate：不是本轮定义的 bounded mutation attempt 生态。
 
-它们继续使用现有 operation-specific 编排；本轮不会为了“统一”机械改写多阶段恢复语义，也不会把 attempt executor 推广到非 mutation tool。[TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 已通过完整自动化回归，以及用户确认的 Reparent fresh/cache、canonical Rename、扩展 `onenote-convergence` 和 production Close lifecycle handoff 真实证据闭合。多阶段 saga、统一 Registry 与全 Tool Operation Runtime 明确由 [TODO 036](../todo/036_operation_runtime_control_plane_and_tool_migration.md) 承接。
+它们继续使用 operation-specific 编排；Runtime 的统一不机械改写多阶段恢复语义，也不把 attempt executor 推广到非 mutation tool。Create/Replace 以 operation-specific policy 登记，Copy/Move 以 saga 登记，Sync/Open/Publish/Navigate 则使用 Lifecycle、Filesystem Effect 或 UI Effect Strategy。[TODO 029](../todo/029_mcp_mutation_readiness_and_reconciliation_hardening.md) 已通过完整自动化回归，以及用户确认的 Reparent fresh/cache、canonical Rename、扩展 `onenote-convergence` 和 production Close lifecycle handoff 真实证据闭合；当前组合边界以 [`operation_runtime.md`](operation_runtime.md) 为准。

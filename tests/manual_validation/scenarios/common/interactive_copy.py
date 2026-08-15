@@ -22,7 +22,7 @@ from ...test_utils import (
 from ...run_identity import run_safe_timestamp
 from ..base import Scenario
 from .copy_invariants import assert_copy_mapping, assert_pages_unchanged
-from .copy_runtime import call_with_result_evidence, stable_copy_plan
+from .copy_runtime import call_with_result_evidence
 from .interactive_bootstrap import MAX_INTERACTIVE_TIMEOUT, _bounded_input
 
 
@@ -475,35 +475,9 @@ class InteractiveCopyEvidenceScenario(Scenario):
                 if case_name == "same-section"
                 else f"03-{recipe.capability}-Cross-Section-Copy-{run_stamp}"
             )
-            plan_arguments = {
-                "source_id": source_id,
-                "destination_parent_id": destination_section_id,
-                "destination_name": destination_title,
-                "include_descendants": False,
-            }
-            planned = await stable_copy_plan(
-                client,
-                plan_arguments,
-                attempts_path=self._case_evidence_path(
-                    out, "plan-attempts", case_name
-                ),
-                plan_path=self._case_evidence_path(out, "plan", case_name),
-            )
-            if planned.get("include_descendants") is not False:
-                raise InvariantFailure(
-                    "Interactive Copy plan unexpectedly included descendants."
-                )
             required_plan_capabilities = set(
                 recipe.required_plan_capabilities or {recipe.capability}
             )
-            observed_plan_capabilities = set(
-                planned.get("content_capabilities", ())
-            )
-            if not required_plan_capabilities <= observed_plan_capabilities:
-                raise InvariantFailure(
-                    "Interactive Copy plan did not observe required capabilities: "
-                    f"{sorted(required_plan_capabilities - observed_plan_capabilities)}."
-                )
 
             case_before = current_snapshot
             current_source = find_snapshot_item(case_before, source_id)
@@ -527,10 +501,9 @@ class InteractiveCopyEvidenceScenario(Scenario):
                         "destination_section_id": destination_section_id,
                         "expected_title": display_name(current_source),
                         "expected_section_id": current_source.get("section_id"),
-                        "expected_modified": planned.get("source", {}).get("modified"),
+                        "expected_modified": current_source.get("modified"),
                         "destination_title": destination_title,
                         "include_descendants": False,
-                        "plan_digest": planned["plan_digest"],
                     },
                     self._case_evidence_path(out, "copy-result", case_name),
                 )
@@ -600,6 +573,20 @@ class InteractiveCopyEvidenceScenario(Scenario):
                 diagnostic_partial_admitted = True
 
             copy_report = copied.get("copy_report", {})
+            if not diagnostic_partial_admitted:
+                planning = copy_report.get("planning", {})
+                observed_plan_capabilities = set(
+                    planning.get("content_capabilities", ())
+                )
+                if planning.get("include_descendants") is not False:
+                    raise InvariantFailure(
+                        "Interactive Copy internal planning unexpectedly included descendants."
+                    )
+                if not required_plan_capabilities <= observed_plan_capabilities:
+                    raise InvariantFailure(
+                        "Interactive Copy internal planning missed required capabilities: "
+                        f"{sorted(required_plan_capabilities - observed_plan_capabilities)}."
+                    )
             target = copied.get("item") or copied.get("destination") or {}
             target_id = str(target.get("id", ""))
             if not target_id:
@@ -770,33 +757,6 @@ class InteractiveCopyEvidenceScenario(Scenario):
                     f"{hop_index + 1:02d}-{recipe.capability}-Copy-Chain-"
                     f"{hop_index}-{run_stamp}"
                 )
-                chain_plan_arguments = {
-                    "source_id": chain_source_id,
-                    "destination_parent_id": destination_section_id,
-                    "destination_name": chain_title,
-                    "include_descendants": False,
-                }
-                chain_plan = await stable_copy_plan(
-                    client,
-                    chain_plan_arguments,
-                    attempts_path=self._case_evidence_path(
-                        out, "plan-attempts", case_name, hop_index
-                    ),
-                    plan_path=self._case_evidence_path(
-                        out, "plan", case_name, hop_index
-                    ),
-                )
-                if chain_plan.get("include_descendants") is not False:
-                    raise InvariantFailure(
-                        f"Interactive Copy chain hop {hop_index} included descendants."
-                    )
-                if not required_plan_capabilities <= set(
-                    chain_plan.get("content_capabilities", ())
-                ):
-                    raise InvariantFailure(
-                        f"Interactive Copy chain hop {hop_index} lost required capabilities."
-                    )
-
                 chain_before = current_snapshot
                 chain_partial_admitted = False
                 chain_xml_pair: tuple[str, str] | None = None
@@ -809,12 +769,9 @@ class InteractiveCopyEvidenceScenario(Scenario):
                             "destination_section_id": destination_section_id,
                             "expected_title": display_name(chain_source),
                             "expected_section_id": chain_source.get("section_id"),
-                            "expected_modified": chain_plan.get("source", {}).get(
-                                "modified"
-                            ),
+                            "expected_modified": chain_source.get("modified"),
                             "destination_title": chain_title,
                             "include_descendants": False,
-                            "plan_digest": chain_plan["plan_digest"],
                         },
                         self._case_evidence_path(
                             out, "copy-result", case_name, hop_index
@@ -910,6 +867,18 @@ class InteractiveCopyEvidenceScenario(Scenario):
                     chain_partial_admitted = True
 
                 chain_copy_report = chain_copied.get("copy_report", {})
+                if not chain_partial_admitted:
+                    chain_planning = chain_copy_report.get("planning", {})
+                    if chain_planning.get("include_descendants") is not False:
+                        raise InvariantFailure(
+                            f"Interactive Copy chain hop {hop_index} internal scope changed."
+                        )
+                    if not required_plan_capabilities <= set(
+                        chain_planning.get("content_capabilities", ())
+                    ):
+                        raise InvariantFailure(
+                            f"Interactive Copy chain hop {hop_index} lost required capabilities."
+                        )
                 chain_target_id = _copy_target_id(chain_copied, chain_source_id)
                 if not chain_target_id:
                     raise InvariantFailure(

@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from ..services import ServiceContainer
+from ..services.operation_runtime import OperationRuntime
 
 
-_services: ServiceContainer | None = None
+_runtime: OperationRuntime | None = None
 
 
-def configure(services: ServiceContainer) -> None:
-    global _services
-    _services = services
+def configure(runtime: OperationRuntime) -> None:
+    global _runtime
+    _runtime = runtime
 
 
-def get_services() -> ServiceContainer:
-    if _services is None:
-        raise RuntimeError("MCP tool services have not been configured.")
-    return _services
+def get_runtime() -> OperationRuntime:
+    if _runtime is None:
+        raise RuntimeError("MCP operation runtime has not been configured.")
+    return _runtime

@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from local_onenote_mcp import server
+from local_onenote_mcp import operation_catalog, server
 from local_onenote_mcp.desktop import OneNoteDesktopState
 from local_onenote_mcp.onenote_errors import (
     OneNoteDesktopNotRunningError,
@@ -12,17 +12,15 @@ from local_onenote_mcp.onenote_errors import (
 )
 from local_onenote_mcp.policy import SearchBudget
 from local_onenote_mcp.services import PartialFailure
-from local_onenote_mcp.tools.advanced import merge_sections, open_hierarchy, set_filing_location
 from local_onenote_mcp.tools.mutations import create_page, create_section, delete_page_content
-from local_onenote_mcp.tools.operations import publish_object
+from local_onenote_mcp.tools.operations import navigate_to, publish_object, sync_notebook
 from local_onenote_mcp.tools.pages import RootSearchScope, StartNodeSearchScope, search_pages
 from local_onenote_mcp.tools.system import health_check, resolve_identifier
-from local_onenote_mcp.tools import system as system_tools
 
 
 def test_health_check_includes_runtime_diagnostics(monkeypatch):
     monkeypatch.setattr(
-        system_tools,
+        operation_catalog,
         "require_onenote_desktop",
         lambda: OneNoteDesktopState(True, True),
     )
@@ -78,6 +76,31 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
     assert "search_default_backend" not in result
     assert "search_backends" not in result
     assert result["content_formats"] == ["plain", "html", "markdown"]
+    assert result["operation_runtime"] == {
+        "enabled": True,
+        "registered_operations": 56,
+        "default_operations": 56,
+        "advanced_operations": 0,
+        "content_free_audit": True,
+    }
+    assert result["copy_move"] == {
+        "tools": [
+            "copy_page",
+            "copy_section",
+            "copy_section_group",
+            "copy_notebook",
+            "move_page",
+            "move_section",
+            "move_section_group",
+        ],
+        "single_call": True,
+        "public_planning_tools": False,
+        "agent_managed_plan_state": False,
+        "preview": {
+            "available": False,
+            "reason": "No public Preview capability is delivered in this release.",
+        },
+    }
     assert result["copy_budget"]["max_pages"] > 0
     assert result["python_executable"]
     assert result["module_path"].endswith("tools\\system.py") or result["module_path"].endswith("tools/system.py")
@@ -91,7 +114,7 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
 
 def test_health_check_fails_before_com_when_onenote_gui_is_absent(monkeypatch):
     monkeypatch.setattr(
-        system_tools,
+        operation_catalog,
         "require_onenote_desktop",
         lambda: (_ for _ in ()).throw(
             OneNoteDesktopNotRunningError(
@@ -327,7 +350,7 @@ def test_metadata_query_schemas_are_typed_strict_and_bounded():
 def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
-    assert len(names) == 61
+    assert len(names) == 56
     assert {
         "query_notebook",
         "query_section_group",
@@ -353,37 +376,40 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
     }.isdisjoint(names)
     assert {
         "reorder_section",
-        "reorder_section_group",
         "reparent_page",
         "reparent_section",
         "reparent_section_group",
     } <= names
     assert {
-        "plan_copy",
         "copy_page",
         "copy_section",
         "copy_section_group",
         "copy_notebook",
-        "plan_move_page",
         "move_page",
-        "plan_move_section",
         "move_section",
-        "plan_move_section_group",
         "move_section_group",
     } <= names
+    assert {
+        "plan_copy",
+        "plan_move_page",
+        "plan_move_section",
+        "plan_move_section_group",
+    }.isdisjoint(names)
     assert "update_page_xml" not in names
     assert "update_hierarchy_xml" not in names
     assert "delete_hierarchy" not in names
     assert "merge_sections" not in names
+    assert "reorder_section_group" not in names
     assert "plan_reconstructive_move_page" not in names
     assert "reconstructive_move_page" not in names
 
 
-def test_raw_hierarchy_xml_is_absent_from_advanced_and_every_registration_profile():
+def test_raw_xml_switch_does_not_create_a_production_advanced_profile(monkeypatch):
     from local_onenote_mcp.bridge import POWERSHELL_BRIDGE
-    from local_onenote_mcp.tools import ADVANCED_TOOLS, register_tools
+    from local_onenote_mcp.tools import register_tools
+    from local_onenote_mcp.tools.advanced import TOOLS as ADVANCED_TOOLS
 
-    assert "update_hierarchy_xml" not in {tool.__name__ for tool in ADVANCED_TOOLS}
+    assert ADVANCED_TOOLS == []
     assert not hasattr(server.services.mutations, "update_hierarchy_xml")
     assert '"update_hierarchy"' in POWERSHELL_BRIDGE
 
@@ -399,9 +425,17 @@ def test_raw_hierarchy_xml_is_absent_from_advanced_and_every_registration_profil
             return register
 
     fake = FakeMCP()
-    register_tools(fake, server.services, raw_xml_enabled=True)
-    assert "update_page_xml" in fake.names
-    assert "update_hierarchy_xml" not in fake.names
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RAW_XML", "true")
+    register_tools(fake, server.services)
+    assert len(fake.names) == 56
+    assert {
+        "find_meta",
+        "open_hierarchy",
+        "update_page_xml",
+        "update_hierarchy_xml",
+        "merge_sections",
+        "set_filing_location",
+    }.isdisjoint(fake.names)
     assert "move_section" in fake.names
 
 
@@ -441,65 +475,52 @@ def test_reparent_tool_schemas_require_exact_typed_confirmation():
         assert "observed" in description
 
 
-def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
+def test_copy_tool_public_schemas_are_single_call_and_require_exact_confirmation():
     tools = server.mcp._tool_manager._tools
     expected_required = {
-        "plan_copy": {"source_id"},
         "copy_page": {
             "page_id",
             "destination_section_id",
             "expected_title",
             "expected_section_id",
-            "plan_digest",
         },
         "copy_section": {
             "section_id",
             "destination_parent_id",
             "expected_name",
             "expected_parent_id",
-            "plan_digest",
         },
         "copy_section_group": {
             "section_group_id",
             "destination_parent_id",
             "expected_name",
             "expected_parent_id",
-            "plan_digest",
         },
-        "copy_notebook": {"notebook_id", "expected_name", "plan_digest"},
-        "plan_move_page": {"page_id", "destination_section_id"},
+        "copy_notebook": {"notebook_id", "expected_name"},
         "move_page": {
             "page_id",
             "destination_section_id",
             "expected_title",
             "expected_section_id",
-            "plan_digest",
         },
-        "plan_move_section": {"section_id", "destination_parent_id"},
         "move_section": {
             "section_id",
             "destination_parent_id",
             "expected_name",
             "expected_parent_id",
-            "plan_digest",
         },
-        "plan_move_section_group": {"section_group_id", "destination_parent_id"},
         "move_section_group": {
             "section_group_id",
             "destination_parent_id",
             "expected_name",
             "expected_parent_id",
-            "plan_digest",
         },
     }
 
     for name, required in expected_required.items():
         assert set(tools[name].parameters.get("required", [])) == required
     assert "destination_parent_id" not in tools["copy_notebook"].parameters["properties"]
-    assert tools["plan_copy"].parameters["properties"]["destination_base_folder"]["default"] == ""
-    assert tools["plan_copy"].parameters["properties"]["include_descendants"]["default"] is False
     assert tools["copy_page"].parameters["properties"]["include_descendants"]["default"] is False
-    assert tools["plan_move_page"].parameters["properties"]["include_descendants"]["default"] is False
     assert tools["move_page"].parameters["properties"]["include_descendants"]["default"] is False
     for name in ("copy_section", "copy_section_group", "copy_notebook"):
         assert "include_descendants" not in tools[name].parameters["properties"]
@@ -513,13 +534,11 @@ def test_copy_tool_public_schemas_require_exact_confirmation_and_plan_digest():
         "move_section_group",
     ):
         assert "position" in tools[name].description.casefold()
-    for name in (
-        "plan_copy",
-        "plan_move_page",
-        "plan_move_section",
-        "plan_move_section_group",
-    ):
-        assert "destination_position" not in tools[name].description
+    for name in expected_required:
+        properties = tools[name].parameters["properties"]
+        assert "plan_digest" not in properties
+        assert "operation_id" not in properties
+        assert "token" not in properties
 
 
 def test_container_reorder_tool_schemas_require_exact_confirmation():
@@ -530,16 +549,8 @@ def test_container_reorder_tool_schemas_require_exact_confirmation():
         "expected_name",
         "expected_parent_id",
     }
-    assert set(tools["reorder_section_group"].parameters.get("required", [])) == {
-        "section_group_id",
-        "expected_name",
-        "expected_parent_id",
-    }
     assert tools["reorder_section"].parameters["properties"]["after_section_id"]["default"] == ""
-    assert (
-        tools["reorder_section_group"].parameters["properties"]["after_section_group_id"]["default"]
-        == ""
-    )
+    assert "reorder_section_group" not in tools
 
 
 def test_page_content_digest_ignores_page_clock_and_hierarchy_metadata():
@@ -609,9 +620,8 @@ def test_open_hierarchy_resolves_existing_friendly_path_without_bridge(monkeypat
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Existing path must not call COM")),
     )
 
-    result = asyncio.run(open_hierarchy("Notebook/Group/Sec"))
+    result = server.services.mutations.open_hierarchy("Notebook/Group/Sec")
 
-    assert result["ok"] is True
     assert result["object_id"] == "section-id"
     assert result["opened_existing"] is True
 
@@ -647,9 +657,10 @@ def test_open_hierarchy_none_waits_for_two_live_identity_observations(monkeypatc
     )
     monkeypatch.setattr("local_onenote_mcp.services.hierarchy.time.sleep", lambda _seconds: None)
 
-    result = asyncio.run(open_hierarchy("Notebook/Opened", create_type="none"))
+    result = server.services.mutations.open_hierarchy(
+        "Notebook/Opened", create_type="none"
+    )
 
-    assert result["ok"] is True
     assert result["object_id"] == "opened-id"
     assert result["converged"] is True
     assert result["convergence"]["stable_observations"] == 2
@@ -668,6 +679,7 @@ def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path
 
     def fake_call(operation, **params):
         captured.update(operation=operation, params=params)
+        Path(params["target_path"]).write_bytes(b"fake-pdf")
         return {"path": params["target_path"]}
 
     monkeypatch.setattr(server.services.operations, "call", fake_call)
@@ -677,6 +689,103 @@ def test_publish_object_resolves_target_path_before_bridge(monkeypatch, tmp_path
     assert result["ok"] is True
     assert captured["operation"] == "publish"
     assert Path(captured["params"]["target_path"]) == expected
+    assert expected.is_file()
+    assert result["execution"]["backend_category"] == "filesystem"
+    assert result["execution"]["observed_outcome"] == "filesystem_effect_completed"
+    assert result["execution"]["backend_calls"] == 3
+
+
+@pytest.mark.write_contract
+def test_publish_object_fails_if_backend_does_not_create_exact_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda object_id, resource_type=None: {
+            "resource_type": "page",
+            "id": object_id,
+            "title": "Page",
+        },
+    )
+    monkeypatch.setattr(
+        server.services.operations,
+        "call",
+        lambda _operation, **params: {"path": params["target_path"]},
+    )
+
+    result = asyncio.run(
+        publish_object(
+            "page-id", str(tmp_path / "missing.pdf"), format="pdf", overwrite=False
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "backend_error"
+    assert result["execution"]["kind"] == "filesystem_effect"
+    assert result["execution"]["backend_calls"] == 3
+    assert not (tmp_path / "missing.pdf").exists()
+
+
+@pytest.mark.write_contract
+def test_publish_object_rejects_mismatched_backend_path(monkeypatch, tmp_path):
+    requested = tmp_path / "requested.pdf"
+    other = tmp_path / "other.pdf"
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda object_id, resource_type=None: {
+            "resource_type": "page",
+            "id": object_id,
+            "title": "Page",
+        },
+    )
+
+    def fake_call(_operation, **_params):
+        requested.write_bytes(b"fake-pdf")
+        return {"path": str(other)}
+
+    monkeypatch.setattr(server.services.operations, "call", fake_call)
+
+    result = asyncio.run(
+        publish_object("page-id", str(requested), format="pdf", overwrite=False)
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "backend_error"
+    assert result["execution"]["backend_calls"] == 2
+
+
+def test_sync_and_navigation_preserve_strategy_specific_public_semantics(monkeypatch):
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda object_id, resource_type=None: {
+            "resource_type": resource_type or "page",
+            "id": object_id,
+            "title": "Target",
+        },
+    )
+    monkeypatch.setattr(
+        server.services.operations,
+        "call",
+        lambda _operation, **_params: {},
+    )
+
+    synced = asyncio.run(sync_notebook("notebook-id"))
+    navigated = asyncio.run(navigate_to("page-id"))
+
+    assert synced["ok"] is True
+    assert synced["complete"] is False
+    assert synced["accepted"] is True
+    assert synced["completion_observable"] is False
+    assert synced["execution"]["kind"] == "lifecycle"
+    assert (
+        synced["execution"]["observed_outcome"]
+        == "accepted_completion_unobservable"
+    )
+    assert navigated["ok"] is True
+    assert navigated["navigated"] is True
+    assert navigated["execution"]["kind"] == "ui_effect"
+    assert navigated["execution"]["observed_outcome"] == "action_accepted"
 
 
 @pytest.mark.write_contract
@@ -1274,9 +1383,9 @@ def test_delete_page_content_classifies_non_target_identity_change_as_partial_wi
 
 
 def test_generic_delete_hierarchy_is_removed_from_advanced_registration():
-    from local_onenote_mcp.tools import ADVANCED_TOOLS
+    from local_onenote_mcp.tools.advanced import TOOLS as ADVANCED_TOOLS
 
-    assert "delete_hierarchy" not in {tool.__name__ for tool in ADVANCED_TOOLS}
+    assert ADVANCED_TOOLS == []
     assert not hasattr(server.services.mutations, "delete_hierarchy")
 
 
@@ -1294,20 +1403,20 @@ def test_open_hierarchy_rejects_duplicate_exact_path_before_bridge(monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("COM must not be called")),
     )
 
-    result = asyncio.run(open_hierarchy("Notebook/Section/Duplicate"))
-
-    assert result["ok"] is False
-    assert "Ambiguous" in result["error"]
+    with pytest.raises(ValueError, match="Ambiguous"):
+        server.services.mutations.open_hierarchy("Notebook/Section/Duplicate")
 
 
-def test_advanced_merge_and_filing_location_schemas_use_exact_id_names():
+def test_internal_merge_and_filing_location_methods_use_exact_id_names():
     import inspect
 
-    assert list(inspect.signature(merge_sections).parameters) == [
+    assert list(inspect.signature(server.services.operations.merge_sections).parameters) == [
         "source_section_id",
         "destination_section_id",
     ]
-    assert list(inspect.signature(set_filing_location).parameters) == [
+    assert list(
+        inspect.signature(server.services.operations.set_filing_location).parameters
+    ) == [
         "filing_location",
         "filing_location_type",
         "section_or_page_id",
@@ -1315,7 +1424,7 @@ def test_advanced_merge_and_filing_location_schemas_use_exact_id_names():
 
 
 @pytest.mark.write_contract
-def test_advanced_merge_and_filing_location_resolve_only_exact_ids(monkeypatch):
+def test_internal_merge_and_filing_location_resolve_only_exact_ids(monkeypatch):
     items = {
         "source-section": {
             "resource_type": "section",
@@ -1356,11 +1465,15 @@ def test_advanced_merge_and_filing_location_resolve_only_exact_ids(monkeypatch):
         lambda operation, **params: calls.append((operation, params)) or {},
     )
 
-    merged = asyncio.run(merge_sections("source-section", "destination-section"))
-    filed = asyncio.run(set_filing_location("email", "current_page", "page-id"))
+    merged = server.services.operations.merge_sections(
+        "source-section", "destination-section"
+    )
+    filed = server.services.operations.set_filing_location(
+        "email", "current_page", "page-id"
+    )
 
-    assert merged["ok"] is True
-    assert filed["ok"] is True
+    assert merged["merged"] is True
+    assert filed["updated"] is True
     assert calls[0][1]["source_section_id"] == "source-section"
     assert calls[0][1]["destination_section_id"] == "destination-section"
     assert calls[1][1]["section_or_page_id"] == "page-id"

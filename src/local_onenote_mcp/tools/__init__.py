@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..operation_catalog import build_operation_registry
 from ..services import ServiceContainer
+from ..services.operation_runtime import OperationRuntime
 from .copying import TOOLS as COPY_TOOLS
-from .advanced import TOOLS as ADVANCED_TOOLS
 from .context import configure
 from .hierarchy import TOOLS as HIERARCHY_TOOLS
 from .mutations import TOOLS as MUTATION_TOOLS
@@ -25,13 +26,16 @@ DEFAULT_TOOLS = [
 ]
 
 
-def register_tools(mcp: Any, services: ServiceContainer, *, raw_xml_enabled: bool = False) -> None:
-    """Bind the service container and register the selected MCP tool profile."""
+def register_tools(mcp: Any, services: ServiceContainer) -> None:
+    """Bind the service container and register the production MCP tool surface."""
 
-    configure(services)
-    functions = [*DEFAULT_TOOLS, *(ADVANCED_TOOLS if raw_xml_enabled else [])]
-    for function in functions:
+    registry = build_operation_registry(services)
+    registry.audit_public_tools(
+        {function.__name__ for function in DEFAULT_TOOLS}, profile="default"
+    )
+    configure(OperationRuntime(registry, services.coordinator))
+    for function in DEFAULT_TOOLS:
         mcp.tool()(function)
 
 
-__all__ = ["ADVANCED_TOOLS", "DEFAULT_TOOLS", "register_tools"]
+__all__ = ["DEFAULT_TOOLS", "register_tools"]
