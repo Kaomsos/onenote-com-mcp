@@ -1,73 +1,151 @@
-# 031：启动 OneNote Desktop GUI 的显式工具
+# 031：显式 `launch_onenote_gui` 工具
 
 > ID：031
-> 状态：待办
+> 状态：进行中
 > 优先级：P1
-> 类型：生产 MCP / Windows Desktop 生命周期
-> 更新日期：2026-08-14
+> 类型：生产 MCP / Windows Desktop GUI 控制
+> 更新日期：2026-08-15
+
+## 当前状态与已确认决策
+
+当前实现仍只有 check-only 的 `health_check`：OneNote Desktop 未运行或没有可见窗口时，读写操作 fail closed，服务器不会隐式启动 GUI。
+
+用户已经授权把本 TODO 的目标工具冻结为 `launch_onenote_gui`，并纳入 [TODO 034](034_pre_user_testing_tool_surface_convergence.md) 的目标 User profile。本文记录目标合同，**不表示工具已经实现或发布**。
+
+已确认：
+
+- 公开名称只使用 `launch_onenote_gui`，不提供 `start_onenote_app` 或其他兼容 alias；
+- 工具归入 Session 类，但执行权限归入独立的 UI Control 授权；
+- 只有在 OneNote 未启动时才允许发起有限启动尝试；
+- 一次调用最多发出一个进程启动请求，随后只做有界、只读的 readiness observation，不重复启动；
+- 返回是否成功，以及是本次启动还是原本已经运行；
+- `health_check` 继续只检查，绝不因为健康检查、初始化或工具枚举而启动 OneNote。
 
 ## 背景
 
-当前 Windows/OneNote 环境的真实 manual-validation 对照表明：scenario 开始前 OneNote Desktop 已运行时，cache working fixture 可以完成 hierarchy 双稳定；OneNote 未运行、由短命 PowerShell/COM client 冷启动时，working Notebook 可能长期只有空 shell，或刚建立的 live ID 随 client 退出而消失。错误模型与证据边界见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)。
+真实 manual-validation 对照表明：OneNote Desktop 已运行时，cache working fixture 可以完成 hierarchy 双稳定；OneNote 未运行、由短命 PowerShell/COM client 冷启动时，working Notebook 可能只形成空 shell，或 live ID 随 client 退出而消失。错误模型与证据边界见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)。
 
-当前已先实施 fail-closed 策略：公开 `health_check` 在任何 hierarchy/COM 调用前用原生 Windows 进程与可见窗口探针确认 OneNote GUI 已启动；manual-validation 单项与真实 `all` 也在创建/打开 working Notebook 前应用同一门限。这个策略可以避免错误扩散，但需要用户自行启动 OneNote。
+因此启动 GUI 必须是用户可见、显式、可授权的独立操作，不能作为任意 COM 调用的副作用，也不能把“COM 对象可创建”误判为“桌面 GUI 已就绪”。
 
-本 TODO 规划一个显式 `start_onenote_app` MCP 工具：仅当 OneNote GUI 尚未就绪时启动 OneNote Desktop，并在返回成功前确认同一 readiness 条件。它不是长期 COM owner，也不改变每次 bridge 调用独立 PowerShell/COM client 的现有架构。
+## 目标公开合同
 
-## 目标合同
+### Schema
 
-- 默认 profile 注册无参数工具 `start_onenote_app`；调用行为是显式的，`health_check` 本身仍只检查、绝不隐式启动。
-- 首先执行与 `health_check` 相同的 native readiness probe：
-  - 已有 `ONENOTE.EXE` 且存在可见顶层 GUI 时不重复启动，返回 `status="already_running"`；
-  - 未就绪时只启动一次受信任的本机 OneNote Desktop executable，并有界等待进程与可见 GUI 同时成立；
-  - `ONENOTE.EXE` 进程存在但没有可见 GUI 时不得直接宣称成功，应尝试受支持的显式 GUI 激活路线或返回可操作的 typed failure。
-- 成功 envelope 至少返回 content-free 的 `status=started|already_running`、`onenote_desktop={process_running,visible_window_present,ready,probe}` 与启动/收敛耗时；不得返回窗口标题、用户 Notebook、对象 ID、命令行或用户路径。
-- 启动失败、可执行文件解析失败、超时和 GUI 未出现使用稳定 typed error，标记 `after_user_action` 或安全的显式重试语义；不得 fallback 到创建 `OneNote.Application` COM 对象并把 COM 可访问误当成 GUI ready。
-- 工具只负责启动/显示应用，不打开任意用户提供的 Notebook 路径、不执行 OneNote 内容 mutation、不接受 executable/path/arguments 参数。
+```text
+launch_onenote_gui()
+```
+
+- 无参数；
+- 不接受 executable、path、arguments、Notebook path、OneNote URI 或任意调用方 payload；
+- 不允许调用方选择启动程序。
+
+### 行为
+
+1. 使用与 `health_check` 一致的 native readiness probe，判断 `ONENOTE.EXE` 进程和可见顶层窗口是否同时存在。
+2. 已就绪时不发起启动，返回成功与 `status="already_running"`。
+3. 完全未运行时，解析受信任的 OneNote Desktop executable，一次且仅一次发起 process launch，然后在固定预算内观察 readiness。
+4. 进程存在但没有可见窗口时，不得再发起第二次启动。实现只能尝试受支持、无用户 payload 的显式窗口激活，或返回 typed failure。
+5. 只有进程和可见 GUI 同时就绪时才返回成功；超时、解析失败、启动异常和只有进程没有窗口都返回稳定失败 envelope。
+
+“有限尝试”特指**一次进程启动请求加有界 readiness 观察**，不是循环创建多个 OneNote 进程。
+
+### 目标响应
+
+成功结果至少包含：
+
+```json
+{
+  "ok": true,
+  "result": {
+    "status": "started | already_running",
+    "launch_attempted": true,
+    "launch_attempts": 1,
+    "ready": true
+  },
+  "warnings": [],
+  "execution": {}
+}
+```
+
+当 `status="already_running"` 时，`launch_attempted=false` 且 `launch_attempts=0`。实际 envelope 还可返回 content-free 的探针类别和有界耗时，但不得返回窗口标题、命令行、用户路径、Notebook、对象 ID 或页面内容。
+
+失败使用 TODO 034 统一的失败 envelope，至少区分：
+
+- trusted executable 无法解析；
+- process launch 被拒绝或异常；
+- readiness timeout；
+- process running but visible GUI unavailable；
+- native probe failure。
+
+错误应提供安全的 `after_user_action` 或显式重试提示，不得在失败后自动重复启动。
+
+## 授权与运行时分类
+
+- Exposure：目标 User profile 默认可见；当前尚未注册。
+- Category：Session。
+- Effect：GUI control，不是普通 read，也不是 OneNote 内容 mutation。
+- Authorization：`LOCAL_ONENOTE_ENABLE_UI_CONTROL=true`；默认 false。
+- Operation runtime：若工具进入生产 Registry，必须进入 canonical Operation Runtime，并记录 content-free 的 execution metadata。
+
+UI Control 权限同时覆盖 `navigate_to`，但授权一个类别不意味着调用时可以隐式执行另一个工具。`health_check` 不需要 UI Control，因为它保持只读探针。
 
 ## 可执行文件与启动边界
 
-- 从 Windows 注册的 `OneNote.Application` LocalServer 或同等受信任、精确的 Office 安装注册信息解析 executable；必须验证目标是普通绝对本地文件、文件名为 `ONENOTE.EXE`，并拒绝未引用参数、脚本、reparse/相对路径或调用方输入。
-- 启动使用参数数组而非 shell command，不经 `cmd.exe`/PowerShell 字符串插值；不得传入 Notebook path、URI、Page 内容或其他可变 payload。
-- 一次 tool 调用最多创建一个 OneNote 进程启动请求。若启动 API 返回后状态不确定，只轮询只读 native readiness，不重复发起启动。
-- 工具不结束、重启、关闭或接管既有 OneNote 进程，也不自动关闭 modal dialog。
+- 从 Windows 注册的 `OneNote.Application` LocalServer 或同等受信任、精确的 Office 安装信息解析 executable；
+- 目标必须是普通绝对本地文件，文件名为 `ONENOTE.EXE`；拒绝相对路径、脚本、reparse target、未解析命令片段或调用方输入；
+- 使用参数数组直接启动，不经 `cmd.exe`、PowerShell 字符串插值或 shell；
+- 不通过创建 `OneNote.Application` COM 对象完成冷启动；
+- 不结束、重启、关闭或接管既有 OneNote 进程；
+- 不自动处理 modal dialog，不打开指定 Notebook/Page，不发送 URI，不执行内容 mutation。
 
 ## 非目标
 
-- 不实现 scenario-scoped 或生产级长期 COM owner、COM broker、后台 daemon、watcher 或跨 MCP 进程 session。
-- 不使 `health_check`、server import、MCP initialize、tool discovery 或 manual-validation dry-run 隐式启动 GUI。
-- 不改变 fixture cache template、working copy、checkpoint、双稳定、内容验证和 fail-closed 门限。
-- 不承诺 Windows 登录前、非交互 session、服务账户、远程无桌面 session 或所有 OneNote/Office 版本均可启动可见 GUI。
+- 不实现长期 COM owner、COM broker、后台 daemon、watcher 或跨 MCP 进程 session；
+- 不使 server import、MCP initialize、`tools/list`、`health_check`、manual-validation dry-run 或任何普通工具隐式启动 GUI；
+- 不改变 fixture cache、working copy、checkpoint、双稳定和 fail-closed 门限；
+- 不承诺在 Windows 登录前、非交互 session、服务账户或无可见桌面的远程 session 中成功；
+- 不把“进程已创建”当作“GUI ready”。
 
-## 自动化验证
+## 自动化验证要求
 
-- 所有测试 mock 进程枚举、窗口枚举、注册表解析与 process launch；pytest 绝不启动或关闭真实 OneNote。
-- 已运行 GUI 路径返回 `already_running`，launch 调用次数为零。
-- 未运行路径只发起一次精确 executable launch，并要求连续或有界的 ready observation 后才返回 `started`。
-- process-only/no-window、launch exception、注册表目标异常、timeout、探针失败均返回稳定非成功 envelope；不发生 COM、Notebook 或文件 mutation。
-- Tool schema 无参数且禁止任意 path/argument；default profile 工具数、README、`tool_contracts.md` 与 `health_check` capability 同步。
-- manual-validation pure tests 证明 dry-run 零 GUI probe/launch，真实 run 的当前 fail-closed preflight 不因工具存在而自动调用它。
-- 完整 `pytest -q`、相关 dry-run 和 `git diff --check` 通过。
+pytest 必须完全 mock 进程枚举、窗口枚举、注册表解析、激活和 process launch，绝不启动或关闭真实 OneNote：
 
-## 真实验证
+- 已运行且有可见窗口：`already_running`，launch 调用为零；
+- 完全未运行：只发起一次精确 executable launch，达到 readiness 后返回 `started`；
+- process-only/no-window：不发起第二次 launch；
+- launch exception、异常注册目标、timeout、探针失败：稳定非成功 envelope；
+- UI Control 默认关闭，拒绝发生在任何启动副作用之前；
+- schema 无参数且禁止任意 path/argument；
+- `health_check` 在全部路径保持 check-only；
+- Registry、README、`tool_contracts.md`、`health_check` capability 与目标 User profile 同步；
+- manual-validation dry-run 为零 GUI probe/launch side effect。
+
+## 用户真实验收
 
 只有用户可以执行涉及真实 OneNote Desktop 的验收：
 
-1. 完全退出 OneNote，调用 `health_check`，确认以 `onenote_desktop_not_running` fail closed 且没有隐式启动应用；
-2. 调用 `start_onenote_app`，确认只出现一个可见 OneNote GUI，返回 `started`；
-3. 再次调用，确认返回 `already_running` 且不产生第二次启动；
-4. 调用 `health_check`，确认 `onenote_desktop.ready=true` 后才进行 hierarchy COM 读取；
-5. 用户随后运行一个 cache manual-validation 单项，确认 fixture 可以进入 hierarchy/content validation；这只验证启动工具与当前环境的配合，不关闭长期 COM owner 议题。
+1. 完全退出 OneNote，调用 `health_check`，确认 fail closed 且没有隐式启动；
+2. 在 UI Control 未授权时调用 `launch_onenote_gui`，确认在启动前被拒绝；
+3. 开启 UI Control 后调用，确认只出现一个可见 OneNote GUI并返回 `started`；
+4. 再次调用，确认返回 `already_running`，且没有第二次启动；
+5. 调用 `health_check`，确认 `onenote_desktop.ready=true` 后再进行 hierarchy COM 读取；
+6. 用户可随后运行一个 cache manual-validation 单项，确认当前 fixture 流程与显式启动后的环境配合正常。
+
+Agent、pytest、CI、hook、timer、watcher 和后台任务都不得执行上述真实启动验收。
 
 ## 完成定义
 
-- 工具实现、typed errors、无参数 schema、可信 executable 解析、single-launch convergence 和 content-free response 全部有纯合同覆盖；
-- 生产/README/design/manual-validation 文档同步，`health_check` 保持 check-only；
-- 完整自动化测试通过且没有真实 OneNote side effect；
-- 用户完成上述真实启动、幂等、健康检查和至少一个 cache consumer 验证，并确认没有重复 GUI 或残留 helper 进程。
+- [x] 用户确认名称、分类、单次启动请求与有界观察语义；
+- [x] 用户授权更新本文及 TODO 034 的目标发布方案；
+- [ ] 工具实现、trusted executable 解析、single-launch convergence 和 typed errors 完成；
+- [ ] 纯合同覆盖完整，且没有真实 OneNote side effect；
+- [ ] Registry、README、design、health capability 和 manual-validation 文档同步到已实现状态；
+- [ ] 用户完成真实启动、幂等、健康检查和必要的 cache consumer 验收；
+- [x] 用户最终批准将 `launch_onenote_gui` 纳入目标 User profile；实际注册仍待实现和验收。
 
 ## 关联
 
+- [用户测试前工具面收敛 TODO 034](034_pre_user_testing_tool_surface_convergence.md)
 - [当前架构](../design/architecture.md#6-运行时生命周期与并发)
 - [公开工具合同](../design/tool_contracts.md)
 - [冷启动错误模型 Lesson](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)

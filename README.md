@@ -180,7 +180,26 @@ LOCAL_ONENOTE_MARKDIG_DLL = "C:\\path\\to\\Markdig.Signed.dll"
 
 ---
 
-## API & Tool Directory
+## Planned User-Testing Surface (Not Yet Implemented)
+
+The pre-user-testing v1.0 proposal is now frozen for implementation review: a **52-tool default User profile**, organized by user task rather than source module. The running server still exposes the 56-tool current contract documented in the next section; do not use the proposed names or permissions in client configuration yet.
+
+The planned categories are Session (including the new explicit `launch_onenote_gui`), Hierarchy Browse, Metadata Get, Query & Search, Page Content Read, Hyperlink, Create, Rename, Reorder, Organize, Page Content Mutation, Recoverable Delete, Copy, Reconstructive Move, Export, UI Navigation, and Notebook Lifecycle.
+
+Key product changes in the proposal:
+
+- metadata reads gain explicit `get_*_metadata` names, Page content reads gain object-specific names, and export/sync names describe their exact effect;
+- `list_notebooks` and all Expand tools form Hierarchy Browse, while Query and Page Search form a separate discovery category;
+- `resolve_identifier`, `get_page_xml`, `navigate_to_url`, `get_special_locations`, and `get_parent` move to a non-registered Internal & Incubating catalog;
+- default deletion is always recoverable; optional permanent deletion, if approved later, uses three separately named tools rather than a `permanently` flag;
+- authorization converges to seven default-off categories: Writes, Deletes, Organize, Copy, Local File IO, UI Control, and Notebook Lifecycle. Reconstructive Move requires Writes + Copy + Deletes instead of its own gate;
+- `launch_onenote_gui` never makes `health_check` start OneNote implicitly. It is planned as an explicit UI Control operation with at most one trusted process-launch request and bounded readiness observation.
+
+See the complete [v1.0 publication plan](docs/todo/034_pre_user_testing_tool_surface_convergence.md), the [`launch_onenote_gui` contract](docs/todo/031_start_onenote_desktop_tool.md), and the [conceptual object-operation matrix](docs/overview/onenote_object_model_assessment.md). The plan has user approval; implementation, automated contracts, real OneNote validation, and final implementation acceptance are still required before it becomes the current product contract.
+
+---
+
+## Current API & Tool Directory (56 Tools)
 
 The default profile exposes typed P0/P1 tools plus policy-gated P2 experimental tools. The complete parameter and return contract is in [`docs/design/tool_contracts.md`](docs/design/tool_contracts.md); the static fields are in [`docs/design/object_model.md`](docs/design/object_model.md).
 
@@ -216,7 +235,7 @@ Every success and failure envelope includes an additive, content-free `execution
 
 * `delete_section_group` / `delete_section` / `delete_page`: Confirmed typed deletes; default destination is the OneNote recycle bin.
 * Notebook deletion is not supported.
-* Raw Page XML mutations are not registered by default. The legacy generic `delete_hierarchy` tool has been removed from every production profile; use typed delete tools with exact IDs and confirmation fields. Remaining advanced operations require an explicit local development profile and still cannot bypass policy.
+* Raw Page XML mutations are not registered. The legacy generic `delete_hierarchy` tool has been removed from every production profile; use typed delete tools with exact IDs and confirmation fields. There is no production advanced profile: retained low-level operations are internal diagnostic/service paths and still cannot bypass policy.
 
 ### 5. Experimental Copy & Reconstructive Move
 

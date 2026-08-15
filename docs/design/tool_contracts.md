@@ -4,6 +4,8 @@
 > 更新日期：2026-08-15
 > ID 参数均指 OneNote COM 对象 ID；除 `resolve_identifier` 外不接受名称或路径。
 
+> **当前与目标的边界：** 本文描述当前已实现的 56 工具合同。用户已冻结但尚未实现的 v1.0 发布目标为 52 个 User 工具、13 项重命名、5 个非注册 Internal & Incubating 入口和 7 个授权类别，详见 [TODO 034](../todo/034_pre_user_testing_tool_surface_convergence.md)。在 Registry、测试和验收完成前，不得把目标名称或权限当作当前可用合同。
+
 生产 profile 共 56 个工具，不存在生产 advanced profile；参数和返回格式由 `tools/` 薄适配层公开，全部生产 Tool 先进入 canonical Operation Runtime/Registry，再由现有 `services/` 实现业务语义与回读验证。层级浏览已收敛为唯一的 root discovery `list_notebooks`、四个 typed Expand 和通用 `expand_hierarchy`；四个 `query_*` 独立承担平展过滤与分页。Section Reorder、三类 Reparent、P2 Copy、Page Move 与容器 Move 由默认关闭的独立策略保护；SectionGroup Reorder 不属于受支持能力，也不存在 MCP adapter 或 Registry binding。只有下文列入 validated allowlist 的 Page 内容类型具有真实 OneNote 隔离证据，实验工具在对应真实场景完成前不升级稳定性承诺。
 
 ## 1. 通用返回 envelope
@@ -81,7 +83,7 @@ Typed backend error 保留规范十六进制 `hresult`（并可含 `hresult_sign
 
 选择规则：打开了哪些 Notebook 使用 `list_notebooks`；按对象语义浏览使用 typed `expand_*`；任意 root 加数值深度使用 `expand_hierarchy`；按字段过滤、关系筛选或分页使用 `query_*`；精确单对象 metadata 使用 `get_*`；Page 正文搜索使用 `search_pages`。Expand 只返回 hierarchy tree，不修改 OneNote GUI 展开状态。
 
-`health_check` 的 Desktop readiness 检查发生在首次 hierarchy bridge/COM 调用之前。只有 `ONENOTE.EXE` 进程存在且拥有可见、无 owner 的顶层窗口时才进入 COM 统计读取；进程缺失或只有后台进程时返回 `code="onenote_desktop_not_running"`、`retryability="after_user_action"`、`operation="health_preflight"` 和 content-free readiness/`required_action`，且不冷启动 OneNote。native probe 无法可靠完成时返回 `onenote_desktop_probe_failed` 并同样 fail closed。当前没有自动启动工具；显式 `start_onenote_app` 由 [TODO 031](../todo/031_start_onenote_desktop_tool.md) 跟踪。
+`health_check` 的 Desktop readiness 检查发生在首次 hierarchy bridge/COM 调用之前。只有 `ONENOTE.EXE` 进程存在且拥有可见、无 owner 的顶层窗口时才进入 COM 统计读取；进程缺失或只有后台进程时返回 `code="onenote_desktop_not_running"`、`retryability="after_user_action"`、`operation="health_preflight"` 和 content-free readiness/`required_action`，且不冷启动 OneNote。native probe 无法可靠完成时返回 `onenote_desktop_probe_failed` 并同样 fail closed。当前没有自动启动工具；目标 `launch_onenote_gui` 由 [TODO 031](../todo/031_start_onenote_desktop_tool.md) 跟踪，且不会改变 `health_check` 的 check-only 语义。
 
 ## 3. Page 内容与 Search
 

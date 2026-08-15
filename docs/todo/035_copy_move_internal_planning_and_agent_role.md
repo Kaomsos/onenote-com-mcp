@@ -209,7 +209,7 @@ Agent 管理用户意图与交互决策；受控操作边界管理执行状态�
 ## 关联
 
 - [TODO 029：MCP Tool Mutation Readiness 状态建模与 Page Reparent 加固](029_mcp_mutation_readiness_and_reconciliation_hardening.md)
-- [TODO 034：用户测试前 MCP 工具面收敛与不必要入口隐藏](034_pre_user_testing_tool_surface_convergence.md)
+- [TODO 034：用户测试前 MCP 工具发布面收敛](034_pre_user_testing_tool_surface_convergence.md)
 - [TODO 002：P2 四层 Copy 与 Page Move](002_p2_copy_and_reconstructive_page_move.md)
 - [TODO 012：跨 Notebook Section 与 SectionGroup 重建式 Move](012_reconstructive_section_and_section_group_move.md)
 - [公开 Tool 契约](../design/tool_contracts.md)

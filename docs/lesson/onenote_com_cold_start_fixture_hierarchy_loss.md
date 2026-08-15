@@ -57,7 +57,7 @@ GUI 已预启动的通过运行与未启动的失败运行执行过相同 checkp
 2. Fixture hierarchy convergence 必须保留双稳定和完整声明对象检查。Notebook shell 可读、`OpenHierarchy` 返回 ID、COM 调用成功或等待时间足够，都不能替代该门限。
 3. 当前 manual runner 没有跨 bridge 调用的 COM lifecycle owner。MCP child 是长驻 Python 进程，但其 `OneNoteBridge` 每次仍启动独立 PowerShell，所以“单 MCP process”不等于“单长驻 COM session”。
 4. 当前设计已把“OneNote Desktop 已预启动”落实为代码门限：公开 `health_check` 在首次 COM 读取前 fail closed；manual-validation 单项与真实 `all` 也在 Notebook lifecycle 前检查。该门限阻止已知失败路径，但不等于 runner 已具备冷启动能力。
-5. 后续已选择规划显式 `start_onenote_app` 工具，而不是长期 COM owner；范围与安全门限见 [TODO 031](../todo/031_start_onenote_desktop_tool.md)。`health_check` 保持 check-only，不隐式启动应用。
+5. 后续已选择规划显式 `launch_onenote_gui` 工具，而不是长期 COM owner；范围与安全门限见 [TODO 031](../todo/031_start_onenote_desktop_tool.md)。`health_check` 保持 check-only，不隐式启动应用。
 6. 在没有长期 owner 的情况下，自动重开、重绑、重复 child activation 或增大 timeout 都不应被写成根因修复。
 
 ## 适用边界

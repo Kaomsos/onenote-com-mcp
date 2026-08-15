@@ -5,6 +5,8 @@
 
 本项目不再提供生产 `advanced` MCP profile。生产 `tools/list` 只有 56 个 task-level typed Tool；低层 COM、raw Page XML 和已证明不受后端支持的能力只能留在 Service、Bridge、纯测试或明确的人工诊断代码中，不能据其内部实现推导出产品能力。
 
+> **发布规划说明：** [TODO 034](../todo/034_pre_user_testing_tool_surface_convergence.md) 计划把 `resolve_identifier`、`get_page_xml`、`navigate_to_url`、`get_special_locations`、`get_parent` 进一步集中到非 MCP 注册的 Internal & Incubating catalog。该 catalog 不是可开启的 profile；当前 56 工具在 Registry 实施变更前仍是事实基线。
+
 ## 1. Exposure 与授权边界
 
 - `src/local_onenote_mcp/tools/advanced.py` 的生产工具集合为空；`tools/__init__.py` 只注册默认 typed Tool。

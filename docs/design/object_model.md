@@ -5,6 +5,8 @@
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
+> **发布规划说明：** 本文仍是当前实现契约。面向用户测试的目标能力分类和对象—操作矩阵见 [对象模型概念评估](../overview/onenote_object_model_assessment.md) 与 [TODO 034](../todo/034_pre_user_testing_tool_surface_convergence.md)；目标重命名和授权尚未落地。
+
 ## 1. 边界与标识符
 
 公开对象模型固定为 `Notebook → SectionGroup → Section → Page → PageContentObject`。层级对象以 OneNote COM `ID` 为唯一 mutation 主键；`path` 仅用于展示和 `resolve_identifier` 只读解析，不能授权写操作。

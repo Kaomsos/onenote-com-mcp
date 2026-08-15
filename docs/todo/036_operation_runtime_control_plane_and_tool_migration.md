@@ -269,6 +269,6 @@ Runtime 骨架本身不得创造新的真实 mutation。每个迁移阶段如果
 - [TODO 024：Search 与 Typed Query 短时只读快照缓存](024_search_and_query_read_snapshot_cache.md)
 - [TODO 025：OneNote COM 收敛、Mutation 对账与调用协调](025_onenote_com_convergence_and_mutation_coordination.md)
 - [TODO 029：Mutation Readiness 与 Page Reparent 加固](029_mcp_mutation_readiness_and_reconciliation_hardening.md)
-- [TODO 031：启动 OneNote Desktop GUI 的显式工具](031_start_onenote_desktop_tool.md)
+- [TODO 031：显式 launch_onenote_gui 工具](031_start_onenote_desktop_tool.md)
 - [TODO 034：用户测试前 MCP 工具面收敛](034_pre_user_testing_tool_surface_convergence.md)
 - [TODO 035：Copy/Move Planning 与 Agent 职责收敛](035_copy_move_internal_planning_and_agent_role.md)
