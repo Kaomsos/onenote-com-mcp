@@ -22,6 +22,11 @@
 4. 新增目录级文档时，应提供 `README.md` 作为该目录的入口或索引。
 5. 代码、配置或工具契约变化后，应检查 `README.md`、`AGENTS.md` 和相关设计/开发文档是否需要同步。
 
+## 开发与验证入口
+
+- [Pytest Windows sandbox 临时产物隔离](dev/pytest_windows_sandbox_artifact_isolation.md)：默认自动测试在人工终端、Codex sandbox 与并发 session 之间的临时根、cache 和保留策略。
+- [OneNote mutation 隔离验证流程](dev/isolated_mutation_validation.md)：只能由用户本人启动的真实后端验证边界与操作步骤。
+
 ## Lesson 治理
 
 Lesson 的权威索引是 [`lesson/README.md`](lesson/README.md)。Lesson 必须说明观察时间与范围，明确区分真实观察、工程推断和当前设计决策，并链接到 `design/` 或 `dev/` 中的 canonical 内容。具体约束见 [`lesson/AGENTS.md`](lesson/AGENTS.md)。

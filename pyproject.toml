@@ -36,6 +36,13 @@ local-onenote-mcp = "local_onenote_mcp.server:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Root conftest initializes this environment variable before pytest's cache
+# plugin starts, keeping generated state out of the repository worktree.
+cache_dir = "$PYTEST_CACHE_DIR"
+# Successful sessions remove tmp_path data; one failed session remains in the
+# identity-isolated system-temp root for diagnosis.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = "1"
 markers = [
     "write_contract: mocked or isolated tests for tools that mutate OneNote; never run automatically in read-only validation",
 ]
