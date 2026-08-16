@@ -38,6 +38,14 @@ def test_filter_resources_returns_only_requested_static_type():
     assert [page["id"] for page in pages] == ["p1", "p2", "p3"]
 
 
+def test_missing_page_level_defaults_to_root_but_explicit_invalid_value_is_preserved():
+    missing = HIERARCHY_XML.replace(' pageLevel="1"', "", 1)
+    assert filter_resources(parse_hierarchy(missing), "page")[0]["page_level"] == 1
+
+    invalid = HIERARCHY_XML.replace('pageLevel="1"', 'pageLevel="0"', 1)
+    assert filter_resources(parse_hierarchy(invalid), "page")[0]["page_level"] == 0
+
+
 def test_page_content_object_normalization_is_stable():
     objects = content_objects(
         "p1",

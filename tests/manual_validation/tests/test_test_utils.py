@@ -116,6 +116,35 @@ def test_page_tree_and_delete_sandbox_ancestry_checks() -> None:
         ("parent", "section", 0, 1, None),
         ("child", "section", 1, 2, "parent"),
     ]
+    gapped = {
+        "items": [
+            {
+                "id": "root",
+                "resource_type": "page",
+                "section_id": "section",
+                "parent_page_id": None,
+                "page_level": 1,
+                "order": 0,
+            },
+            {
+                "id": "skipped",
+                "resource_type": "page",
+                "section_id": "section",
+                "parent_page_id": "root",
+                "page_level": 3,
+                "order": 1,
+            },
+            {
+                "id": "skipped-sibling",
+                "resource_type": "page",
+                "section_id": "section",
+                "parent_page_id": "root",
+                "page_level": 3,
+                "order": 2,
+            },
+        ]
+    }
+    assert_valid_page_tree(gapped, "section")
     assert is_descendant_of(snapshot, "section", "sandbox") is True
     assert is_descendant_of(snapshot, "section", "unrelated") is False
 

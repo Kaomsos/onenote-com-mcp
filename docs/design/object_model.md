@@ -75,9 +75,7 @@ Page 不公开 `name`，统一使用 `title`：
 
 `parent_id` 表示 COM 容器父级；`parent_page_id` 表示 Page 缩进父级，两者不能混用。普通 List/Get 不读取正文。Microsoft 的 OneNote Desktop 支持文档明确说明只能有两级 Subpage，因此真实 fixture 和 mutation 验证不得构造 `page_level=4`；参见 [Create a subpage in OneNote](https://support.microsoft.com/en-US/OneNote/onenote-help-and-learning/create-a-subpage-in-onenote)。
 
-相邻 `page_level` 不必连续。真实 Notebook 可以出现 `page_level=1` 后直接 `page_level=3`；这仍是合法 COM `pageLevel` 序列。已接受的映射是：L1 后跟随的 L3 **直接成为该 L1 的子节点**（`parent_page_id` = 该 L1，Expand 树中位于该 L1 的 `children`，不虚构中间 L2）。紧随的连续 L3 同样是该 L1 的直接子节点。`query_page` 已按该规则返回 `parent_page_id`。
-
-当前 Expand 实现更严：`expand_section` / `expand_page` / `expand_hierarchy` 仍把相邻 `page_level` 增幅大于 1 当作 snapshot 非法，并在整本打开 Notebook 上 fail closed。已接受的合同要求 Expand 与 Query 共用上述「L3 直接挂到前序 L1」映射；该行为尚未改代码。跟踪项见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
+相邻 `page_level` 不必连续。真实 Notebook 可以出现 `page_level=1` 后直接 `page_level=3`；这仍是合法 COM `pageLevel` 序列。当前映射是：L1 后跟随的 L3 **直接成为该 L1 的子节点**（`parent_page_id` = 该 L1，Expand 树中位于该 L1 的 `children`，不虚构中间 L2）。紧随的连续 L3 同样是该 L1 的直接子节点。`query_page`、`expand_section`、`expand_page` 与 `expand_hierarchy` 共用该派生规则。用户测试记录见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
 
 ### PageContentObject
 
@@ -117,7 +115,7 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 - 五个 Expand 共用一份关系图与 tree builder：容器使用 `parent_id`，Page 优先使用 `parent_page_id`，顶层 Page 挂到 `section_id`。
 - `expand_notebook/expand_section_group` 在 Section 停止；`expand_section/expand_page` 返回完整 Page 缩进子树；`expand_hierarchy` 施加数值深度边界。
 - 缺 ID、重复 ID、环、跨 Section 缩进父级、`page_level` 越出 1–3、或 Section 首个 Page 不是 level 1，不能冒充准确的 tree；超过公共响应边界时明确失败。
-- 相邻 `page_level` 间隙（如 1 后直接 3）不是“不完整关系”。已接受模型把该 L3 直接映射为前序 L1 的子节点。当前 Expand 实现仍拒绝该序列，见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
+- 相邻 `page_level` 间隙（如 1 后直接 3）不是“不完整关系”。当前实现把该 L3 直接映射为前序 L1 的子节点，见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
 
 ## 5. Mutation 一致性
 

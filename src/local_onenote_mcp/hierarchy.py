@@ -37,6 +37,15 @@ def _int(value: str | None) -> int | None:
         return None
 
 
+def _page_level(value: str | None) -> int:
+    """Parse COM pageLevel without turning malformed input into the L1 default."""
+
+    if value is None:
+        return 1
+    parsed = _int(value)
+    return parsed if parsed is not None else 0
+
+
 def display_name(item: dict[str, Any]) -> str:
     """Return the public display field shared by container and Page models."""
 
@@ -129,7 +138,7 @@ def parse_hierarchy(
                     title=name,
                     notebook_id=notebook_id,
                     section_id=section_id,
-                    page_level=max(1, _int(node.attrib.get("pageLevel")) or 1),
+                    page_level=_page_level(node.attrib.get("pageLevel")),
                     order=order,
                 ).as_dict()
             records.append(item)
@@ -190,14 +199,26 @@ def _derive_page_tree(records: list[dict[str, Any]]) -> None:
         if item["resource_type"] == "page":
             pages_by_section.setdefault(item.get("section_id") or "", []).append(item)
     for pages in pages_by_section.values():
-        stack: list[dict[str, Any]] = []
-        for page in sorted(pages, key=lambda value: value["order"]):
-            while stack and stack[-1]["page_level"] >= page["page_level"]:
-                stack.pop()
-            page["parent_page_id"] = stack[-1]["id"] if stack else None
-            if stack:
-                stack[-1]["has_children"] = True
-            stack.append(page)
+        for page, parent in derive_page_relationships(pages):
+            page["parent_page_id"] = str(parent["id"]) if parent is not None else None
+            if parent is not None:
+                parent["has_children"] = True
+
+
+def derive_page_relationships(
+    pages: Iterable[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """Return ordered Pages paired with their nearest shallower ancestor."""
+
+    stack: list[dict[str, Any]] = []
+    relationships: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+    for page in sorted(pages, key=lambda value: int(value.get("order") or 0)):
+        level = int(page.get("page_level") or 0)
+        while stack and int(stack[-1].get("page_level") or 0) >= level:
+            stack.pop()
+        relationships.append((page, stack[-1] if stack else None))
+        stack.append(page)
+    return relationships
 
 
 def filter_resources(items: Iterable[dict[str, Any]], resource_type: str) -> list[dict[str, Any]]:

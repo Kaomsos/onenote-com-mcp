@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from ..bridge import OneNoteBridge
 from ..constants import HIERARCHY_SCOPES, ONE_NS, XML_SCHEMA_2013
 from ..hierarchy import (
+    derive_page_relationships,
     display_name,
     filter_resources,
     find_resource_by_id,
@@ -346,19 +347,18 @@ class HierarchyService(BaseService):
             if item.get("resource_type") == "page":
                 pages_by_section.setdefault(str(item.get("section_id", "")), []).append(item)
         for section_id, pages in pages_by_section.items():
-            stack: list[dict[str, Any]] = []
-            for index, page in enumerate(pages):
+            relationships = derive_page_relationships(pages)
+            for index, (page, expected_parent_page) in enumerate(relationships):
                 level = int(page.get("page_level") or 0)
-                if level < 1 or (index == 0 and level != 1):
+                if level < 1 or level > 3 or (index == 0 and level != 1):
                     raise ValueError(f"Section '{section_id}' has an invalid Page indentation root.")
-                if index and level > int(pages[index - 1].get("page_level") or 0) + 1:
-                    raise ValueError(f"Section '{section_id}' has a discontinuous Page indentation level.")
-                while stack and int(stack[-1].get("page_level") or 0) >= level:
-                    stack.pop()
-                expected_parent = str(stack[-1]["id"]) if stack else None
+                expected_parent = (
+                    str(expected_parent_page["id"])
+                    if expected_parent_page is not None
+                    else None
+                )
                 if page.get("parent_page_id") != expected_parent:
                     raise ValueError(f"Page indentation relationship is inconsistent for '{page['id']}'.")
-                stack.append(page)
 
     def _browsing_snapshot(
         self,

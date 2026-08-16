@@ -669,10 +669,8 @@ def assert_valid_page_tree(snapshot: dict[str, Any], section_id: str) -> None:
     stack: list[dict[str, Any]] = []
     for index, page in enumerate(pages):
         level = int(page.get("page_level", 0))
-        if level < 1 or (index == 0 and level != 1):
+        if level < 1 or level > 3 or (index == 0 and level != 1):
             raise InvariantFailure("Page tree has an invalid first/root level.")
-        if index and level > int(pages[index - 1].get("page_level", 0)) + 1:
-            raise InvariantFailure("Page tree level jumps by more than one.")
         while stack and int(stack[-1].get("page_level", 0)) >= level:
             stack.pop()
         expected_parent = stack[-1].get("id") if stack else None

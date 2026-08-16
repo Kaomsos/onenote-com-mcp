@@ -49,9 +49,9 @@ readiness 失败 envelope 的 `error.details.failed_precondition` 为 `onenote_g
 | `expand_page` | `page_id`；返回该 Page 的完整缩进后代。 |
 | `expand_hierarchy` | `root_id, max_depth=8, include_recycle_bin=false`；数值深度边界。 |
 
-所有 Expand 返回统一递归 `tree={item,children[]}`，只读取 hierarchy metadata；target Notebook 内缺 ID、重复 ID、环、跨 Section 缩进父级或超过公共响应预算时明确失败。
+所有 Expand 返回统一递归 `tree={item,children[]}`，只读取 hierarchy metadata；target Notebook 内缺 ID、重复 ID、环、跨 Section 缩进父级、`page_level` 越出 1–3、Section 首个 Page 不是 level 1 或超过公共响应预算时明确失败。
 
-当前实现另把同 Notebook 任意 Section 中相邻 `page_level` 增幅大于 1（例如 L1 后直接 L3）当作 snapshot 非法，因此 `expand_section` / `expand_page` / `expand_hierarchy` 会 fail closed，即使请求的 root 本身没有跳级。`query_page` 已把该 L3 的 `parent_page_id` 设为紧邻前序 L1，不走这条校验。已接受但未实现的合同是：L1 后跟随的 L3 直接映射为该 L1 的子节点；Expand 与 Query 共用这一映射并返回树，不得再让无关 Section 毒死整本浏览。见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
+L1 后跟随的 L3 直接映射为该 L1 的子节点：`parent_page_id` 为该 L1，Expand 树中位于该 L1 的 `children`，不虚构中间 L2。`query_page` 与 `expand_section` / `expand_page` / `expand_hierarchy` 共用这一派生。同 Notebook 另一 Section 的合法间隙不得阻断所请求 root。见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
 
 ### Metadata Get（4）
 
