@@ -160,17 +160,62 @@ def probe_onenote_desktop() -> OneNoteDesktopState:
         ) from exc
 
 
-def require_onenote_desktop() -> OneNoteDesktopState:
+def _readiness_recovery(
+    *, ui_control_enabled: bool | None,
+) -> dict[str, Any]:
+    recovery: dict[str, Any] = {
+        "sequence": [
+            "health_check",
+            "launch_onenote_gui",
+            "health_check",
+            "retry_original_operation",
+        ],
+        "launch_requires_gate": "LOCAL_ONENOTE_ENABLE_UI_CONTROL=true",
+        "manual_alternative": "Start OneNote Desktop manually with a visible window.",
+    }
+    if ui_control_enabled is not None:
+        recovery["ui_control_enabled"] = ui_control_enabled
+        if not ui_control_enabled:
+            recovery["required_user_action"] = (
+                "Enable LOCAL_ONENOTE_ENABLE_UI_CONTROL=true and restart the MCP "
+                "server, or start OneNote Desktop manually."
+            )
+    return recovery
+
+
+def require_onenote_desktop(
+    *,
+    operation: str = "health_preflight",
+    ui_control_enabled: bool | None = None,
+) -> OneNoteDesktopState:
     """Fail closed unless an existing OneNote Desktop GUI is ready."""
 
-    state = probe_onenote_desktop()
+    try:
+        state = probe_onenote_desktop()
+    except OneNoteDesktopProbeError as exc:
+        if operation == "health_preflight" and ui_control_enabled is None:
+            raise
+        raise OneNoteDesktopProbeError(
+            "The OneNote Desktop visible-GUI prerequisite could not be determined safely.",
+            operation=operation,
+            details={
+                "failed_precondition": "onenote_gui_ready",
+                "recovery": _readiness_recovery(
+                    ui_control_enabled=ui_control_enabled
+                ),
+            },
+        ) from exc
     if not state.ready:
         raise OneNoteDesktopNotRunningError(
-            "OneNote Desktop is not running with a visible GUI. Start OneNote and retry.",
-            operation="health_preflight",
+            "The operation requires OneNote Desktop to be running with a visible GUI.",
+            operation=operation,
             details={
+                "failed_precondition": "onenote_gui_ready",
                 "onenote_desktop": state.as_dict(),
-                "required_action": "start_onenote_desktop_and_retry",
+                "required_action": "restore_onenote_gui_readiness_and_retry",
+                "recovery": _readiness_recovery(
+                    ui_control_enabled=ui_control_enabled
+                ),
             },
         )
     return state

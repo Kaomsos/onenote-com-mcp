@@ -247,6 +247,21 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
             "observed_counts": {"List": 3, "Tag": 3, "TagDef": 1},
         }
 
+    async def binary_evidence(_client, _page_id):
+        calls.extend(
+            ["get_page_content_objects", "get_page_content_object_binary"]
+        )
+        return {
+            "schema_version": 1,
+            "tool": "get_page_content_object_binary",
+            "selection": "exact_page_content_object_id",
+            "kind": "Image",
+            "media_type": "png",
+            "decoded_bytes": 68,
+            "sha256": "a" * 64,
+            "payload_persisted": False,
+        }
+
     for target_module in recipe_modules:
         for name, replacement in {
             "ensure_group": ensure_group,
@@ -256,6 +271,7 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
             "ensure_copy_rich_fixture": rich,
             "ensure_reparent_page_rich_fixture": rich,
             "ensure_copy_list_tag_fixture": list_tag,
+            "capture_page_image_binary_evidence": binary_evidence,
         }.items():
             if hasattr(target_module, name):
                 monkeypatch.setattr(target_module, name, replacement)
@@ -334,7 +350,10 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
     )
     assert set(result.structure) == set(expected_keys)
     assert set(calls) <= set(scenario.spec.tool_allowlist)
-    read_calls = READ_TOOLS | {"get_page_text"}
+    read_calls = READ_TOOLS | {
+        "get_page_text",
+        "get_page_content_object_binary",
+    }
     mutation_calls = {name for name in calls if name not in read_calls}
     assert mutation_calls <= set(recipe.profile.creation_tools)
     if scenario_name == "reparent-page-with-level":

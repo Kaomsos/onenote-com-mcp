@@ -174,8 +174,8 @@ Move 是 Copy、目标验证、源状态复核和源可恢复删除组成的非�
 | Query metadata | ● | ● | ● | ● | — | 四个 `query_*` |
 | Search Page text | — | ◇ | ◇ | ● | — | `search_pages`；scope 可由 hierarchy 对象限定 |
 | Read Page text | — | — | — | ● | — | `get_page_text` |
-| List content objects | — | — | — | ● | ● | `list_page_content_objects` 返回 Page 下对象 |
-| Read object binary | — | — | — | ◇ | ● | `get_page_object_binary` 以 Page 和对象 identity 复核 |
+| Get content objects | — | — | — | ● | ● | `get_page_content_objects` 返回 Page 下对象 |
+| Get content object binary | — | — | — | ◇ | ● | `get_page_content_object_binary` 以 Page 和对象 identity 复核 |
 | Create | ● | ● | ● | ● | — | 四个 `create_*` |
 | Rename | — | ● | ● | ● | — | `rename_section_group`、`rename_section`、`rename_page` |
 | Reorder | — | — | ● | ● | — | Section sibling order；Page order/indentation |

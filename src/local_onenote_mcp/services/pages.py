@@ -176,17 +176,37 @@ class PageService(BaseService):
         text = text_from_page_xml(self.xml(page_id, "basic"))
         return {"text": self.truncate(text, max_chars or self.max_text_chars), "chars": len(text)}
 
-    def get_objects(self, page_id: str) -> dict[str, Any]:
+    def _content_object_snapshot(self, page_id: str) -> list[dict[str, Any]]:
+        """Read object metadata and callback IDs without embedding binary payloads."""
+
+        return content_objects(
+            page_id,
+            collect_page_objects(self.xml(page_id, "file_type")),
+        )
+
+    def get_content_objects(self, page_id: str) -> dict[str, Any]:
         self.hierarchy.resource(page_id, "page")
-        objects = content_objects(page_id, collect_page_objects(self.xml(page_id, "all")))
+        objects = self._content_object_snapshot(page_id)
         return {"objects": objects, "count": len(objects)}
 
-    def get_binary(self, page_id: str, callback_id: str) -> dict[str, Any]:
+    def get_content_object_binary(
+        self, page_id: str, page_content_object_id: str
+    ) -> dict[str, Any]:
         self.hierarchy.resource(page_id, "page")
-        objects = content_objects(page_id, collect_page_objects(self.xml(page_id, "all")))
-        matched = next((item for item in objects if item["callback_id"] == callback_id), None)
+        objects = self._content_object_snapshot(page_id)
+        matched = next(
+            (item for item in objects if item["id"] == page_content_object_id),
+            None,
+        )
         if not matched:
-            raise ValueError("callback_id was not found in the current page object snapshot.")
+            raise ValueError(
+                "page_content_object_id was not found in the current page object snapshot."
+            )
+        callback_id = matched.get("callback_id")
+        if not callback_id:
+            raise ValueError(
+                "The selected PageContentObject has no callback ID for binary retrieval."
+            )
         result = self.call("get_binary_page_content", page_id=page_id, callback_id=callback_id)
         return {"object": matched, "base64": result["base64"]}
 

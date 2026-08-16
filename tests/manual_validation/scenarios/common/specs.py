@@ -8,6 +8,11 @@ from typing import Any
 from ...mcp_stdio_client import (
     COPY_NO_DELETE_POLICY,
     COPY_POLICY,
+    RICH_COPY_NO_DELETE_POLICY,
+    RICH_COPY_NOTEBOOK_POLICY,
+    RICH_COPY_POLICY,
+    RICH_REPARENT_POLICY,
+    RICH_WRITE_POLICY,
     MOVE_PAGE_POLICY,
     MOVE_CONTAINERS_POLICY,
     REPARENT_POLICY,
@@ -379,7 +384,7 @@ SCENARIO_SPECS = {
                 "target Page contains three mixed List/Tag items alongside rich content",
             ),
         ),
-        REPARENT_POLICY,
+        RICH_REPARENT_POLICY,
         frozenset(REPARENT_PAGE_TOOLS | {"get_page_text"}),
     ),
     "reparent-page-with-level": ScenarioSpec(
@@ -421,7 +426,7 @@ SCENARIO_SPECS = {
                 "both selected Pages own stable rich-content evidence",
             ),
         ),
-        REPARENT_POLICY,
+        RICH_REPARENT_POLICY,
         frozenset(REPARENT_PAGE_TOOLS | {"reorder_page"}),
     ),
     "reparent-section-group": ScenarioSpec(
@@ -517,7 +522,12 @@ SCENARIO_SPECS = {
                 "cross_notebook_anchor",
                 "cross_notebook_position_anchor",
             ),
-            {"create_section", "get_page_text"} | LAYERED_PAGE_FIXTURE_TOOLS,
+            {
+                "create_section",
+                "get_page_text",
+                "get_page_content_object_binary",
+            }
+            | LAYERED_PAGE_FIXTURE_TOOLS,
             content=(
                 "RichText",
                 "DisplayEquation",
@@ -535,12 +545,17 @@ SCENARIO_SPECS = {
                 "source parent and child remain unchanged after all six copies",
                 "same-title destination anchors remain unchanged after all six copies",
                 "cross-Notebook targets appear only in the destination role",
+                "the rich source Image binary is read by exact PageContentObject ID without persisting Base64",
             ),
         ),
-        COPY_POLICY,
+        RICH_COPY_POLICY,
         frozenset(
             COPY_PAGE_TOOLS
-            | {"create_section", "get_page_text"}
+            | {
+                "create_section",
+                "get_page_text",
+                "get_page_content_object_binary",
+            }
             | LAYERED_PAGE_FIXTURE_TOOLS
         ),
         {
@@ -626,7 +641,7 @@ SCENARIO_SPECS = {
                 "same-Notebook and cross-Notebook destination Groups are role-bound",
             ),
         ),
-        COPY_POLICY,
+        RICH_COPY_POLICY,
         frozenset(
             COPY_TOOLS
             | {"create_section_group", "create_section"}
@@ -684,7 +699,7 @@ SCENARIO_SPECS = {
                 "each otherwise-empty destination SectionGroup is persisted by one typed sentinel Section",
             ),
         ),
-        COPY_POLICY,
+        RICH_COPY_POLICY,
         frozenset(
             COPY_TOOLS
             | {"create_section_group", "create_section"}
@@ -733,7 +748,7 @@ SCENARIO_SPECS = {
                 "source Notebook contains a SectionGroup/Section/Page subtree",
             ),
         ),
-        COPY_NO_DELETE_POLICY,
+        RICH_COPY_NOTEBOOK_POLICY,
         frozenset(
             COPY_NOTEBOOK_TOOLS
             | {"create_section_group", "create_section"}
@@ -1100,7 +1115,7 @@ SCENARIO_SPECS["copy-display-equation"] = ScenarioSpec(
             "content-free MathML OE placement evidence is captured",
         ),
     ),
-    COPY_POLICY,
+    RICH_COPY_POLICY,
     frozenset(
         COPY_PAGE_TOOLS
         | {"create_section", "create_page", "append_page_content", "add_page_image_from_file"}
@@ -1132,7 +1147,7 @@ SCENARIO_SPECS["bootstrap-inline-equation-fixture"] = ScenarioSpec(
             "the inline equation has no display attribute and no standalone formula line",
         ),
     ),
-    WRITE_POLICY,
+    RICH_WRITE_POLICY,
     frozenset(_INTERACTIVE_TOOLS | {"append_page_content", "add_page_image_from_file"}),
     {
         "interactive_bootstrap": True,

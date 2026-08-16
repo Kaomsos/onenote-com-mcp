@@ -129,6 +129,13 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
                     )
                     for cached_role in roles
                 },
+                "scenario_policies": {"stale-scenario": {"writes_enabled": False}},
+                "scenario_spec": {
+                    "scenario": "stale-scenario",
+                    "fixture_profile": {"actual_manifest_keys": ["stale"]},
+                    "tool_allowlist": ["list_pages"],
+                },
+                "mcp_process_contract": {"maximum_starts": 99},
             },
         )
         write_json(
@@ -199,6 +206,7 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
     )
     monkeypatch.setattr(fixture_runtime_module, "capture_snapshot", fake_capture)
     scenario = argparse.Namespace(name="fake-materialized", fixture_recipe=FakeRecipe())
+    current_spec = SCENARIO_REGISTRY.get("copy-page").spec
     hit = CacheHit("f" * 64, "instance", entry_path, {"roles": list(roles)})
     materialized = MaterializedBundle(
         hit.fingerprint,
@@ -216,7 +224,7 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
             object(),
             notebooks,
             notebook_paths,
-            object(),
+            current_spec,
             hit,
             materialized,
         )
@@ -238,6 +246,18 @@ def test_materialized_bundle_stages_one_validated_scenario_before_snapshot_per_r
         for role_report in convergence["roles"].values()
     )
     assert manifest["fixture_validation"]["scenario_before_snapshot_reused"] is True
+    assert manifest["scenario_spec"] == {
+        **current_spec.as_dict(),
+        "fixture_profile": {
+            **current_spec.fixture.as_dict(),
+            "actual_manifest_keys": [],
+        },
+    }
+    assert manifest["scenario_policies"] == {
+        current_spec.name: current_spec.policy.as_dict()
+    }
+    assert manifest["mcp_process_contract"]["maximum_starts"] == 1
+    assert manifest["fixture_cache"]["current_contract_refreshed"] is True
     assert result["validation"]["scenario_before_snapshot_reused"] is True
     assert manifest["disposable_targets"]["notebook_copy_root"] == str(
         (run_dir / "notebook-copies").resolve()
@@ -1577,6 +1597,13 @@ def test_reparent_page_materialization_persists_rebound_run_local_evidence(
         },
         "lifecycle_lease": str(cached_run_dir / "lifecycle-lease.json"),
         "fixture_validation": {"status": "passed", "checks": []},
+        "scenario_policies": {"stale-scenario": {"writes_enabled": False}},
+        "scenario_spec": {
+            "scenario": "stale-scenario",
+            "fixture_profile": {"actual_manifest_keys": ["stale"]},
+            "tool_allowlist": ["list_pages"],
+        },
+        "mcp_process_contract": {"maximum_starts": 99},
     }
     write_json(artifact_root / "template-manifest.json", source_manifest)
     write_json(
@@ -1647,6 +1674,16 @@ def test_reparent_page_materialization_persists_rebound_run_local_evidence(
     )
 
     assert manifest["reparent_page_fixture"]["page_id"] == "working-reparent_page"
+    assert manifest["scenario_spec"]["scenario"] == "reparent-page"
+    assert manifest["scenario_spec"]["tool_allowlist"] == sorted(
+        scenario.spec.tool_allowlist
+    )
+    assert "list_pages" not in manifest["scenario_spec"]["tool_allowlist"]
+    assert manifest["scenario_policies"] == {
+        scenario.name: scenario.spec.policy.as_dict()
+    }
+    assert manifest["mcp_process_contract"]["maximum_starts"] == 1
+    assert manifest["fixture_cache"]["current_contract_refreshed"] is True
     assert (
         manifest["reparent_page_fixture"]["list_tag"]["page_id"]
         == "working-reparent_page"

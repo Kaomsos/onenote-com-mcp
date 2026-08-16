@@ -28,6 +28,8 @@ from pathlib import Path
 import re
 import tempfile
 
+import pytest
+
 
 _UNSAFE_PATH_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
 _ROOT_PYCACHE = Path(__file__).with_name("__pycache__")
@@ -88,6 +90,20 @@ def _remove_root_conftest_bytecode(cache_dir: Path = _ROOT_PYCACHE) -> None:
         # A nonempty directory belongs to another cache producer or concurrent
         # process and must remain untouched.
         pass
+
+
+@pytest.fixture(autouse=True)
+def mock_ready_onenote_gui_for_operation_contracts(monkeypatch):
+    """Keep pure tests independent from the host's real OneNote GUI state."""
+
+    from local_onenote_mcp import operation_catalog
+    from local_onenote_mcp.desktop import OneNoteDesktopState
+
+    monkeypatch.setattr(
+        operation_catalog,
+        "require_onenote_desktop",
+        lambda **_kwargs: OneNoteDesktopState(True, True),
+    )
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001

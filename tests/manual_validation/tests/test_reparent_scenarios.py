@@ -9,7 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.manual_validation.mcp_stdio_client import REPARENT_POLICY
+from tests.manual_validation.mcp_stdio_client import (
+    REPARENT_POLICY,
+    RICH_REPARENT_POLICY,
+)
 from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
 from tests.manual_validation.scenarios.common import reparent as reparent_runtime
 from tests.manual_validation.scenarios.common.destination_position import (
@@ -751,7 +754,9 @@ def test_reparent_specs_use_typed_tools_without_raw_xml_and_fixtures_are_valid()
     ):
         manifest, before, _forwards, _restores, _scenario_type, _allowed_tools = case()
         spec = SCENARIO_SPECS[name]
-        assert spec.policy == REPARENT_POLICY
+        assert spec.policy == (
+            RICH_REPARENT_POLICY if name == "reparent-page" else REPARENT_POLICY
+        )
         assert "update_hierarchy_xml" not in spec.tool_allowlist
         assert (
             "reparent_page" if name == "reparent-page" else "reparent_section_group"

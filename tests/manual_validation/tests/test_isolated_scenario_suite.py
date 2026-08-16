@@ -45,6 +45,19 @@ def _validate_fixture_snapshot(scenario, snapshot, structure, content_fixture):
         evidence[
             "reparent_page_fixture" if scenario == "reparent-page" else "copy_fixture"
         ] = content_fixture
+    if scenario == "copy-page":
+        evidence["page_content_object_binary"] = {
+            "schema_version": 1,
+            "tool": "get_page_content_object_binary",
+            "selection": "exact_page_content_object_id",
+            "callback_resolution_verified": True,
+            "public_id_distinct_from_callback": False,
+            "kind": "Image",
+            "media_type": "png",
+            "decoded_bytes": 68,
+            "sha256": "a" * 64,
+            "payload_persisted": False,
+        }
     return list(
         SCENARIO_REGISTRY.get(scenario).fixture_recipe.validate(
             FixtureValidationContext(

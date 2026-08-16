@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import hashlib
 from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
@@ -39,6 +41,77 @@ EXPECTED_EQUATION_EVIDENCE = {
     "display_candidates_with_visible_residual": 0,
     "display_candidates_with_known_leading_blank": 1,
 }
+
+
+async def capture_page_image_binary_evidence(
+    client: MCPStdioClient,
+    page_id: str,
+) -> dict[str, Any]:
+    """Exercise the public ID-to-callback binary read without persisting payload bytes."""
+
+    response = await client.call_tool(
+        "get_page_content_objects", {"page_id": page_id}
+    )
+    objects = response.get("objects", [])
+    images = [
+        item
+        for item in objects
+        if isinstance(item, dict)
+        and item.get("kind") == "Image"
+        and isinstance(item.get("id"), str)
+        and item.get("id")
+    ]
+    if len(images) != 1:
+        raise InvariantFailure(
+            "Copy Page binary validation requires exactly one ID-addressable Image object."
+        )
+    selected = images[0]
+    selected_callback_id = selected.get("callback_id")
+    if not isinstance(selected_callback_id, str) or not selected_callback_id:
+        raise InvariantFailure(
+            "Copy Page binary validation Image has no callback ID."
+        )
+    binary_result = await client.call_tool(
+        "get_page_content_object_binary",
+        {
+            "page_id": page_id,
+            "page_content_object_id": selected["id"],
+        },
+    )
+    returned = binary_result.get("object")
+    if (
+        not isinstance(returned, dict)
+        or returned.get("id") != selected["id"]
+        or returned.get("page_id") != page_id
+        or returned.get("callback_id") != selected_callback_id
+    ):
+        raise InvariantFailure(
+            "Binary retrieval did not return the exact selected PageContentObject."
+        )
+    payload = binary_result.get("base64")
+    if not isinstance(payload, str) or not payload:
+        raise InvariantFailure("Binary retrieval returned no Base64 payload.")
+    try:
+        decoded = base64.b64decode("".join(payload.split()), validate=True)
+    except (binascii.Error, ValueError, TypeError) as exc:
+        raise InvariantFailure("Binary retrieval returned invalid Base64.") from exc
+    if not decoded:
+        raise InvariantFailure("Binary retrieval decoded to an empty payload.")
+    media_type = returned.get("media_type")
+    if not isinstance(media_type, str) or not media_type:
+        raise InvariantFailure("Binary retrieval returned no Image media type.")
+    return {
+        "schema_version": 1,
+        "tool": "get_page_content_object_binary",
+        "selection": "exact_page_content_object_id",
+        "callback_resolution_verified": True,
+        "public_id_distinct_from_callback": selected["id"] != selected_callback_id,
+        "kind": "Image",
+        "media_type": media_type,
+        "decoded_bytes": len(decoded),
+        "sha256": hashlib.sha256(decoded).hexdigest(),
+        "payload_persisted": False,
+    }
 
 
 def _tree_items(response: dict[str, Any], resource_type: str) -> list[dict[str, Any]]:
@@ -451,7 +524,7 @@ async def ensure_copy_rich_fixture(
             )
 
     objects = (
-        await client.call_tool("list_page_content_objects", {"page_id": page_id})
+        await client.call_tool("get_page_content_objects", {"page_id": page_id})
     ).get("objects", [])
     if not any(item.get("kind") == "Image" for item in objects if isinstance(item, dict)):
         asset_dir = run_dir / "fixture-assets"
@@ -479,7 +552,7 @@ async def ensure_copy_rich_fixture(
         (await client.call_tool("get_page_xml", {"page_id": page_id, "page_info": "all"}))["xml"]
     )
     final_objects = (
-        await client.call_tool("list_page_content_objects", {"page_id": page_id})
+        await client.call_tool("get_page_content_objects", {"page_id": page_id})
     ).get("objects", [])
     has_table = any(node.tag.rsplit("}", 1)[-1] == "Table" for node in ET.fromstring(final_xml).iter())
     has_image = any(

@@ -5,11 +5,11 @@ A local-first MCP server for Microsoft OneNote Desktop on Windows. It uses the l
 ## Design and safety
 
 - Typed Notebook, SectionGroup, Section, Page, and PageContentObject contracts; mutations use exact IDs and optimistic confirmation fields.
-- A canonical 52-operation Registry owns exposure, category, authorization, execution strategy, handler, audit, and retry semantics.
+- A canonical 52-operation Registry owns exposure, category, authorization, independent platform-preflight policy, execution strategy, handler, audit, and retry semantics.
 - Reads share a process-local lease; mutation and lifecycle effects use exclusive coordination through preflight, execution, reconciliation, and stable read-back.
 - Writes, Deletes, Organize, Copy, Local File IO, UI Control, and Notebook Lifecycle are seven independent, default-off authorization categories.
 - Raw XML, generic hierarchy mutation, public planning tokens, and an advanced MCP profile are not exposed.
-- OneNote Desktop readiness means both `ONENOTE.EXE` and a visible top-level window. `health_check` is always check-only.
+- OneNote Desktop readiness means both `ONENOTE.EXE` and a visible top-level window. Every authorized effect checks this prerequisite after authorization and before coordination or backend work; pure reads do not. `health_check` is always check-only and `launch_onenote_gui` is the explicit recovery effect.
 
 Current architecture and contracts: [documentation map](docs/README.md), [tool contracts](docs/design/tool_contracts.md), [object model](docs/design/object_model.md), [Operation Runtime](docs/design/operation_runtime.md), and [tool-surface convergence record](docs/todo/034_pre_user_testing_tool_surface_convergence.md).
 
@@ -38,11 +38,11 @@ uv sync --all-groups
 uv run pytest
 ```
 
-The checked-in Codex and Claude Code configurations start the server with `uv run --locked local-onenote-mcp` after project trust/approval.
+The repository includes project-scoped MCP configuration for Claude Code (`.mcp.json`), Codex (`.codex/config.toml`), Cursor (`.cursor/mcp.json`), and Grok Build (`.grok/config.toml`). Each uses `uv run --locked local-onenote-mcp`. The reusable Claude Code, Codex, and Cursor profiles keep all seven effect gates off; the developer-owned Grok user-testing profile explicitly enables only Writes and UI Control for disposable testing. Codex remains disabled until the user trusts and enables it; Claude Code and Cursor apply their own project-server approval flow.
 
 ## Client configuration
 
-Claude Desktop:
+Claude Desktop or Cursor (`mcpServers` JSON):
 
 ```json
 {
@@ -65,13 +65,13 @@ Claude Desktop:
 }
 ```
 
-Codex/Cursor TOML:
+Codex or Grok Build TOML:
 
 ```toml
 [mcp_servers.local-onenote]
-type = "stdio"
 command = "local-onenote-mcp"
-startup_timeout_ms = 120000
+startup_timeout_sec = 120
+tool_timeout_sec = 120
 
 [mcp_servers.local-onenote.env]
 LOCAL_ONENOTE_MCP_TIMEOUT = "90"
@@ -97,7 +97,7 @@ The only production profile is organized by user task:
 | Hierarchy Browse | `list_notebooks`, `get_hierarchy_path`, `expand_notebook`, `expand_section_group`, `expand_section`, `expand_page`, `expand_hierarchy` |
 | Metadata Get | `get_notebook_metadata`, `get_section_group_metadata`, `get_section_metadata`, `get_page_metadata` |
 | Query & Search | `query_notebook`, `query_section_group`, `query_section`, `query_page`, `search_pages` |
-| Page Content Read | `get_page_text`, `list_page_content_objects`, `get_page_object_binary` |
+| Page Content Read | `get_page_text`, `get_page_content_objects`, `get_page_content_object_binary` |
 | Hyperlink | `get_hyperlink` |
 | Create | `create_notebook`, `create_section_group`, `create_section`, `create_page` |
 | Rename | `rename_page`, `rename_section_group`, `rename_section` |
@@ -143,7 +143,8 @@ The normal delete tools are always non-permanent and have no `permanently` param
 
 ## Important behavior
 
-- `health_check` never launches OneNote. `launch_onenote_gui()` is a separate UI Control operation with no parameters, at most one trusted process-launch request, and bounded GUI-readiness observation. Its real start/rejection/idempotency check uses the standalone, human-gated [`launch_onenote_gui_check.py`](tests/manual_validation/launch_onenote_gui_check.py), which is outside the Scenario registry and `all`.
+- Call `health_check` at the start of an MCP session. It never launches OneNote. Before every authorized effect, the Runtime independently requires an existing visible OneNote GUI; authorization rejection happens first, and a readiness rejection produces zero backend calls. Pure reads remain usable without this effect prerequisite.
+- If health reports not ready, call `launch_onenote_gui()` with UI Control enabled, call `health_check` again, then retry the original authorized effect. If UI Control is disabled, set `LOCAL_ONENOTE_ENABLE_UI_CONTROL=true` and restart the MCP server, or start OneNote Desktop manually. Launch is a separate no-parameter UI effect with at most one trusted process-launch request and bounded readiness observation; its real acceptance check uses the standalone, human-gated [`launch_onenote_gui_check.py`](tests/manual_validation/launch_onenote_gui_check.py), outside the Scenario registry and `all`.
 - Query reads hierarchy metadata; `search_pages` uses OneNote's live index for Page body discovery. Both return candidates; mutations still require an exact ID.
 - Typed Expand parameters name their object type (`notebook_id`, `section_group_id`, `section_id`, `page_id`).
 - Page range is `page_scope="page_only" | "indentation_subtree"`; optional values use `null`, not empty-string sentinels.

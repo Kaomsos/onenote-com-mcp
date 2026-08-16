@@ -35,7 +35,7 @@ READ_TOOLS = {
     "expand_page",
     "expand_hierarchy",
     "get_page_xml",
-    "list_page_content_objects",
+    "get_page_content_objects",
     "query_notebook",
     "query_section_group",
     "query_section",

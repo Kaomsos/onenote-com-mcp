@@ -43,19 +43,19 @@ async def get_page_text(page_id: str, max_chars: int = MAX_TEXT_CHARS) -> dict[s
     return invoke("get_page_text", page_id=page_id, max_chars=max_chars)
 
 
-async def list_page_content_objects(page_id: str) -> dict[str, Any]:
-    """List typed PageContentObjects."""
+async def get_page_content_objects(page_id: str) -> dict[str, Any]:
+    """Return typed PageContentObjects for one exact Page."""
 
-    return invoke("list_page_content_objects", page_id=page_id)
+    return invoke("get_page_content_objects", page_id=page_id)
 
 
-async def get_page_object_binary(
+async def get_page_content_object_binary(
     page_id: str, page_content_object_id: str
 ) -> dict[str, Any]:
-    """Read one exact Page object binary after ownership validation and within the hard response budget."""
+    """Read one exact PageContentObject binary after ownership validation and within the hard response budget."""
 
     return invoke(
-        "get_page_object_binary",
+        "get_page_content_object_binary",
         page_id=page_id,
         page_content_object_id=page_content_object_id,
     )
@@ -85,7 +85,7 @@ async def search_pages(
 TOOLS = [
     get_page_metadata,
     get_page_text,
-    list_page_content_objects,
-    get_page_object_binary,
+    get_page_content_objects,
+    get_page_content_object_binary,
     search_pages,
 ]

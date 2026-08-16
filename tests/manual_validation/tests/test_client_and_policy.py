@@ -16,6 +16,11 @@ from tests.manual_validation.mcp_stdio_client import (
     SEARCH_BUDGET_ENV,
     DELETE_POLICY,
     REPARENT_POLICY,
+    RICH_COPY_NO_DELETE_POLICY,
+    RICH_COPY_NOTEBOOK_POLICY,
+    RICH_COPY_POLICY,
+    RICH_REPARENT_POLICY,
+    RICH_WRITE_POLICY,
     POLICY_ENV_NAMES,
     READ_ONLY_POLICY,
     REORDER_SECTION_GROUP_POLICY,
@@ -94,6 +99,9 @@ def test_static_policy_matrix_is_minimal() -> None:
     assert WRITE_POLICY.deletes_enabled is False
     assert REPARENT_POLICY.writes_enabled is True
     assert REPARENT_POLICY.organize_enabled is True
+    assert RICH_WRITE_POLICY.local_file_io_enabled is True
+    assert RICH_REPARENT_POLICY.organize_enabled is True
+    assert RICH_REPARENT_POLICY.local_file_io_enabled is True
     assert REORDER_SECTION_POLICY.as_dict() == WRITE_POLICY.as_dict()
     assert REORDER_SECTION_GROUP_POLICY.as_dict() == WRITE_POLICY.as_dict()
     assert DELETE_POLICY.deletes_enabled is True
@@ -101,6 +109,13 @@ def test_static_policy_matrix_is_minimal() -> None:
     assert COPY_POLICY.copy_enabled is True
     assert COPY_POLICY.deletes_enabled is True
     assert COPY_NO_DELETE_POLICY.deletes_enabled is False
+    assert RICH_COPY_POLICY.local_file_io_enabled is True
+    assert RICH_COPY_NO_DELETE_POLICY.local_file_io_enabled is True
+    assert RICH_COPY_NO_DELETE_POLICY.deletes_enabled is False
+    assert RICH_COPY_NOTEBOOK_POLICY.copy_enabled is True
+    assert RICH_COPY_NOTEBOOK_POLICY.local_file_io_enabled is True
+    assert RICH_COPY_NOTEBOOK_POLICY.notebook_lifecycle_enabled is True
+    assert RICH_COPY_NOTEBOOK_POLICY.deletes_enabled is False
     assert MOVE_PAGE_POLICY.copy_enabled is True
     assert MOVE_CONTAINERS_POLICY.copy_enabled is True
     for policy in (
@@ -112,10 +127,28 @@ def test_static_policy_matrix_is_minimal() -> None:
         DELETE_POLICY,
         COPY_POLICY,
         COPY_NO_DELETE_POLICY,
+        RICH_WRITE_POLICY,
+        RICH_REPARENT_POLICY,
+        RICH_COPY_POLICY,
+        RICH_COPY_NO_DELETE_POLICY,
+        RICH_COPY_NOTEBOOK_POLICY,
         MOVE_PAGE_POLICY,
         MOVE_CONTAINERS_POLICY,
     ):
         assert set(policy.as_dict()) == set(POLICY_ENV_NAMES)
+
+
+def test_client_failure_reads_nested_public_error_envelope() -> None:
+    failure = ClientFailure(
+        "tool failed",
+        envelope={
+            "ok": False,
+            "error": {"code": "validation_error", "message": "bounded failure"},
+        },
+    )
+
+    assert failure.error_code == "validation_error"
+    assert failure.error_message == "bounded failure"
 
 def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> None:
     for env_name in POLICY_ENV_NAMES.values():

@@ -36,7 +36,7 @@ PINNED_RECIPE_VERSIONS = {
     "bootstrap-shape-fixture": 5,
     "bootstrap-user-authored-fixture": 3,
     "copy-notebook": 3,
-    "copy-page": 11,
+    "copy-page": 13,
     "copy-section": 4,
     "copy-section-group": 5,
     "create": 5,

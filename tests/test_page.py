@@ -336,6 +336,22 @@ def test_collect_page_objects_keeps_idless_images_with_container():
     assert image["format"] == "png"
 
 
+def test_collect_page_objects_reads_nested_binary_callback_id():
+    xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:Outline objectID="outline-id"><one:OEChildren><one:OE objectID="oe-id">
+      <one:Image format="png">
+        <one:CallbackID callbackID="image-callback-id"/>
+      </one:Image>
+    </one:OE></one:OEChildren></one:Outline>
+    </one:Page>"""
+
+    objects = collect_page_objects(xml)
+
+    image = next(obj for obj in objects if obj["type"] == "Image")
+    assert image["callback_id"] == "image-callback-id"
+    assert not any(obj["type"] == "CallbackID" for obj in objects)
+
+
 def test_collect_page_objects_marks_deletable_containers_and_child_suggestions():
     xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
     <one:Outline objectID="outline-id"><one:OEChildren><one:OE objectID="oe-id">

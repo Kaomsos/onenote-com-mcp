@@ -6,7 +6,11 @@ from dataclasses import replace
 
 from ...runtime import InvariantFailure
 from ...test_utils import display_name
-from ..common.fixture_builders import ensure_page, ensure_section
+from ..common.fixture_builders import (
+    capture_page_image_binary_evidence,
+    ensure_page,
+    ensure_section,
+)
 from ..common.fixture_models import (
     FixtureBuildResult,
     FixtureContext,
@@ -47,7 +51,7 @@ Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、�
 """
 
 class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
-    recipe_version = 11
+    recipe_version = 13
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "the cross-Notebook destination Section belongs only to destination",
@@ -177,6 +181,13 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
         if not all(marker in description_text for marker in markers):
             raise InvariantFailure("Copy Page Description is missing a state marker.")
         build = await super().build(context)
+        r.record_evidence(
+            "page_content_object_binary",
+            await capture_page_image_binary_evidence(
+                context.client,
+                str(build.structure["parent_page"]["id"]),
+            ),
+        )
         disposable_section = build.structure["disposable_section"]
         r.record_structure(
             "cross_section_anchor",
@@ -235,6 +246,29 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             )
             return tuple(state.checks)
         checks = list(super().validate(context, build))
+        binary_evidence = build.evidence.get("page_content_object_binary")
+        state_binary_valid = (
+            isinstance(binary_evidence, dict)
+            and binary_evidence.get("tool") == "get_page_content_object_binary"
+            and binary_evidence.get("selection") == "exact_page_content_object_id"
+            and binary_evidence.get("callback_resolution_verified") is True
+            and isinstance(
+                binary_evidence.get("public_id_distinct_from_callback"), bool
+            )
+            and binary_evidence.get("kind") == "Image"
+            and isinstance(binary_evidence.get("media_type"), str)
+            and int(binary_evidence.get("decoded_bytes", 0)) > 0
+            and isinstance(binary_evidence.get("sha256"), str)
+            and len(binary_evidence["sha256"]) == 64
+            and binary_evidence.get("payload_persisted") is False
+        )
+        if not state_binary_valid:
+            raise InvariantFailure(
+                "Copy Page fixture has no valid public Image binary retrieval evidence."
+            )
+        checks.append(
+            "rich source Image binary was read by exact PageContentObject ID without persisting Base64"
+        )
         resolved, _by_id, state = resolve_active_structure(
             context.snapshot, build.structure
         )

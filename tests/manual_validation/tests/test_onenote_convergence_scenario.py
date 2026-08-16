@@ -248,7 +248,7 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
                     },
                     "convergence": _convergence(),
                 }
-            if name == "list_page_content_objects":
+            if name == "get_page_content_objects":
                 self.object_reads += 1
                 objects = [
                     {
@@ -382,9 +382,9 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
         "create_page",
         "rename_page",
         "replace_page_body",
-        "list_page_content_objects",
+        "get_page_content_objects",
         "append_page_content",
-        "list_page_content_objects",
+        "get_page_content_objects",
         "delete_page_content_object",
         "reorder_page",
         "delete_page",

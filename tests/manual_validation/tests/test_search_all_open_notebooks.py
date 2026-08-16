@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.manual_validation.mcp_stdio_client import summarize
+from tests.manual_validation.mcp_stdio_client import ClientFailure, summarize
 from tests.manual_validation.runner import main
 from tests.manual_validation.runtime import InvariantFailure, RunnerFailure, RuntimeOptions
 from tests.manual_validation.scenarios.common.fixture_runtime import (
@@ -190,6 +190,132 @@ def test_search_warns_after_an_actual_stable_probe_collision(tmp_path, monkeypat
     )
     assert warning["extra_hit_ids"] == ["extra"]
     assert warning["query_text_persisted"] is False
+
+
+@pytest.mark.parametrize(
+    ("code", "message_fragment", "passed_status", "filename"),
+    [
+        (
+            "validation_error",
+            "LOCAL_ONENOTE_MAX_SEARCH_PAGES=4",
+            "candidate_budget_exceeded",
+            "candidate.json",
+        ),
+        (
+            "backend_error",
+            "LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS=512",
+            "total_char_budget_exceeded",
+            "total.json",
+        ),
+    ],
+)
+def test_search_budget_probe_parses_nested_failure_after_index_retry(
+    code,
+    message_fragment,
+    passed_status,
+    filename,
+    monkeypatch,
+    tmp_path,
+) -> None:
+    scenario = SCENARIO_REGISTRY.get("search-all-open-notebooks")
+    calls = 0
+
+    async def fake_search(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return {"pages": []}
+        raise ClientFailure(
+            "expected budget failure",
+            envelope={
+                "ok": False,
+                "error": {
+                    "code": code,
+                    "message": f"budget exceeded: {message_fragment}",
+                },
+            },
+        )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(scenario, "_search", fake_search)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    attempts = asyncio.run(
+        scenario._wait_for_expected_budget_failure(
+            object(),
+            "redacted",
+            {"mode": "root"},
+            tmp_path,
+            search_arguments={"page_size": 1},
+            expected_code=code,
+            expected_message_fragment=message_fragment,
+            passed_status=passed_status,
+            evidence_filename=filename,
+            exhausted_message="not ready",
+            max_attempts=2,
+        )
+    )
+
+    assert [attempt["status"] for attempt in attempts] == [
+        "index_not_ready",
+        passed_status,
+    ]
+    assert json.loads((tmp_path / filename).read_text(encoding="utf-8")) == {
+        "attempts": attempts
+    }
+
+
+def test_search_budget_probe_fails_fast_on_unexpected_nested_error(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    scenario = SCENARIO_REGISTRY.get("search-all-open-notebooks")
+    calls = 0
+
+    async def fake_search(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise ClientFailure(
+            "unexpected",
+            envelope={
+                "ok": False,
+                "error": {"code": "policy_disabled", "message": "denied"},
+            },
+        )
+
+    monkeypatch.setattr(scenario, "_search", fake_search)
+    with pytest.raises(
+        RunnerFailure,
+        match="Unexpected Search budget probe failure: policy_disabled: denied",
+    ):
+        asyncio.run(
+            scenario._wait_for_expected_budget_failure(
+                object(),
+                "redacted",
+                {"mode": "root"},
+                tmp_path,
+                search_arguments={"page_size": 1},
+                expected_code="validation_error",
+                expected_message_fragment="expected budget",
+                passed_status="passed",
+                evidence_filename="unexpected.json",
+                exhausted_message="not ready",
+                max_attempts=20,
+            )
+        )
+
+    assert calls == 1
+    attempts = json.loads(
+        (tmp_path / "unexpected.json").read_text(encoding="utf-8")
+    )["attempts"]
+    assert attempts == [
+        {
+            "attempt": 1,
+            "error_category": "policy_disabled",
+            "status": "unexpected_error",
+        }
+    ]
 
 
 def test_search_fresh_dry_run_has_exclusive_index_activation_checkpoint(capsys) -> None:

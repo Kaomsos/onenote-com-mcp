@@ -42,8 +42,8 @@ class BackendCategory(StrEnum):
 
 class OperationStage(StrEnum):
     ADMISSION = "admission"
-    PLATFORM_PREFLIGHT = "platform_preflight"
     AUTHORIZATION = "authorization"
+    PLATFORM_PREFLIGHT = "platform_preflight"
     COORDINATION = "coordination"
     PREFLIGHT = "preflight"
     EXECUTE = "execute"
@@ -81,6 +81,7 @@ class OperationSpec:
     cache_policy: str = "live"
     retry_policy: str = "never"
     authorization_policy: str = "none"
+    platform_preflight_policy: str = "none"
     audit_policy: str = "content_free"
     exposures: frozenset[str] = frozenset({"default"})
     mutation: MutationOperationPolicy | None = None
@@ -94,6 +95,7 @@ class OperationSpec:
             or not self.strategy
             or not self.handler
             or not self.authorization_policy
+            or not self.platform_preflight_policy
         ):
             raise ValueError("OperationSpec identity fields must be non-empty.")
         if self.kind is OperationKind.MUTATION and self.mutation is None:
@@ -108,6 +110,7 @@ class OperationSpec:
 
 OperationHandler = Callable[[Mapping[str, Any]], dict[str, Any]]
 OperationAuthorizer = Callable[[Mapping[str, Any]], None]
+OperationPlatformPreflight = Callable[[Mapping[str, Any]], None]
 
 
 class ExecutionStrategy(Protocol):
@@ -129,6 +132,7 @@ class OperationBinding:
     strategy: ExecutionStrategy
     handler: OperationHandler
     authorizer: OperationAuthorizer
+    platform_preflight: OperationPlatformPreflight
 
 
 @dataclass
@@ -202,6 +206,7 @@ class OperationRegistry:
         strategy: ExecutionStrategy,
         handler: OperationHandler,
         authorizer: OperationAuthorizer | None = None,
+        platform_preflight: OperationPlatformPreflight | None = None,
     ) -> None:
         if spec.name in self._bindings:
             raise ValueError(f"Duplicate operation registration: {spec.name}")
@@ -210,8 +215,20 @@ class OperationRegistry:
                 f"Operation {spec.name!r} declares strategy {spec.strategy!r}, "
                 f"but received {strategy.name!r}."
             )
+        if (
+            spec.platform_preflight_policy != "none"
+            and platform_preflight is None
+        ):
+            raise ValueError(
+                f"Operation {spec.name!r} declares platform preflight policy "
+                f"{spec.platform_preflight_policy!r} but has no preflight binding."
+            )
         self._bindings[spec.name] = OperationBinding(
-            spec, strategy, handler, authorizer or (lambda _arguments: None)
+            spec,
+            strategy,
+            handler,
+            authorizer or (lambda _arguments: None),
+            platform_preflight or (lambda _arguments: None),
         )
 
     def resolve(self, operation: str) -> OperationBinding:
@@ -266,6 +283,7 @@ class OperationRegistry:
                 not binding.spec.handler
                 or binding.handler is None
                 or not callable(binding.authorizer)
+                or not callable(binding.platform_preflight)
             ):
                 raise RuntimeError(f"Operation {name!r} has no registered Handler.")
 
@@ -451,9 +469,10 @@ class OperationRuntime:
         data: dict[str, Any] | None = None
         error: Exception | None = None
         try:
-            execution.stage = OperationStage.PLATFORM_PREFLIGHT
             execution.stage = OperationStage.AUTHORIZATION
             binding.authorizer(safe_arguments)
+            execution.stage = OperationStage.PLATFORM_PREFLIGHT
+            binding.platform_preflight(safe_arguments)
             data = binding.strategy.execute(
                 self, binding, execution, safe_arguments, timeout_seconds
             )

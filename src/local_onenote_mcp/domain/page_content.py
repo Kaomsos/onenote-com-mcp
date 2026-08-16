@@ -27,7 +27,11 @@ def content_objects(page_id: str, objects: Iterable[dict[str, Any]]) -> list[dic
 
     return [
         PageContentObject(
-            id=item.get("object_id"),
+            # Binary leaf elements such as Image can expose only callbackID in
+            # a non-binary GetPageContent snapshot. Keep objectID preferred,
+            # and use the documented binary-object OneNote ID only as a
+            # page-scoped fallback when objectID is absent.
+            id=item.get("object_id") or item.get("callback_id"),
             page_id=page_id,
             kind=item.get("type", "Unknown"),
             parent_object_id=item.get("parent_object_id"),

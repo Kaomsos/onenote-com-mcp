@@ -1,7 +1,7 @@
 # Operation Runtime 操作执行控制面
 
 > 状态：当前实现态
-> 更新日期：2026-08-15
+> 更新日期：2026-08-16
 > 相关契约：[当前架构](architecture.md) · [公开 Tool 契约](tool_contracts.md) · [Mutation readiness](mutation_readiness_and_call_design.md)
 
 ## 1. 定位与依赖方向
@@ -12,7 +12,7 @@ Operation Control Plane 是所有生产 MCP Tool 共用、与 transport 无关�
 MCP Tool adapter
   → tools.responses.invoke(operation, arguments)
     → OperationRuntime
-      → OperationRegistry: OperationSpec + Strategy + Handler
+      → OperationRegistry: OperationSpec + Strategy + Handler + policies
         → existing application Service
           → backend port
             → OneNote COM bridge | filesystem | Windows UI/process
@@ -51,7 +51,7 @@ classDiagram
 
     class OperationRegistry {
         -dict bindings
-        +register(spec, strategy, handler, authorizer)
+        +register(spec, strategy, handler, authorizer, platform_preflight)
         +resolve(operation) OperationBinding
         +names_for_profile(profile)
         +audit_public_tools(names, profile)
@@ -62,6 +62,7 @@ classDiagram
         +ExecutionStrategy strategy
         +OperationHandler handler
         +OperationAuthorizer authorizer
+        +OperationPlatformPreflight platform_preflight
     }
 
     class OperationSpec {
@@ -76,6 +77,7 @@ classDiagram
         +str cache_policy
         +str retry_policy
         +str authorization_policy
+        +str platform_preflight_policy
         +str audit_policy
         +frozenset exposures
         +MutationOperationPolicy mutation
@@ -158,6 +160,11 @@ classDiagram
         +call(arguments)
     }
 
+    class OperationPlatformPreflight {
+        <<Callable>>
+        +call(arguments)
+    }
+
     class ReadWriteCoordinator {
         +int generation
         +float default_timeout_seconds
@@ -198,6 +205,7 @@ classDiagram
     OperationBinding o-- ExecutionStrategy
     OperationBinding --> OperationHandler
     OperationBinding --> OperationAuthorizer
+    OperationBinding --> OperationPlatformPreflight
     OperationSpec o-- MutationOperationPolicy : mutation only
     _BaseStrategy ..|> ExecutionStrategy
     ReadExecutionStrategy --|> _BaseStrategy
@@ -236,6 +244,7 @@ sequenceDiagram
     participant Runtime as OperationRuntime
     participant Registry as OperationRegistry
     participant Auth as OperationAuthorizer
+    participant Platform as PlatformPreflight
     participant Strategy as ExecutionStrategy
     participant Coord as ReadWriteCoordinator
     participant Handler as OperationHandler
@@ -247,11 +256,12 @@ sequenceDiagram
     Tool->>Response: invoke operation and arguments
     Response->>Runtime: execute operation and arguments
     Runtime->>Registry: resolve operation
-    Registry-->>Runtime: Spec Strategy Handler Authorizer
+    Registry-->>Runtime: Spec Strategy Handler Authorizer PlatformPreflight
     Runtime->>Runtime: create OperationExecution at admission
-    Runtime->>Runtime: platform_preflight stage
     Runtime->>Auth: authorize safe argument view
     Auth-->>Runtime: allowed
+    Runtime->>Platform: check independent platform policy
+    Platform-->>Runtime: ready or exempt
     Runtime->>Strategy: execute binding and deadline
     Strategy->>Coord: acquire shared or exclusive scope
     activate Coord
@@ -289,9 +299,9 @@ sequenceDiagram
     Tool-->>Client: MCP structured response
 ```
 
-### 3.2 授权拒绝与执行异常
+### 3.2 授权、平台前置条件拒绝与执行异常
 
-授权发生在协调 lease、cache generation 和 backend 调用之前；因此 policy 拒绝不会产生 backend side effect。授权通过后的 Handler、backend、reconciliation 或 deadline `Exception` 必须依靠 coordination context 退出释放 lease，Runtime 再把 typed error 与 content-free `execution` 合并到既有失败 envelope。取消等 `BaseException` 同样释放 lease 并重置调用上下文，但继续向上传播，不伪造一个已完成的 MCP envelope。
+授权先于独立的平台前置条件，二者都发生在协调 lease、cache generation 和 backend 调用之前；因此 authorization 或 GUI readiness 拒绝都不会产生 backend side effect。授权通过后的 `onenote_gui_ready` 只负责 native check-only readiness，不开启 GUI、不解释七类 gate。Handler、backend、reconciliation 或 deadline `Exception` 必须依靠 coordination context 退出释放 lease，Runtime 再把 typed error 与 content-free `execution` 合并到既有失败 envelope。取消等 `BaseException` 同样释放 lease 并重置调用上下文，但继续向上传播，不伪造一个已完成的 MCP envelope。
 
 ```mermaid
 sequenceDiagram
@@ -301,6 +311,7 @@ sequenceDiagram
     participant Runtime as OperationRuntime
     participant Registry as OperationRegistry
     participant Auth as OperationAuthorizer
+    participant Platform as PlatformPreflight
     participant Strategy as ExecutionStrategy
     participant Coord as ReadWriteCoordinator
     participant Handler as OperationHandler and Service
@@ -320,27 +331,36 @@ sequenceDiagram
         Response-->>Client: existing error envelope plus execution
     else Authorization allowed
         Auth-->>Runtime: allowed
-        Runtime->>Strategy: execute binding
-        Strategy->>Coord: acquire scope
-        Strategy->>Handler: execute operation
-        Handler->>Backend: typed backend call
-        alt Handled Exception
-            Backend--xHandler: typed backend error or timeout
-            Handler--xStrategy: propagate typed failure
-            Strategy-->>Coord: context exit releases scope
-            Strategy--xRuntime: Exception
-            Runtime->>Runtime: absorb typed error reset call context
-            Runtime->>Runtime: freeze outcome append content-free audit
-            Runtime-->>Response: failed OperationOutcome
-            Response-->>Client: compatible failure envelope plus execution
-        else Cancellation or other BaseException
-            Backend--xHandler: cancellation or fatal interruption
-            Handler--xStrategy: propagate without conversion
-            Strategy-->>Coord: context exit releases scope
-            Strategy--xRuntime: BaseException
-            Runtime->>Runtime: finally reset call context
-            Runtime--xResponse: propagate without fabricated outcome
-            Response--xClient: transport cancellation or interruption
+        Runtime->>Platform: check registered prerequisite
+        alt GUI readiness rejected
+            Platform--xRuntime: typed failed precondition
+            Note over Runtime,Backend: No lease no generation change no backend call
+            Runtime-->>Response: failed OperationOutcome at platform_preflight
+            Response-->>Client: recovery sequence plus execution
+        else Ready or exempt
+            Platform-->>Runtime: continue
+            Runtime->>Strategy: execute binding
+            Strategy->>Coord: acquire scope
+            Strategy->>Handler: execute operation
+            Handler->>Backend: typed backend call
+            alt Handled Exception
+                Backend--xHandler: typed backend error or timeout
+                Handler--xStrategy: propagate typed failure
+                Strategy-->>Coord: context exit releases scope
+                Strategy--xRuntime: Exception
+                Runtime->>Runtime: absorb typed error reset call context
+                Runtime->>Runtime: freeze outcome append content-free audit
+                Runtime-->>Response: failed OperationOutcome
+                Response-->>Client: compatible failure envelope plus execution
+            else Cancellation or other BaseException
+                Backend--xHandler: cancellation or fatal interruption
+                Handler--xStrategy: propagate without conversion
+                Strategy-->>Coord: context exit releases scope
+                Strategy--xRuntime: BaseException
+                Runtime->>Runtime: finally reset call context
+                Runtime--xResponse: propagate without fabricated outcome
+                Response--xClient: transport cancellation or interruption
+            end
         end
     end
 ```
@@ -355,7 +375,7 @@ sequenceDiagram
 OperationSpec + ExecutionStrategy + OperationHandler
 ```
 
-`OperationSpec` 固定记录：`name/kind/capability/coordination/backend/strategy/handler/budget_policy/cache_policy/retry_policy/authorization_policy/audit_policy/exposures`。Mutation 还必须登记 operation-specific 的 authorization、attempt policy、replay、identity、observer、partial boundary、recovery 和 saga 属性；缺少任一 mutation policy 或 authorization policy 会在构造 Registry 时 fail closed。
+`OperationSpec` 固定记录：`name/kind/capability/coordination/backend/strategy/handler/budget_policy/cache_policy/retry_policy/authorization_policy/platform_preflight_policy/audit_policy/exposures`。Authorization 与 platform preflight 分别绑定 callable；改变一个 policy 不会隐式改变另一个。Mutation 还必须登记 operation-specific 的 authorization、attempt policy、replay、identity、observer、partial boundary、recovery 和 saga 属性；缺少任一 mutation policy 或 authorization policy 会在构造 Registry 时 fail closed。
 
 当前 production inventory 为唯一 User profile 52 项；advanced profile 为空，Registry 中也没有隐藏的 advanced binding。启动时 Registry 与 `tool_surface.py` 的冻结顺序、分类及实际 Tool 集合做精确双向审计；重复 operation、未注册 Tool、profile 错配或额外 operation 都阻止启动。五项 Internal & Incubating capability 和 forbidden set 不参与 Tool 注册；内部 raw safety gate 也不改变 exposure。
 
@@ -364,7 +384,7 @@ OperationSpec + ExecutionStrategy + OperationHandler
 固定阶段词汇为：
 
 ```text
-admission → platform_preflight → authorization → coordination
+admission → authorization → platform_preflight → coordination
           → preflight → execute → observe → reconcile
           → converge → postcondition → finalize
 ```
@@ -379,7 +399,7 @@ admission → platform_preflight → authorization → coordination
 | `filesystem_effect` | preflight/execute/postcondition | Publish | 使用文件系统结果，不套用 OneNote identity。 |
 | `ui_effect` | preflight/execute | Navigate | 只证明 action accepted，不声称 OneNote 持久状态改变。 |
 
-Read 使用 shared lease；当前 OneNote mutation 与 lifecycle 使用 exclusive lease。Runtime 在取得 lease 前执行 Registry authorizer，因此缺少 Writes/Delete/Permanent Delete/Reparent/Reorder/Copy/Move/Raw XML 权限的请求不会调用 backend，也不会推进 cache generation；Service 内原有 policy 检查继续作为纵深防御。Coordinator 是 writer-preferring、获取有界，并在每次 exclusive operation 进入时只增加一次 cache generation、调用一次 invalidator。Handler、deadline、coordination、reconciliation、finalize 或 `BaseException` 出口都必须释放 lease；它不约束另一个 MCP 进程或用户直接在 OneNote Desktop 中编辑。
+Read 使用 shared lease；当前 OneNote mutation 与 lifecycle 使用 exclusive lease。Runtime 在取得 lease 前先执行 Registry authorizer，再执行独立的 platform preflight。所有需公开 gate 的 operation 除 `launch_onenote_gui` 外都显式登记 `onenote_gui_ready`；纯 read、`health_check` 与恢复入口 launch 登记 `none`。任一拒绝都不会调用 backend 或推进 cache generation，Service 内原有 policy 检查继续作为纵深防御。Coordinator 是 writer-preferring、获取有界，并在每次 exclusive operation 进入时只增加一次 cache generation、调用一次 invalidator。Handler、deadline、coordination、reconciliation、finalize 或 `BaseException` 出口都必须释放 lease；它不约束另一个 MCP 进程或用户直接在 OneNote Desktop 中编辑。
 
 ## 6. 029 principal attempt 与 operation outcome
 

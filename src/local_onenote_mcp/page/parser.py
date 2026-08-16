@@ -110,8 +110,25 @@ def collect_page_objects(xml: str) -> list[dict[str, Any]]:
                 record["delete_object_id"] = object_id
             elif deletable_container_id:
                 record["delete_object_id"] = deletable_container_id
-            if "callbackID" in node.attrib:
-                record["callback_id"] = node.attrib["callbackID"]
+            callback_id = node.attrib.get("callbackID")
+            if not callback_id:
+                # OneNote 2013 XML commonly represents the binary handle as a
+                # direct child, for example
+                # ``<Image><CallbackID callbackID="..."/></Image>``.  Some
+                # inputs and older shapes put the same attribute directly on
+                # the content element, so accept both without treating the
+                # CallbackID metadata node as a separate public object.
+                callback_id = next(
+                    (
+                        child.attrib.get("callbackID")
+                        for child in list(node)
+                        if local_name(child.tag) == "CallbackID"
+                        and child.attrib.get("callbackID")
+                    ),
+                    None,
+                )
+            if callback_id:
+                record["callback_id"] = callback_id
             if "format" in node.attrib:
                 record["format"] = node.attrib["format"]
             objects.append(record)

@@ -42,6 +42,7 @@
 | 034 | [用户测试前 MCP 工具发布面收敛](034_pre_user_testing_tool_surface_convergence.md)                                     | 已完成 | P0     | 52 Tool Registry、13 项重命名、5 项非注册 catalog、7 个授权、统一 envelope、98 组合权限矩阵及 convergence/launch 真实证据全部闭合；用户已批准测试准入与提交。               |
 | 035 | [Copy/Move 内部 Planning、Preview 高级能力与 Agent 职责收敛](035_copy_move_internal_planning_and_agent_role.md)          | 已完成 | P1     | 七个单次调用 Copy/Move、无公共 Plan/Preview 与服务端内部 planning/证明职责已冻结；自动化、fresh/cache 真实回归和用户产品边界确认全部完成。                                    |
 | 036 | [Operation Runtime 操作执行控制层与 Tool 迁移](036_operation_runtime_control_plane_and_tool_migration.md)               | 已完成 | P1     | Runtime 控制层与全 Tool 迁移证据已交付；当时 56 项 Registry 已由 034 进一步收敛为当前 52 项并继续使用同一控制面。                                                          |
+| 037 | [用户测试期工具调用与实现体验优化](037_user_testing_experience_feedback_and_optimization.md)                          | 进行中 | P0     | UT-002 已完成；UT-001 仍待原始纯 read 复测；UT-003 已把 L1 后跟随的 L3 定为该 L1 的直接子节点（仅文档，Expand 实现未改）。                               |
 
 ## 文件命名
 

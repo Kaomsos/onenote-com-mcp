@@ -1,7 +1,7 @@
 # Local OneNote MCP 当前设计架构
 
 > 状态：当前实现态
-> 更新日期：2026-08-15
+> 更新日期：2026-08-16
 > 相关契约：[Operation Runtime](operation_runtime.md) · [对象模型](object_model.md) · [层级解析器](hierarchy_parser.md) · [工具参数与返回格式](tool_contracts.md) · [Windows Fixture Cache 路径配额目标设计](windows_fixture_cache_path_budget.md)
 
 ## 1. 架构结论
@@ -224,7 +224,7 @@ classDiagram
 
 ### 3.2 COM 收敛与进程内协调
 
-所有公开 Tool 都由 `tools.responses.invoke` 提交给同一个 `OperationRuntime`。Runtime 从 Registry 读取静态 Spec、authorization policy 和分类型 Strategy；先执行 authorizer，再取得进程级协调器 lease：Read 使用 shared；OneNote mutation 和 lifecycle 使用 exclusive，并在进入时恰好推进一次 cache generation。权限拒绝因此发生在 backend、lease 和 generation invalidation 之前，Service 内原有门限继续纵深防御。operation 从 live preflight 跨越 execute、reconciliation、连续稳定 read-back 和 finalize 后才释放 lease；异常、timeout、finalize failure 与取消路径同样释放。首版不承诺跨 MCP 进程、用户在 Desktop 中的直接编辑或 OneNote 自身同步被事务化。完整阶段、Outcome 与 content-free audit 合同见 [`operation_runtime.md`](operation_runtime.md)。
+所有公开 Tool 都由 `tools.responses.invoke` 提交给同一个 `OperationRuntime`。Runtime 从 Registry 读取静态 Spec、authorization policy、独立的 platform-preflight policy 和分类型 Strategy；先执行 authorizer，再执行适用的 check-only GUI readiness preflight，最后取得进程级协调器 lease：Read 使用 shared；OneNote mutation 和 lifecycle 使用 exclusive，并在进入时恰好推进一次 cache generation。权限或 readiness 拒绝因此发生在 backend、lease 和 generation invalidation 之前，Service 内原有门限继续纵深防御。operation 从 live preflight 跨越 execute、reconciliation、连续稳定 read-back 和 finalize 后才释放 lease；异常、timeout、finalize failure 与取消路径同样释放。首版不承诺跨 MCP 进程、用户在 Desktop 中的直接编辑或 OneNote 自身同步被事务化。完整阶段、Outcome 与 content-free audit 合同见 [`operation_runtime.md`](operation_runtime.md)。
 
 默认 convergence 合同为 4 秒 monotonic deadline、0.5 秒观察间隔、最多 16 次观察，并至少要求两个连续、accepted 且 stable identity 相同的 live 观察。history 只记录 attempt/accepted/stable 和 typed transient category，不保存 Page XML、正文、binary、路径或请求参数。异常默认立即传播；只有调用点显式提供 transient predicate，且 typed HRESULT 属于 not-yet-synchronized、timeout 或 read-only object/file unavailable 时才延迟重读。Create 的 stable identity 包含 allocated→resolved ID；Page mutation 使用内容摘要；Reorder/Reparent/Copy 使用各自业务层定义的 topology/fidelity projection；Delete/Close 使用活动态或 open-state 后置条件。
 
@@ -420,7 +420,7 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 
 `OneNote.Application` 在当前 Windows 安装中由 `ONENOTE.EXE` 进程外 COM server 承载。`OneNoteBridge` 只复用 Python 配置对象，不复用 PowerShell 进程或 COM reference；因此长驻 MCP server 也不构成跨 bridge 调用的 COM lifecycle owner。生产 MCP 当前不承诺自动启动的 OneNote 实例会在两个独立 bridge 调用之间保持运行，也不承诺前一 client 激活的临时 live hierarchy 会被下一 client 继承。
 
-当前生产代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在。缺失或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote。短命 COM client 冷启动 OneNote 时的已观察平台限制见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)；测试 runner 如何复用该门限由独立的 [Manual Validation 架构](manual_validation_scenario_fixture_architecture.md)定义。
+当前生产代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在。相同 native probe 由 Registry 中独立的 `platform_preflight_policy` 绑定到所有需公开 gate 的 effect，并在 authorization 后、协调和首个 backend call 前执行；纯 read 不绑定，恢复入口 `launch_onenote_gui` 明确豁免。进程缺失、process-only、窗口不可见或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote。失败 envelope 给出 `health_check → launch_onenote_gui → health_check → retry original operation`，并在 UI Control 关闭时提示开启最小 gate 或手动启动。短命 COM client 冷启动 OneNote 时的已观察平台限制见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)；测试 runner 如何复用该门限由独立的 [Manual Validation 架构](manual_validation_scenario_fixture_architecture.md)定义。
 
 生产 MCP 已提供显式、无参数、UI Control 授权的 `launch_onenote_gui`；它在进程完全不存在时最多请求一次受信任 `ONENOTE.EXE` launch，再有界观察可见 GUI，不实现 scenario-scoped COM keeper。标准 manual-validation runner 仍要求启动前已有可见 GUI，避免 fixture 场景隐式改变 session；长期 COM owner 暂不采用。
 

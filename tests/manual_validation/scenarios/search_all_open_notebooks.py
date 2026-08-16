@@ -165,7 +165,7 @@ class SearchAllOpenNotebooksScenario(Scenario):
             except ClientFailure as exc:
                 attempt.update(
                     status="error",
-                    error_category=(exc.envelope or {}).get("code", "client_failure"),
+                    error_category=exc.error_code or "client_failure",
                 )
                 stable_count = 0
                 previous = None
@@ -198,6 +198,57 @@ class SearchAllOpenNotebooksScenario(Scenario):
                 )
             await asyncio.sleep(1)
         raise RunnerFailure("index_not_ready_or_failed: root Search never stabilized at four exact IDs.")
+
+    async def _wait_for_expected_budget_failure(
+        self,
+        client: MCPStdioClient,
+        query: str,
+        scope: dict[str, str],
+        out,
+        *,
+        search_arguments: dict[str, Any],
+        expected_code: str,
+        expected_message_fragment: str,
+        passed_status: str,
+        evidence_filename: str,
+        exhausted_message: str,
+        max_attempts: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Retry only while the index is not ready; reject other errors immediately."""
+
+        attempts: list[dict[str, Any]] = []
+        evidence_path = out / evidence_filename
+        for ordinal in range(1, max_attempts + 1):
+            try:
+                await self._search(
+                    client,
+                    query,
+                    scope,
+                    **search_arguments,
+                )
+                attempts.append({"attempt": ordinal, "status": "index_not_ready"})
+            except ClientFailure as exc:
+                expected = (
+                    exc.error_code == expected_code
+                    and expected_message_fragment in exc.error_message
+                )
+                attempts.append(
+                    {
+                        "attempt": ordinal,
+                        "status": passed_status if expected else "unexpected_error",
+                        "error_category": exc.error_code,
+                    }
+                )
+                write_json(evidence_path, {"attempts": attempts})
+                if expected:
+                    return attempts
+                raise RunnerFailure(
+                    "Unexpected Search budget probe failure: "
+                    f"{exc.error_code or 'client_failure'}: {exc.error_message}"
+                ) from exc
+            write_json(evidence_path, {"attempts": attempts})
+            await asyncio.sleep(1)
+        raise RunnerFailure(exhausted_message)
 
     async def execute(
         self,
@@ -339,38 +390,24 @@ class SearchAllOpenNotebooksScenario(Scenario):
         if not pagination_passed:
             raise RunnerFailure("index_changed_during_pagination: bounded pagination retries exhausted.")
 
-        budget_attempts: list[dict[str, Any]] = []
-        candidate_budget_passed = False
-        for ordinal in range(1, 21):
-            try:
-                await self._search(
-                    client,
-                    budget_marker,
-                    {"mode": "root"},
-                    offset=99,
-                    page_size=1,
-                    include_snippets=False,
-                )
-                budget_attempts.append({"attempt": ordinal, "status": "index_not_ready"})
-            except ClientFailure as exc:
-                envelope = exc.envelope or {}
-                candidate_budget_passed = (
-                    envelope.get("code") == "validation_error"
-                    and "LOCAL_ONENOTE_MAX_SEARCH_PAGES=4" in str(envelope.get("error", ""))
-                )
-                budget_attempts.append(
-                    {
-                        "attempt": ordinal,
-                        "status": "candidate_budget_exceeded" if candidate_budget_passed else "unexpected_error",
-                        "error_category": envelope.get("code"),
-                    }
-                )
-            write_json(out / "candidate-budget-attempts.json", {"attempts": budget_attempts})
-            if candidate_budget_passed:
-                break
-            await asyncio.sleep(1)
-        if not candidate_budget_passed:
-            raise RunnerFailure("Candidate budget probe never produced five indexed candidates.")
+        await self._wait_for_expected_budget_failure(
+            client,
+            budget_marker,
+            {"mode": "root"},
+            out,
+            search_arguments={
+                "offset": 99,
+                "page_size": 1,
+                "include_snippets": False,
+            },
+            expected_code="validation_error",
+            expected_message_fragment="LOCAL_ONENOTE_MAX_SEARCH_PAGES=4",
+            passed_status="candidate_budget_exceeded",
+            evidence_filename="candidate-budget-attempts.json",
+            exhausted_message=(
+                "Candidate budget probe never produced five indexed candidates."
+            ),
+        )
 
         snippet_result = await self._search(
             client,
@@ -385,37 +422,23 @@ class SearchAllOpenNotebooksScenario(Scenario):
         ):
             raise InvariantFailure("Section snippet hydration did not return the exact A1 Page and snippet.")
 
-        total_char_budget_passed = False
-        total_char_attempts: list[dict[str, Any]] = []
-        for ordinal in range(1, 21):
-            try:
-                await self._search(
-                    client,
-                    long_text_marker,
-                    {"mode": "start_node", "start_node_id": str(structure["probe_section_b"]["id"])},
-                    page_size=1,
-                    include_snippets=True,
-                )
-                total_char_attempts.append({"attempt": ordinal, "status": "index_not_ready"})
-            except ClientFailure as exc:
-                envelope = exc.envelope or {}
-                total_char_budget_passed = (
-                    envelope.get("code") == "backend_error"
-                    and "LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS=512" in str(envelope.get("error", ""))
-                )
-                total_char_attempts.append(
-                    {
-                        "attempt": ordinal,
-                        "status": "total_char_budget_exceeded" if total_char_budget_passed else "unexpected_error",
-                        "error_category": envelope.get("code"),
-                    }
-                )
-            write_json(out / "total-char-budget-attempts.json", {"attempts": total_char_attempts})
-            if total_char_budget_passed:
-                break
-            await asyncio.sleep(1)
-        if not total_char_budget_passed:
-            raise RunnerFailure("Long-text marker never produced the expected total character budget error.")
+        await self._wait_for_expected_budget_failure(
+            client,
+            long_text_marker,
+            {
+                "mode": "start_node",
+                "start_node_id": str(structure["probe_section_b"]["id"]),
+            },
+            out,
+            search_arguments={"page_size": 1, "include_snippets": True},
+            expected_code="backend_error",
+            expected_message_fragment="LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS=512",
+            passed_status="total_char_budget_exceeded",
+            evidence_filename="total-char-budget-attempts.json",
+            exhausted_message=(
+                "Long-text marker never produced the expected total character budget error."
+            ),
+        )
 
         evidence = {
             "scenario": self.name,

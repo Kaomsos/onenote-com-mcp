@@ -1,7 +1,7 @@
 # 独立层级解析器设计
 
 > 状态：已实现  
-> 更新日期：2026-08-11
+> 更新日期：2026-08-16
 > 实现：`src/local_onenote_mcp/hierarchy.py`
 
 ## 1. 模块边界
@@ -50,6 +50,8 @@ hierarchy.parse_hierarchy
 7. 未知 XML attribute 丢弃。
 
 Page 不生成旧式 `name` alias，解析和搜索统一通过 `display_name` 读取 `title`。
+
+Page 缩进派生按同 Section 的 `order` 扫描：弹出 stack 上 `page_level` 不小于当前页的节点，再把 `parent_page_id` 设为剩余栈顶（最近的更浅祖先）。因此 L1 后跟随的 L3 **直接映射为该 L1 的子节点**，不虚构中间 L2；紧随的连续 L3 同样挂在该 L1 下。parser 不把该间隙当成残缺 XML。`query_page` 消费这份派生结果。Expand 在 parser 之外另有连续性校验，当前实现仍会拒绝该序列；已接受的模型要求 Expand 按同一映射把该 L3 作为该 L1 的子节点返回，见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
 
 ## 4. 局部 XML 与 catalog hydration
 

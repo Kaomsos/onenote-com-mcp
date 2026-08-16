@@ -8,12 +8,12 @@ from .responses import invoke
 
 
 async def health_check() -> dict[str, Any]:
-    """Check an existing visible OneNote GUI and report content-free runtime capabilities; never launch it."""
+    """At session start, check the existing visible OneNote GUI and runtime capabilities; never launch it. GUI readiness is required before every authorized effect."""
     return invoke("health_check")
 
 
 async def launch_onenote_gui() -> dict[str, Any]:
-    """With UI Control, launch trusted OneNote Desktop at most once when absent, then observe GUI readiness."""
+    """When health_check is not ready, use UI Control to launch trusted OneNote once, then call health_check again before retrying an authorized effect."""
 
     return invoke("launch_onenote_gui")
 

@@ -9,6 +9,7 @@ from local_onenote_mcp.desktop import OneNoteDesktopState
 from local_onenote_mcp.onenote_errors import (
     OneNoteDesktopLaunchTimeoutError,
     OneNoteDesktopNotRunningError,
+    OneNoteDesktopProbeError,
     OneNoteDesktopWindowUnavailableError,
 )
 
@@ -25,20 +26,75 @@ def test_desktop_state_requires_process_and_visible_window() -> None:
     }
 
 
-def test_require_desktop_fails_closed_without_starting_any_process(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "state",
+    (
+        OneNoteDesktopState(False, False),
+        OneNoteDesktopState(True, False),
+        OneNoteDesktopState(False, True),
+    ),
+)
+def test_require_desktop_fails_closed_without_ready_visible_gui(
+    monkeypatch, state
+) -> None:
     monkeypatch.setattr(
         desktop,
         "probe_onenote_desktop",
-        lambda: OneNoteDesktopState(False, False),
+        lambda: state,
     )
 
     with pytest.raises(OneNoteDesktopNotRunningError) as raised:
-        desktop.require_onenote_desktop()
+        desktop.require_onenote_desktop(
+            operation="create_page", ui_control_enabled=False
+        )
 
     assert raised.value.code == "onenote_desktop_not_running"
     assert raised.value.retryability == "after_user_action"
-    assert raised.value.details["required_action"] == "start_onenote_desktop_and_retry"
+    assert raised.value.operation == "create_page"
+    assert (
+        raised.value.details["required_action"]
+        == "restore_onenote_gui_readiness_and_retry"
+    )
+    assert raised.value.details["failed_precondition"] == "onenote_gui_ready"
     assert raised.value.details["onenote_desktop"]["ready"] is False
+    assert raised.value.details["recovery"] == {
+        "sequence": [
+            "health_check",
+            "launch_onenote_gui",
+            "health_check",
+            "retry_original_operation",
+        ],
+        "launch_requires_gate": "LOCAL_ONENOTE_ENABLE_UI_CONTROL=true",
+        "manual_alternative": "Start OneNote Desktop manually with a visible window.",
+        "ui_control_enabled": False,
+        "required_user_action": (
+            "Enable LOCAL_ONENOTE_ENABLE_UI_CONTROL=true and restart the MCP "
+            "server, or start OneNote Desktop manually."
+        ),
+    }
+
+
+def test_require_desktop_projects_uncertain_probe_as_failed_precondition(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        desktop,
+        "probe_onenote_desktop",
+        lambda: (_ for _ in ()).throw(
+            OneNoteDesktopProbeError(
+                "probe failed", operation="health_preflight"
+            )
+        ),
+    )
+
+    with pytest.raises(OneNoteDesktopProbeError) as raised:
+        desktop.require_onenote_desktop(
+            operation="delete_page", ui_control_enabled=True
+        )
+
+    assert raised.value.operation == "delete_page"
+    assert raised.value.details["failed_precondition"] == "onenote_gui_ready"
+    assert raised.value.details["recovery"]["ui_control_enabled"] is True
 
 
 def test_require_desktop_accepts_existing_visible_gui(monkeypatch) -> None:

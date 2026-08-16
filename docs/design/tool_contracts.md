@@ -1,7 +1,7 @@
 # 公开 MCP Tool 契约
 
 > 状态：当前实现态
-> 更新日期：2026-08-15
+> 更新日期：2026-08-16
 > 权威来源：`src/local_onenote_mcp/tool_surface.py`、canonical Operation Registry 与公开 Tool schema
 
 生产 MCP 只有一个 User profile，按用户任务固定公开 **52 个 Tool**。Tool 是否可见、是否获准执行、实现成熟度是三个独立维度：`tools/list` 只返回本页目录；所有 effect gate 默认关闭；内部能力不能通过环境变量重新注册。
@@ -22,6 +22,8 @@
 
 业务字段只在 `result` 内。`execution` 是 content-free Operation Runtime 投影，记录 operation、stage、effect kind、backend category、attempt/replay、backend-call count、retry safety 与 cache generation；它不包含请求参数、对象 ID、用户路径、Page 内容、raw XML、binary 或 secret。失败不会同时返回伪成功 `result`。
 
+Authorization 与平台前置条件是两个独立 Registry policy。所有需要七类公开授权之一的 operation，除恢复入口 `launch_onenote_gui` 外，均在授权成功后、协调 lease/cache generation/首个 backend call 之前要求 `onenote_gui_ready`。进程不存在、仅有后台进程、没有可见顶层窗口或 native probe 无法安全判定时 typed fail closed，且 `backend_calls=0`。纯 read 不受此 effect 前置条件限制。
+
 ## 2. 52 个公开 Tool
 
 签名中的 `null` 表示可选值缺省。调用者不得用空字符串代替 optional value。所有对象参数均为精确 OneNote COM ID；名称、路径和 Query 结果只能用于发现候选，mutation 前必须固定 ID 并提交确认字段。
@@ -30,8 +32,10 @@
 
 | Tool | 参数 | 合同 |
 | --- | --- | --- |
-| `health_check` | 无 | check-only；验证现有 `ONENOTE.EXE` 进程和可见窗口，绝不启动 GUI。成功时返回 52 项分类计数、7 个公开授权状态及运行时预算。 |
-| `launch_onenote_gui` | 无 | UI Control；已就绪时不启动。进程完全不存在时只解析受信任的注册目标并发出一次启动请求，再有界观察 GUI readiness。process-only、解析失败、启动异常与超时均 typed fail closed。 |
+| `health_check` | 无 | 每个 MCP session 开始时调用；check-only，验证现有 `ONENOTE.EXE` 进程和可见窗口，绝不启动 GUI。成功时返回 52 项分类计数、7 个公开授权状态及运行时预算；执行授权 effect 前必须 ready。 |
+| `launch_onenote_gui` | 无 | GUI 未 ready 时的显式恢复入口并豁免 readiness 前置条件。UI Control；已就绪时不启动。进程完全不存在时只解析受信任的注册目标并发出一次启动请求，再有界观察 GUI readiness；随后调用者必须再次 `health_check`，再重试原 effect。process-only、解析失败、启动异常与超时均 typed fail closed。 |
+
+readiness 失败 envelope 的 `error.details.failed_precondition` 为 `onenote_gui_ready`，并给出 `health_check → launch_onenote_gui → health_check → retry_original_operation` 恢复顺序。若 `ui_control_enabled=false`，调用者需开启 `LOCAL_ONENOTE_ENABLE_UI_CONTROL=true` 后重启 MCP server，或由用户手动启动可见 OneNote Desktop GUI；Runtime 不会把 launch 隐藏进 read、effect、初始化或 `tools/list`。
 
 ### Hierarchy Browse（7）
 
@@ -45,7 +49,9 @@
 | `expand_page` | `page_id`；返回该 Page 的完整缩进后代。 |
 | `expand_hierarchy` | `root_id, max_depth=8, include_recycle_bin=false`；数值深度边界。 |
 
-所有 Expand 返回统一递归 `tree={item,children[]}`，只读取 hierarchy metadata；target Notebook 内关系不完整、重复、循环、跨 Section 或超过公共响应预算时明确失败。
+所有 Expand 返回统一递归 `tree={item,children[]}`，只读取 hierarchy metadata；target Notebook 内缺 ID、重复 ID、环、跨 Section 缩进父级或超过公共响应预算时明确失败。
+
+当前实现另把同 Notebook 任意 Section 中相邻 `page_level` 增幅大于 1（例如 L1 后直接 L3）当作 snapshot 非法，因此 `expand_section` / `expand_page` / `expand_hierarchy` 会 fail closed，即使请求的 root 本身没有跳级。`query_page` 已把该 L3 的 `parent_page_id` 设为紧邻前序 L1，不走这条校验。已接受但未实现的合同是：L1 后跟随的 L3 直接映射为该 L1 的子节点；Expand 与 Query 共用这一映射并返回树，不得再让无关 Section 毒死整本浏览。见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
 
 ### Metadata Get（4）
 
@@ -68,8 +74,8 @@
 | Tool | 参数与边界 |
 | --- | --- |
 | `get_page_text` | `page_id, max_chars=60000`；受硬字符预算约束。 |
-| `list_page_content_objects` | `page_id`；返回 typed `PageContentObject` 清单以及可用的稳定删除/二进制读取 ID。 |
-| `get_page_object_binary` | `page_id, page_content_object_id`；校验对象归属并受硬 binary 响应预算约束。 |
+| `get_page_content_objects` | `page_id`；以不嵌入 binary payload 的 `file_type` 快照返回 typed `PageContentObject` 清单以及可用的稳定删除/二进制读取 ID。 |
+| `get_page_content_object_binary` | `page_id, page_content_object_id`；校验对象归属并受硬 binary 响应预算约束。 |
 | `get_hyperlink` | `object_id, page_content_object_id=null, link_type="desktop"|"web"`。 |
 
 Raw Page XML 不属于公开读取降级路线。

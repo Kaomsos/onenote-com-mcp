@@ -73,8 +73,8 @@ Query 与 Page 正文搜索归为同一发现类；Metadata Get 继续独立。Q
 ### 5. Page Content Read（3）
 
 - `get_page_text`
-- `list_page_content_objects`
-- `get_page_object_binary`
+- `get_page_content_objects`
+- `get_page_content_object_binary`
 
 Binary 是预算受限的 typed read，由 bridge/service 的硬大小预算保护，不设独立授权开关。
 
@@ -170,8 +170,8 @@ Sync 表达请求语义，不承诺远端同步已经完成。
 | `get_section` | `get_section_metadata` | 同上。 |
 | `get_page` | `get_page_metadata` | 与正文/对象读取分离。 |
 | `get_path` | `get_hierarchy_path` | 明确对象域。 |
-| `get_page_objects` | `list_page_content_objects` | 明确返回对象清单。 |
-| `get_binary_content` | `get_page_object_binary` | 明确二进制属于 Page 对象。 |
+| `get_page_objects` | `get_page_content_objects` | 明确返回 Page 内容对象清单。 |
+| `get_binary_content` | `get_page_content_object_binary` | 明确二进制属于 Page 内容对象。 |
 | `update_page_title` | `rename_page` | 与 Section/SectionGroup 命名一致。 |
 | `append_to_page` | `append_page_content` | 明确内容 mutation。 |
 | `add_image_to_page` | `add_page_image_from_file` | 明确本地文件来源。 |

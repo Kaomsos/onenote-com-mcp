@@ -50,7 +50,7 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
     monkeypatch.setattr(
         operation_catalog,
         "require_onenote_desktop",
-        lambda: OneNoteDesktopState(True, True),
+        lambda **_kwargs: OneNoteDesktopState(True, True),
     )
     monkeypatch.setattr(
         server.services.hierarchy,
@@ -143,18 +143,30 @@ def test_health_check_fails_before_com_when_onenote_gui_is_absent(monkeypatch):
     monkeypatch.setattr(
         operation_catalog,
         "require_onenote_desktop",
-        lambda: (_ for _ in ()).throw(
+        lambda **_kwargs: (_ for _ in ()).throw(
             OneNoteDesktopNotRunningError(
-                "OneNote Desktop is not running with a visible GUI. Start OneNote and retry.",
+                "The operation requires OneNote Desktop to be running with a visible GUI.",
                 operation="health_preflight",
                 details={
+                    "failed_precondition": "onenote_gui_ready",
                     "onenote_desktop": {
                         "process_running": False,
                         "visible_window_present": False,
                         "ready": False,
                         "probe": "native_windows_process_and_visible_window",
                     },
-                    "required_action": "start_onenote_desktop_and_retry",
+                    "required_action": "restore_onenote_gui_readiness_and_retry",
+                    "recovery": {
+                        "sequence": [
+                            "health_check",
+                            "launch_onenote_gui",
+                            "health_check",
+                            "retry_original_operation",
+                        ],
+                        "launch_requires_gate": (
+                            "LOCAL_ONENOTE_ENABLE_UI_CONTROL=true"
+                        ),
+                    },
                 },
             )
         ),
@@ -172,7 +184,21 @@ def test_health_check_fails_before_com_when_onenote_gui_is_absent(monkeypatch):
     assert result["code"] == "onenote_desktop_not_running"
     assert result["details"]["retryability"] == "after_user_action"
     assert result["details"]["operation"] == "health_preflight"
-    assert result["details"]["required_action"] == "start_onenote_desktop_and_retry"
+    assert (
+        result["details"]["required_action"]
+        == "restore_onenote_gui_readiness_and_retry"
+    )
+    assert result["details"]["failed_precondition"] == "onenote_gui_ready"
+    assert result["details"]["recovery"]["sequence"] == [
+        "health_check",
+        "launch_onenote_gui",
+        "health_check",
+        "retry_original_operation",
+    ]
+    assert (
+        result["details"]["recovery"]["launch_requires_gate"]
+        == "LOCAL_ONENOTE_ENABLE_UI_CONTROL=true"
+    )
     assert result["details"]["onenote_desktop"]["ready"] is False
 
 
@@ -413,6 +439,20 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
     assert "reorder_section_group" not in names
     assert "plan_reconstructive_move_page" not in names
     assert "reconstructive_move_page" not in names
+
+
+def test_session_tool_descriptions_teach_gui_readiness_recovery_workflow():
+    tools = server.mcp._tool_manager._tools
+    health = tools["health_check"].description.casefold()
+    launch = tools["launch_onenote_gui"].description.casefold()
+
+    assert "session start" in health
+    assert "never launch" in health
+    assert "required before every authorized effect" in health
+    assert "health_check is not ready" in launch
+    assert "ui control" in launch
+    assert "call health_check again" in launch
+    assert "authorized effect" in launch
 
 
 def test_raw_xml_switch_does_not_create_a_production_advanced_profile(monkeypatch):

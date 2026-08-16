@@ -34,8 +34,8 @@ USER_TOOL_CATEGORIES: MappingProxyType[str, tuple[str, ...]] = MappingProxyType(
         ),
         "page_content_read": (
             "get_page_text",
-            "list_page_content_objects",
-            "get_page_object_binary",
+            "get_page_content_objects",
+            "get_page_content_object_binary",
         ),
         "hyperlink": ("get_hyperlink",),
         "create": (
@@ -143,6 +143,8 @@ LEGACY_PUBLIC_NAMES = frozenset(
         "get_path",
         "get_page_objects",
         "get_binary_content",
+        "list_page_content_objects",
+        "get_page_object_binary",
         "update_page_title",
         "append_to_page",
         "add_image_to_page",

@@ -7,7 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from local_onenote_mcp import server
+from local_onenote_mcp import operation_catalog, server
+from local_onenote_mcp.desktop import OneNoteDesktopState
+from local_onenote_mcp.onenote_errors import OneNoteDesktopNotRunningError
 from local_onenote_mcp.services.base import BaseService
 from local_onenote_mcp.services.coordination import ReadWriteCoordinator
 from local_onenote_mcp.services.operation_runtime import (
@@ -76,8 +78,8 @@ EXPECTED_OPERATIONS_BY_AUTHORIZATION = {
         "query_page",
         "search_pages",
         "get_page_text",
-        "list_page_content_objects",
-        "get_page_object_binary",
+        "get_page_content_objects",
+        "get_page_content_object_binary",
         "get_hyperlink",
     ),
     "write": (
@@ -123,6 +125,21 @@ EXPECTED_AUTHORIZATION_BY_OPERATION = {
     for operation in operations
 }
 
+EXPECTED_PLATFORM_PREFLIGHT_BY_OPERATION = {
+    operation: (
+        "onenote_gui_ready"
+        if authorization != "none" and operation != "launch_onenote_gui"
+        else "none"
+    )
+    for operation, authorization in EXPECTED_AUTHORIZATION_BY_OPERATION.items()
+}
+
+GUI_READY_PREFLIGHT_CASES = tuple(
+    pytest.param(operation, authorization, id=operation)
+    for operation, authorization in EXPECTED_AUTHORIZATION_BY_OPERATION.items()
+    if EXPECTED_PLATFORM_PREFLIGHT_BY_OPERATION[operation] == "onenote_gui_ready"
+)
+
 AUTHORIZATION_ALLOW_CASES = tuple(
     pytest.param(operation, authorization, id=operation)
     for operation, authorization in EXPECTED_AUTHORIZATION_BY_OPERATION.items()
@@ -160,6 +177,7 @@ def binding_runtime(
     handler=lambda _arguments: {"value": True},
     coordinator: ReadWriteCoordinator | None = None,
     authorizer=None,
+    platform_preflight=None,
     finalizer=None,
     clock=None,
 ) -> OperationRuntime:
@@ -177,7 +195,13 @@ def binding_runtime(
         mutation=policy,
         attempt_policy_id=policy.attempt_policy_id if policy else None,
     )
-    registry.register(spec, STRATEGIES[spec.strategy], handler, authorizer)
+    registry.register(
+        spec,
+        STRATEGIES[spec.strategy],
+        handler,
+        authorizer,
+        platform_preflight,
+    )
     kwargs = {}
     if finalizer is not None:
         kwargs["finalizer"] = finalizer
@@ -193,7 +217,13 @@ def binding_runtime(
 def mock_production_operation_runtime(operation: str, handler) -> OperationRuntime:
     source = get_runtime().registry.resolve(operation)
     registry = OperationRegistry()
-    registry.register(source.spec, source.strategy, handler, source.authorizer)
+    registry.register(
+        source.spec,
+        source.strategy,
+        handler,
+        source.authorizer,
+        source.platform_preflight,
+    )
     return OperationRuntime(
         registry,
         ReadWriteCoordinator(default_timeout_seconds=1),
@@ -219,6 +249,19 @@ def test_public_operation_authorization_mapping_is_frozen_for_all_52_tools() -> 
     assert actual == EXPECTED_AUTHORIZATION_BY_OPERATION
 
 
+def test_gui_readiness_is_an_independent_explicit_registry_policy() -> None:
+    actual = {
+        operation: binding.spec.platform_preflight_policy
+        for operation, binding in get_runtime().registry.bindings.items()
+    }
+
+    assert len(GUI_READY_PREFLIGHT_CASES) == 30
+    assert actual == EXPECTED_PLATFORM_PREFLIGHT_BY_OPERATION
+    assert actual["health_check"] == "none"
+    assert actual["get_page_text"] == "none"
+    assert actual["launch_onenote_gui"] == "none"
+
+
 @pytest.mark.parametrize(
     ("operation", "authorization"), AUTHORIZATION_ALLOW_CASES
 )
@@ -227,6 +270,11 @@ def test_each_public_operation_accepts_its_exact_minimum_authorization(
 ) -> None:
     required_gates = REQUIRED_GATES_BY_AUTHORIZATION[authorization]
     set_public_authorization_environment(monkeypatch, required_gates)
+    monkeypatch.setattr(
+        operation_catalog,
+        "require_onenote_desktop",
+        lambda **_kwargs: OneNoteDesktopState(True, True),
+    )
     handler_calls = []
 
     def handler(arguments):
@@ -244,6 +292,96 @@ def test_each_public_operation_accepts_its_exact_minimum_authorization(
 
 
 @pytest.mark.parametrize(
+    ("operation", "authorization"), GUI_READY_PREFLIGHT_CASES
+)
+def test_each_authorized_effect_rejects_when_gui_is_not_ready_before_backend(
+    monkeypatch, operation, authorization
+) -> None:
+    set_public_authorization_environment(
+        monkeypatch, REQUIRED_GATES_BY_AUTHORIZATION[authorization]
+    )
+    preflight_calls = []
+
+    def reject_gui(**kwargs):
+        preflight_calls.append(kwargs)
+        raise OneNoteDesktopNotRunningError(
+            "The operation requires OneNote Desktop to be running with a visible GUI.",
+            operation=kwargs["operation"],
+            details={
+                "failed_precondition": "onenote_gui_ready",
+                "recovery": {
+                    "sequence": [
+                        "health_check",
+                        "launch_onenote_gui",
+                        "health_check",
+                        "retry_original_operation",
+                    ]
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        operation_catalog, "require_onenote_desktop", reject_gui
+    )
+
+    def handler(_arguments):
+        raise AssertionError("GUI preflight must prevent Handler execute")
+
+    runtime = mock_production_operation_runtime(operation, handler)
+    generation = runtime.coordinator.generation
+    outcome = runtime.execute(operation, {})
+
+    assert outcome.success is False
+    assert isinstance(outcome.error, OneNoteDesktopNotRunningError)
+    assert outcome.stage is OperationStage.PLATFORM_PREFLIGHT
+    assert outcome.backend_calls == 0
+    assert outcome.generation_before == outcome.generation_after == generation
+    assert preflight_calls == [
+        {
+            "operation": operation,
+            "ui_control_enabled": (
+                "ui_control" in REQUIRED_GATES_BY_AUTHORIZATION[authorization]
+            ),
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("operation", "enabled_gates"),
+    (
+        ("health_check", ()),
+        ("get_page_text", ()),
+        ("launch_onenote_gui", ("ui_control",)),
+    ),
+)
+def test_health_reads_and_launch_do_not_require_gui_ready_preflight(
+    monkeypatch, operation, enabled_gates
+) -> None:
+    set_public_authorization_environment(monkeypatch, enabled_gates)
+    monkeypatch.setattr(
+        operation_catalog,
+        "require_onenote_desktop",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError(f"{operation} must be exempt from GUI preflight")
+        ),
+    )
+    handler_calls = []
+
+    def handler(arguments):
+        handler_calls.append(dict(arguments))
+        record_backend_call("mock_backend")
+        return {}
+
+    outcome = mock_production_operation_runtime(operation, handler).execute(
+        operation, {}
+    )
+
+    assert outcome.success is True
+    assert outcome.backend_calls == 1
+    assert handler_calls == [{}]
+
+
+@pytest.mark.parametrize(
     ("operation", "authorization", "missing_gate"), AUTHORIZATION_DENY_CASES
 )
 def test_each_required_gate_rejects_before_backend_for_every_public_operation(
@@ -253,6 +391,13 @@ def test_each_required_gate_rejects_before_backend_for_every_public_operation(
     assert missing_gate in required_gates
     enabled_gates = set(PUBLIC_AUTHORIZATION_ENV) - {missing_gate}
     set_public_authorization_environment(monkeypatch, enabled_gates)
+    monkeypatch.setattr(
+        operation_catalog,
+        "require_onenote_desktop",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("authorization must reject before GUI preflight")
+        ),
+    )
     handler_calls = []
 
     def handler(arguments):
@@ -303,7 +448,9 @@ def test_registry_is_the_unique_default_and_advanced_tool_inventory() -> None:
         assert binding.spec.handler
         assert callable(binding.handler)
         assert binding.spec.authorization_policy
+        assert binding.spec.platform_preflight_policy
         assert callable(binding.authorizer)
+        assert callable(binding.platform_preflight)
         if binding.spec.kind is OperationKind.MUTATION:
             assert binding.spec.authorization_policy != "none"
 
@@ -471,6 +618,22 @@ def test_registry_rejects_duplicate_operations_and_incomplete_profile() -> None:
     else:
         raise AssertionError("Unregistered public tools must fail startup audit.")
 
+    protected = OperationSpec(
+        name="protected",
+        category="test",
+        kind=OperationKind.READ,
+        capability="protected",
+        coordination=CoordinationMode.SHARED,
+        backend=BackendCategory.ONENOTE_COM,
+        strategy="read",
+        handler="tests.protected",
+        platform_preflight_policy="onenote_gui_ready",
+    )
+    with pytest.raises(ValueError, match="has no preflight binding"):
+        OperationRegistry().register(
+            protected, STRATEGIES["read"], lambda _a: {}
+        )
+
 
 def test_mutation_invalidates_generation_once_and_counts_all_base_service_calls() -> None:
     invalidations: list[int] = []
@@ -522,6 +685,33 @@ def test_policy_rejection_happens_before_backend_execute_and_releases_writer() -
     assert outcome.generation_before == outcome.generation_after == 0
     with coordinator.read(timeout_seconds=0.01):
         pass
+
+
+def test_platform_preflight_runs_after_authorization_and_before_coordination() -> None:
+    events: list[str] = []
+    coordinator = ReadWriteCoordinator(
+        default_timeout_seconds=0.1,
+        mutation_invalidator=lambda _generation: events.append("coordination"),
+    )
+    runtime = binding_runtime(
+        name="mutation",
+        kind=OperationKind.MUTATION,
+        coordination=CoordinationMode.EXCLUSIVE,
+        coordinator=coordinator,
+        authorizer=lambda _a: events.append("authorization"),
+        platform_preflight=lambda _a: events.append("platform_preflight"),
+        handler=lambda _a: events.append("handler") or {},
+    )
+
+    outcome = runtime.execute("mutation", {})
+
+    assert outcome.success is True
+    assert events == [
+        "authorization",
+        "platform_preflight",
+        "coordination",
+        "handler",
+    ]
 
 
 def test_handler_and_finalize_failures_release_lease_and_preserve_stage() -> None:

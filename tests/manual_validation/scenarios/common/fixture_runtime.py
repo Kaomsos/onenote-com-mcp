@@ -58,6 +58,25 @@ MATERIALIZED_STRUCTURE_STABLE_OBSERVATIONS = 2
 MATERIALIZED_STRUCTURE_OBSERVATION_DELAY_SECONDS = 0.75
 
 
+def _refresh_materialized_current_contract(
+    manifest: dict[str, Any],
+    spec: ScenarioSpec,
+    *,
+    actual_manifest_keys: set[str] | frozenset[str] | tuple[str, ...],
+) -> None:
+    """Replace cached runner contract metadata with the current run's static spec."""
+
+    manifest["scenario_policies"] = {spec.name: spec.policy.as_dict()}
+    manifest["scenario_spec"] = spec.as_dict()
+    manifest["scenario_spec"]["fixture_profile"]["actual_manifest_keys"] = sorted(
+        actual_manifest_keys
+    )
+    manifest["mcp_process_contract"] = {
+        "maximum_starts": 1,
+        "fixture_and_scenario_share_process": True,
+    }
+
+
 def _assert_authored_cache_identity(hit: CacheHit, frozen: Any) -> None:
     location = hit.entry.get("instance_location")
     recorded_digest = (
@@ -750,7 +769,11 @@ async def prepare_materialized_fixture(
         raise InvariantFailure("Cached fixture manifest has no typed structure.")
     cached_evidence = {
         key: manifest[key]
-        for key in ("copy_fixture", "reparent_page_fixture")
+        for key in (
+            "copy_fixture",
+            "reparent_page_fixture",
+            "page_content_object_binary",
+        )
         if key in manifest
     }
     source_structure = structure
@@ -935,6 +958,11 @@ async def prepare_materialized_fixture(
     manifest["structure"] = {
         key: stable_item(value) for key, value in structure.items()
     }
+    _refresh_materialized_current_contract(
+        manifest,
+        spec,
+        actual_manifest_keys=set(structure),
+    )
     manifest.update(evidence)
     run_local_path_remap = _rebind_materialized_run_local_paths(
         manifest,
@@ -959,6 +987,7 @@ async def prepare_materialized_fixture(
         "working_path": str(materialized.working_paths["source"]),
         "opened_template": False,
         "run_local_path_remap_evidence": str(run_local_path_remap_path.resolve()),
+        "current_contract_refreshed": True,
     }
     _record_run_identity(manifest, args)
     if interactive_validation is not None:
@@ -1256,7 +1285,11 @@ async def prepare_materialized_fixture_bundle(
         )
         cached_evidence = {
             key: cached_manifest[key]
-            for key in ("copy_fixture", "reparent_page_fixture")
+            for key in (
+                "copy_fixture",
+                "reparent_page_fixture",
+                "page_content_object_binary",
+            )
             if key in cached_manifest
         }
         evidence, evidence_remap = _rebind_materialized_evidence(
@@ -1420,6 +1453,11 @@ async def prepare_materialized_fixture_bundle(
         for key, value in role_structures[role].items()
     }
     manifest = dict(source_manifest)
+    _refresh_materialized_current_contract(
+        manifest,
+        spec,
+        actual_manifest_keys=set(combined_structure),
+    )
     run_local_path_remap = _rebind_materialized_run_local_paths(
         manifest,
         run_dir=options.run_dir,
@@ -1469,6 +1507,7 @@ async def prepare_materialized_fixture_bundle(
                 for role in roles
             },
             "opened_template": False,
+            "current_contract_refreshed": True,
         },
     )
     run_local_path_remap_path = options.run_dir / "cache-run-local-path-remap.json"
@@ -1723,6 +1762,7 @@ def _rebind_materialized_evidence(
 __all__ = [
     "_rebind_materialized_evidence",
     "_rebind_materialized_structure",
+    "_refresh_materialized_current_contract",
     "bundle_cache_artifacts",
     "prepare_fixture",
     "prepare_fixture_bundle",

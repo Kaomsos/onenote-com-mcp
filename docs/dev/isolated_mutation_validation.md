@@ -7,7 +7,7 @@
 
 对于需要反复复现复杂输入、自动比较真实 COM 结果并由用户检查 UI 的新功能或高风险回归，推荐采用[缓存 Fixture → 待验证操作 → 自动比较 → 人工 verdict](cached_fixture_operation_validation.md)的分阶段证据链。它适用于 Copy 之外的 Reorder、Reparent、Move、非永久 Delete 和内容转换，但不改变各操作独立的最小权限与安全门。
 
-反复调试复杂 fixture 时可显式加 `--use-cache`。它不会放宽 policy/tool allowlist，也不会打开 cache template；validated hit 始终 materialize 新的 run-scoped working copy。Cache 与 run 不维持 working lease、所有权或生命周期关系。相同 fingerprint/instance 可以同时服务多个 consumer：每个 run 必须使用唯一 working paths，打开过程由短时全局锁串行化，并把实际 live Notebook ID 写入本 run 的 `lifecycle-lease*.json`；实际 ID/path 相交、role 内重复或身份尚未可靠重绑定时才拒绝。`--keep-worksite` 只保留一组独立 working bundle，不会阻止下一次 validated hit，也不会阻止物理独立 cache entry 的 invalidation/cleanup；cache cleanup 仅在 template 自身的实际路径仍被 OneNote 打开时拒绝。Materialized hierarchy 只使用下文定义的 parent-aware batch：所有物理 child 请求先冻结，再在同一个短命 COM session 中按 parent-before-child 激活；不存在逐对象 global/exact-self fallback。随后以 Notebook-relative typed address 重绑完整 live hierarchy、连续确认两次结构稳定，并对每个 Page 只做一次完整内容读取。Working-copy activation、重绑或内容验证失败保留本次 working Notebook、实际 live ID lease 和诊断，但不污染已验证的 immutable template。省略 `--use-cache` 仍是默认、最保守的 fresh 路径，并保证零 cache lookup/read/write/invalidation/cleanup。
+反复调试复杂 fixture 时可显式加 `--use-cache`。它不会放宽 policy/tool allowlist，也不会打开 cache template；validated hit 始终 materialize 新的 run-scoped working copy。Cache 与 run 不维持 working lease、所有权或生命周期关系。相同 fingerprint/instance 可以同时服务多个 consumer：每个 run 必须使用唯一 working paths，打开过程由短时全局锁串行化，并把实际 live Notebook ID 写入本 run 的 `lifecycle-lease*.json`；实际 ID/path 相交、role 内重复或身份尚未可靠重绑定时才拒绝。`--keep-worksite` 只保留一组独立 working bundle，不会阻止下一次 validated hit，也不会阻止物理独立 cache entry 的 invalidation/cleanup；cache cleanup 仅在 template 自身的实际路径仍被 OneNote 打开时拒绝。Materialized hierarchy 只使用下文定义的 parent-aware batch：所有物理 child 请求先冻结，再在同一个短命 COM session 中按 parent-before-child 激活；不存在逐对象 global/exact-self fallback。随后以 Notebook-relative typed address 重绑完整 live hierarchy、连续确认两次结构稳定，并对每个 Page 只做一次完整内容读取。Template manifest 只提供 fixture 内容/结构证据；materialized run 的 `scenario_spec`、`scenario_policies` 和 `mcp_process_contract` 必须从当前 runtime spec 重建，避免报告继承旧工具名或旧权限。Working-copy activation、重绑或内容验证失败保留本次 working Notebook、实际 live ID lease 和诊断，但不污染已验证的 immutable template。省略 `--use-cache` 仍是默认、最保守的 fresh 路径，并保证零 cache lookup/read/write/invalidation/cleanup。
 
 Programmatic cold build 发布前会在 lifecycle 边界内对每个 exact Notebook 调用一次 `SyncHierarchy`，随后执行 `CloseNotebook(force=false)` 并确认精确关闭，再复制已关闭的 bytes。Sync 调用失败时不发布 cache，并保留 active lease 交给默认失败收尾；成功证据记录在 lifecycle close result。该持久化 checkpoint 不会 reopen Notebook，也不会改变只有 Search 可以 close/reopen 激活 index 的限制。
 
@@ -99,7 +99,7 @@ LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
 1. 用 `list_notebooks` 或 `query_notebook(name_equals="__LOCAL_ONENOTE_MCP_ISOLATED__")` 找到候选，并用 `get_notebook_metadata(notebook_id)` 固定精确 Notebook ID；后续 mutation 禁止继续用名称或路径。
 2. 调用 `expand_hierarchy(root_id=notebook_id)`，记录所有 ID、父级、Page `order/page_level`。
 3. 对 3 个 Page 调用 `get_page_text` 并保存有界内容摘要；具名 Runner 会用非 MCP 的内部验证 capability 计算 raw Page snapshot SHA-256。
-4. 对含图片/附件的 Page 调用 `list_page_content_objects`，记录 `id/callback_id/media_type`，但不要把二进制粘贴到日志。
+4. 对含图片/附件的 Page 调用 `get_page_content_objects`，记录 `id/callback_id/media_type`，但不要把二进制粘贴到日志。
 5. 调用 `expand_notebook` 和相关 `expand_section`，确认没有回收站对象混入。
 
 任何 ID、标题、父级或内容与准备结构不一致时立即停止。
@@ -291,7 +291,7 @@ Section/SectionGroup Move 使用不同的删除策略：只允许跨 Notebook，
 
 1. 自动化 pytest 只允许 mock/纯合同测试，不能访问真实 OneNote；
 2. 真实场景统一放在 [`tests/manual_validation/`](../../tests/manual_validation/README.md)，通过一个总入口由用户显式选择顶层场景；每个 `run.py <scenario>` 自身包含 lifecycle create、该场景最小 fixture、mutation、report 与 close/keep；不得公开辅助 action。唯一批处理例外是用户显式运行的 `run.py all`，它只能串行启动显式注册的稳定测试 scenario，不得共享 run-dir、Notebook、MCP、权限或 lifecycle；新增的探索性/验证性 scenario 默认不得进入该注册表；
-3. 每个 scenario 最多启动一个 MCP 子进程。Runner 为其推导覆盖 fixture、mutation、evidence 与 restore/cleanup 的静态最小权限闭包，并在 fixture 前用 `health_check` 精确核验；源 Notebook 生命周期只能通过精确 lease 约束的窄 wrapper 操作；
+3. 每个 scenario 最多启动一个 MCP 子进程。Runner 为其推导覆盖 fixture、mutation、evidence 与 restore/cleanup 的静态最小权限闭包，并在注册期分别检查全部 fixture creation tools 与完整 scenario allowlist：每个 tool 必须有静态 policy 映射，所需的 Writes/Delete/Organize/Copy/Local File IO/UI Control/Notebook Lifecycle gate 必须已启用，且 fixture tool 必须属于同一 allowlist；随后在 fixture 前用 `health_check` 精确核验。源 Notebook 生命周期只能通过精确 lease 约束的窄 wrapper 操作；
    每个 Scenario 显式持有唯一 fixture recipe；common runtime 不按名称分派，并在每次登记精确 ID 后增量保存 pending/failed evidence。每个公开 Scenario 还自动注册 default/keep dry-run cases，与 `included_in_all` 资格完全分离；pytest harness 强制安全参数并以 sentinel 证明零 MCP、零 lifecycle、零 subprocess 和零目录副作用；
 4. 使用专用可丢弃 Notebook、精确 ID、最新确认字段和 before/after 证据；可恢复操作默认执行恢复与 restored 回读。所有具名 scenario 都提供显式 `--keep-worksite` 人工验收模式，用于保留各自动验证通过的动作现场，并必须写入带精确目标 ID 和清理说明的 `worksite.json`；该模式不得扩权；
 5. 不可恢复操作只能命中 manifest 白名单中的 disposable 对象，并在报告中明确最终状态和人工处理方式；

@@ -104,7 +104,11 @@ class FixtureRecorder:
         return value
 
     def record_evidence(self, key: str, value: Any) -> None:
-        if key not in {"copy_fixture", "reparent_page_fixture"}:
+        if key not in {
+            "copy_fixture",
+            "reparent_page_fixture",
+            "page_content_object_binary",
+        }:
             raise InvariantFailure(f"Unsupported fixture evidence key: {key}")
         if key in self.evidence:
             raise InvariantFailure(f"Duplicate fixture evidence key: {key}")

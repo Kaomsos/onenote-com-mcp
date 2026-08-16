@@ -101,9 +101,18 @@ class ScenarioPolicy:
 
 READ_ONLY_POLICY = ScenarioPolicy()
 WRITE_POLICY = ScenarioPolicy(writes_enabled=True)
+RICH_WRITE_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    local_file_io_enabled=True,
+)
 REPARENT_POLICY = ScenarioPolicy(
     writes_enabled=True,
     organize_enabled=True,
+)
+RICH_REPARENT_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    organize_enabled=True,
+    local_file_io_enabled=True,
 )
 REORDER_SECTION_POLICY = ScenarioPolicy(writes_enabled=True)
 REORDER_SECTION_GROUP_POLICY = ScenarioPolicy(writes_enabled=True)
@@ -113,9 +122,26 @@ COPY_POLICY = ScenarioPolicy(
     deletes_enabled=True,
     copy_enabled=True,
 )
+RICH_COPY_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    deletes_enabled=True,
+    copy_enabled=True,
+    local_file_io_enabled=True,
+)
 COPY_NO_DELETE_POLICY = ScenarioPolicy(
     writes_enabled=True,
     copy_enabled=True,
+)
+RICH_COPY_NO_DELETE_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    copy_enabled=True,
+    local_file_io_enabled=True,
+)
+RICH_COPY_NOTEBOOK_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    copy_enabled=True,
+    local_file_io_enabled=True,
+    notebook_lifecycle_enabled=True,
 )
 MOVE_PAGE_POLICY = ScenarioPolicy(
     writes_enabled=True,
@@ -135,6 +161,27 @@ class ClientFailure(RuntimeError):
     def __init__(self, message: str, *, envelope: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.envelope = envelope
+
+    @property
+    def error_code(self) -> str | None:
+        """Return the public error code from the nested MCP failure envelope."""
+
+        envelope = self.envelope or {}
+        error = envelope.get("error")
+        value = error.get("code") if isinstance(error, dict) else envelope.get("code")
+        return str(value) if value is not None else None
+
+    @property
+    def error_message(self) -> str:
+        """Return the public error message without assuming a legacy flat envelope."""
+
+        envelope = self.envelope or {}
+        error = envelope.get("error")
+        if isinstance(error, dict):
+            value = error.get("message")
+        else:
+            value = error if error is not None else envelope.get("message")
+        return str(value) if value is not None else str(self)
 
 
 def build_server_env(

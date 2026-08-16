@@ -23,6 +23,10 @@ from tests.manual_validation.scenarios.common.registry import (
     ScenarioRegistry,
     get_all_scenario_names,
 )
+from tests.manual_validation.mcp_stdio_client import (
+    REPARENT_POLICY,
+    RICH_COPY_NO_DELETE_POLICY,
+)
 from tests.manual_validation.scenarios.common import specs
 
 
@@ -261,6 +265,68 @@ def test_registry_wrapper_rejects_duplicate_scenario_names() -> None:
     assert registry.register(FirstRenameScenario) is FirstRenameScenario
     with pytest.raises(ValueError, match="Duplicate scenario registration: rename"):
         registry.register(DuplicateRenameScenario)
+
+
+def test_registry_rejects_fixture_policy_without_required_local_file_gate(
+    monkeypatch,
+) -> None:
+    name = "policy-closure-probe"
+    bad_spec = replace(
+        specs.SCENARIO_SPECS["reparent-page"],
+        name=name,
+        policy=REPARENT_POLICY,
+    )
+    monkeypatch.setitem(specs.SCENARIO_SPECS, name, bad_spec)
+
+    class PolicyClosureProbeScenario(Scenario):
+        pass
+
+    PolicyClosureProbeScenario.name = name
+    PolicyClosureProbeScenario.fixture_recipe = SimpleNamespace(
+        scenario_name=name,
+        profile=bad_spec.fixture,
+        manifest_keys=frozenset(bad_spec.fixture.manifest_keys),
+        notebook_roles=(),
+        consumer_scenario=False,
+        validate_registration=lambda _spec: None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="fixture policy is missing required gates: local_file_io_enabled",
+    ):
+        ScenarioRegistry().register(PolicyClosureProbeScenario)
+
+
+def test_registry_rejects_allowed_close_without_notebook_lifecycle_gate(
+    monkeypatch,
+) -> None:
+    name = "scenario-policy-closure-probe"
+    bad_spec = replace(
+        specs.SCENARIO_SPECS["copy-notebook"],
+        name=name,
+        policy=RICH_COPY_NO_DELETE_POLICY,
+    )
+    monkeypatch.setitem(specs.SCENARIO_SPECS, name, bad_spec)
+
+    class ScenarioPolicyClosureProbe(Scenario):
+        pass
+
+    ScenarioPolicyClosureProbe.name = name
+    ScenarioPolicyClosureProbe.fixture_recipe = SimpleNamespace(
+        scenario_name=name,
+        profile=bad_spec.fixture,
+        manifest_keys=frozenset(bad_spec.fixture.manifest_keys),
+        notebook_roles=(),
+        consumer_scenario=False,
+        validate_registration=lambda _spec: None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="scenario-policy-closure-probe policy is missing required gates: notebook_lifecycle_enabled",
+    ):
+        ScenarioRegistry().register(ScenarioPolicyClosureProbe)
 
 
 def test_all_runs_every_scenario_serially_and_is_quiet_by_default(capsys) -> None:

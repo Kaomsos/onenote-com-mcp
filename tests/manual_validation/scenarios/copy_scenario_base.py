@@ -6,7 +6,7 @@ import argparse
 from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
-from ..mcp_stdio_client import COPY_NO_DELETE_POLICY, MCPStdioClient
+from ..mcp_stdio_client import MCPStdioClient
 from ..runtime import RuntimeOptions
 from .base import Scenario
 from .common.config import COPY_CLEANUP_TOOLS
@@ -28,7 +28,7 @@ class CopyScenario(Scenario):
             return spec
         return replace(
             spec,
-            policy=COPY_NO_DELETE_POLICY,
+            policy=replace(spec.policy, deletes_enabled=False),
             tool_allowlist=frozenset(
                 set(spec.tool_allowlist) - COPY_CLEANUP_TOOLS - {"close_notebook"}
             ),

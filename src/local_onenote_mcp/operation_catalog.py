@@ -93,6 +93,45 @@ AUTHORIZATION_POLICIES = {
     "close_notebook": "notebook_lifecycle",
 }
 
+# Platform prerequisites are a separate registry policy from authorization.
+# Keep this inventory explicit so changing a gate never silently changes GUI
+# readiness enforcement (or vice versa).
+PLATFORM_PREFLIGHT_POLICIES = {
+    name: "onenote_gui_ready"
+    for name in (
+        "create_notebook",
+        "create_section_group",
+        "create_section",
+        "create_page",
+        "rename_page",
+        "rename_section_group",
+        "rename_section",
+        "reorder_page",
+        "reorder_section",
+        "append_page_content",
+        "reparent_page",
+        "reparent_section",
+        "reparent_section_group",
+        "replace_page_body",
+        "delete_page_content_object",
+        "delete_section_group",
+        "delete_section",
+        "delete_page",
+        "copy_page",
+        "copy_section",
+        "copy_section_group",
+        "copy_notebook",
+        "move_page",
+        "move_section",
+        "move_section_group",
+        "add_page_image_from_file",
+        "export_object_to_pdf",
+        "navigate_to",
+        "request_notebook_sync",
+        "close_notebook",
+    )
+}
+
 
 def _authorizer(policy_id: str):
     def authorize(arguments: Mapping[str, Any]) -> None:
@@ -125,6 +164,22 @@ def _authorizer(policy_id: str):
             raise RuntimeError(f"Unknown operation authorization policy: {policy_id}")
 
     return authorize
+
+
+def _platform_preflight(policy_id: str, operation: str):
+    def check(_arguments: Mapping[str, Any]) -> None:
+        if policy_id == "none":
+            return
+        if policy_id == "onenote_gui_ready":
+            policy = MutationPolicy.current()
+            require_onenote_desktop(
+                operation=operation,
+                ui_control_enabled=policy.ui_control_enabled,
+            )
+            return
+        raise RuntimeError(f"Unknown platform preflight policy: {policy_id}")
+
+    return check
 
 
 def _positional(
@@ -181,12 +236,17 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
         cache: str = "live",
         retry: str = "never",
         authorization: str | None = None,
+        platform_preflight: str | None = None,
         exposures: frozenset[str] = frozenset({"default"}),
         mutation: MutationOperationPolicy | None = None,
         attempt_policy_id: str | None = None,
     ) -> None:
         strategy_id = strategy or kind.value
         authorization_id = authorization or AUTHORIZATION_POLICIES.get(name, "none")
+        platform_preflight_id = (
+            platform_preflight
+            or PLATFORM_PREFLIGHT_POLICIES.get(name, "none")
+        )
         if kind is OperationKind.MUTATION and authorization_id == "none":
             raise RuntimeError(
                 f"Mutation operation {name!r} requires an explicit authorization policy."
@@ -204,6 +264,7 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
             cache_policy=cache,
             retry_policy=retry,
             authorization_policy=authorization_id,
+            platform_preflight_policy=platform_preflight_id,
             exposures=exposures,
             mutation=mutation,
             attempt_policy_id=(
@@ -211,7 +272,11 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
             ),
         )
         registry.register(
-            spec, STRATEGIES[strategy_id], handler, _authorizer(authorization_id)
+            spec,
+            STRATEGIES[strategy_id],
+            handler,
+            _authorizer(authorization_id),
+            _platform_preflight(platform_preflight_id, name),
         )
 
     read = dict(
@@ -353,10 +418,10 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
     for name, method, keys in (
         ("get_page_metadata", "get", ("page_id",)),
         ("get_page_text", "get_text", ("page_id", "max_chars")),
-        ("list_page_content_objects", "get_objects", ("page_id",)),
+        ("get_page_content_objects", "get_content_objects", ("page_id",)),
         (
-            "get_page_object_binary",
-            "get_binary",
+            "get_page_content_object_binary",
+            "get_content_object_binary",
             ("page_id", "page_content_object_id"),
         ),
     ):
@@ -366,7 +431,7 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
             handler=_positional(services.pages, method, keys),
             handler_id=f"pages.{method}",
             budget="page_read_budget",
-            cache="live_bypass" if name == "get_page_object_binary" else "live",
+            cache="live_bypass" if name == "get_page_content_object_binary" else "live",
         )
     add(
         "search_pages",
@@ -678,9 +743,11 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
 def _health_snapshot(
     services: ServiceContainer, registry: OperationRegistry
 ) -> dict[str, Any]:
-    desktop = require_onenote_desktop()
-    items = services.hierarchy.resources(include_recycle_bin=False)
     policy = MutationPolicy.current()
+    desktop = require_onenote_desktop(
+        ui_control_enabled=policy.ui_control_enabled,
+    )
+    items = services.hierarchy.resources(include_recycle_bin=False)
     budget = SearchBudget.current()
     copy_budget = CopyBudget.current()
     return {

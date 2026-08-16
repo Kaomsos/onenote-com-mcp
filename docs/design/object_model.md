@@ -1,7 +1,7 @@
 # OneNote 对象模型
 
 > 状态：实现契约
-> 更新日期：2026-08-15
+> 更新日期：2026-08-16
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
@@ -70,16 +70,20 @@ Page 不公开 `name`，统一使用 `title`：
 | `section_id` | string/null | 所属 Section ID。 |
 | `page_level` | integer | COM `pageLevel`；OneNote Desktop 的合法范围为 1-3（根 Page 加两级 Subpage）。 |
 | `order` | integer | 同 Section 完整 Page 序列中的零基位置。 |
-| `parent_page_id` | string/null | 按完整有序 Page 序列和 `page_level` 推导。 |
+| `parent_page_id` | string/null | 按完整有序 Page 序列和 `page_level` 推导：同 Section 上最近的更浅祖先；L1 后跟随的 L3 的父级就是该 L1。不是 COM 容器父级。 |
 | `has_children` | boolean | 是否存在缩进子 Page，派生值。 |
 
 `parent_id` 表示 COM 容器父级；`parent_page_id` 表示 Page 缩进父级，两者不能混用。普通 List/Get 不读取正文。Microsoft 的 OneNote Desktop 支持文档明确说明只能有两级 Subpage，因此真实 fixture 和 mutation 验证不得构造 `page_level=4`；参见 [Create a subpage in OneNote](https://support.microsoft.com/en-US/OneNote/onenote-help-and-learning/create-a-subpage-in-onenote)。
+
+相邻 `page_level` 不必连续。真实 Notebook 可以出现 `page_level=1` 后直接 `page_level=3`；这仍是合法 COM `pageLevel` 序列。已接受的映射是：L1 后跟随的 L3 **直接成为该 L1 的子节点**（`parent_page_id` = 该 L1，Expand 树中位于该 L1 的 `children`，不虚构中间 L2）。紧随的连续 L3 同样是该 L1 的直接子节点。`query_page` 已按该规则返回 `parent_page_id`。
+
+当前 Expand 实现更严：`expand_section` / `expand_page` / `expand_hierarchy` 仍把相邻 `page_level` 增幅大于 1 当作 snapshot 非法，并在整本打开 Notebook 上 fail closed。已接受的合同要求 Expand 与 Query 共用上述「L3 直接挂到前序 L1」映射；该行为尚未改代码。跟踪项见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
 
 ### PageContentObject
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `id` | string/null | Page 内对象 ID；部分内嵌对象可能没有 ID。 |
+| `id` | string/null | Page 内对象 ID。优先使用 COM `objectID`；没有 `objectID` 但具有 `callbackID` 的二进制叶对象使用后者作为 Page-scoped ID；两者均缺失时为 null。 |
 | `page_id` | string | 所属 Page ID。 |
 | `kind` | string | 如 `Outline/Image/InkDrawing/FileAttachment`。 |
 | `parent_object_id` | string/null | Page XML 直接父对象 ID。 |
@@ -101,7 +105,7 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 
 `Embedded Spreadsheet`（内嵌电子表格）目前只是产品能力类别，不是已观察到的公开对象模型枚举。项目尚未收集它的 `PageContentObject.kind`、Page XML 或引用边界，因此不得把它建模为 `Table`、`InsertedFile`、`FileAttachment` 或猜测的 Office/OLE kind。当前支持状态明确为 unsupported；未知或未验证表示由 Copy 合同 fail closed。证据边界见 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。
 
-`get_page_object_binary` 的公开参数 `page_content_object_id` 指向上述对象 `id`；Service 会在当前 Page 的最新对象快照中重新确认归属，再使用对象的内部 `callback_id` 读取二进制，不把 callback 当作全局句柄。`delete_page_content_object` 同样要求对象仍存在且 `can_delete=true`。
+`get_page_content_objects` 与二进制读取的归属复核使用 `page_info=file_type`，使 COM 返回文件类型和 `callbackID`、但不把 Base64 payload 嵌入 Page XML。OneNote XML 既可能把 `callbackID` 作为内容元素属性，也可能使用直接子节点 `<CallbackID callbackID="…"/>`；两种表示映射为同一个内部 `callback_id`，元数据子节点本身不成为公开内容对象。`get_page_content_object_binary` 的公开参数 `page_content_object_id` 指向上述对象 `id`；Service 会在当前 Page 的最新对象快照中重新确认归属，再使用对象的内部 `callback_id` 读取二进制。对象同时具有 `objectID/callbackID` 时两者保持分离并完成转换；只有 `callbackID` 的二进制叶对象把该 OneNote ID 作为 Page-scoped fallback，仍必须连同精确 `page_id` 重新定位，不能作为全局句柄。`delete_page_content_object` 同样要求对象仍存在且 `can_delete=true`。
 
 ## 4. 关系与树重建
 
@@ -112,7 +116,8 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 - `list_notebooks` 是 OneNote 无真实 root 对象时的 open-only root discovery；它不伪造 COM root。
 - 五个 Expand 共用一份关系图与 tree builder：容器使用 `parent_id`，Page 优先使用 `parent_page_id`，顶层 Page 挂到 `section_id`。
 - `expand_notebook/expand_section_group` 在 Section 停止；`expand_section/expand_page` 返回完整 Page 缩进子树；`expand_hierarchy` 施加数值深度边界。
-- 不完整、重复、循环或跨 Section 的关系不能冒充准确的 tree；超过公共响应边界时明确失败。
+- 缺 ID、重复 ID、环、跨 Section 缩进父级、`page_level` 越出 1–3、或 Section 首个 Page 不是 level 1，不能冒充准确的 tree；超过公共响应边界时明确失败。
+- 相邻 `page_level` 间隙（如 1 后直接 3）不是“不完整关系”。已接受模型把该 L3 直接映射为前序 L1 的子节点。当前 Expand 实现仍拒绝该序列，见 [UT-003](../todo/037_user_testing_experience_feedback_and_optimization.md)。
 
 ## 5. Mutation 一致性
 

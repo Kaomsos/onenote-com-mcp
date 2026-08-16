@@ -411,7 +411,7 @@ class OneNoteConvergenceScenario(Scenario):
                 "replace_page_body omitted its verified Page identity or replacement result."
             )
         objects_before_append = await client.call_tool(
-            "list_page_content_objects", {"page_id": created_id}
+            "get_page_content_objects", {"page_id": created_id}
         )
         before_object_ids = {
             str(item["id"])
@@ -440,7 +440,7 @@ class OneNoteConvergenceScenario(Scenario):
         if not isinstance(appended_item, dict):
             raise InvariantFailure("Append response omitted the stable Page identity.")
         objects_after_append = await client.call_tool(
-            "list_page_content_objects", {"page_id": created_id}
+            "get_page_content_objects", {"page_id": created_id}
         )
         fresh_deletable = [
             item

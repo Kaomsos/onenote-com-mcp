@@ -68,3 +68,23 @@ def test_page_content_object_normalization_is_stable():
             "delete_target_id": "image-id",
         }
     ]
+
+
+def test_idless_binary_object_uses_page_scoped_callback_identity():
+    objects = content_objects(
+        "p1",
+        [
+            {
+                "type": "Image",
+                "container_object_id": "oe-id",
+                "callback_id": "image-callback-id",
+                "format": "png",
+                "delete_supported": False,
+                "delete_object_id": "outline-id",
+            }
+        ],
+    )
+
+    assert objects[0]["id"] == "image-callback-id"
+    assert objects[0]["callback_id"] == "image-callback-id"
+    assert objects[0]["container_object_id"] == "oe-id"

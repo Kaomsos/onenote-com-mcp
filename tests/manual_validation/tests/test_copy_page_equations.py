@@ -10,6 +10,7 @@ from tests.manual_validation.scenarios.common.fixture_builders import (
     INLINE_EQUATION_MARKER,
     MATHML_NAMESPACE,
     _equation_fixture_report,
+    capture_page_image_binary_evidence,
     ensure_copy_rich_fixture,
 )
 from tests.manual_validation.scenarios.fixture_recipes.copy_page import RECIPE
@@ -23,6 +24,64 @@ from tests.manual_validation.test_utils import read_json
 def test_copy_page_recipe_requires_inline_and_display_equations() -> None:
     assert RECIPE.config.kind is LayeredFixtureKind.PAGE
     assert RECIPE.config.include_equations is True
+
+
+def test_copy_page_binary_evidence_uses_public_object_id_and_redacts_payload() -> None:
+    calls = []
+
+    class Client:
+        async def call_tool(self, name, arguments):
+            calls.append((name, arguments))
+            if name == "get_page_content_objects":
+                return {
+                    "objects": [
+                        {
+                            "id": "image-object-id",
+                            "page_id": "page-id",
+                            "kind": "Image",
+                            "callback_id": "internal-callback-id",
+                            "media_type": "png",
+                        }
+                    ]
+                }
+            if name == "get_page_content_object_binary":
+                return {
+                    "object": {
+                        "id": "image-object-id",
+                        "page_id": "page-id",
+                        "kind": "Image",
+                        "callback_id": "internal-callback-id",
+                        "media_type": "png",
+                    },
+                    "base64": "cG5nLWJ5dGVz",
+                }
+            raise AssertionError(name)
+
+    evidence = asyncio.run(
+        capture_page_image_binary_evidence(Client(), "page-id")
+    )
+
+    assert calls[1] == (
+        "get_page_content_object_binary",
+        {
+            "page_id": "page-id",
+            "page_content_object_id": "image-object-id",
+        },
+    )
+    assert evidence == {
+        "schema_version": 1,
+        "tool": "get_page_content_object_binary",
+        "selection": "exact_page_content_object_id",
+        "callback_resolution_verified": True,
+        "public_id_distinct_from_callback": True,
+        "kind": "Image",
+        "media_type": "png",
+        "decoded_bytes": 9,
+        "sha256": "ea80334363eed145dfeee51ebae7dc3f1cd7d0c7879f8bfd2070c061d3c33f56",
+        "payload_persisted": False,
+    }
+    assert "base64" not in evidence
+    assert "callback_id" not in evidence
 
 
 def test_semantic_fixture_capabilities_do_not_overwrite_equation_evidence() -> None:
@@ -117,7 +176,7 @@ def test_copy_page_rich_fixture_builds_and_reuses_exact_equation_pair(tmp_path) 
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
                 return {"xml": state["xml"]}
-            if name == "list_page_content_objects":
+            if name == "get_page_content_objects":
                 return {"objects": state["objects"]}
             if name == "expand_section":
                 return {
@@ -232,7 +291,7 @@ def test_copy_page_rich_fixture_writes_equation_detection_before_failure(tmp_pat
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
                 return {"xml": state["xml"]}
-            if name == "list_page_content_objects":
+            if name == "get_page_content_objects":
                 return {"objects": state["objects"]}
             if name == "expand_section":
                 return {

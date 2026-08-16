@@ -1277,7 +1277,7 @@ def test_copy_rich_fixture_is_idempotent_and_records_automated_types(tmp_path) -
         async def call_tool(self, name, arguments):
             if name == "get_page_xml":
                 return {"xml": state["xml"]}
-            if name == "list_page_content_objects":
+            if name == "get_page_content_objects":
                 return {"objects": state["objects"]}
             if name == "expand_section":
                 return {
