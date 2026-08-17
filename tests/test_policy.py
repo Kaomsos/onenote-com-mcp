@@ -4,10 +4,10 @@ from local_onenote_mcp.policy import CopyBudget, MutationPolicy, SearchBudget
 
 
 PUBLIC_GATE_ENV = (
+    "LOCAL_ONENOTE_ENABLE_CREATE",
     "LOCAL_ONENOTE_ENABLE_WRITES",
     "LOCAL_ONENOTE_ENABLE_DELETES",
     "LOCAL_ONENOTE_ENABLE_ORGANIZE",
-    "LOCAL_ONENOTE_ENABLE_COPY",
     "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO",
     "LOCAL_ONENOTE_ENABLE_UI_CONTROL",
     "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE",
@@ -25,14 +25,15 @@ def test_public_authorization_is_disabled_by_default(monkeypatch):
 
     policy = MutationPolicy.current()
 
+    assert policy.create_enabled is False
     assert policy.writes_enabled is False
     assert policy.deletes_enabled is False
     assert policy.organize_enabled is False
-    assert policy.copy_enabled is False
     assert policy.local_file_io_enabled is False
     assert policy.ui_control_enabled is False
     assert policy.notebook_lifecycle_enabled is False
     for requirement in (
+        policy.require_create,
         policy.require_write,
         policy.require_delete,
         policy.require_organize,
@@ -46,7 +47,7 @@ def test_public_authorization_is_disabled_by_default(monkeypatch):
             requirement()
 
 
-def test_legacy_experimental_and_move_switches_are_not_aliases(monkeypatch):
+def test_legacy_copy_experimental_and_move_switches_are_not_aliases(monkeypatch):
     for name in PUBLIC_GATE_ENV:
         monkeypatch.delenv(name, raising=False)
     for name in (
@@ -55,6 +56,7 @@ def test_legacy_experimental_and_move_switches_are_not_aliases(monkeypatch):
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
+        "LOCAL_ONENOTE_ENABLE_COPY",
         "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
         "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
     ):
@@ -62,7 +64,7 @@ def test_legacy_experimental_and_move_switches_are_not_aliases(monkeypatch):
 
     policy = MutationPolicy.current()
     assert policy.organize_enabled is False
-    assert policy.copy_enabled is False
+    assert policy.create_enabled is False
     with pytest.raises(PermissionError):
         policy.require_organize()
     with pytest.raises(PermissionError):
@@ -86,12 +88,12 @@ def test_organize_permission_matrix(monkeypatch, writes, organize, allowed):
 
 
 @pytest.mark.parametrize(
-    ("writes", "copy", "allowed"),
+    ("writes", "create", "allowed"),
     [(False, False, False), (False, True, False), (True, False, False), (True, True, True)],
 )
-def test_copy_permission_matrix(monkeypatch, writes, copy, allowed):
+def test_copy_permission_matrix(monkeypatch, writes, create, allowed):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", str(writes))
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", str(copy))
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", str(create))
     if allowed:
         MutationPolicy.current().require_copy()
     else:
@@ -104,14 +106,14 @@ def test_copy_permission_matrix(monkeypatch, writes, copy, allowed):
     [
         "LOCAL_ONENOTE_ENABLE_WRITES",
         "LOCAL_ONENOTE_ENABLE_DELETES",
-        "LOCAL_ONENOTE_ENABLE_COPY",
+        "LOCAL_ONENOTE_ENABLE_CREATE",
     ],
 )
 def test_move_permission_matrix_rejects_each_missing_gate(monkeypatch, missing):
     for name in (
         "LOCAL_ONENOTE_ENABLE_WRITES",
         "LOCAL_ONENOTE_ENABLE_DELETES",
-        "LOCAL_ONENOTE_ENABLE_COPY",
+        "LOCAL_ONENOTE_ENABLE_CREATE",
     ):
         monkeypatch.setenv(name, "true")
     monkeypatch.setenv(missing, "false")
@@ -119,10 +121,10 @@ def test_move_permission_matrix_rejects_each_missing_gate(monkeypatch, missing):
         MutationPolicy.current().require_move()
 
 
-def test_move_requires_only_writes_copy_and_deletes(monkeypatch):
+def test_move_requires_only_create_writes_and_deletes(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
     MutationPolicy.current().require_move()
 
 

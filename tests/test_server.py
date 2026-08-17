@@ -28,7 +28,12 @@ from local_onenote_mcp.tools.operations import (
     navigate_to,
     request_notebook_sync,
 )
-from local_onenote_mcp.tools.pages import RootSearchScope, StartNodeSearchScope, search_pages
+from local_onenote_mcp.tools.pages import (
+    RootSearchScope,
+    StartNodeSearchScope,
+    get_page_text,
+    search_pages,
+)
 from local_onenote_mcp.tools.system import health_check
 
 
@@ -44,6 +49,52 @@ def failure_error(envelope):
     assert envelope["ok"] is False
     assert set(envelope["error"]) == {"code", "message", "details"}
     return envelope["error"]
+
+
+def test_get_page_text_defaults_to_rich_and_supports_explicit_plain_compatibility(monkeypatch):
+    mathml_namespace = "http://www.w3.org/1998/Math/MathML"
+    xml = f"""<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:Outline><one:OEChildren><one:OE><one:T><![CDATA[
+      <strong>Bold</strong> <a href="https://example.com">link</a>
+    ]]></one:T></one:OE><one:OE><one:T><![CDATA[
+      <!--[if mathML]><m:math xmlns:m="{mathml_namespace}"><m:mi>x</m:mi></m:math><![endif]-->
+    ]]></one:T></one:OE></one:OEChildren></one:Outline></one:Page>"""
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda page_id, resource_type=None: {"id": page_id, "resource_type": "page"},
+    )
+    monkeypatch.setattr(server.services.pages, "xml", lambda *_args, **_kwargs: xml)
+
+    rich = success_data(asyncio.run(get_page_text("p")))
+    plain = success_data(asyncio.run(get_page_text("p", mode="plain")))
+
+    assert plain == {"text": "Title\n\nBold link", "chars": 16}
+    assert rich["mode"] == "rich"
+    assert rich["format"] == "sanitized_html_v1"
+    assert rich["truncated"] is False
+    assert "<strong>Bold</strong>" in rich["html"]
+    assert '<a href="https://example.com">link</a>' in rich["html"]
+    assert f'<math xmlns="{mathml_namespace}"><mi>x</mi></math>' in rich["html"]
+    assert "<one:" not in rich["html"]
+
+
+def test_get_page_text_rejects_unknown_mode_before_page_content_read(monkeypatch):
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda page_id, resource_type=None: {"id": page_id, "resource_type": "page"},
+    )
+    monkeypatch.setattr(
+        server.services.pages,
+        "xml",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Page XML must not be read")),
+    )
+
+    error = failure_error(asyncio.run(get_page_text("p", mode="invalid")))  # type: ignore[arg-type]
+
+    assert error["code"] == "validation_error"
 
 
 def test_health_check_includes_runtime_diagnostics(monkeypatch):
@@ -103,10 +154,16 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
     assert "search_default_backend" not in result
     assert "search_backends" not in result
     assert result["content_formats"] == ["plain", "html", "markdown"]
+    assert result["page_text_modes"] == {
+        "modes": ["plain", "rich"],
+        "default": "rich",
+        "rich_format": "sanitized_html_v1",
+        "raw_page_xml_exposed": False,
+    }
     assert result["operation_runtime"] == {
         "enabled": True,
-        "registered_operations": 52,
-        "default_operations": 52,
+            "registered_operations": 53,
+            "default_operations": 53,
         "advanced_operations": 0,
         "content_free_audit": True,
     }
@@ -121,6 +178,16 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
             "move_section_group",
         ],
         "single_call": True,
+        "authorization": {
+            "copy": ["create", "writes"],
+            "move": ["create", "writes", "deletes"],
+            "independent_copy_gate": False,
+        },
+        "page_verification": {
+            "capability_aware": True,
+            "semantic_content_tier": "semantic_content_v1",
+            "unknown_projection": "strict_canonical_fail_closed",
+        },
         "public_planning_tools": False,
         "agent_managed_plan_state": False,
         "preview": {
@@ -385,7 +452,7 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
     assert tuple(server.mcp._tool_manager._tools) == USER_TOOL_NAMES
-    assert len(names) == 52
+    assert len(names) == 53
     assert {
         "query_notebook",
         "query_section_group",
@@ -478,7 +545,7 @@ def test_raw_xml_switch_does_not_create_a_production_advanced_profile(monkeypatc
     fake = FakeMCP()
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_RAW_XML", "true")
     register_tools(fake, server.services)
-    assert len(fake.names) == 52
+    assert len(fake.names) == 53
     assert {
         "find_meta",
         "open_hierarchy",
@@ -492,27 +559,16 @@ def test_raw_xml_switch_does_not_create_a_production_advanced_profile(monkeypatc
 
 def test_reparent_tool_schemas_require_exact_typed_confirmation():
     tools = server.mcp._tool_manager._tools
-    assert set(tools["reparent_page"].parameters.get("required", [])) == {
-        "page_id",
-        "destination_section_id",
-        "expected_title",
-        "expected_section_id",
-    }
-    assert set(tools["reparent_section"].parameters.get("required", [])) == {
-        "section_id",
-        "destination_parent_id",
-        "expected_name",
-        "expected_parent_id",
-    }
-    assert set(tools["reparent_section_group"].parameters.get("required", [])) == {
-        "section_group_id",
-        "destination_parent_id",
-        "expected_name",
-        "expected_parent_id",
-    }
+    assert tools["reparent_page"].parameters.get("required", []) == []
+    assert tools["reparent_section"].parameters.get("required", []) == []
+    assert tools["reparent_section_group"].parameters.get("required", []) == []
     for name in ("reparent_page", "reparent_section", "reparent_section_group"):
         assert "xml" not in tools[name].parameters["properties"]
         assert "force" not in tools[name].parameters["properties"]
+        items = tools[name].parameters["properties"]["items"]
+        array_schema = next(value for value in items["anyOf"] if value.get("type") == "array")
+        assert array_schema["minItems"] == 1
+        assert array_schema["maxItems"] == 20
     assert tools["reparent_page"].parameters["properties"]["page_scope"] == {
         "default": "page_only",
         "enum": ["page_only", "indentation_subtree"],
@@ -847,7 +903,7 @@ def test_sync_and_navigation_preserve_strategy_specific_public_semantics(monkeyp
 def test_create_section_returns_refreshed_current_section_id(monkeypatch):
     parent = {"resource_type": "section_group", "id": "group-id", "path": "Notebook/Group", "name": "Group"}
     refreshed = {"resource_type": "section", "id": "current-section-id", "path": "Notebook/Group/New Sec", "name": "New Sec"}
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda object_id, resource_type=None: parent)
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
     monkeypatch.setattr(server.services.mutations, "call", lambda operation, **params: {"object_id": "stale-id"})
@@ -1036,6 +1092,7 @@ def test_create_page_twice_with_duplicate_title_returns_distinct_allocated_ids(m
     }
     state = [section]
     allocated = []
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: section)
     monkeypatch.setattr(
@@ -1084,6 +1141,7 @@ def test_create_page_reports_allocated_id_when_initial_content_write_fails(monke
         "path": "Notebook/Section",
         "name": "Section",
     }
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: section)
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
@@ -1117,6 +1175,7 @@ def test_create_page_rejects_preexisting_allocated_id_before_content_write(monke
         "section_id": "section-id",
         "parent_id": "section-id",
     }
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: section)
     monkeypatch.setattr(
@@ -1149,7 +1208,7 @@ def test_create_container_reports_allocated_id_when_readback_fails(monkeypatch, 
         "path": "Notebook",
         "name": "Notebook",
     }
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
     monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
     monkeypatch.setattr(
@@ -1190,7 +1249,7 @@ def test_create_container_accepts_only_one_fresh_path_remap(monkeypatch, tmp_pat
         "is_in_recycle_bin": False,
     }
     state = {"called": False}
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
     monkeypatch.setattr(
         server.services.hierarchy,
@@ -1239,7 +1298,7 @@ def test_create_container_rejects_preexisting_returned_id(monkeypatch, tmp_path,
         "parent_id": None if kind == "notebook" else "parent-id",
         "is_in_recycle_bin": False,
     }
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
     monkeypatch.setattr(
         server.services.hierarchy,
@@ -1289,7 +1348,7 @@ def test_create_container_rejects_ambiguous_fresh_path_remap(monkeypatch, tmp_pa
         for index in (1, 2)
     ]
     state = {"called": False}
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
     monkeypatch.setattr(
         server.services.hierarchy,

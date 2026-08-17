@@ -1161,6 +1161,9 @@ def test_reparent_container_service_returns_observed_destination_position(
         destination_ids.index(target_id) + 1
     )
     assert position["sibling_count"] == len(destination_siblings)
+    assert result["convergence"]["stable_observations"] == (
+        4 if resource_type == "section_group" else 2
+    )
 
 
 @pytest.mark.write_contract
@@ -1462,7 +1465,9 @@ def test_reparent_hierarchy_capture_may_exceed_convergence_deadline(
     )
 
     assert result["item"]["id"] == target_id
-    assert result["convergence"]["stable_observations"] == 2
+    assert result["convergence"]["stable_observations"] == (
+        4 if resource_type == "section_group" else 2
+    )
     assert now[0] > 4.0
     assert captures == 2
     assert calls == ["update_hierarchy"]

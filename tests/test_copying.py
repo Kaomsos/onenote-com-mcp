@@ -1087,6 +1087,150 @@ def test_strict_copy_verification_remains_default_for_validated_content():
     assert copy_verification_tier(["Outline", "MediaFile"]) == "strict_canonical"
 
 
+def test_semantic_content_accepts_title_text_node_merge_on_image_page():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Title><one:OE><one:T>Alpha</one:T><one:T>Beta</one:T></one:OE></one:Title>
+    <one:Image format="png"><one:Data>YWJj</one:Data></one:Image></one:Page>"""
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        "<one:T>Alpha</one:T><one:T>Beta</one:T>", "<one:T>AlphaBeta</one:T>"
+    )
+    tier = copy_verification_tier(
+        ["Image"],
+        page_xml=source,
+    )
+
+    result = page_equivalence(source, target, verification_tier=tier)
+
+    assert tier == "semantic_content_v1"
+    assert result["checks"]["canonical_xml"] is False
+    assert result["checks"]["visible_text"] is False
+    assert result["semantic_content_comparison"]["checks"]["title"] is True
+    assert result["equivalent"] is True
+
+
+def test_semantic_content_accepts_empty_outline_elimination_on_list_table_page():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:Outline><one:Position x="1" y="2"/><one:OEChildren><one:OE/></one:OEChildren></one:Outline>
+    <one:Outline><one:OEChildren><one:OE><one:List><one:Bullet/></one:List><one:T>Item</one:T>
+      <one:Table><one:Row><one:Cell><one:OEChildren><one:OE><one:T>Cell</one:T></one:OE>
+      </one:OEChildren></one:Cell></one:Row></one:Table>
+    </one:OE></one:OEChildren></one:Outline></one:Page>"""
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        '<one:Outline><one:Position x="1" y="2"/><one:OEChildren><one:OE/></one:OEChildren></one:Outline>',
+        "",
+    )
+    tier = copy_verification_tier(
+        ["Outline", "List", "Table"],
+        page_xml=source,
+    )
+
+    result = page_equivalence(source, target, verification_tier=tier)
+
+    assert tier == "semantic_content_v1"
+    assert result["checks"]["canonical_xml"] is False
+    assert result["checks"]["content_objects"] is False
+    assert result["equivalent"] is True
+
+
+def test_semantic_content_accepts_table_cell_oe_flattening():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Outline><one:OEChildren><one:OE><one:List><one:Number/></one:List><one:T>Item</one:T>
+      <one:Table><one:Row><one:Cell><one:OEChildren>
+        <one:OE><one:T><![CDATA[<strong>A</strong>]]></one:T></one:OE>
+        <one:OE><one:T><![CDATA[<strong>B</strong>]]></one:T></one:OE>
+      </one:OEChildren></one:Cell></one:Row></one:Table>
+    </one:OE></one:OEChildren></one:Outline></one:Page>"""
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        "<one:OE><one:T><![CDATA[<strong>A</strong>]]></one:T></one:OE>\n        "
+        "<one:OE><one:T><![CDATA[<strong>B</strong>]]></one:T></one:OE>",
+        "<one:OE><one:T><![CDATA[<strong>AB</strong>]]></one:T></one:OE>",
+    )
+    tier = copy_verification_tier(
+        ["Outline", "RichText", "List", "Table"],
+        page_xml=source,
+    )
+
+    result = page_equivalence(source, target, verification_tier=tier)
+
+    assert tier == "semantic_content_v1"
+    assert result["checks"]["canonical_xml"] is False
+    assert result["equivalent"] is True
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda xml: xml.replace("<one:T>Title</one:T>", "<one:T>Changed</one:T>"),
+        lambda xml: xml.replace(
+            '<strong><a href="https://example.com/a">Cell</a></strong>',
+            '<a href="https://example.com/a">Cell</a>',
+        ),
+        lambda xml: xml.replace("https://example.com/a", "https://example.com/b"),
+        lambda xml: xml.replace("<one:Cell>", '<one:Cell shadingColor="#ffffff">'),
+        lambda xml: xml.replace("<one:T>Second</one:T>", ""),
+        lambda xml: xml.replace("YWJj", "ZGVm"),
+    ],
+)
+def test_semantic_content_rejects_meaningful_title_rich_outline_or_binary_loss(change):
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:Outline><one:OEChildren><one:OE><one:List><one:Bullet/></one:List>
+      <one:Table><one:Row><one:Cell><one:OEChildren><one:OE>
+        <one:T><![CDATA[<strong><a href="https://example.com/a">Cell</a></strong>]]></one:T>
+      </one:OE></one:OEChildren></one:Cell></one:Row></one:Table>
+    </one:OE></one:OEChildren></one:Outline>
+    <one:Outline><one:OEChildren><one:OE><one:T>Second</one:T></one:OE></one:OEChildren></one:Outline>
+    <one:Image format="png"><one:Data>YWJj</one:Data></one:Image></one:Page>"""
+    target = change(source.replace('ID="source"', 'ID="target"'))
+    tier = copy_verification_tier(
+        ["Image", "List", "Outline", "RichText", "Table"],
+        page_xml=source,
+    )
+
+    result = page_equivalence(source, target, verification_tier=tier)
+
+    assert tier == "semantic_content_v1"
+    assert result["equivalent"] is False
+
+
+def test_semantic_content_incomplete_inline_projection_falls_back_to_strict():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Outline><one:OEChildren><one:OE><one:Table><one:Row><one:Cell>
+      <one:OEChildren><one:OE><one:T><![CDATA[<mark>Cell</mark>]]></one:T></one:OE></one:OEChildren>
+    </one:Cell></one:Row></one:Table></one:OE></one:OEChildren></one:Outline></one:Page>"""
+    same = source.replace('ID="source"', 'ID="target"')
+    changed = same.replace("<mark>Cell</mark>", "Cell")
+
+    accepted = page_equivalence(
+        source,
+        same,
+        verification_tier="semantic_content_v1",
+    )
+    rejected = page_equivalence(
+        source,
+        changed,
+        verification_tier="semantic_content_v1",
+    )
+
+    assert accepted["checks"]["semantic_projection_complete"] is False
+    assert accepted["checks"]["semantic_fallback_strict"] is True
+    assert accepted["equivalent"] is True
+    assert rejected["checks"]["semantic_fallback_strict"] is False
+    assert rejected["equivalent"] is False
+
+
+def test_semantic_content_tier_selection_rejects_unknown_page_structure():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Outline><one:OEChildren><one:OE><one:Table/><one:FutureWidget/></one:OE>
+    </one:OEChildren></one:Outline></one:Page>"""
+
+    assert (
+        copy_verification_tier(["Outline", "Table"], page_xml=source)
+        == "strict_canonical"
+    )
+
+
 @pytest.mark.parametrize(
     ("capability", "shape_info", "delta", "expected_tier", "equivalent"),
     [
@@ -1546,7 +1690,7 @@ def test_copy_rebuilds_plan_from_live_source_inside_single_call(monkeypatch):
         "parent", "destination-section", "Copied Parent"
     )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
     observed = {}
     monkeypatch.setattr(
@@ -1576,7 +1720,7 @@ def test_copy_notebook_allows_modified_clock_drift_when_semantic_plan_matches(mo
     confirmations: list[tuple] = []
     executions: list[str] = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(
         server.services.copying,
         "_confirm_source",
@@ -1626,7 +1770,7 @@ def test_copy_notebook_allows_modified_clock_drift_when_semantic_plan_matches(mo
 def test_copy_rebuilds_plan_from_live_destination_inside_single_call(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
     observed = {}
     monkeypatch.setattr(
@@ -1669,7 +1813,7 @@ def test_copy_rebuilds_plan_from_live_destination_inside_single_call(monkeypatch
 def test_copy_binds_requested_scope_in_internal_plan(monkeypatch, include_descendants):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.pages, "confirm", lambda *args, **kwargs: {})
     observed = {}
     monkeypatch.setattr(
@@ -2282,7 +2426,7 @@ def test_move_page_binds_requested_scope_in_internal_plan(
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     observed = {}
     monkeypatch.setattr(
@@ -2328,7 +2472,7 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
     monkeypatch.setattr(server.services.pages, "xml", hierarchy_sensitive_page_xml)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
@@ -2415,7 +2559,7 @@ def test_root_only_move_blocks_delete_when_descendant_promotion_fails(monkeypatc
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
@@ -2469,7 +2613,7 @@ def test_move_page_degrades_to_copy_when_fidelity_is_unverified(monkeypatch):
     install_plan_fakes(monkeypatch)
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2511,7 +2655,7 @@ def test_move_page_uses_shared_copy_contract_without_lossless_gate(monkeypatch):
     state["items"] = [item for item in state["items"] if item["id"] != "child"]
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
@@ -2573,7 +2717,7 @@ def test_move_page_same_section_recomputes_position_after_source_delete(monkeypa
     state["items"] = [item for item in state["items"] if item["id"] != "child"]
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(
         server.services.copying, "_confirm_source", lambda *args, **kwargs: None
     )
@@ -2657,7 +2801,7 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2708,7 +2852,7 @@ def test_move_page_actual_copy_identity_failure_blocks_all_source_deletes(
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     planned = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2775,7 +2919,7 @@ def test_move_page_reports_copy_only_when_source_revalidation_fails(monkeypatch)
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2833,7 +2977,7 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2880,7 +3024,7 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     state = install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -2967,7 +3111,7 @@ def test_move_page_reports_verified_and_remaining_ids_on_delete_failure(monkeypa
     install_plan_fakes(monkeypatch, body="")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
@@ -3020,7 +3164,7 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
     state["items"] = [item for item in state["items"] if item["id"] != "child"]
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     plan = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent"
@@ -3258,7 +3402,7 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
     delete_calls = []
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
     monkeypatch.setattr(server.services.copying, "_build_plan", lambda *args, **kwargs: plan)
     monkeypatch.setattr(server.services.copying, "_execute_copy", lambda _plan: copied)

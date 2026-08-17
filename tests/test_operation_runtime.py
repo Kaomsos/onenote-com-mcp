@@ -35,10 +35,10 @@ from local_onenote_mcp.tools.hierarchy import get_notebook_metadata
 
 
 PUBLIC_AUTHORIZATION_ENV = {
+    "create": "LOCAL_ONENOTE_ENABLE_CREATE",
     "writes": "LOCAL_ONENOTE_ENABLE_WRITES",
     "deletes": "LOCAL_ONENOTE_ENABLE_DELETES",
     "organize": "LOCAL_ONENOTE_ENABLE_ORGANIZE",
-    "copy": "LOCAL_ONENOTE_ENABLE_COPY",
     "local_file_io": "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO",
     "ui_control": "LOCAL_ONENOTE_ENABLE_UI_CONTROL",
     "notebook_lifecycle": "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE",
@@ -46,12 +46,13 @@ PUBLIC_AUTHORIZATION_ENV = {
 
 REQUIRED_GATES_BY_AUTHORIZATION = {
     "none": (),
+    "create": ("create",),
     "write": ("writes",),
+    "create_write": ("create", "writes"),
     "delete": ("deletes",),
     "write_delete": ("writes", "deletes"),
     "organize": ("writes", "organize"),
-    "copy": ("writes", "copy"),
-    "move": ("writes", "copy", "deletes"),
+    "create_write_delete": ("create", "writes", "deletes"),
     "local_file": ("local_file_io",),
     "write_local_file": ("writes", "local_file_io"),
     "ui_control": ("ui_control",),
@@ -82,16 +83,25 @@ EXPECTED_OPERATIONS_BY_AUTHORIZATION = {
         "get_page_content_object_binary",
         "get_hyperlink",
     ),
-    "write": (
+    "create": (
         "create_notebook",
         "create_section_group",
         "create_section",
+    ),
+    "create_write": (
         "create_page",
+        "copy_page",
+        "copy_section",
+        "copy_section_group",
+        "copy_notebook",
+    ),
+    "write": (
         "rename_page",
         "rename_section_group",
         "rename_section",
         "reorder_page",
         "reorder_section",
+        "sort_children",
         "append_page_content",
     ),
     "delete": (
@@ -106,13 +116,7 @@ EXPECTED_OPERATIONS_BY_AUTHORIZATION = {
         "reparent_section",
         "reparent_section_group",
     ),
-    "copy": (
-        "copy_page",
-        "copy_section",
-        "copy_section_group",
-        "copy_notebook",
-    ),
-    "move": ("move_page", "move_section", "move_section_group"),
+    "create_write_delete": ("move_page", "move_section", "move_section_group"),
     "local_file": ("export_object_to_pdf",),
     "write_local_file": ("add_page_image_from_file",),
     "ui_control": ("launch_onenote_gui", "navigate_to"),
@@ -237,15 +241,15 @@ def set_public_authorization_environment(monkeypatch, enabled_gates) -> None:
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES", "false")
 
 
-def test_public_operation_authorization_mapping_is_frozen_for_all_52_tools() -> None:
+def test_public_operation_authorization_mapping_is_frozen_for_all_53_tools() -> None:
     actual = {
         operation: binding.spec.authorization_policy
         for operation, binding in get_runtime().registry.bindings.items()
     }
 
-    assert len(EXPECTED_AUTHORIZATION_BY_OPERATION) == 52
-    assert len(AUTHORIZATION_ALLOW_CASES) == 52
-    assert len(AUTHORIZATION_DENY_CASES) == 46
+    assert len(EXPECTED_AUTHORIZATION_BY_OPERATION) == 53
+    assert len(AUTHORIZATION_ALLOW_CASES) == 53
+    assert len(AUTHORIZATION_DENY_CASES) == 48
     assert actual == EXPECTED_AUTHORIZATION_BY_OPERATION
 
 
@@ -255,7 +259,7 @@ def test_gui_readiness_is_an_independent_explicit_registry_policy() -> None:
         for operation, binding in get_runtime().registry.bindings.items()
     }
 
-    assert len(GUI_READY_PREFLIGHT_CASES) == 30
+    assert len(GUI_READY_PREFLIGHT_CASES) == 31
     assert actual == EXPECTED_PLATFORM_PREFLIGHT_BY_OPERATION
     assert actual["health_check"] == "none"
     assert actual["get_page_text"] == "none"
@@ -424,7 +428,7 @@ def test_registry_is_the_unique_default_and_advanced_tool_inventory() -> None:
     assert registry.names_for_profile("default") == default_names
     assert registry.names_for_profile("advanced") == advanced_names
     assert advanced_names == set()
-    assert len(registry.bindings) == len(default_names) == 52
+    assert len(registry.bindings) == len(default_names) == 53
     assert default_names == USER_TOOL_NAME_SET
     assert INTERNAL_CAPABILITY_NAMES.isdisjoint(default_names | advanced_names)
     assert LEGACY_PUBLIC_NAMES.isdisjoint(default_names | advanced_names)
@@ -544,16 +548,17 @@ def test_registry_covers_five_effect_kinds_without_mutation_semantic_leakage() -
 def test_registry_authorization_catalog_is_explicit_for_risk_classes() -> None:
     bindings = get_runtime().registry.bindings
 
-    assert bindings["create_page"].spec.authorization_policy == "write"
+    assert bindings["create_notebook"].spec.authorization_policy == "create"
+    assert bindings["create_page"].spec.authorization_policy == "create_write"
     assert bindings["delete_page"].spec.authorization_policy == "delete"
     assert bindings["replace_page_body"].spec.authorization_policy == "write_delete"
     assert (
         bindings["reparent_page"].spec.authorization_policy
         == "organize"
     )
-    assert bindings["copy_page"].spec.authorization_policy == "copy"
-    assert bindings["move_page"].spec.authorization_policy == "move"
-    assert bindings["move_section"].spec.authorization_policy == "move"
+    assert bindings["copy_page"].spec.authorization_policy == "create_write"
+    assert bindings["move_page"].spec.authorization_policy == "create_write_delete"
+    assert bindings["move_section"].spec.authorization_policy == "create_write_delete"
     assert bindings["close_notebook"].spec.authorization_policy == "notebook_lifecycle"
     assert bindings["request_notebook_sync"].spec.authorization_policy == "notebook_lifecycle"
     assert bindings["launch_onenote_gui"].spec.authorization_policy == "ui_control"
@@ -563,7 +568,7 @@ def test_production_authorization_rejects_before_coordination_or_argument_access
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_WRITES", raising=False)
-    monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_COPY", raising=False)
+    monkeypatch.delenv("LOCAL_ONENOTE_ENABLE_CREATE", raising=False)
     runtime = get_runtime()
     generation = runtime.coordinator.generation
 

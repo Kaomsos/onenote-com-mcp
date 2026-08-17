@@ -165,7 +165,7 @@ def reordered_snapshot(before, resource_type, ordered_ids):
 
 
 def install_backend(monkeypatch, before, after, *, page_xml_after=None, bridge_error=None):
-    state = {"mutated": False, "calls": 0, "xml": ""}
+    state = {"mutated": False, "calls": 0, "page_reads": 0, "xml": ""}
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",
@@ -173,6 +173,7 @@ def install_backend(monkeypatch, before, after, *, page_xml_after=None, bridge_e
     )
 
     def page_xml(page_id, page_info="basic"):
+        state["page_reads"] += 1
         suffix = "changed" if state["mutated"] and page_xml_after == page_id else "same"
         return (
             '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
@@ -215,6 +216,7 @@ def test_reorder_section_supports_first_forward_backward_and_noop(monkeypatch, t
     assert [value["id"] for value in result["siblings"]] == expected
     assert all(result["verified"].values())
     assert state["calls"] == 1
+    assert state["page_reads"] == 0
 
 
 @pytest.mark.write_contract
@@ -430,7 +432,7 @@ def test_reorder_section_rejects_confirmation_mismatch(monkeypatch, field):
 
 
 @pytest.mark.write_contract
-@pytest.mark.parametrize("failure", ["parent", "siblings", "sibling_added", "descendants", "content"])
+@pytest.mark.parametrize("failure", ["parent", "siblings", "sibling_added", "descendants"])
 def test_reorder_section_fails_closed_on_readback_invariant_change(monkeypatch, failure):
     before = section_fixture()
     after = reordered_snapshot(before, "section", ["sA", "sC", "sB"])
@@ -447,7 +449,6 @@ def test_reorder_section_fails_closed_on_readback_invariant_change(monkeypatch, 
         monkeypatch,
         before,
         after,
-        page_xml_after="pC" if failure == "content" else None,
     )
 
     result = asyncio.run(reorder_section("sC", "C", "n", "sA", "modified-sC"))
@@ -464,11 +465,12 @@ def test_reorder_section_fails_closed_on_readback_invariant_change(monkeypatch, 
         assert result["reconciliation"] == "indeterminate"
     assert result["manual_recovery_required"] is True
     assert state["calls"] == 1
+    assert state["page_reads"] == 0
 
 
 @pytest.mark.write_contract
-@pytest.mark.parametrize("failure", ["descendant_parent", "content"])
-def test_reorder_section_group_fails_on_descendant_or_content_change(monkeypatch, failure):
+@pytest.mark.parametrize("failure", ["descendant_parent"])
+def test_reorder_section_group_fails_on_descendant_change(monkeypatch, failure):
     before = group_fixture()
     after = reordered_snapshot(before, "section_group", ["gC", "gA", "gB"])
     if failure == "descendant_parent":
@@ -478,7 +480,6 @@ def test_reorder_section_group_fails_on_descendant_or_content_change(monkeypatch
         monkeypatch,
         before,
         after,
-        page_xml_after="pC" if failure == "content" else None,
     )
 
     result = asyncio.run(
@@ -490,6 +491,7 @@ def test_reorder_section_group_fails_on_descendant_or_content_change(monkeypatch
     assert result["ok"] is False
     assert result["code"] == "onenote_convergence_timeout"
     assert state["calls"] == 1
+    assert state["page_reads"] == 0
 
 
 @pytest.mark.write_contract

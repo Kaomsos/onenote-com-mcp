@@ -8,7 +8,9 @@ from local_onenote_mcp.page import (
     build_page_update_xml,
     collect_page_objects,
     normalize_content,
+    rich_html_from_page_xml,
     text_from_page_xml,
+    truncate_rich_html,
 )
 from local_onenote_mcp.page.builder import tag_definitions_from_page_xml
 from local_onenote_mcp.page.images import image_dimensions, proportional_dimensions
@@ -320,6 +322,101 @@ def test_text_from_page_xml_extracts_inline_html():
     <one:Outline><one:OEChildren><one:OE><one:T><![CDATA[Hello<br/>World]]></one:T></one:OE></one:OEChildren></one:Outline>
     </one:Page>"""
     assert text_from_page_xml(xml) == "Hello\nWorld"
+
+
+def test_rich_html_projection_preserves_safe_formatting_links_lists_tags_and_tables():
+    xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:Title><one:OE><one:T>Rich Page</one:T></one:OE></one:Title>
+    <one:TagDef index="0" type="0" symbol="3" name="To Do"/>
+    <one:Outline><one:OEChildren>
+      <one:OE><one:List><one:Number/></one:List><one:Tag index="0" completed="true"/>
+        <one:T><![CDATA[<span style="font-weight:bold;color:#123456;position:absolute">Bold</span>
+          <a href="https://example.com" onclick="bad()">link</a><script>bad()</script>]]></one:T>
+      </one:OE>
+      <one:OE><one:Table><one:Row><one:Cell><one:OEChildren><one:OE>
+        <one:T><![CDATA[<i>Cell</i>]]></one:T>
+      </one:OE></one:OEChildren></one:Cell></one:Row></one:Table></one:OE>
+    </one:OEChildren></one:Outline></one:Page>"""
+
+    html = rich_html_from_page_xml(xml)
+
+    assert 'data-onenote-projection="sanitized_html_v1"' in html
+    assert "<h1>Rich Page</h1>" in html
+    assert '<ol data-onenote-list-kind="number">' in html
+    assert 'data-onenote-tag-completed="true"' in html
+    assert 'style="color: #123456; font-weight: bold"' in html
+    assert '<a href="https://example.com">link</a>' in html
+    assert "onclick" not in html
+    assert "position" not in html
+    assert "bad()" not in html
+    assert "<table><tbody><tr><td><p><i>Cell</i></p></td></tr></tbody></table>" in html
+
+
+def test_rich_html_projection_preserves_canonical_conditional_mathml_comments():
+    namespace = "http://www.w3.org/1998/Math/MathML"
+    xml = f'''<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:Outline><one:OEChildren><one:OE><one:T><![CDATA[
+      before<!--[if mathML]><m:math xmlns:m="{namespace}" display="block">
+        <m:mrow><m:mi>x</m:mi><m:mo>=</m:mo><m:mn>1</m:mn></m:mrow>
+      </m:math><![endif]-->after
+    ]]></one:T></one:OE></one:OEChildren></one:Outline></one:Page>'''
+
+    html = rich_html_from_page_xml(xml)
+
+    assert "<!--[if" not in html
+    assert "m:math" not in html
+    assert f'<math display="block" xmlns="{namespace}">' in html
+    assert "<mrow><mi>x</mi><mo>=</mo><mn>1</mn></mrow>" in html
+    assert "before" in html and "after" in html
+
+
+def test_rich_html_projection_normalizes_unwrapped_prefixed_mathml():
+    namespace = "http://www.w3.org/1998/Math/MathML"
+    xml = f'''<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:Outline><one:OEChildren><one:OE><one:T><![CDATA[
+      <m:math xmlns:m="{namespace}"><m:mfrac><m:mi>x</m:mi><m:mi>y</m:mi></m:mfrac></m:math>
+    ]]></one:T></one:OE></one:OEChildren></one:Outline></one:Page>'''
+
+    html = rich_html_from_page_xml(xml)
+
+    assert "m:math" not in html
+    assert f'<math xmlns="{namespace}"><mfrac><mi>x</mi><mi>y</mi></mfrac></math>' in html
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "<!--[if mathML]><math><mi>x</mi></math><![endif]-->",
+        "<!--[if mathML]><m:math xmlns:m=\"urn:not-mathml\"><m:mi>x</m:mi></m:math><![endif]-->",
+        "<!--[if mathML]><m:math xmlns:m=\"http://www.w3.org/1998/Math/MathML\"><m:script>x</m:script></m:math><![endif]-->",
+        "<!--[if somethingElse]><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mi>x</mi></math><![endif]-->",
+    ],
+)
+def test_rich_html_projection_rejects_noncanonical_conditional_mathml(fragment):
+    xml = f'''<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:Outline><one:OEChildren><one:OE><one:T><![CDATA[{fragment}]]></one:T>
+    </one:OE></one:OEChildren></one:Outline></one:Page>'''
+
+    html = rich_html_from_page_xml(xml)
+
+    assert "<math" not in html
+    assert "<mi" not in html
+    assert "<script" not in html
+
+
+def test_rich_html_projection_strips_unsafe_link_schemes_and_truncates_well_formed():
+    xml = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p">
+    <one:Outline><one:OEChildren><one:OE><one:T><![CDATA[
+      <a href="javascript:alert(1)">unsafe</a><strong>abcdefghijklmnopqrstuvwxyz</strong>
+    ]]></one:T></one:OE></one:OEChildren></one:Outline></one:Page>"""
+    html = rich_html_from_page_xml(xml)
+
+    projected, truncated = truncate_rich_html(html, 120)
+
+    assert "javascript:" not in html
+    assert truncated is True
+    assert len(projected) <= 120
+    assert projected.endswith("</section></article>")
 
 
 def test_collect_page_objects_keeps_idless_images_with_container():
