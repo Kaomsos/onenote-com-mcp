@@ -95,7 +95,7 @@ Page 不公开 `name`，统一使用 `title`：
 
 OneNote UI Shape 当前没有独立的公开 `kind=Shape`。2026-08-11 的矩形与箭头真实回读都得到 `kind=InkDrawing`，但其 XML 子树共同含 `ShapeInfo`；箭头另含 `AnchorPoint`。因此 `UIShape` 只是 content-free capability projection 的复合分类：它要求公开对象仍为 `InkDrawing` 且结构 marker 完整，用来与普通自由墨迹严格区分，不是新增或伪造的 `PageContentObject.kind`。
 
-`DisplayEquation` 同样是 Page 语义 capability/content type，不是公开 `PageContentObject.kind`。它只在一个完整、有界的 Presentation MathML root 明确带有 `display="block"` 时由 Page XML 投影产生，Copy 用它选择单行公式专属的输出规范化和读回 comparator。无 `display` 属性的行内公式继续属于 RichText；未知、残缺或不合约 MathML 不得通过 `DisplayEquation` 分类绕过 fail-closed 比较。COM 初次生成和后续重建都可能增加公式前空白包装，该限制并非 Copy 独有；证据边界见 [`lesson/display_equation_com_leading_whitespace_normalization.md`](../lesson/display_equation_com_leading_whitespace_normalization.md)。
+`DisplayEquation` 同样是 Page 语义 capability/content type，不是公开 `PageContentObject.kind`。它只在一个完整、有界的 Presentation MathML root 明确带有 `display="block"` 时由 Page XML 投影产生，Copy 用它选择单行公式专属的输出规范化和读回 comparator。无 `display` 属性的行内公式继续属于 RichText；未知、残缺或不合约 MathML 不得通过 `DisplayEquation` 分类绕过 fail-closed 比较。`get_page_text(mode="rich")` 会把 OneNote 完整的 MathML conditional-comment wrapper 验证并规范化为不带 prefix 的 canonical `<math xmlns="http://www.w3.org/1998/Math/MathML">`；普通 comment、错误 namespace、额外属性或未知 MathML 元素不会进入公开投影。COM 初次生成和后续重建都可能增加公式前空白包装，该限制并非 Copy 独有；证据边界见 [`lesson/display_equation_com_leading_whitespace_normalization.md`](../lesson/display_equation_com_leading_whitespace_normalization.md)。
 
 OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实测环境都公开一个 `kind=MediaFile`。Page XML 还会包含 `MediaPlaylist/MediaReference`，以及同一含 MediaFile 的 Outline 中的 `OE/MediaIndex/MediaReference` 和 `OE/MediaFile/MediaReference`；Template materialize 后，媒体时间轴可能规范化为只含 `MediaIndex + T` 的 OE，T 使用单一 `span` 富文本。它们都是媒体支撑而不是额外的公开 PageContentObject kind；projection 和 Copy 转换只在精确媒体关联结构内接受节点/时间轴 span，普通 RichText 仍保持独立能力。录像 v8 bootstrap 与 materialized live validation 均未观察到额外 unknown/unsupported 节点。
 
@@ -139,7 +139,7 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 | SectionGroup 同父级 Reorder | 明确不支持并拒绝；后端仅提供按名称固定升序，不提供可变 sibling order |
 | Section 同 Notebook 换父级（历史 Move 语义） | 已收敛为 typed `reparent_section`；保持 Section ID，由 Writes + Organize fail closed，已有用户确认的真实 COM 证据 |
 | Reparent | 只表示同一 Notebook 内的容器换父级；公开 typed `reparent_page`、`reparent_section`、`reparent_section_group` 共用 Writes + Organize。Page 默认只迁移选中对象并提升被排除后代，也可用 `page_scope="indentation_subtree"` 迁移完整缩进子树。生产 read-back 仅验证 hierarchy，不读取 Page 正文；逐 Page 正文/内容对象比较只在 human-gated manual validation 中保留。生产 MCP 不暴露 raw hierarchy XML。 |
-| Section/SectionGroup 跨 Notebook转移 | 重建式 Move；完整子树 Copy 与验证后只对源容器根执行一次非永久删除，全部后代获得新 ID；同 Notebook 请求 fail closed。需要 Writes + Copy + Deletes。 |
+| Section/SectionGroup 跨 Notebook转移 | 重建式 Move；完整子树 Copy 与验证后只对源容器根执行一次非永久删除，全部后代获得新 ID；同 Notebook 请求 fail closed。需要 Create + Writes + Deletes。 |
 | 四层 Copy、Page/容器 Move | 已实现为单次公开调用；Page Copy/Move 用 `page_scope` 选择根 Page 或完整缩进子树，容器始终递归。内部 live planning 不暴露 token；Move 采用 Copy→验证→非永久删除源的重建语义。 |
 | Notebook/Section/Page Export、导航、Notebook Sync/Close | P1 typed 契约已实现 |
 | Notebook Delete、SectionGroup Export | 不承诺 |

@@ -5,9 +5,9 @@ A local-first MCP server for Microsoft OneNote Desktop on Windows. It uses the l
 ## Design and safety
 
 - Typed Notebook, SectionGroup, Section, Page, and PageContentObject contracts; mutations use exact IDs and optimistic confirmation fields.
-- A canonical 52-operation Registry owns exposure, category, authorization, independent platform-preflight policy, execution strategy, handler, audit, and retry semantics.
+- A canonical 53-operation Registry owns exposure, category, authorization, independent platform-preflight policy, execution strategy, handler, audit, and retry semantics.
 - Reads share a process-local lease; mutation and lifecycle effects use exclusive coordination through preflight, execution, reconciliation, and stable read-back.
-- Writes, Deletes, Organize, Copy, Local File IO, UI Control, and Notebook Lifecycle are seven independent, default-off authorization categories.
+- Create, Writes, Deletes, Organize, Local File IO, UI Control, and Notebook Lifecycle are seven independent, default-off authorization categories.
 - Raw XML, generic hierarchy mutation, public planning tokens, and an advanced MCP profile are not exposed.
 - OneNote Desktop readiness means both `ONENOTE.EXE` and a visible top-level window. Every authorized effect checks this prerequisite after authorization and before coordination or backend work; pure reads do not. `health_check` is always check-only and `launch_onenote_gui` is the explicit recovery effect.
 
@@ -52,10 +52,10 @@ Claude Desktop or Cursor (`mcpServers` JSON):
       "env": {
         "LOCAL_ONENOTE_MCP_TIMEOUT": "90",
         "LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS": "60000",
+        "LOCAL_ONENOTE_ENABLE_CREATE": "false",
         "LOCAL_ONENOTE_ENABLE_WRITES": "false",
         "LOCAL_ONENOTE_ENABLE_DELETES": "false",
         "LOCAL_ONENOTE_ENABLE_ORGANIZE": "false",
-        "LOCAL_ONENOTE_ENABLE_COPY": "false",
         "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO": "false",
         "LOCAL_ONENOTE_ENABLE_UI_CONTROL": "false",
         "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE": "false"
@@ -76,10 +76,10 @@ tool_timeout_sec = 120
 [mcp_servers.local-onenote.env]
 LOCAL_ONENOTE_MCP_TIMEOUT = "90"
 LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS = "60000"
+LOCAL_ONENOTE_ENABLE_CREATE = "false"
 LOCAL_ONENOTE_ENABLE_WRITES = "false"
 LOCAL_ONENOTE_ENABLE_DELETES = "false"
 LOCAL_ONENOTE_ENABLE_ORGANIZE = "false"
-LOCAL_ONENOTE_ENABLE_COPY = "false"
 LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO = "false"
 LOCAL_ONENOTE_ENABLE_UI_CONTROL = "false"
 LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
@@ -87,7 +87,7 @@ LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
 
 Restart the MCP client after changing configuration.
 
-## Current user tool surface: 52 tools
+## Current user tool surface: 53 tools
 
 The only production profile is organized by user task:
 
@@ -101,7 +101,7 @@ The only production profile is organized by user task:
 | Hyperlink | `get_hyperlink` |
 | Create | `create_notebook`, `create_section_group`, `create_section`, `create_page` |
 | Rename | `rename_page`, `rename_section_group`, `rename_section` |
-| Reorder | `reorder_page`, `reorder_section` |
+| Reorder | `reorder_page`, `reorder_section`, `sort_children` |
 | Organize | `reparent_page`, `reparent_section`, `reparent_section_group` |
 | Page Content Mutation | `append_page_content`, `add_page_image_from_file`, `replace_page_body`, `delete_page_content_object` |
 | Recoverable Delete | `delete_page`, `delete_section`, `delete_section_group` |
@@ -131,10 +131,10 @@ All seven gates default to false:
 
 | Gate | Environment variable | Important combinations |
 | --- | --- | --- |
-| Writes | `LOCAL_ONENOTE_ENABLE_WRITES` | Create, Rename, Reorder, Append |
+| Create | `LOCAL_ONENOTE_ENABLE_CREATE` | Notebook/SectionGroup/Section creation; Page creation also needs Writes |
+| Writes | `LOCAL_ONENOTE_ENABLE_WRITES` | Rename, Reorder/Sort, Append; Copy also needs Create |
 | Deletes | `LOCAL_ONENOTE_ENABLE_DELETES` | Recoverable Delete; Replace also needs Writes |
 | Organize | `LOCAL_ONENOTE_ENABLE_ORGANIZE` | Reparent also needs Writes |
-| Copy | `LOCAL_ONENOTE_ENABLE_COPY` | Copy also needs Writes; Move also needs Deletes |
 | Local File IO | `LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO` | Export; file image addition also needs Writes |
 | UI Control | `LOCAL_ONENOTE_ENABLE_UI_CONTROL` | `launch_onenote_gui`, `navigate_to` |
 | Notebook Lifecycle | `LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE` | sync request and close |
@@ -147,8 +147,11 @@ The normal delete tools are always non-permanent and have no `permanently` param
 - If health reports not ready, call `launch_onenote_gui()` with UI Control enabled, call `health_check` again, then retry the original authorized effect. If UI Control is disabled, set `LOCAL_ONENOTE_ENABLE_UI_CONTROL=true` and restart the MCP server, or start OneNote Desktop manually. Launch is a separate no-parameter UI effect with at most one trusted process-launch request and bounded readiness observation; its real acceptance check uses the standalone, human-gated [`launch_onenote_gui_check.py`](tests/manual_validation/launch_onenote_gui_check.py), outside the Scenario registry and `all`.
 - Query reads hierarchy metadata; `search_pages` uses OneNote's live index for Page body discovery. Both return candidates; mutations still require an exact ID.
 - Typed Expand parameters name their object type (`notebook_id`, `section_group_id`, `section_id`, `page_id`).
+- `get_page_text` defaults to bounded `sanitized_html_v1`, which preserves reviewed formatting, links, lists, tags, tables, and canonical Presentation MathML without exposing raw Page XML or binary payloads. Set `mode="plain"` when the legacy `{text, chars}` projection is preferred.
 - Page range is `page_scope="page_only" | "indentation_subtree"`; optional values use `null`, not empty-string sentinels.
-- Copy/Move are single calls. Planning stays inside the operation; clients never carry `plan_digest` or replay state.
+- Existing `create_*`, `rename_*`, `reparent_*`, and recoverable `delete_*` tools support either their original single-item fields or a bounded `items` batch (1–20); there are no separate `batch_*` tools. A batch is preflighted as a whole, executes in input order, stops on the first failed or uncertain item, and never performs a broad rollback or mutation replay. Partial responses preserve `applied/failed/not_attempted` item states and require live-state inspection before recovery. Successful Reparent batches additionally return a final live, content-free hierarchy summary for every input item.
+- `sort_children` stably sorts only a confirmed parent's complete direct-child sequence by `name`, `created`, or `modified`, ascending or descending. Child type is inferred: Notebook/SectionGroup sorts Sections; Section/Page sorts Pages. Leveled Pages move as complete indentation blocks; SectionGroups are never sorted and recursive mode is unsupported.
+- Copy/Move are single calls. Copy requires Create + Writes; Move additionally requires Deletes. Planning stays inside the operation; clients never carry `plan_digest` or replay state.
 - Move is reconstructive: verified Copy followed by a non-permanent source delete. It creates new IDs and can return partial or indeterminate results that must not be blindly retried.
 - `export_object_to_pdf` only writes a new PDF and never overwrites an existing path.
 - `request_notebook_sync` proves request acceptance, not synchronization completion.
@@ -181,7 +184,7 @@ uv run python scripts\smoke_mcp.py
 uv run python scripts\smoke_mcp.py --notebook "{EXACT-NOTEBOOK-ID}"
 ```
 
-`--tools-only` validates the exact 52-item MCP `tools/list` order, descriptions and schemas without probing or connecting to OneNote. Add `--include-tool-snapshot` when the complete transport projection is needed in the JSON output. The other forms require an already-running visible OneNote Desktop GUI and remain read-only.
+`--tools-only` validates the exact 53-item MCP `tools/list` order, descriptions and schemas without probing or connecting to OneNote. Add `--include-tool-snapshot` when the complete transport projection is needed in the JSON output. The other forms require an already-running visible OneNote Desktop GUI and remain read-only.
 
 Manual-validation plans are safe to inspect with `--dry-run`. Only the user may remove `--dry-run` and run a real OneNote scenario:
 

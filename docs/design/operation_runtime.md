@@ -1,7 +1,7 @@
 # Operation Runtime 操作执行控制面
 
 > 状态：当前实现态
-> 更新日期：2026-08-16
+> 更新日期：2026-08-17
 > 相关契约：[当前架构](architecture.md) · [公开 Tool 契约](tool_contracts.md) · [Mutation readiness](mutation_readiness_and_call_design.md)
 
 ## 1. 定位与依赖方向
@@ -227,7 +227,7 @@ classDiagram
 - `MutationAttemptExecutor` 是部分 mutation Handler 组合的 029 principal-attempt 原语，不是 Runtime 的父类，也不适用于 Replace、Create、Copy/Move 等 operation-wide saga；
 - `OperationExecution` 是单次调用内的可变控制面状态，只通过 `ContextVar` 暂时绑定给 content-free backend-call counter；调用结束后只生成不可变语义的 `OperationOutcome` 和 allowlist audit；
 - `OperationOutcome.data` 承载 Service 返回值，但 `public_execution()` 仅投影固定控制字段，不把业务 payload 写入 Runtime audit。
-- `StaticExecutionStrategy` 是当前代码中的预留实现；当前 52 项 production Registry 没有 `static` binding，实际生产分类仍是 Read、Mutation、Lifecycle、Filesystem Effect、UI Effect 五类。
+- `StaticExecutionStrategy` 是当前代码中的预留实现；当前 53 项 production Registry 没有 `static` binding，实际生产分类仍是 Read、Mutation、Lifecycle、Filesystem Effect、UI Effect 五类。
 
 ## 3. 时序图
 
@@ -303,6 +303,8 @@ sequenceDiagram
 
 授权先于独立的平台前置条件，二者都发生在协调 lease、cache generation 和 backend 调用之前；因此 authorization 或 GUI readiness 拒绝都不会产生 backend side effect。授权通过后的 `onenote_gui_ready` 只负责 native check-only readiness，不开启 GUI、不解释七类 gate。Handler、backend、reconciliation 或 deadline `Exception` 必须依靠 coordination context 退出释放 lease，Runtime 再把 typed error 与 content-free `execution` 合并到既有失败 envelope。取消等 `BaseException` 同样释放 lease 并重置调用上下文，但继续向上传播，不伪造一个已完成的 MCP envelope。
 
+当前七类公开 gate 是 Create、Writes、Deletes、Organize、Local File IO、UI Control 与 Notebook Lifecycle。Registry 使用显式组合 policy：容器 Create=`create`，Page Create 与 Copy=`create_write`，Move=`create_write_delete`；旧 `LOCAL_ONENOTE_ENABLE_COPY` 不参与 `MutationPolicy`，也不是兼容 alias。组合中任一 gate 缺失都会停在 authorization，保持 `backend_calls=0`。
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -377,7 +379,7 @@ OperationSpec + ExecutionStrategy + OperationHandler
 
 `OperationSpec` 固定记录：`name/kind/capability/coordination/backend/strategy/handler/budget_policy/cache_policy/retry_policy/authorization_policy/platform_preflight_policy/audit_policy/exposures`。Authorization 与 platform preflight 分别绑定 callable；改变一个 policy 不会隐式改变另一个。Mutation 还必须登记 operation-specific 的 authorization、attempt policy、replay、identity、observer、partial boundary、recovery 和 saga 属性；缺少任一 mutation policy 或 authorization policy 会在构造 Registry 时 fail closed。
 
-当前 production inventory 为唯一 User profile 52 项；advanced profile 为空，Registry 中也没有隐藏的 advanced binding。启动时 Registry 与 `tool_surface.py` 的冻结顺序、分类及实际 Tool 集合做精确双向审计；重复 operation、未注册 Tool、profile 错配或额外 operation 都阻止启动。五项 Internal & Incubating capability 和 forbidden set 不参与 Tool 注册；内部 raw safety gate 也不改变 exposure。
+当前 production inventory 为唯一 User profile 53 项；advanced profile 为空，Registry 中也没有隐藏的 advanced binding。启动时 Registry 与 `tool_surface.py` 的冻结顺序、分类及实际 Tool 集合做精确双向审计；重复 operation、未注册 Tool、profile 错配或额外 operation 都阻止启动。五项 Internal & Incubating capability 和 forbidden set 不参与 Tool 注册；内部 raw safety gate 也不改变 exposure。
 
 ## 5. Operation 分类与阶段
 
@@ -415,7 +417,7 @@ MutationExecutionStrategy
 
 Registry 取代旧的独立 Tool→attempt-policy inventory。当前生产 attempt policy 均为 `replay=never`；COM error 后 observer 可以证明 `applied`，精确 unchanged pre-state 则要求新调用，partial/indeterminate 要求只读检查或人工恢复。Runtime 从 Service 返回的嵌套 `reconciliation` 吸收 `mutation_attempts/mutation_replayed/observed_outcome/retry_safety/recommended_action`，但不复制第二套 attempt 状态机。
 
-Copy/Move 是 operation-wide saga：内部 planning、allocated/resolved/remapped identity、fidelity、Copy gate、source-delete gate 和 completed steps 留在 `CopyService`；Runtime 只投影安全的 operation 状态。Agent 不保存 plan、ID map 或 replay 状态。
+Copy/Move 是 operation-wide saga：内部 planning、allocated/resolved/remapped identity、fidelity、Create/Writes authorization 后的 Copy verification、source-delete gate 和 completed steps 留在 `CopyService`；Runtime 只投影安全的 operation 状态。Agent 不保存 plan、ID map 或 replay 状态。
 
 ## 7. Outcome 与公开 response
 

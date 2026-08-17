@@ -1,7 +1,7 @@
 # Local OneNote MCP 对象模型概念评估
 
 > 文档性质：产品概念模型
-> 对齐方案：当前 52 Tool User profile
+> 对齐方案：当前 53 Tool User profile
 > 更新日期：2026-08-15
 
 ## 文档边界

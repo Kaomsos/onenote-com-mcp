@@ -3,7 +3,7 @@
 > 本文只定义用户本人在终端显式触发的隔离流程。CI、hook、前台/后台 Agent 或默认测试不得执行。
 > 真实验证对象必须是专用、无业务数据、可丢弃的本地 Notebook。
 
-推荐由用户按 [Human-gated Manual Validation Runner](../../tests/manual_validation/README.md) 显式运行一个扁平的 `run.py <scenario>`。每个 scenario 本身就是完整隔离 suite：一个用户命令创建全新 Notebook、准备 fixture、运行所选 mutation、生成报告并按选项关闭或保留 Notebook。`create` 也会在 fixture 后连续创建两个同标题 Page，验证 allocated/read-back ID 互异，并在默认模式下按精确 ID 非永久清理。`validate`、`inspect`、`read`、`report` 和聚合 `suite` 均不是公开 action；本页的手工 tool 调用只保留为故障排查说明，不构成可执行入口。Agent 不得通过 Codex CLI、shell 或 MCP 代用户执行真实 mutation；历史 Codex CLI 编排记录见 [已停用流程](codex_cli_mcp_validation.md)。实现进度见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
+推荐由用户按 [Human-gated Manual Validation Runner](../../tests/manual_validation/README.md) 显式运行一个扁平的 `run.py <scenario>`。每个 scenario 本身就是完整隔离 suite：一个用户命令创建全新 Notebook、准备 fixture、运行所选 mutation、生成报告并按选项关闭或保留 Notebook。`create` 也会在 fixture 后连续创建两个同标题 Page，验证 allocated/read-back ID 互异，并在默认模式下按精确 ID 非永久清理。UT-004 的默认 `create` 与 `reorder-page` 还各包含一个可确定的 mutation-preflight 拒绝探针：要求 typed error、零 mutation bridge call 和 unchanged snapshot；中途 batch partial-failure 只由本地 fault-injection 合同验证，不在真实 OneNote 中故意制造。`validate`、`inspect`、`read`、`report` 和聚合 `suite` 均不是公开 action；本页的手工 tool 调用只保留为故障排查说明，不构成可执行入口。Agent 不得通过 Codex CLI、shell 或 MCP 代用户执行真实 mutation；历史 Codex CLI 编排记录见 [已停用流程](codex_cli_mcp_validation.md)。实现进度见 [TODO 001](../todo/001_programmatic_isolated_mutation_runner.md)。
 
 对于需要反复复现复杂输入、自动比较真实 COM 结果并由用户检查 UI 的新功能或高风险回归，推荐采用[缓存 Fixture → 待验证操作 → 自动比较 → 人工 verdict](cached_fixture_operation_validation.md)的分阶段证据链。它适用于 Copy 之外的 Reorder、Reparent、Move、非永久 Delete 和内容转换，但不改变各操作独立的最小权限与安全门。
 
@@ -83,16 +83,16 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
 
 ```toml
 [mcp_servers.local-onenote-isolated.env]
+LOCAL_ONENOTE_ENABLE_CREATE = "false"
 LOCAL_ONENOTE_ENABLE_WRITES = "true"
 LOCAL_ONENOTE_ENABLE_DELETES = "false"
 LOCAL_ONENOTE_ENABLE_ORGANIZE = "true"
-LOCAL_ONENOTE_ENABLE_COPY = "false"
 LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO = "false"
 LOCAL_ONENOTE_ENABLE_UI_CONTROL = "false"
 LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
 ```
 
-先调用 `health_check`，确认 `onenote_desktop.ready=true`，且只有 `writes_enabled` 和 `organize_enabled` 为 `true`。禁止设置内部 raw XML 或永久删除开关。
+先调用 `health_check`，确认 `onenote_desktop.ready=true`，且只有 `writes_enabled` 和 `organize_enabled` 为 `true`。Create 保持关闭，因此这份排障配置不能创建新对象；需要验证 Create 时应使用对应具名 Runner 的静态最小权限，而不是临时扩权。禁止设置内部 raw XML 或永久删除开关。
 
 ## 4. 建立只读基线
 
@@ -121,7 +121,7 @@ LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
 }
 ```
 
-然后以新快照确认字段改回 `Group-A`。对 `Content-Section → Content-Section-Renamed → Content-Section` 重复同一流程。验收：对象 ID、父级、Page ID/顺序及 Page XML SHA-256 均不变。
+然后以新快照确认字段改回 `Group-A`。对 `Content-Section → Content-Section-Renamed → Content-Section` 重复同一流程。canonical `rename` runner 还用同名 `rename_page` 的 `items` 模式覆盖 Page：正向以剔除 Title 后的 canonical body hash 证明正文不变，恢复时要求原标题和完整 canonical Page 语义复原；OneNote 对同一标题 XML 的重序列化不再以 raw hash 单独判失败。三类 Rename 均要求对象 ID、父级和 Page 拓扑不变，无关 Page 的稳定内容 hash 必须精确一致。
 
 ## 6. Reorder 与缩进验证
 
@@ -233,9 +233,11 @@ Notebook 父级：
 
 目标 Page 本身包含 Rich Text、Table、三个混合 List/Tag 项和 Image；不是另建一个只读旁证页。fixture 构建使用普通 Page 写工具，正向 reparent 只调用一次 `reparent_page`。场景 policy 不启用 Copy、Delete 或 Raw XML，因此不会调用 `copy_page`、`UpdatePageContent` 重建目标、`DeleteHierarchy` 或任意 XML mutation 工具。
 
+为复验 TODO 037/UT-008，`reparent-page` 还会通过公开 `get_page_text` 在正向前、Page ID remap 后和默认恢复后读取同一目标的默认 rich 投影，并比较不含正文的语义签名；该只读检查不改变 mutation 次数或权限门。配套的完整 default-rich/plain/截断合同由既有 `copy-page` 承担，源/复制目标投影一致性由既有 `copy-section` 两个 case 承担。三项均只写 content-free `page-text-projection.json`，真实执行仍必须由用户本人在前台发起。
+
 2026-08-13 的真实 run 曾让实现把 `SyncHierarchy` 后失败归因为 fixture 尚未持久化，并为 `reparent-page` v3 加入 close/reopen checkpoint。2026-08-14 的稳定对照随后确认，共性变量是 scenario 启动前 OneNote Desktop GUI 是否已存在，而不是 `CloseNotebook(false)` 动作；GUI preflight 落地后当前 manual validation 全绿。因此该 checkpoint、fresh persistence 分支及其 evidence 已移除。保留的 v3 cache identity、typed structure/evidence ID rebind、完整 read-back、默认恢复、template inventory 和精确最终关闭仍分别承担原有安全职责。
 
-三个生产 Reparent 共用两阶段 mutation 后验证：先用不读取 Page XML 的 bounded hierarchy observer 连续两次观察相同的目标、父级、Page ID remap（如适用）与完整关系/同级顺序签名；随后只做一次稳定的 content-free hierarchy evidence capture。只有瞬态读取错误或 hierarchy bookend 不一致时才允许再读取一次，绝不重放 Reparent mutation；确定性 hierarchy scope 或 topology invariant 失败立即返回带 `readback_phase=hierarchy_evidence_capture` 的 partial failure。通用 4 秒 convergence deadline 保持不变。
+三个生产 Reparent 共用两阶段 mutation 后验证：先用不读取 Page XML 的 bounded hierarchy observer 观察相同的目标、父级、Page ID remap（如适用）与完整关系/同级顺序签名；Page 与 Section 要求连续两次稳定观测，SectionGroup 要求连续四次，以覆盖真实证据中“生产结果短暂 applied、随后 hierarchy 又回退”的延迟窗口。随后只做一次稳定的 content-free hierarchy evidence capture。只有瞬态读取错误或 hierarchy bookend 不一致时才允许再读取一次，绝不重放 Reparent mutation；确定性 hierarchy scope 或 topology invariant 失败立即返回带 `readback_phase=hierarchy_evidence_capture` 的 partial failure。通用 4 秒 convergence deadline 保持不变。
 
 逐 Page XML、内容摘要和内容对象比较只属于 human-gated runner：它在每个 Reparent 正向和恢复步骤前后捕获完整 manual snapshot，并以自身的 hierarchy bookend 证明采集期间结构未变化。该人工证据验证当前 OneNote/Office 环境的内容保真；生产 Tool 不对单次调用作该项逐 Page 承诺。
 
@@ -251,6 +253,8 @@ Notebook 父级：
 03：03-Source-Parent/03-Group-To-Group-Target
     → 03-Destination-Parent/03-Group-To-Group-Target
 ```
+
+`02-Source-Parent` 与 `03-Source-Parent` 各自另有两个固定 source anchors；目标搬出后源 SectionGroup 仍非空，默认逆序恢复不会把“向刚被搬空的容器写回”这一环境变量混入三类父级转换的能力判断。anchors 的 ID、父级和顺序同样进入 before/after/restored 证据。
 
 Page typed 场景的验收标准是：
 

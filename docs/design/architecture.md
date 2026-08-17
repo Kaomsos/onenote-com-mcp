@@ -39,7 +39,7 @@ flowchart LR
 ```text
 src/local_onenote_mcp/
 ├─ server.py                 依赖装配与 FastMCP 启动
-├─ operation_catalog.py      52 项 OperationSpec/Strategy/Handler 唯一 Registry
+├─ operation_catalog.py      53 项 OperationSpec/Strategy/Handler 唯一 Registry
 ├─ tool_surface.py           User 分类、精确工具集与 Internal catalog
 ├─ tools/
 │  ├─ context.py             当前 OperationRuntime 绑定
@@ -336,12 +336,12 @@ classDiagram
 | `tools.system` | 2 | Runtime Handler（health、GUI process effect） |
 | `tools.hierarchy` | 14 | Runtime Handler（hierarchy） |
 | `tools.pages` | 5 | pages、search |
-| `tools.mutations` | 19 | mutations |
+| `tools.mutations` | 20 | mutations |
 | `tools.copying` | 7 | copying |
 | `tools.operations` | 5 | operations |
-| 合计 | 52 | — |
+| 合计 | 53 | — |
 
-生产 MCP 只有这一个 52 项 typed User profile。`tool_surface.py` 同时维护五项非注册 Internal & Incubating catalog 与 forbidden set；二者都不能由环境变量、导入顺序或 profile 切换进入 `tools/list`。`tools.advanced` 不登记 Tool；内部 raw safety gate 也不改变 exposure。逐项边界见 [Advanced/低层操作](advanced_operations.md)。
+生产 MCP 只有这一个 53 项 typed User profile。`tool_surface.py` 同时维护五项非注册 Internal & Incubating catalog 与 forbidden set；二者都不能由环境变量、导入顺序或 profile 切换进入 `tools/list`。`tools.advanced` 不登记 Tool；内部 raw safety gate 也不改变 exposure。逐项边界见 [Advanced/低层操作](advanced_operations.md)。
 
 响应映射：
 

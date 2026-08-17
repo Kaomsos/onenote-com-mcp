@@ -1,9 +1,9 @@
 # 内部低层与诊断操作
 
 > 状态：当前实现态
-> 更新日期：2026-08-15
+> 更新日期：2026-08-17
 
-本项目不提供生产 `advanced` MCP profile。生产 `tools/list` 只有 52 个 task-level typed Tool；低层 COM、raw Page XML 和已证明不受后端支持的能力只能留在 Service、Bridge、纯测试或明确的人工诊断代码中，不能据其内部实现推导出产品能力。
+本项目不提供生产 `advanced` MCP profile。生产 `tools/list` 只有 53 个 task-level typed Tool；低层 COM、raw Page XML 和已证明不受后端支持的能力只能留在 Service、Bridge、纯测试或明确的人工诊断代码中，不能据其内部实现推导出产品能力。
 
 `resolve_identifier`、`get_page_xml`、`navigate_to_url`、`get_special_locations`、`get_parent` 已集中到非 MCP 注册的 Internal & Incubating catalog。该 catalog 不是隐藏 profile，也没有批量 exposure 开关；状态、原因、内部调用者和 promotion requirements 的机器投影在 `tool_surface.py`。
 
