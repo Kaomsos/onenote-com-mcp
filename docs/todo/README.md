@@ -42,7 +42,7 @@
 | 034 | [用户测试前 MCP 工具发布面收敛](034_pre_user_testing_tool_surface_convergence.md)                                     | 已完成 | P0     | 52 Tool Registry、13 项重命名、5 项非注册 catalog、7 个授权、统一 envelope、98 组合权限矩阵及 convergence/launch 真实证据全部闭合；用户已批准测试准入与提交。               |
 | 035 | [Copy/Move 内部 Planning、Preview 高级能力与 Agent 职责收敛](035_copy_move_internal_planning_and_agent_role.md)          | 已完成 | P1     | 七个单次调用 Copy/Move、无公共 Plan/Preview 与服务端内部 planning/证明职责已冻结；自动化、fresh/cache 真实回归和用户产品边界确认全部完成。                                    |
 | 036 | [Operation Runtime 操作执行控制层与 Tool 迁移](036_operation_runtime_control_plane_and_tool_migration.md)               | 已完成 | P1     | Runtime 控制层与全 Tool 迁移证据已交付；当时 56 项 Registry 已由 034 进一步收敛为当前 52 项并继续使用同一控制面。                                                          |
-| 037 | [用户测试期工具调用与实现体验优化](037_user_testing_experience_feedback_and_optimization.md)                          | 进行中 | P0     | UT-001、UT-002、UT-003 均已完成；台账继续接收后续用户测试反馈，整体代表性任务矩阵尚未宣告收尾。                               |
+| 037 | [用户测试期工具调用与实现体验优化](037_user_testing_experience_feedback_and_optimization.md)                          | 进行中 | P0     | UT-001、UT-002 与 UT-003 已完成；UT-004 的批量 Reparent/Delete/Rename/Create 与单父节点 Sort、UT-005 的新增 Create 权限/Copy/Move 授权收敛、UT-007 的全层级 mutation hierarchy-only read-back、UT-008 的 plain/rich Page 文本读取，以及 UT-009 的按内容能力组合语义验证均已接受；UT-006 仅记录 online-backed Notebook 的同步观察；整体代表性任务矩阵尚未宣告收尾。 |
 
 ## 文件命名
 
