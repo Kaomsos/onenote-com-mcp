@@ -109,7 +109,7 @@ Organize 同时需要 Writes + Organize：
 - `reparent_section(section_id, destination_parent_id, expected_name, expected_parent_id, expected_modified=null)`
 - `reparent_section_group(section_group_id, destination_parent_id, expected_name, expected_parent_id, expected_modified=null)`
 
-`page_scope` 只能是 `page_only | indentation_subtree`。Reparent 只在同一 Notebook 内改变父级；Section 与 SectionGroup 保持对象 ID，Page 在 OneNote 重映射时返回经验证的一对一 `id_map` 和最终对象。它不是 Copy 或跨 Notebook Move。SectionGroup reorder 没有稳定后端语义，因此不公开。
+`page_scope` 只能是 `page_only | indentation_subtree`。Reparent 只在同一 Notebook 内改变父级；Section 与 SectionGroup 保持对象 ID，Page 在 OneNote 重映射时返回经验证的一对一 **Page ID** `id_map` 和最终对象。生产 read-back 只验证有界、稳定的 hierarchy（typed ID、父级、子树/缩进和 sibling order），不读取 Page 正文或推导内容对象 ID 映射；逐 Page 内容和内容对象保真比较仅由 human-gated manual-validation scenario 承担，不能解读为单次生产调用的正文验证。它不是 Copy 或跨 Notebook Move。SectionGroup reorder 没有稳定后端语义，因此不公开。
 
 ### Page Content Mutation（4）
 

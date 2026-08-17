@@ -157,15 +157,15 @@ Manual-validation 只操作本次新建的 disposable Notebook，因此 Recipe �
 | `delete_page_content_object` | 指定内容对象消失且其余对象集合保持 | live content object ID 集合精确等于 frozen set 减目标 | never | Page identity 改变，或任何非目标内容对象 ID 漂移 |
 | typed `delete_*`（内部 `delete_hierarchy`） | 目标退出活动层级 | typed resource activity | never | 永久删除只到回收站或状态不完整 |
 | `close_notebook` | Notebook 退出 open 集合 | typed open state | never | open state 无法确定 |
-| `reparent_page` | Page/内容对象允许一对一 remap | 完整 destination、唯一 ID map、scope、内容、无关对象和 bookend | never | 任意 topology/identity/content/promotion 变化 |
-| `reparent_section` | ID 保持 | 完整 destination、子树内容、无关对象和 bookend | never | 任意 topology/identity/content 变化 |
-| `reparent_section_group` | ID 保持 | 完整 destination、递归子树、无关对象和 bookend | never | 任意 topology/identity/content 变化 |
+| `reparent_page` | Page ID 允许一对一 remap | 完整 destination、唯一 Page ID map、scope、层级关系、无关对象和 hierarchy bookend | never | 任意 hierarchy topology/identity/promotion 变化 |
+| `reparent_section` | ID 保持 | 完整 destination、子树 hierarchy、无关对象和 hierarchy bookend | never | 任意 hierarchy topology/identity 变化 |
+| `reparent_section_group` | ID 保持 | 完整 destination、递归子树 hierarchy、无关对象和 hierarchy bookend | never | 任意 hierarchy topology/identity 变化 |
 
 三类 Reparent 的主 `UpdateHierarchy` attempt 还声明禁止 `sync_hierarchy`、`close_notebook`、`open_hierarchy` 与 filesystem readiness probe。Page root-only 路线可能在 principal attempt 前执行 operation-specific descendant promotion；该步骤不计入 `mutation_attempts`，但会进入 operation failure 的 `completed_steps`。一旦 promotion 已发生，之后的失败整体至少是 `partially_applied`。
 
 ## 7. 当前实现与暂不收拢的边界
 
-当前已经成立：typed confirmation、进程内写协调、统一 bounded-attempt policy/executor/outcome、连续稳定 read-back、Reparent 成功/异常共享 observer 的四态对账、execute-error reconciled success、最内层 HRESULT 恢复建议，以及生产 Reparent 不依赖 `SyncHierarchy` 或自动 close/reopen。Manual validation 会对每次正向与恢复调用检查 reconciliation 响应和 bridge audit。
+当前已经成立：typed confirmation、进程内写协调、统一 bounded-attempt policy/executor/outcome、连续稳定 read-back、Reparent 成功/异常共享 observer 的四态对账、execute-error reconciled success、最内层 HRESULT 恢复建议，以及生产 Reparent 不依赖 `SyncHierarchy`、自动 close/reopen 或逐 Page XML read-back。生产 Reparent 的保证边界是 hierarchy；Manual validation 则对每次正向与恢复调用保留逐 Page 内容/对象比较，并检查 reconciliation 响应和 bridge audit。
 
 以下操作刻意不交给 029 principal-attempt executor，但仍在 Operation Registry 中具名登记：
 

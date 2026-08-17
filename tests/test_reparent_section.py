@@ -230,7 +230,148 @@ def test_reparent_rejects_stale_confirmation_before_com(monkeypatch) -> None:
 
 
 @pytest.mark.write_contract
-def test_reparent_page_validator_reports_page_and_content_id_remaps() -> None:
+def test_reparent_container_production_readback_never_reads_page_xml(monkeypatch) -> None:
+    before_items = _container_items() + [
+        {
+            "resource_type": "page",
+            "id": "descendant-page-id",
+            "title": "Descendant",
+            "parent_id": "section-id",
+            "section_id": "section-id",
+            "notebook_id": "notebook-id",
+            "page_level": 1,
+            "parent_page_id": None,
+            "order": 0,
+            "is_in_recycle_bin": False,
+        }
+    ]
+    after_items = [
+        {
+            **item,
+            "parent_id": "destination-group-id",
+        }
+        if item["id"] == "section-id"
+        else dict(item)
+        for item in before_items
+    ]
+    mutation_applied = False
+    page_reads: list[tuple[object, ...]] = []
+
+    def resources(**_kwargs) -> list[dict]:
+        return after_items if mutation_applied else before_items
+
+    def call(operation: str, **_kwargs) -> dict:
+        nonlocal mutation_applied
+        assert operation == "update_hierarchy"
+        mutation_applied = True
+        return {"updated": True}
+
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resources", resources)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "reparent_xml",
+        lambda *_args, **_kwargs: "<typed-container />",
+    )
+    monkeypatch.setattr(server.services.mutations, "call", call)
+    monkeypatch.setattr(
+        server.services.pages,
+        "xml",
+        lambda *args, **_kwargs: page_reads.append(args)
+        or (_ for _ in ()).throw(AssertionError("Reparent must not read Page XML")),
+    )
+    monkeypatch.setattr("local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None)
+
+    result = server.services.mutations.reparent_section(
+        "section-id",
+        "destination-group-id",
+        "Section",
+        "source-group-id",
+        "modified",
+    )
+
+    assert result["item"]["parent_id"] == "destination-group-id"
+    assert result["verified"] == {
+        "parent_applied": True,
+        "section_id_preserved": True,
+        "same_notebook_preserved": True,
+        "descendant_topology_preserved": True,
+        "unrelated_objects_preserved": True,
+    }
+    assert page_reads == []
+
+
+@pytest.mark.write_contract
+def test_reparent_page_production_readback_never_reads_page_xml(monkeypatch) -> None:
+    before = _page_scope_before()
+    before_items = before["items"]
+    target = next(item for item in before_items if item["id"] == "source-after")
+    target["modified"] = "modified"
+    after_items = [dict(item) for item in before_items if item["id"] != target["id"]]
+    after_items.append(
+        {
+            **target,
+            "id": "source-after-new",
+            "parent_id": "destination-section",
+            "section_id": "destination-section",
+            "page_level": 1,
+            "parent_page_id": None,
+            "order": 1,
+        }
+    )
+    mutation_applied = False
+    page_reads: list[tuple[object, ...]] = []
+
+    def resources(**_kwargs) -> list[dict]:
+        return after_items if mutation_applied else before_items
+
+    def call(operation: str, **_kwargs) -> dict:
+        nonlocal mutation_applied
+        assert operation == "update_hierarchy"
+        mutation_applied = True
+        return {"updated": True}
+
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
+    monkeypatch.setattr(server.services.hierarchy, "resources", resources)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "reparent_page_scope_xml",
+        lambda *_args, **_kwargs: "<typed-page />",
+    )
+    monkeypatch.setattr(server.services.mutations, "call", call)
+    monkeypatch.setattr(
+        server.services.pages,
+        "xml",
+        lambda *args, **_kwargs: page_reads.append(args)
+        or (_ for _ in ()).throw(AssertionError("Reparent must not read Page XML")),
+    )
+    monkeypatch.setattr("local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None)
+
+    result = server.services.mutations.reparent_page(
+        "source-after",
+        "destination-section",
+        "Source After",
+        "source-section",
+        "modified",
+    )
+
+    assert result["id_map"] == {"source-after": "source-after-new"}
+    assert result["verified"] == {
+        "parent_applied": True,
+        "target_id_transition_valid": True,
+        "same_notebook_preserved": True,
+        "page_scope_complete": True,
+        "page_topology_preserved": True,
+        "page_ids_mapped": True,
+        "unrelated_objects_preserved": True,
+    }
+    assert page_reads == []
+
+
+@pytest.mark.write_contract
+def test_reparent_page_validator_reports_page_id_remap_from_hierarchy() -> None:
     before_items = [
         {
             "resource_type": "notebook",
@@ -271,30 +412,16 @@ def test_reparent_page_validator_reports_page_and_content_id_remaps() -> None:
             "section_id": "destination-section",
         }
     ]
-    before_xml = (
-        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
-        'ID="old-page" name="Page"><one:Outline objectID="old-outline">'
-        '<one:OEChildren><one:OE objectID="old-oe"><one:T>Text</one:T></one:OE>'
-        '</one:OEChildren></one:Outline></one:Page>'
-    )
-    after_xml = before_xml.replace("old-page", "new-page").replace(
-        "old-outline", "new-outline"
-    ).replace("old-oe", "new-oe")
-
-    item, id_map, verified = server.services.mutations._validate_reparent_snapshots(
-        {"items": before_items, "page_xml": {"old-page": before_xml}},
-        {"items": after_items, "page_xml": {"new-page": after_xml}},
-        target_id="old-page",
-        destination_parent_id="destination-section",
-        resource_type="page",
+    item, id_map, verified = server.services.mutations._validate_reparent_page_scope(
+        {"items": before_items},
+        {"items": after_items},
+        selected=[before_items[-1]],
+        destination_section_id="destination-section",
+        include_descendants=False,
     )
 
     assert item["id"] == "new-page"
-    assert id_map == {
-        "old-page": "new-page",
-        "old-outline": "new-outline",
-        "old-oe": "new-oe",
-    }
+    assert id_map == {"old-page": "new-page"}
     assert all(verified.values())
 
 
@@ -864,7 +991,7 @@ def test_reparent_page_readback_unavailable_reports_stable_partial_reason(
 
     assert captures == 3
     assert caught.value.details["outcome"] == "reparent_subtree_incomplete"
-    assert caught.value.details["readback_phase"] == "full_evidence_capture"
+    assert caught.value.details["readback_phase"] == "hierarchy_evidence_capture"
     assert caught.value.details["capture_attempts"] == 2
     assert caught.value.details["mutation_replayed"] is False
     assert caught.value.details["active_source_ids"] == []
@@ -1197,7 +1324,7 @@ def test_reparent_page_without_descendants_skips_promotion_and_false_is_equivale
 
 @pytest.mark.write_contract
 @pytest.mark.parametrize("resource_type", ["section", "section_group", "page"])
-def test_reparent_full_evidence_capture_may_exceed_convergence_deadline(
+def test_reparent_hierarchy_capture_may_exceed_convergence_deadline(
     monkeypatch,
     resource_type: str,
 ) -> None:
@@ -1609,14 +1736,10 @@ def test_reparent_execute_error_with_exact_prestate_is_typed_not_applied(
 
 
 @pytest.mark.write_contract
-@pytest.mark.parametrize(
-    "failure_kind,expected_outcome",
-    [("content_changed", "partially_applied"), ("ambiguous", "indeterminate")],
-)
-def test_reparent_page_error_classifies_partial_and_ambiguous_live_states(
+@pytest.mark.parametrize("failure_kind", ["content_changed", "ambiguous"])
+def test_reparent_page_execution_error_uses_hierarchy_only_live_state(
     monkeypatch,
     failure_kind: str,
-    expected_outcome: str,
 ) -> None:
     before = _page_scope_before()
     target = next(item for item in before["items"] if item["id"] == "source-after")
@@ -1690,17 +1813,27 @@ def test_reparent_page_error_classifies_partial_and_ambiguous_live_states(
 
     monkeypatch.setattr(server.services.mutations, "call", execute)
 
-    with pytest.raises(PartialFailure) as caught:
-        server.services.mutations.reparent_page(
+    if failure_kind == "content_changed":
+        result = server.services.mutations.reparent_page(
             "source-after",
             "destination-section",
             "Source After",
             "source-section",
             "modified",
         )
-
+        assert result["reconciliation"]["state"] == "applied"
+        assert result["verified"]["page_ids_mapped"] is True
+    else:
+        with pytest.raises(PartialFailure) as caught:
+            server.services.mutations.reparent_page(
+                "source-after",
+                "destination-section",
+                "Source After",
+                "source-section",
+                "modified",
+            )
+        assert caught.value.details["observed_outcome"] == "indeterminate"
+        assert caught.value.details["mutation_attempts"] == 1
+        assert caught.value.details["mutation_replayed"] is False
+        assert caught.value.details["retry_safety"] == "do_not_replay"
     assert calls == ["update_hierarchy"]
-    assert caught.value.details["observed_outcome"] == expected_outcome
-    assert caught.value.details["mutation_attempts"] == 1
-    assert caught.value.details["mutation_replayed"] is False
-    assert caught.value.details["retry_safety"] == "do_not_replay"

@@ -235,7 +235,9 @@ Notebook 父级：
 
 2026-08-13 的真实 run 曾让实现把 `SyncHierarchy` 后失败归因为 fixture 尚未持久化，并为 `reparent-page` v3 加入 close/reopen checkpoint。2026-08-14 的稳定对照随后确认，共性变量是 scenario 启动前 OneNote Desktop GUI 是否已存在，而不是 `CloseNotebook(false)` 动作；GUI preflight 落地后当前 manual validation 全绿。因此该 checkpoint、fresh persistence 分支及其 evidence 已移除。保留的 v3 cache identity、typed structure/evidence ID rebind、完整 read-back、默认恢复、template inventory 和精确最终关闭仍分别承担原有安全职责。
 
-三个生产 Reparent 共用两阶段 mutation 后验证：先用不读取 Page XML 的 bounded hierarchy observer 连续两次观察相同的目标、父级、ID remap 与完整关系/同级顺序签名；随后只做一次完整 Page evidence capture，并以 capture 前后的 hierarchy 签名证明取证期间结构未变化。只有瞬态读取错误或该 bookend 不一致时才允许再读取一次，绝不重放 Reparent mutation；确定性内容、scope 或 topology invariant 失败立即返回带 `readback_phase` 的 partial failure。通用 4 秒 convergence deadline 保持不变，但不再包围可能超过该时限的完整 Page XML 取证。
+三个生产 Reparent 共用两阶段 mutation 后验证：先用不读取 Page XML 的 bounded hierarchy observer 连续两次观察相同的目标、父级、Page ID remap（如适用）与完整关系/同级顺序签名；随后只做一次稳定的 content-free hierarchy evidence capture。只有瞬态读取错误或 hierarchy bookend 不一致时才允许再读取一次，绝不重放 Reparent mutation；确定性 hierarchy scope 或 topology invariant 失败立即返回带 `readback_phase=hierarchy_evidence_capture` 的 partial failure。通用 4 秒 convergence deadline 保持不变。
+
+逐 Page XML、内容摘要和内容对象比较只属于 human-gated runner：它在每个 Reparent 正向和恢复步骤前后捕获完整 manual snapshot，并以自身的 hierarchy bookend 证明采集期间结构未变化。该人工证据验证当前 OneNote/Office 环境的内容保真；生产 Tool 不对单次调用作该项逐 Page 承诺。
 
 `reparent-section-group` 创建 Description 说明页和三组带编号 Section/Page 后代的目标 Group：
 

@@ -6,6 +6,8 @@
 > 类型：公开 mutation 契约 / 工具注册与安全收敛
 > 更新日期：2026-08-10
 
+> **当前实现注记（2026-08-17）**：本文的完成证据保留当时的 production 全 Page read-back 历史。当前生产 Reparent 已按 [TODO 037 的 UT-007](037_user_testing_experience_feedback_and_optimization.md#ut-007大型-reparent-的生产-read-back-不应逐-page-读取正文) 收敛为 content-free hierarchy 验证；逐 Page 正文与内容对象比较只继续存在于 human-gated manual validation。当前公开契约以 [`docs/design/tool_contracts.md`](../design/tool_contracts.md) 为准。
+
 ## 背景
 
 当前仓库对三类同 Notebook 换父级操作采用了不一致的产品边界：

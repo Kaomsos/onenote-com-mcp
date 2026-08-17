@@ -284,9 +284,8 @@ class MutationAttemptExecutor:
     ) -> MutationAttemptOutcome[T, R]:
         """Classify a previously executed operation after its shared observer ran.
 
-        Reparent uses this form so success and exception paths share its existing
-        bounded hierarchy convergence and full-evidence bookend without adding
-        another expensive Page-content capture to the normal success path.
+        Reparent uses this form so success and exception paths share its bounded
+        hierarchy convergence and content-free hierarchy evidence bookend.
         """
 
         if policy.max_execute_attempts != 1:

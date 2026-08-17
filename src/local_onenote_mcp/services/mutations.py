@@ -1167,7 +1167,7 @@ class MutationService(BaseService):
         OneNote can advance ``modified`` on a Page or container while it
         finishes persisting an already-observed hierarchy.  Reparent binds the
         caller's clock once above, then uses this semantic projection to make
-        sure the full evidence capture still names the same typed object and
+        sure the hierarchy evidence capture still names the same typed object and
         relationship.  Volatile clocks and derived aggregate fields therefore
         cannot be the sole reason a native move is rejected.
         """
@@ -1189,26 +1189,16 @@ class MutationService(BaseService):
         )
 
     def _capture_reparent_snapshot(self, notebook_id: str) -> dict[str, Any]:
-        """Capture bounded hierarchy and Page evidence for one active Notebook."""
+        """Capture a bounded, stable, content-free hierarchy for Reparent.
 
-        budget = CopyBudget.current()
+        Production Reparent establishes its postcondition from typed hierarchy
+        identity, parentage and sibling order.  Full Page XML comparison is
+        intentionally owned by the human-gated validation scenarios instead:
+        reading every Page in a Notebook makes Section/SectionGroup Reparent
+        latency scale with unrelated Page content.
+        """
+
         initial = self._capture_reparent_hierarchy(notebook_id)
-        pages = [item for item in initial if item.get("resource_type") == "page"]
-
-        total_bytes = 0
-        page_xml: dict[str, str] = {}
-        for page in pages:
-            xml = self.pages.xml(page["id"], "all")
-            size = len(xml.encode("utf-8"))
-            if size > budget.max_page_xml_bytes:
-                raise ValueError(
-                    f"Reparent verification Page {page['id']} exceeds the per-Page XML budget."
-                )
-            total_bytes += size
-            if total_bytes > budget.max_total_xml_bytes:
-                raise ValueError("Reparent verification exceeds the total Page XML budget.")
-            page_xml[page["id"]] = xml
-
         refreshed = self._capture_reparent_hierarchy(notebook_id)
         if self._reparent_hierarchy_signature(refreshed) != self._reparent_hierarchy_signature(
             initial
@@ -1216,7 +1206,7 @@ class MutationService(BaseService):
             raise RuntimeError(
                 "Notebook hierarchy changed while Reparent verification evidence was collected."
             )
-        return {"items": refreshed, "page_xml": page_xml}
+        return {"items": refreshed}
 
     def _reparent_topology_target(
         self,
@@ -1340,44 +1330,15 @@ class MutationService(BaseService):
             if any(after_item.get(field) != before_item.get(field) for field in relationship_fields):
                 raise RuntimeError(f"Reparent changed an unrelated relationship for {object_id}.")
 
-        for page_id, before_xml in before["page_xml"].items():
-            if page_id == target_id:
-                continue
-            after_xml = after["page_xml"].get(page_id)
-            if after_xml is None or self.pages.digest(after_xml) != self.pages.digest(before_xml):
-                raise RuntimeError(f"Reparent changed unrelated Page content for {page_id}.")
-
         if resource_type == "page":
-            if (
-                current.get("page_level") != before_target.get("page_level")
-                or current.get("parent_page_id") != before_target.get("parent_page_id")
-            ):
-                raise RuntimeError("Page reparent changed indentation topology.")
-            before_xml = before["page_xml"][target_id]
-            after_xml = after["page_xml"].get(current_target_id)
-            if after_xml is None:
-                raise RuntimeError("Page reparent read-back is missing target Page content.")
-            if self.pages.reparent_digest(after_xml) != self.pages.reparent_digest(before_xml):
-                raise RuntimeError("Page reparent changed rich Page content semantics.")
-            id_map.update(self.pages.observable_id_map(before_xml, after_xml))
-            verified = {
-                "parent_applied": True,
-                "target_id_transition_valid": True,
-                "same_notebook_preserved": True,
-                "page_topology_preserved": True,
-                "rich_content_preserved": True,
-                "content_object_ids_mapped": True,
-                "unrelated_objects_preserved": True,
-            }
-        else:
-            verified = {
-                "parent_applied": True,
-                f"{resource_type}_id_preserved": True,
-                "same_notebook_preserved": True,
-                "descendant_topology_preserved": True,
-                "page_content_preserved": True,
-                "unrelated_objects_preserved": True,
-            }
+            raise ValueError("Page Reparent uses its scoped hierarchy validator.")
+        verified = {
+            "parent_applied": True,
+            f"{resource_type}_id_preserved": True,
+            "same_notebook_preserved": True,
+            "descendant_topology_preserved": True,
+            "unrelated_objects_preserved": True,
+        }
         return current, id_map, verified
 
     @staticmethod
@@ -1482,10 +1443,8 @@ class MutationService(BaseService):
             if (
                 int(current.get("page_level") or 0) != int(expected["page_level"])
                 or current.get("parent_page_id") != expected_parents[page_id]
-                or stable_page_content_digest(after["page_xml"][page_id])
-                != stable_page_content_digest(before["page_xml"][page_id])
             ):
-                raise RuntimeError("Descendant promotion did not preserve Page topology/content.")
+                raise RuntimeError("Descendant promotion did not preserve Page topology.")
         return after, {
             "promoted": True,
             "preserved_descendant_ids": [str(item["id"]) for item in descendants],
@@ -1517,11 +1476,7 @@ class MutationService(BaseService):
                 and (item_id == selected_ids[0] or item_id in added_ids)
                 and display_name(item) == display_name(root)
             ):
-                xml = after["page_xml"].get(item_id)
-                if xml is not None and self.pages.reparent_digest(xml) == self.pages.reparent_digest(
-                    before["page_xml"][selected_ids[0]]
-                ):
-                    root_candidates.append(item)
+                root_candidates.append(item)
         if len(root_candidates) != 1:
             raise RuntimeError("Page reparent did not yield one exact destination root Page.")
         current_root = root_candidates[0]
@@ -1558,24 +1513,12 @@ class MutationService(BaseService):
                 current.get("section_id") != destination_section_id
                 or int(current.get("page_level") or 0) != expected_level
                 or display_name(current) != display_name(source)
-                or self.pages.reparent_digest(after["page_xml"][current_id])
-                != self.pages.reparent_digest(before["page_xml"][source_id])
             ):
-                raise RuntimeError("Page reparent changed selected Page topology/content.")
+                raise RuntimeError("Page reparent changed selected Page topology.")
             if current_id in reverse_ids:
                 raise RuntimeError("Page reparent produced a non-injective Page ID mapping.")
             id_map[source_id] = current_id
             reverse_ids.add(current_id)
-            observable = self.pages.observable_id_map(
-                before["page_xml"][source_id], after["page_xml"][current_id]
-            )
-            for old_id, new_id in observable.items():
-                if old_id in id_map and id_map[old_id] != new_id:
-                    raise RuntimeError("Page reparent produced an ambiguous observable ID mapping.")
-                if new_id in reverse_ids:
-                    raise RuntimeError("Page reparent produced a non-injective observable ID mapping.")
-                id_map[old_id] = new_id
-                reverse_ids.add(new_id)
 
         expected_scope_parents = self._page_parent_map(
             [
@@ -1636,10 +1579,6 @@ class MutationService(BaseService):
                     raise RuntimeError("Page reparent changed preserved source Page topology.")
             elif any(current.get(field) != old.get(field) for field in relationship_fields):
                 raise RuntimeError(f"Page reparent changed an unrelated relationship for {object_id}.")
-            if old.get("resource_type") == "page" and stable_page_content_digest(
-                after["page_xml"][object_id]
-            ) != stable_page_content_digest(before["page_xml"][object_id]):
-                raise RuntimeError(f"Page reparent changed unrelated Page content for {object_id}.")
 
         return current_root, id_map, {
             "parent_applied": True,
@@ -1647,13 +1586,12 @@ class MutationService(BaseService):
             "same_notebook_preserved": True,
             "page_scope_complete": True,
             "page_topology_preserved": True,
-            "rich_content_preserved": True,
-            "content_object_ids_mapped": True,
+            "page_ids_mapped": True,
             "unrelated_objects_preserved": True,
         }
 
     def _reparent_snapshot_signature(self, snapshot: dict[str, Any]) -> tuple[Any, ...]:
-        """Project the complete frozen semantic state used to prove not-applied."""
+        """Project the frozen hierarchy state used to prove not-applied."""
 
         hierarchy = tuple(
             sorted(
@@ -1664,16 +1602,7 @@ class MutationService(BaseService):
                 for item in snapshot["items"]
             )
         )
-        page_content = tuple(
-            sorted(
-                (
-                    str(page_id),
-                    self.pages.reparent_digest(xml),
-                )
-                for page_id, xml in snapshot["page_xml"].items()
-            )
-        )
-        return hierarchy, page_content
+        return hierarchy
 
     def _observe_reparent_state(
         self,
@@ -1688,7 +1617,7 @@ class MutationService(BaseService):
         preservation: dict[str, Any],
         snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Observe one full Reparent state for both success and error paths."""
+        """Observe one content-free Reparent state for success and error paths."""
 
         snapshot = snapshot or self._capture_reparent_snapshot(notebook_id)
         validated: tuple[dict[str, Any], dict[str, str], dict[str, bool]] | None = None
@@ -1773,16 +1702,7 @@ class MutationService(BaseService):
             and (str(item.get("id")) == source_root_id or str(item.get("id")) in added_ids)
             and display_name(item) == display_name(root)
         ]
-        observed = []
-        for item in candidates:
-            item_id = str(item["id"])
-            xml = candidate.get("page_xml", {}).get(item_id)
-            if (
-                xml is not None
-                and self.pages.reparent_digest(xml)
-                == self.pages.reparent_digest(before["page_xml"][source_root_id])
-            ):
-                observed.append(item)
+        observed = candidates
         source_ids = [
             source_id
             for source_id in selected_source_ids
@@ -2037,7 +1957,7 @@ class MutationService(BaseService):
             details: dict[str, Any] = {
                 "outcome": "reparent_readback_incomplete",
                 "reparent_attempted": True,
-                "readback_phase": "full_evidence_capture",
+                "readback_phase": "hierarchy_evidence_capture",
                 "readback_error_type": type(capture_error).__name__,
                 "capture_attempts": capture_attempts,
                 "convergence": stable.summary() if stable is not None else {
@@ -2113,7 +2033,7 @@ class MutationService(BaseService):
             observed_state.update(
                 validated=None,
                 validation_error=RuntimeError(
-                    "Reparent topology and full-evidence observations did not agree."
+                    "Reparent topology and hierarchy evidence observations did not agree."
                 ),
                 exact_pre_state=False,
                 partial=False,
