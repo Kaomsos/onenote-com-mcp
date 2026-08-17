@@ -19,7 +19,7 @@ class ReparentPageScenario(Scenario):
     name = "reparent-page"
     fixture_recipe = RECIPE
     help_text = (
-        "EXPERIMENTAL: validate typed same-Notebook Page reparent with a Description "
+        "EXPERIMENTAL: validate same-Notebook Page reparent items with a Description "
         "Page, then restore or preserve."
     )
     included_in_all = True

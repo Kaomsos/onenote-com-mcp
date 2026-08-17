@@ -42,7 +42,7 @@ class ReorderPageFixtureRecipe(RecipeBase):
         r = context.recorder
         description_section = r.record_structure("description_section", await ensure_section(context.client, context.notebook_id, "Description"))
         description_page = r.record_structure("description_page", await ensure_page(context.client, description_section["id"], DESCRIPTION_TITLE, f"{DESCRIPTION}\nFixture token: {context.token}"))
-        description_text = str((await context.client.call_tool("get_page_text", {"page_id": description_page["id"]}))["text"])
+        description_text = str((await context.client.call_tool("get_page_text", {"page_id": description_page["id"], "mode": "plain"}))["text"])
         if not all(marker in description_text for marker in ("操作前（顺序 01,02,03）", "预期操作后（顺序 01,03,02）", "默认恢复后（顺序 01,02,03）")):
             raise InvariantFailure("Reorder Page Description is missing a before/after/restore marker.")
         section = r.record_structure("reorder_section", await ensure_section(context.client, context.notebook_id, "01-Reorder-Page-Section"))

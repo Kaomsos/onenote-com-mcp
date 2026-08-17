@@ -10,6 +10,7 @@ from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
 from ..test_utils import (
     assert_restored,
     capture_snapshot,
+    display_name,
     find_snapshot_item,
     resolve_manifest_item,
     scenario_dir,
@@ -19,6 +20,7 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.copy_runtime import call_with_result_evidence
+from .common.expected_rejection import expect_mutation_preflight_rejection
 from .common.registry import SCENARIO_REGISTRY
 from .fixture_recipes.create import RECIPE
 
@@ -29,7 +31,8 @@ class CreateScenario(Scenario):
     fixture_recipe = RECIPE
     help_text = (
         "GATED: create the preset isolated Notebook fixture, create two same-title "
-        "Pages with fresh IDs, verify and clean them up, then close or keep."
+        "Pages with fresh IDs, prove a duplicate-name batch is rejected before mutation, "
+        "exercise bounded Create items, verify and clean them up, then close or keep."
     )
     included_in_all = True
     worksite_dry_run_action = "preserve-created-fixture-and-duplicate-title-pages"
@@ -106,7 +109,80 @@ class CreateScenario(Scenario):
 
         keep_worksite = bool(getattr(args, "keep_worksite", False))
         cleanup_results: list[dict[str, Any]] = []
+        batch_results: dict[str, Any] = {}
+        batch_targets: list[dict[str, Any]] = []
+        expected_rejection: dict[str, Any] | None = None
         restored = False
+        if not keep_worksite and fixture_result:
+            notebook = find_snapshot_item(after, notebook_id)
+            current_section = find_snapshot_item(after, section["id"])
+            if notebook is None or current_section is None:
+                raise InvariantFailure("Batch Create parent confirmation targets disappeared.")
+            expected_rejection = await expect_mutation_preflight_rejection(
+                client,
+                "create_section",
+                {
+                    "parent_id": notebook_id,
+                    "expected_parent_name": display_name(notebook),
+                    "expected_parent_modified": None,
+                    "items": [
+                        {"name": "Rejected-Duplicate"},
+                        {"name": "rejected-duplicate.one"},
+                    ],
+                },
+                out / "expected-batch-rejection.json",
+                label="create-section-normalized-duplicate",
+                expected_message_fragment="unique after normalization",
+            )
+            rejection_after = await capture_snapshot(client, notebook_id)
+            write_json(out / "expected-batch-rejection-after.json", rejection_after)
+            assert_restored(after, rejection_after)
+            batch_requests = (
+                (
+                    "section_group",
+                    "create_section_group",
+                    {
+                        "parent_id": notebook_id,
+                        "expected_parent_name": display_name(notebook),
+                        "expected_parent_modified": None,
+                        "items": [{"name": "Batch-Group-A"}, {"name": "Batch-Group-B"}],
+                    },
+                ),
+                (
+                    "section",
+                    "create_section",
+                    {
+                        "parent_id": notebook_id,
+                        "expected_parent_name": display_name(notebook),
+                        "expected_parent_modified": None,
+                        "items": [{"name": "Batch-Section-A"}, {"name": "Batch-Section-B"}],
+                    },
+                ),
+                (
+                    "page",
+                    "create_page",
+                    {
+                        "section_id": current_section["id"],
+                        "expected_section_name": display_name(current_section),
+                        "expected_section_modified": None,
+                        "items": [
+                            {"title": "Batch-Page-A", "content": "Batch A", "content_format": "plain"},
+                            {"title": "Batch-Page-B", "content": "Batch B", "content_format": "plain"},
+                        ],
+                    },
+                ),
+            )
+            for resource_type, tool_name, arguments in batch_requests:
+                response = await client.call_tool(tool_name, arguments)
+                batch_results[resource_type] = response
+            batch_after = await capture_snapshot(client, notebook_id)
+            write_json(out / "batch-after.json", batch_after)
+            for response in batch_results.values():
+                for entry in response.get("items", []):
+                    result_item = entry.get("result", {}).get("item") or entry.get("result", {}).get("page") or entry.get("result", {}).get("section") or entry.get("result", {}).get("section_group")
+                    if not isinstance(result_item, dict) or find_snapshot_item(batch_after, str(result_item.get("id"))) is None:
+                        raise InvariantFailure("Batch Create item omitted a live allocated identity.")
+                    batch_targets.append(find_snapshot_item(batch_after, str(result_item["id"])))
         if not keep_worksite:
             cleanup_targets = list(
                 enumerate(
@@ -129,6 +205,38 @@ class CreateScenario(Scenario):
                         out / f"cleanup-created-page-{ordinal:02d}-result.json",
                     )
                 )
+            for ordinal, target in enumerate(
+                sorted(
+                    [item for item in batch_targets if item is not None],
+                    key=lambda item: {"page": 0, "section": 1, "section_group": 2}[item["resource_type"]],
+                ),
+                start=1,
+            ):
+                resource_type = target["resource_type"]
+                cleanup_tool = f"delete_{resource_type}"
+                cleanup_arguments = (
+                    {
+                        "page_id": target["id"],
+                        "expected_title": display_name(target),
+                        "expected_section_id": target["section_id"],
+                        "expected_modified": target.get("modified"),
+                    }
+                    if resource_type == "page"
+                    else {
+                        ("section_id" if resource_type == "section" else "section_group_id"): target["id"],
+                        "expected_name": display_name(target),
+                        "expected_parent_id": target["parent_id"],
+                        "expected_modified": target.get("modified"),
+                    }
+                )
+                cleanup_results.append(
+                    await call_with_result_evidence(
+                        client,
+                        cleanup_tool,
+                        cleanup_arguments,
+                        out / f"cleanup-batch-{ordinal:02d}-result.json",
+                    )
+                )
             restored_snapshot = await capture_snapshot(client, notebook_id)
             write_json(out / "restored.json", restored_snapshot)
             assert_restored(before, restored_snapshot)
@@ -146,6 +254,8 @@ class CreateScenario(Scenario):
                 "bodies_independently_readable": True,
             },
             "cleanup_results": cleanup_results,
+            "batch_results": batch_results,
+            "expected_rejection": expected_rejection,
             "restored": restored,
             "worksite_preserved": keep_worksite,
         }

@@ -14,6 +14,7 @@ from tests.manual_validation.mcp_stdio_client import (
     RICH_REPARENT_POLICY,
 )
 from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
+from tests.manual_validation.test_utils import read_json
 from tests.manual_validation.scenarios.common import reparent as reparent_runtime
 from tests.manual_validation.scenarios.common.destination_position import (
     expected_destination_position,
@@ -63,7 +64,15 @@ class FakeClient:
 
     async def call_tool(self, name: str, arguments: dict, **_kwargs) -> dict:
         self.calls.append((name, arguments))
-        target_id = arguments.get("page_id") or arguments.get("section_group_id")
+        batch_item = arguments.get("items", [{}])[0]
+        target_id = (
+            arguments.get("page_id")
+            or arguments.get("section_group_id")
+            or batch_item.get("page_id")
+            or batch_item.get("section_id")
+            or batch_item.get("section_group_id")
+            or batch_item.get("object_id")
+        )
         current_id = {
             "target-page": "reparented-page",
             "reparented-page": "restored-page",
@@ -85,7 +94,38 @@ class FakeClient:
                 "recommended_action": "none",
             },
         }
-        return self.last_response
+        return {
+            "operation": name,
+            "mode": "batch",
+            "items": [{
+                "input_index": 0,
+                "object_id": target_id,
+                "status": "applied",
+                "result": self.last_response,
+            }],
+            "final_hierarchy": {
+                "destination_parent_id": arguments.get("destination_section_id")
+                or arguments.get("destination_parent_id"),
+                "item_count": 1,
+                "items": [{"input_index": 0, "current_id": current_id}],
+                "verification_scope": {"page_content": "not_read"},
+            },
+        }
+
+
+@pytest.fixture(autouse=True)
+def _stub_page_text_projection(monkeypatch):
+    async def capture_projection(*_args, **_kwargs):
+        return {
+            "mode": "rich",
+            "format": "sanitized_html_v1",
+            "semantic_signature": {"fixture": "stable"},
+            "default_mode_argument_omitted": True,
+        }
+
+    monkeypatch.setattr(
+        reparent_runtime, "capture_rich_page_text_projection", capture_projection
+    )
 
 
 def _snapshot(items: list[dict]) -> dict:
@@ -294,6 +334,12 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
         group("anchor-3a", "00-Group-Anchor-A", "destination-3"),
         group("anchor-3b", "99-Group-Anchor-B", "destination-3"),
     ]
+    source_anchors = [
+        group("source-anchor-2a", "00-Source-Anchor-A", "source-2"),
+        group("source-anchor-2b", "99-Source-Anchor-B", "source-2"),
+        group("source-anchor-3a", "00-Source-Anchor-A", "source-3"),
+        group("source-anchor-3b", "99-Source-Anchor-B", "source-3"),
+    ]
     for parent, target, section_name, page_name in cases:
         items.extend(
             [
@@ -319,7 +365,7 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
                 },
             ]
         )
-    items.extend([destination_3, *anchors])
+    items.extend([destination_3, *anchors, *source_anchors])
     before = _snapshot(items)
     after_1 = _with_parent(before, "target-1", "destination-1")
     after_2 = _with_parent(after_1, "target-2", "notebook")
@@ -342,12 +388,16 @@ def _section_group_case() -> tuple[dict, dict, list[dict], list[dict], type, set
             "notebook_to_group_section": by_id["section-1"],
             "notebook_to_group_page": by_id["page-1"],
             "group_to_notebook_source": by_id["source-2"],
+            "group_to_notebook_source_anchor_a": by_id["source-anchor-2a"],
+            "group_to_notebook_source_anchor_b": by_id["source-anchor-2b"],
             "group_to_notebook_target": by_id["target-2"],
             "group_to_notebook_section": by_id["section-2"],
             "group_to_notebook_page": by_id["page-2"],
             "group_to_notebook_anchor_a": by_id["anchor-2a"],
             "group_to_notebook_anchor_b": by_id["anchor-2b"],
             "group_to_group_source": by_id["source-3"],
+            "group_to_group_source_anchor_a": by_id["source-anchor-3a"],
+            "group_to_group_source_anchor_b": by_id["source-anchor-3b"],
             "group_to_group_destination": by_id["destination-3"],
             "group_to_group_anchor_a": by_id["anchor-3a"],
             "group_to_group_anchor_b": by_id["anchor-3b"],
@@ -498,12 +548,30 @@ def test_typed_reparent_verifies_identity_content_and_restore_or_preserve(
     )
 
     if scenario_type is ReparentPageScenario:
+        projection = read_json(
+            tmp_path / "scenarios" / "reparent-page" / "page-text-projection.json"
+        )
+        assert projection["content_persisted"] is False
+        operation_projection = projection["operations"][0]
+        assert operation_projection["forward_comparison"]["passed"] is True
+        if keep_worksite:
+            assert operation_projection["restore_status"] == (
+                "not_requested_keep_worksite"
+            )
+            assert "restored" not in operation_projection
+        else:
+            assert operation_projection["restore_status"] == "captured"
+            assert operation_projection["restore_comparison"]["passed"] is True
         assert client.calls[0][1] == {
-            "page_id": "target-page",
             "destination_section_id": "destination-section",
-            "expected_title": "01-Reparent-Page",
-            "expected_section_id": "source-section",
-            "expected_modified": None,
+            "items": [
+                {
+                    "page_id": "target-page",
+                    "expected_title": "01-Reparent-Page",
+                    "expected_section_id": "source-section",
+                    "expected_modified": None,
+                }
+            ],
         }
         assert result["operations"][0]["id_history"] == (
             ["target-page", "reparented-page"]
@@ -514,12 +582,15 @@ def test_typed_reparent_verifies_identity_content_and_restore_or_preserve(
             "target-page": "reparented-page"
         }
         if not keep_worksite:
-            assert client.calls[1][1]["page_id"] == "reparented-page"
+            assert client.calls[1][1]["items"][0]["page_id"] == "reparented-page"
             assert result["operations"][0]["restore_id_maps"] == [
                 {"reparented-page": "restored-page"}
             ]
     else:
-        assert [arguments["section_group_id"] for _name, arguments in client.calls[:3]] == [
+        assert [
+            arguments["items"][0]["section_group_id"]
+            for _name, arguments in client.calls[:3]
+        ] == [
             "target-1",
             "target-2",
             "target-3",
@@ -531,7 +602,8 @@ def test_typed_reparent_verifies_identity_content_and_restore_or_preserve(
         ]
         if not keep_worksite:
             restore_target_ids = [
-                call[1]["section_group_id"] for call in client.calls[operation_count:]
+                call[1]["items"][0]["section_group_id"]
+                for call in client.calls[operation_count:]
             ]
             assert restore_target_ids == ["target-3", "target-2", "target-1"]
 
@@ -804,7 +876,7 @@ def test_section_group_typed_call_accepts_notebook_destination() -> None:
         target, "notebook", "section_group"
     )
     assert name == "reparent_section_group"
-    assert arguments["section_group_id"] == "target-2"
+    assert arguments["items"][0]["section_group_id"] == "target-2"
     assert arguments["destination_parent_id"] == "notebook"
 
 

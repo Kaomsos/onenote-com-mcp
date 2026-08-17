@@ -272,7 +272,7 @@ def test_hierarchy_navigation_recipe_and_policy_are_cacheable_and_least_privileg
     } == {"list_notebooks"}
     assert scenario.spec.policy.writes_enabled is True
     assert scenario.spec.policy.deletes_enabled is False
-    assert scenario.spec.policy.copy_enabled is False
+    assert scenario.spec.policy.create_enabled is True
 
     assert main(["hierarchy-navigation", "--dry-run", "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)

@@ -273,3 +273,140 @@ def test_rename_keep_worksite_preserves_both_fixed_targets(
     assert worksite["target_ids"] == ["section-id", "group-id"]
     assert worksite["manual_cleanup_required"] is True
     assert len(worksite["cleanup"]) == 2
+
+
+def _page_snapshot(
+    title: str,
+    *,
+    page_hash: str,
+    body_hash: str = "body-stable",
+    canonical_hash: str,
+) -> dict:
+    section = {
+        "resource_type": "section",
+        "id": "section-id",
+        "name": "Rename-Section",
+        "parent_id": "notebook-id",
+    }
+    page = {
+        "resource_type": "page",
+        "id": "page-id",
+        "title": title,
+        "path": f"Notebook/Rename-Section/{title}",
+        "parent_id": "section-id",
+        "section_id": "section-id",
+        "page_level": 1,
+        "order": 0,
+        "parent_page_id": None,
+        "modified": page_hash,
+    }
+    return {
+        "captured_at": page_hash,
+        "notebook_id": "notebook-id",
+        "items": [section, page],
+        "page_hashes": {"page-id": page_hash},
+        "page_body_hashes": {"page-id": body_hash},
+        "page_canonical_hashes": {"page-id": canonical_hash},
+        "page_objects": {"page-id": [{"kind": "Outline", "id": "outline-id"}]},
+    }
+
+
+def test_page_rename_allows_title_hash_change_and_requires_canonical_restore(
+    monkeypatch, tmp_path
+) -> None:
+    before = _page_snapshot(
+        "Rename-Page", page_hash="raw-before", canonical_hash="canonical-before"
+    )
+    after = _page_snapshot(
+        "Rename-Page-Smoke-Renamed",
+        page_hash="raw-after",
+        canonical_hash="canonical-after",
+    )
+    restored = _page_snapshot(
+        "Rename-Page", page_hash="raw-restored", canonical_hash="canonical-before"
+    )
+    snapshots = iter([before, after, restored])
+    notebook = {
+        "resource_type": "notebook",
+        "id": "notebook-id",
+        "name": "Notebook",
+        "parent_id": None,
+    }
+    manifest = {
+        "schema_version": 1,
+        "notebook": notebook,
+        "structure": {"page_target": before["items"][1]},
+    }
+
+    class FakeClient:
+        calls: list[tuple[str, dict]] = []
+        allowed_tools = set(rename_scenario.RENAME_TOOLS) | {"health_check"}
+        policy = rename_scenario.WRITE_POLICY
+        timeout_seconds = 10
+
+        async def call_tool(self, name: str, arguments: dict, **_: object) -> dict:
+            self.calls.append((name, arguments))
+            item = arguments["items"][0]
+            title = item["new_title"]
+            result_item = {
+                **before["items"][1],
+                "title": title,
+                "path": f"Notebook/Rename-Section/{title}",
+            }
+            return {
+                "operation": name,
+                "mode": "batch",
+                "items": [
+                    {
+                        "input_index": 0,
+                        "object_id": "page-id",
+                        "status": "applied",
+                        "result": {
+                            "item": result_item,
+                            "reconciliation": _attempt(),
+                        },
+                    }
+                ],
+            }
+
+    async def fake_snapshot(_client, _notebook_id):
+        return deepcopy(next(snapshots))
+
+    monkeypatch.setattr(rename_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(rename_scenario, "render_report", lambda _run_dir: None)
+    result = asyncio.run(
+        RenameScenario().execute(
+            _args(),
+            RuntimeOptions(tmp_path, 10, False, False),
+            manifest,
+            client=FakeClient(),
+            fixture_result={},
+        )
+    )
+
+    assert result["status"] == "passed"
+    assert result["restored"] is True
+    assert [call[1]["items"][0]["new_title"] for call in FakeClient.calls] == [
+        "Rename-Page-Smoke-Renamed",
+        "Rename-Page",
+    ]
+
+
+def test_page_rename_rejects_body_change_even_when_only_title_should_change() -> None:
+    before = _page_snapshot(
+        "Rename-Page", page_hash="raw-before", canonical_hash="canonical-before"
+    )
+    after = _page_snapshot(
+        "Rename-Page-Smoke-Renamed",
+        page_hash="raw-after",
+        body_hash="body-changed",
+        canonical_hash="canonical-after",
+    )
+
+    with pytest.raises(InvariantFailure, match="outside the title"):
+        rename_scenario._validate_transition(
+            before,
+            after,
+            target_id="page-id",
+            new_name="Rename-Page-Smoke-Renamed",
+        )

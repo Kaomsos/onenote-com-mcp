@@ -94,7 +94,7 @@ def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
     assert spec.policy.writes_enabled is True
     assert spec.policy.deletes_enabled is False
     assert spec.policy.organize_enabled is False
-    assert spec.policy.copy_enabled is False
+    assert spec.policy.create_enabled is True
     assert spec.policy.local_file_io_enabled is False
     assert spec.policy.ui_control_enabled is False
     assert spec.policy.notebook_lifecycle_enabled is False
@@ -156,7 +156,7 @@ def test_query_metadata_scope_dry_run_is_human_gated_and_least_privilege(capsys)
         "writes_enabled": True,
         "deletes_enabled": False,
         "organize_enabled": False,
-        "copy_enabled": False,
+            "create_enabled": True,
         "local_file_io_enabled": False,
         "ui_control_enabled": False,
         "notebook_lifecycle_enabled": False,

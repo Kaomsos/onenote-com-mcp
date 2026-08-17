@@ -43,7 +43,7 @@ class ReparentSectionFixtureRecipe(RecipeBase):
         r = context.recorder
         ds = r.record_structure("description_section", await ensure_section(context.client, context.notebook_id, "00-Description"))
         dp = r.record_structure("description_page", await ensure_page(context.client, ds["id"], DESCRIPTION_TITLE, f"{DESCRIPTION}\nFixture token: {context.token}"))
-        text = str((await context.client.call_tool("get_page_text", {"page_id": dp["id"]}))["text"])
+        text = str((await context.client.call_tool("get_page_text", {"page_id": dp["id"], "mode": "plain"}))["text"])
         if not all(marker in text for marker in ("场景一：Notebook 父级 → SectionGroup 父级", "场景二：SectionGroup 父级 → Notebook 父级", "场景三：SectionGroup 父级 → SectionGroup 父级", "三个目标 Section 各自包含同编号 Page")):
             raise InvariantFailure("Reparent Section Description is missing a parent transition marker.")
         d1 = r.record_structure("notebook_to_group_destination", await ensure_group(context.client, context.notebook_id, "01-Destination-Group"))

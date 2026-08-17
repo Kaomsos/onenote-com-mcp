@@ -166,7 +166,8 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
         description_text = str(
             (
                 await context.client.call_tool(
-                    "get_page_text", {"page_id": description_page["id"]}
+                    "get_page_text",
+                    {"page_id": description_page["id"], "mode": "plain"},
                 )
             )["text"]
         )

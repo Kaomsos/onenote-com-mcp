@@ -26,6 +26,10 @@ from ...test_utils import (
     write_json,
 )
 from .destination_position import assert_destination_position
+from .page_text_evidence import (
+    assert_rich_page_text_equivalent,
+    capture_rich_page_text_projection,
+)
 
 
 def _container_parent(item: dict[str, Any], resource_type: str) -> Any:
@@ -291,19 +295,23 @@ def _typed_reparent_call(
 ) -> tuple[str, dict[str, Any]]:
     if resource_type == "page":
         return "reparent_page", {
-            "page_id": target["id"],
             "destination_section_id": destination_parent_id,
-            "expected_title": display_name(target),
-            "expected_section_id": target["section_id"],
-            "expected_modified": target.get("modified"),
+            "items": [{
+                "page_id": target["id"],
+                "expected_title": display_name(target),
+                "expected_section_id": target["section_id"],
+                "expected_modified": target.get("modified"),
+            }],
         }
     if resource_type == "section_group":
         return "reparent_section_group", {
-            "section_group_id": target["id"],
             "destination_parent_id": destination_parent_id,
-            "expected_name": display_name(target),
-            "expected_parent_id": target["parent_id"],
-            "expected_modified": target.get("modified"),
+            "items": [{
+                "section_group_id": target["id"],
+                "expected_name": display_name(target),
+                "expected_parent_id": target["parent_id"],
+                "expected_modified": target.get("modified"),
+            }],
         }
     raise ValueError(f"Unsupported typed reparent resource type: {resource_type}")
 
@@ -339,6 +347,28 @@ def _validate_single_stage_mutation_response(
             + json.dumps(mismatched, ensure_ascii=True, sort_keys=True)
         )
     return {key: reconciliation[key] for key in expected}
+
+
+def _batch_item_result(response: dict[str, Any]) -> dict[str, Any]:
+    items = response.get("items")
+    if not isinstance(items, list) or len(items) != 1:
+        raise InvariantFailure("Typed batch Reparent response must contain one item result.")
+    final_hierarchy = response.get("final_hierarchy")
+    if (
+        not isinstance(final_hierarchy, dict)
+        or final_hierarchy.get("item_count") != 1
+        or not isinstance(final_hierarchy.get("items"), list)
+        or len(final_hierarchy["items"]) != 1
+        or final_hierarchy.get("verification_scope")
+        != {"page_content": "not_read"}
+    ):
+        raise InvariantFailure(
+            "Typed batch Reparent response omitted its final content-free hierarchy summary."
+        )
+    result = items[0].get("result") if isinstance(items[0], dict) else None
+    if not isinstance(result, dict):
+        raise InvariantFailure("Typed batch Reparent item omitted its result.")
+    return result
 
 
 _FORBIDDEN_REPARENT_BRIDGE_OPERATIONS = {
@@ -419,6 +449,25 @@ async def execute_typed_reparent(
         plans = ((scenario_name, target_key, source_parent_key, destination_parent_key),)
     out = scenario_dir(options.run_dir, scenario_name)
 
+    def write_page_text_projection(operations: list[dict[str, Any]]) -> None:
+        if resource_type != "page" or scenario_name != "reparent-page":
+            return
+        write_json(
+            out / "page-text-projection.json",
+            {
+                "schema_version": 1,
+                "tool": "get_page_text",
+                "operations": [
+                    {
+                        "case": operation["case"],
+                        **operation.get("page_text_projection", {}),
+                    }
+                    for operation in operations
+                ],
+                "content_persisted": False,
+            },
+        )
+
     def parent(key: str | None) -> dict[str, Any]:
         return notebook if key is None else resolve_manifest_item(manifest, key)
 
@@ -458,6 +507,7 @@ async def execute_typed_reparent(
             )
             audit_path, audit_cursor = _bridge_audit_cursor(active_client)
             response = await active_client.call_tool(tool_name, arguments)
+            item_response = _batch_item_result(response)
             operation.setdefault("restore_bridge_audit", []).append(
                 _validate_reparent_bridge_audit(
                     audit_path,
@@ -467,7 +517,7 @@ async def execute_typed_reparent(
             )
             operation.setdefault("restore_reconciliation", []).append(
                 _validate_single_stage_mutation_response(
-                    response, case=f"{operation['case']} restore"
+                    item_response, case=f"{operation['case']} restore"
                 )
             )
             restore_snapshot = await capture_snapshot(active_client, notebook_id)
@@ -480,7 +530,7 @@ async def execute_typed_reparent(
                 resource_type=resource_type,
             )
             operation["current_target_id"] = restored_target_id
-            response_id_map = response.get("id_map")
+            response_id_map = item_response.get("id_map")
             if not isinstance(response_id_map, dict) or response_id_map.get(
                 active_target_id
             ) != restored_target_id:
@@ -501,6 +551,30 @@ async def execute_typed_reparent(
                 target_id=operation["target_id"],
                 destination_parent_id=operation["source_parent_id"],
             )
+            for operation in operations:
+                projection = operation.get("page_text_projection")
+                if not isinstance(projection, dict) or "before" not in projection:
+                    continue
+                restored_projection = await capture_rich_page_text_projection(
+                    active_client,
+                    str(operation["current_target_id"]),
+                    expected_features=(
+                        "title",
+                        "formatting",
+                        "table",
+                        "image",
+                        "list",
+                        "tag",
+                    ),
+                )
+                projection["restored"] = restored_projection
+                projection["restore_comparison"] = assert_rich_page_text_equivalent(
+                    projection["before"],
+                    restored_projection,
+                    label=f"{operation['case']}/restore",
+                )
+                projection["restore_status"] = "captured"
+            write_page_text_projection(operations)
         else:
             assert_restored(before, restore_snapshot)
         options.progress.unit_completed(
@@ -546,6 +620,23 @@ async def execute_typed_reparent(
                 "destination_parent_id": str(destination["id"]),
             }
             operations.append(operation)
+            if resource_type == "page" and scenario_name == "reparent-page":
+                operation["page_text_projection"] = {
+                    "before": await capture_rich_page_text_projection(
+                        active_client,
+                        str(current["id"]),
+                        expected_features=(
+                            "title",
+                            "formatting",
+                            "table",
+                            "image",
+                            "list",
+                            "tag",
+                        ),
+                    ),
+                    "restore_status": "pending",
+                }
+                write_page_text_projection(operations)
             write_json(out / "requests.json", {"operations": operations})
             step_before = current_snapshot
             tool_name, arguments = _typed_reparent_call(
@@ -555,13 +646,14 @@ async def execute_typed_reparent(
             )
             audit_path, audit_cursor = _bridge_audit_cursor(active_client)
             response = await active_client.call_tool(tool_name, arguments)
+            item_response = _batch_item_result(response)
             operation["forward_bridge_audit"] = _validate_reparent_bridge_audit(
                 audit_path,
                 audit_cursor,
                 case=case,
             )
             operation["forward_reconciliation"] = (
-                _validate_single_stage_mutation_response(response, case=case)
+                _validate_single_stage_mutation_response(item_response, case=case)
             )
             write_json(out / f"mutation-response-{index}.json", response)
             current_snapshot = await capture_snapshot(active_client, notebook_id)
@@ -579,7 +671,7 @@ async def execute_typed_reparent(
                 if current_target_id not in operation["id_history"]:
                     operation["id_history"].append(current_target_id)
                 operation["target_id_changed"] = current_target_id != operation["target_id"]
-                response_id_map = response.get("id_map")
+                response_id_map = item_response.get("id_map")
                 if not isinstance(response_id_map, dict) or response_id_map.get(
                     operation["target_id"]
                 ) != current_target_id:
@@ -588,7 +680,7 @@ async def execute_typed_reparent(
                     )
                 operation["forward_id_map"] = response_id_map
                 position_evidence = assert_destination_position(
-                    response,
+                    item_response,
                     current_snapshot,
                     current_target_id,
                 )
@@ -597,6 +689,29 @@ async def execute_typed_reparent(
                     position_evidence,
                 )
                 operation["destination_position"] = position_evidence
+                projection = operation.get("page_text_projection")
+                if isinstance(projection, dict) and "before" in projection:
+                    after_projection = await capture_rich_page_text_projection(
+                        active_client,
+                        current_target_id,
+                        expected_features=(
+                            "title",
+                            "formatting",
+                            "table",
+                            "image",
+                            "list",
+                            "tag",
+                        ),
+                    )
+                    projection["after"] = after_projection
+                    projection["forward_comparison"] = (
+                        assert_rich_page_text_equivalent(
+                            projection["before"],
+                            after_projection,
+                            label=f"{case}/forward",
+                        )
+                    )
+                    write_page_text_projection(operations)
                 write_json(out / "requests.json", {"operations": operations})
                 verified[case] = checks
                 options.progress.unit_completed(
@@ -639,6 +754,11 @@ async def execute_typed_reparent(
         write_json(out / "after.json", after)
 
         if getattr(args, "keep_worksite", False):
+            for operation in operations:
+                projection = operation.get("page_text_projection")
+                if isinstance(projection, dict):
+                    projection["restore_status"] = "not_requested_keep_worksite"
+            write_page_text_projection(operations)
             worksite = {
                 "status": "preserved_after_reparent",
                 "target_ids": [operation["current_target_id"] for operation in operations],

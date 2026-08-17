@@ -28,7 +28,7 @@ POLICY_ENV_NAMES = {
     "writes_enabled": "LOCAL_ONENOTE_ENABLE_WRITES",
     "deletes_enabled": "LOCAL_ONENOTE_ENABLE_DELETES",
     "organize_enabled": "LOCAL_ONENOTE_ENABLE_ORGANIZE",
-    "copy_enabled": "LOCAL_ONENOTE_ENABLE_COPY",
+    "create_enabled": "LOCAL_ONENOTE_ENABLE_CREATE",
     "local_file_io_enabled": "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO",
     "ui_control_enabled": "LOCAL_ONENOTE_ENABLE_UI_CONTROL",
     "notebook_lifecycle_enabled": "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE",
@@ -68,6 +68,7 @@ MUTATION_TOOL_PREFIXES = (
     "request_",
     "replace_",
     "set_",
+    "sort_",
     "sync_",
     "update_",
 )
@@ -82,7 +83,7 @@ class ScenarioPolicy:
     writes_enabled: bool = False
     deletes_enabled: bool = False
     organize_enabled: bool = False
-    copy_enabled: bool = False
+    create_enabled: bool = False
     local_file_io_enabled: bool = False
     ui_control_enabled: bool = False
     notebook_lifecycle_enabled: bool = False
@@ -92,7 +93,7 @@ class ScenarioPolicy:
             "writes_enabled": self.writes_enabled,
             "deletes_enabled": self.deletes_enabled,
             "organize_enabled": self.organize_enabled,
-            "copy_enabled": self.copy_enabled,
+            "create_enabled": self.create_enabled,
             "local_file_io_enabled": self.local_file_io_enabled,
             "ui_control_enabled": self.ui_control_enabled,
             "notebook_lifecycle_enabled": self.notebook_lifecycle_enabled,
@@ -100,58 +101,61 @@ class ScenarioPolicy:
 
 
 READ_ONLY_POLICY = ScenarioPolicy()
-WRITE_POLICY = ScenarioPolicy(writes_enabled=True)
+WRITE_POLICY = ScenarioPolicy(create_enabled=True, writes_enabled=True)
 RICH_WRITE_POLICY = ScenarioPolicy(
+    create_enabled=True,
     writes_enabled=True,
     local_file_io_enabled=True,
 )
 REPARENT_POLICY = ScenarioPolicy(
+    create_enabled=True,
     writes_enabled=True,
     organize_enabled=True,
 )
 RICH_REPARENT_POLICY = ScenarioPolicy(
+    create_enabled=True,
     writes_enabled=True,
     organize_enabled=True,
     local_file_io_enabled=True,
 )
-REORDER_SECTION_POLICY = ScenarioPolicy(writes_enabled=True)
-REORDER_SECTION_GROUP_POLICY = ScenarioPolicy(writes_enabled=True)
+REORDER_SECTION_POLICY = ScenarioPolicy(create_enabled=True, writes_enabled=True)
+REORDER_SECTION_GROUP_POLICY = ScenarioPolicy(create_enabled=True, writes_enabled=True)
 DELETE_POLICY = ScenarioPolicy(deletes_enabled=True)
 COPY_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
-    copy_enabled=True,
+    create_enabled=True,
 )
 RICH_COPY_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
-    copy_enabled=True,
+    create_enabled=True,
     local_file_io_enabled=True,
 )
 COPY_NO_DELETE_POLICY = ScenarioPolicy(
     writes_enabled=True,
-    copy_enabled=True,
+    create_enabled=True,
 )
 RICH_COPY_NO_DELETE_POLICY = ScenarioPolicy(
     writes_enabled=True,
-    copy_enabled=True,
+    create_enabled=True,
     local_file_io_enabled=True,
 )
 RICH_COPY_NOTEBOOK_POLICY = ScenarioPolicy(
     writes_enabled=True,
-    copy_enabled=True,
+    create_enabled=True,
     local_file_io_enabled=True,
     notebook_lifecycle_enabled=True,
 )
 MOVE_PAGE_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
-    copy_enabled=True,
+    create_enabled=True,
 )
 MOVE_CONTAINERS_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
-    copy_enabled=True,
+    create_enabled=True,
 )
 
 
@@ -231,7 +235,7 @@ def _json_safe(value: Any) -> Any:
 def summarize(value: Any, *, key: str = "") -> Any:
     """Return a bounded audit representation without content/XML/base64 data."""
 
-    sensitive = {"xml", "base64", "content", "text", "query", "snippet"}
+    sensitive = {"xml", "base64", "content", "text", "html", "query", "snippet"}
     if key.casefold() in sensitive and isinstance(value, str):
         return {
             "redacted": True,

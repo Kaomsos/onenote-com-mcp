@@ -50,14 +50,15 @@ CREATE_TOOLS = READ_TOOLS | {
     "create_page",
     "reorder_page",
 }
-RENAME_TOOLS = READ_TOOLS | {"rename_section_group", "rename_section"}
-REORDER_PAGE_TOOLS = READ_TOOLS | {"get_page_text", "reorder_page"}
+RENAME_TOOLS = READ_TOOLS | {"rename_page", "rename_section_group", "rename_section"}
+REORDER_PAGE_TOOLS = READ_TOOLS | {"get_page_text", "reorder_page", "sort_children"}
 REORDER_SECTION_TOOLS = READ_TOOLS | {
     "create_section_group",
     "create_section",
     "create_page",
     "get_page_text",
     "reorder_section",
+    "sort_children",
 }
 REORDER_SECTION_GROUP_TOOLS = READ_TOOLS | {
     "create_section_group",
@@ -72,6 +73,7 @@ REPARENT_PAGE_TOOLS = READ_TOOLS | {
     "append_page_content",
     "create_section",
     "create_page",
+    "get_page_text",
     "reparent_page",
 }
 REPARENT_SECTION_GROUP_TOOLS = READ_TOOLS | {

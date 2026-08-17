@@ -28,6 +28,7 @@ from .base import Scenario
 from .common.config import REPARENT_SECTION_TOOLS
 from .common.destination_position import assert_destination_position
 from .common.registry import SCENARIO_REGISTRY
+from .common.reparent import _batch_item_result
 from .fixture_recipes.reparent_section import RECIPE
 from .common.report import render_report
 
@@ -126,13 +127,16 @@ async def _execute_reparent_section(
             response = await client.call_tool(
                 "reparent_section",
                 {
-                    "section_id": current["id"],
                     "destination_parent_id": destination_parent_id,
-                    "expected_name": display_name(current),
-                    "expected_parent_id": source_parent_id,
-                    "expected_modified": current.get("modified"),
+                    "items": [{
+                        "section_id": current["id"],
+                        "expected_name": display_name(current),
+                        "expected_parent_id": source_parent_id,
+                        "expected_modified": current.get("modified"),
+                    }],
                 },
             )
+            item_response = _batch_item_result(response)
             write_json(out / f"mutation-response-{index}.json", response)
             operations.append(
                 {
@@ -146,7 +150,7 @@ async def _execute_reparent_section(
             current_snapshot = await capture_snapshot(client, notebook_id)
             write_json(out / f"forward-{index}.json", current_snapshot)
             position_evidence = assert_destination_position(
-                response,
+                item_response,
                 current_snapshot,
                 str(current["id"]),
             )
@@ -210,16 +214,19 @@ async def _execute_reparent_section(
                     raise RestoreFailure(
                         f"{operation['case']} target disappeared before restoration."
                     )
-                await client.call_tool(
+                restore_response = await client.call_tool(
                     "reparent_section",
                     {
-                        "section_id": restore_target["id"],
                         "destination_parent_id": operation["source_parent_id"],
-                        "expected_name": operation["section_name"],
-                        "expected_parent_id": operation["destination_parent_id"],
-                        "expected_modified": restore_target.get("modified"),
+                        "items": [{
+                            "section_id": restore_target["id"],
+                            "expected_name": operation["section_name"],
+                            "expected_parent_id": operation["destination_parent_id"],
+                            "expected_modified": restore_target.get("modified"),
+                        }],
                     },
                 )
+                _batch_item_result(restore_response)
                 restore_snapshot = await capture_snapshot(client, notebook_id)
                 write_json(out / f"restore-{index}.json", restore_snapshot)
             restored = restore_snapshot
@@ -253,8 +260,8 @@ class ReparentSectionScenario(Scenario):
     name = "reparent-section"
     fixture_recipe = RECIPE
     help_text = (
-        "GATED: validate Notebook→SectionGroup, SectionGroup→Notebook, and "
-        "SectionGroup→SectionGroup Section reparent operations, then restore or preserve."
+        "GATED: validate Section reparent items for Notebook→SectionGroup, "
+        "SectionGroup→Notebook, and SectionGroup→SectionGroup, then restore or preserve."
     )
     included_in_all = True
     worksite_dry_run_action = "preserve-reparented-section"

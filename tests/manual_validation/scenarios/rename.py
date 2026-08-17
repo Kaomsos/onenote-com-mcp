@@ -8,8 +8,8 @@ from typing import Any
 from ..mcp_stdio_client import ClientFailure, MCPStdioClient, WRITE_POLICY, scenario_client
 from ..runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
 from ..test_utils import (
-    assert_restored,
     capture_snapshot,
+    comparable_snapshot,
     display_name,
     find_snapshot_item,
     page_topology,
@@ -27,6 +27,7 @@ from .fixture_recipes.rename import RECIPE
 
 
 _RENAME_CASES = (
+    ("page", "page_target", "rename_page", "page_id"),
     ("section", "section_target", "rename_section", "section_id"),
     (
         "section_group",
@@ -74,9 +75,65 @@ def _validate_transition(
         raise InvariantFailure(
             "Rename changed Page IDs, order, level, or parent relationships."
         )
-    if before["page_hashes"] != after["page_hashes"]:
-        raise InvariantFailure("Rename changed one or more Page XML hashes.")
+    before_hashes = dict(before.get("page_hashes", {}))
+    after_hashes = dict(after.get("page_hashes", {}))
+    if previous.get("resource_type") == "page":
+        before_hashes.pop(target_id, None)
+        after_hashes.pop(target_id, None)
+        before_body_hash = before.get("page_body_hashes", {}).get(target_id)
+        after_body_hash = after.get("page_body_hashes", {}).get(target_id)
+        if (
+            not before_body_hash
+            or not after_body_hash
+            or before_body_hash != after_body_hash
+        ):
+            raise InvariantFailure("Page Rename changed content outside the title.")
+        if before.get("page_objects", {}).get(target_id) != after.get(
+            "page_objects", {}
+        ).get(target_id):
+            raise InvariantFailure("Page Rename changed content-object identity or shape.")
+    if before_hashes != after_hashes:
+        raise InvariantFailure("Rename changed one or more unrelated Page XML hashes.")
     return changed
+
+
+def _assert_rename_restored(
+    before: dict[str, Any],
+    restored: dict[str, Any],
+    *,
+    page_target_ids: set[str],
+) -> None:
+    before_comparable = comparable_snapshot(before)
+    restored_comparable = comparable_snapshot(restored)
+    before_hashes = dict(before_comparable["page_hashes"])
+    restored_hashes = dict(restored_comparable["page_hashes"])
+    for target_id in page_target_ids:
+        before_hashes.pop(target_id, None)
+        restored_hashes.pop(target_id, None)
+    before_comparable["page_hashes"] = before_hashes
+    restored_comparable["page_hashes"] = restored_hashes
+    if before_comparable != restored_comparable:
+        raise RestoreFailure(
+            "Restored Rename hierarchy, unrelated Page content, or content objects do not match the before snapshot."
+        )
+    for target_id in page_target_ids:
+        before_body_hash = before.get("page_body_hashes", {}).get(target_id)
+        restored_body_hash = restored.get("page_body_hashes", {}).get(target_id)
+        before_canonical_hash = before.get("page_canonical_hashes", {}).get(
+            target_id
+        )
+        restored_canonical_hash = restored.get("page_canonical_hashes", {}).get(
+            target_id
+        )
+        if (
+            not before_body_hash
+            or before_body_hash != restored_body_hash
+            or not before_canonical_hash
+            or before_canonical_hash != restored_canonical_hash
+        ):
+            raise RestoreFailure(
+                "Restored Page Rename did not recover the original title and canonical Page content."
+            )
 
 
 def _require_attempt_contract(
@@ -106,9 +163,14 @@ async def _execute_rename(
     client: MCPStdioClient | None = None,
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
+    use_batch = "page_target" in manifest.get("structure", {})
+    active_cases = tuple(
+        case for case in _RENAME_CASES
+        if case[1] in manifest.get("structure", {})
+    )
     declared_targets = {
         resource_type: resolve_manifest_item(manifest, target_key)
-        for resource_type, target_key, _tool, _id_key in _RENAME_CASES
+        for resource_type, target_key, _tool, _id_key in active_cases
     }
     out = scenario_dir(options.run_dir, "rename")
     async with scenario_client(
@@ -122,7 +184,7 @@ async def _execute_rename(
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)
         planned: list[dict[str, Any]] = []
-        for resource_type, _target_key, tool, id_key in _RENAME_CASES:
+        for resource_type, _target_key, tool, id_key in active_cases:
             target = declared_targets[resource_type]
             current = find_snapshot_item(before, str(target["id"]))
             if current is None or current.get("resource_type") != resource_type:
@@ -154,27 +216,49 @@ async def _execute_rename(
             current = find_snapshot_item(current_snapshot, case["target_id"])
             if current is None:
                 raise RunnerFailure("Rename target disappeared before its fixed case ran.")
-            forward = await client.call_tool(
-                case["tool"],
+            batch_item = (
                 {
+                    "page_id": current["id"],
+                    "new_title": case["new_name"],
+                    "expected_title": case["original_name"],
+                    "expected_section_id": current["section_id"],
+                    "expected_modified": current.get("modified"),
+                }
+                if case["resource_type"] == "page"
+                else {
                     case["id_key"]: current["id"],
                     "new_name": case["new_name"],
                     "expected_name": case["original_name"],
                     "expected_parent_id": case["parent_id"],
                     "expected_modified": current.get("modified"),
+                }
+            )
+            forward = await client.call_tool(
+                case["tool"],
+                {"items": [batch_item]}
+                if use_batch
+                else {
+                    case["id_key"]: current["id"],
+                    ("title" if case["resource_type"] == "page" else "new_name"): case["new_name"],
+                    ("expected_title" if case["resource_type"] == "page" else "expected_name"): case["original_name"],
+                    ("expected_section_id" if case["resource_type"] == "page" else "expected_parent_id"): (
+                        current["section_id"] if case["resource_type"] == "page" else case["parent_id"]
+                    ),
+                    "expected_modified": current.get("modified"),
                 },
             )
+            forward_item = forward["items"][0]["result"] if use_batch else forward
             after = await capture_snapshot(client, notebook_id)
             write_json(out / f"{case['resource_type']}-after.json", after)
             completed_case = {
                 **case,
-                "forward_result": forward.get("item"),
-                "forward_reconciliation": forward.get("reconciliation"),
+                "forward_result": forward_item.get("item"),
+                "forward_reconciliation": forward_item.get("reconciliation"),
             }
             completed.append(completed_case)
             try:
                 completed_case["forward_reconciliation"] = _require_attempt_contract(
-                    forward, case["tool"]
+                    forward_item, case["tool"]
                 )
                 _validate_transition(
                     current_snapshot,
@@ -227,20 +311,42 @@ async def _execute_rename(
                     raise RestoreFailure(
                         "Rename succeeded but an exact target was unavailable for restoration."
                     )
-                restore_response = await client.call_tool(
-                    case["tool"],
+                restore_item = (
                     {
+                        "page_id": restore_target["id"],
+                        "new_title": case["original_name"],
+                        "expected_title": case["new_name"],
+                        "expected_section_id": restore_target["section_id"],
+                        "expected_modified": restore_target.get("modified"),
+                    }
+                    if case["resource_type"] == "page"
+                    else {
                         case["id_key"]: restore_target["id"],
                         "new_name": case["original_name"],
                         "expected_name": case["new_name"],
                         "expected_parent_id": case["parent_id"],
                         "expected_modified": restore_target.get("modified"),
+                    }
+                )
+                restore_response = await client.call_tool(
+                    case["tool"],
+                    {"items": [restore_item]}
+                    if use_batch
+                    else {
+                        case["id_key"]: restore_target["id"],
+                        ("title" if case["resource_type"] == "page" else "new_name"): case["original_name"],
+                        ("expected_title" if case["resource_type"] == "page" else "expected_name"): case["new_name"],
+                        ("expected_section_id" if case["resource_type"] == "page" else "expected_parent_id"): (
+                            restore_target["section_id"] if case["resource_type"] == "page" else case["parent_id"]
+                        ),
+                        "expected_modified": restore_target.get("modified"),
                     },
                 )
+                restore_result = restore_response["items"][0]["result"] if use_batch else restore_response
                 current_snapshot = await capture_snapshot(client, notebook_id)
-                case["restore_result"] = restore_response.get("item")
+                case["restore_result"] = restore_result.get("item")
                 case["restore_reconciliation"] = _require_attempt_contract(
-                    restore_response, f"{case['tool']}:restore"
+                    restore_result, f"{case['tool']}:restore"
                 )
                 write_json(
                     out / f"{case['resource_type']}-restored.json",
@@ -248,7 +354,15 @@ async def _execute_rename(
                 )
             restored = current_snapshot
             write_json(out / "restored.json", restored)
-            assert_restored(before, restored)
+            _assert_rename_restored(
+                before,
+                restored,
+                page_target_ids={
+                    case["target_id"]
+                    for case in completed
+                    if case["resource_type"] == "page"
+                },
+            )
         except (ClientFailure, RunnerFailure) as exc:
             if isinstance(exc, RestoreFailure):
                 raise
@@ -272,9 +386,9 @@ async def _execute_rename(
 class RenameScenario(Scenario):
     name = "rename"
     fixture_recipe = RECIPE
-    help_text = "GATED: create, rename/restore or preserve, report, then close or keep."
+    help_text = "GATED: validate Page/Section/SectionGroup Rename items, restore or preserve, report, then close or keep."
     included_in_all = True
-    worksite_dry_run_action = "preserve-both-renamed-targets"
+    worksite_dry_run_action = "preserve-all-three-renamed-targets"
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
         parser.add_argument("--new-name")

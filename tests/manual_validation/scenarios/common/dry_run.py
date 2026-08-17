@@ -110,7 +110,15 @@ def build_isolated_dry_run_plan(
     roles = [role.role for role in recipe.cache_identity.notebook_roles]
     multi_role = len(roles) > 1
     mutation_target = {
-        "rename": "fixed Section and SectionGroup Rename/read-back/restore cases",
+        "create": (
+            "same-title Page allocation, normalized-duplicate batch preflight rejection, "
+            "three typed Create batches, exact non-permanent cleanup, and restore proof"
+        ),
+        "rename": "fixed Page, Section, and SectionGroup Rename/read-back/restore cases",
+        "reorder-page": (
+            "Page Reorder, Page-parent direct-child Sort, child_type conflict preflight "
+            "rejection, unchanged snapshot proof, and restore"
+        ),
         "onenote-convergence": (
             "fixed Notebook Create/Close, effect, Page Replace/Append/Delete/Reorder, and source Close chain"
         ),
@@ -245,7 +253,7 @@ def build_isolated_dry_run_plan(
                 spec.policy,
                 set(spec.tool_allowlist),
                 (
-                    "fixed Section and SectionGroup Rename cases against stable rebound live IDs"
+                    "fixed Page, Section, and SectionGroup Rename cases against stable rebound live IDs"
                     if args.scenario == "rename"
                     else "selected mutation against only stable rebound live IDs"
                 ),

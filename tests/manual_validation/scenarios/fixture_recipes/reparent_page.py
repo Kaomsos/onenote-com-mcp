@@ -36,7 +36,7 @@ class ReparentPageFixtureRecipe(RecipeBase):
         r = context.recorder
         ds = r.record_structure("description_section", await ensure_section(context.client, context.notebook_id, "00-Description"))
         dp = r.record_structure("description_page", await ensure_page(context.client, ds["id"], DESCRIPTION_TITLE, f"{DESCRIPTION}\nFixture token: {context.token}"))
-        text = str((await context.client.call_tool("get_page_text", {"page_id": dp["id"]}))["text"])
+        text = str((await context.client.call_tool("get_page_text", {"page_id": dp["id"], "mode": "plain"}))["text"])
         markers = ("操作前：01-Source-Section/01-Reparent-Page", "操作后：02-Destination-Section/01-Reparent-Page", "默认恢复后：01-Source-Section/01-Reparent-Page", "Rich Text、Table、List、Tag 和 Image", "旧 ID → 新 ID")
         if not all(marker in text for marker in markers):
             raise InvariantFailure("Reparent Page Description is missing a state marker.")

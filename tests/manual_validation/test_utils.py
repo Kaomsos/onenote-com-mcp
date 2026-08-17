@@ -197,6 +197,16 @@ def page_content_hash(xml: str) -> str:
     return stable_page_content_digest(xml)
 
 
+def page_body_content_hash(xml: str) -> str:
+    """Hash canonical Page content outside the title edited by Rename."""
+
+    root = parse_xml(xml)
+    for child in list(root):
+        if local_name(child.tag) == "Title":
+            root.remove(child)
+    return canonical_page_digest(ET.tostring(root, encoding="unicode"))
+
+
 def page_reparent_content_hash(xml: str) -> str:
     """Hash rich Page semantics while allowing native ID and Tag-index remapping."""
 
@@ -570,6 +580,7 @@ async def capture_snapshot(
         key=lambda item: (str(item.get("section_id")), int(item.get("order", 0))),
     )
     page_hashes: dict[str, str] = {}
+    page_body_hashes: dict[str, str] = {}
     page_canonical_hashes: dict[str, str] = {}
     page_reparent_hashes: dict[str, str] = {}
     page_xml_hashes: dict[str, str] = {}
@@ -583,6 +594,7 @@ async def capture_snapshot(
         if page_xml_observer is not None:
             page_xml_observer(page, xml)
         page_hashes[page_id] = page_content_hash(xml)
+        page_body_hashes[page_id] = page_body_content_hash(xml)
         page_canonical_hashes[page_id] = canonical_page_digest(xml)
         page_reparent_hashes[page_id] = page_reparent_content_hash(xml)
         page_xml_hashes[page_id] = hashlib.sha256(xml.encode("utf-8")).hexdigest()
@@ -609,6 +621,7 @@ async def capture_snapshot(
         "notebook_id": notebook_id,
         "items": [stable_item(item) for item in refreshed_items],
         "page_hashes": page_hashes,
+        "page_body_hashes": page_body_hashes,
         "page_canonical_hashes": page_canonical_hashes,
         "page_reparent_hashes": page_reparent_hashes,
         "page_xml_hashes": page_xml_hashes,
@@ -778,6 +791,7 @@ __all__ = [
     "load_manifest",
     "manifest_path",
     "page_content_hash",
+    "page_body_content_hash",
     "page_topology",
     "read_json",
     "resolve_manifest_item",

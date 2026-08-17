@@ -24,6 +24,7 @@ from .common.registry import SCENARIO_REGISTRY
 from .fixture_recipes.reorder_page import RECIPE
 from .common.dry_run import DryRunVariant
 from .common.config import REORDER_PAGE_TOOLS
+from .common.expected_rejection import expect_mutation_preflight_rejection
 from .common.report import render_report
 
 
@@ -96,13 +97,82 @@ async def _execute_reorder_page(
                 raise InvariantFailure("Reorder changed one or more Page XML hashes.")
         except InvariantFailure as exc:
             validation_error = exc
+        sort_result: dict[str, Any] = {"skipped_for_keep_worksite": True}
+        expected_rejection: dict[str, Any] | None = None
+        if not getattr(args, "keep_worksite", False):
+            parent_after = find_snapshot_item(after, str(after_target["id"]))
+            if parent_after is None:
+                raise RunnerFailure("Sort parent Page disappeared after Reorder.")
+            direct_children = [
+                item
+                for item in after["items"]
+                if item.get("resource_type") == "page"
+                and item.get("parent_page_id") == parent_after["id"]
+            ]
+            sort_result = await client.call_tool(
+                "sort_children",
+                {
+                    "parent_id": parent_after["id"],
+                    "expected_parent_name": display_name(parent_after),
+                    "expected_parent_modified": parent_after.get("modified"),
+                    "expected_child_ids": [str(item["id"]) for item in direct_children],
+                    "key": "name",
+                    "direction": "ascending",
+                },
+            )
+            sorted_snapshot = await capture_snapshot(client, notebook_id)
+            write_json(out / "sorted.json", sorted_snapshot)
+            sorted_children = [
+                item
+                for item in sorted_snapshot["items"]
+                if item.get("resource_type") == "page"
+                and item.get("parent_page_id") == parent_after["id"]
+            ]
+            if [display_name(item) for item in sorted_children] != sorted(
+                display_name(item) for item in sorted_children
+            ):
+                raise InvariantFailure("sort_children did not order direct Page children by name.")
+            if snapshot_ids(after) != snapshot_ids(sorted_snapshot):
+                raise InvariantFailure("sort_children changed a Page identity.")
+            if after["page_hashes"] != sorted_snapshot["page_hashes"]:
+                raise InvariantFailure("sort_children changed Page content.")
+            sorted_parent = find_snapshot_item(sorted_snapshot, parent_after["id"])
+            if sorted_parent is None:
+                raise InvariantFailure("sort_children read-back omitted its parent Page.")
+            expected_rejection = await expect_mutation_preflight_rejection(
+                client,
+                "sort_children",
+                {
+                    "child_type": "section",
+                    "parent_id": sorted_parent["id"],
+                    "expected_parent_name": display_name(sorted_parent),
+                    "expected_parent_modified": sorted_parent.get("modified"),
+                    "expected_child_ids": [str(item["id"]) for item in sorted_children],
+                    "key": "name",
+                    "direction": "ascending",
+                },
+                out / "expected-sort-rejection.json",
+                label="page-parent-child-type-conflict",
+                expected_message_fragment="conflicts",
+            )
+            rejected_snapshot = await capture_snapshot(client, notebook_id)
+            write_json(out / "expected-sort-rejection-after.json", rejected_snapshot)
+            assert_restored(sorted_snapshot, rejected_snapshot)
+            after = rejected_snapshot
+            changed = find_snapshot_item(after, original["id"])
         if getattr(args, "keep_worksite", False):
             worksite = {
                 "status": "preserved_after_reorder_page",
                 "target_ids": [original["id"]],
                 "target_id": original["id"],
                 "original_after_page_id": original_after,
-                "current_after_page_id": after_target["id"],
+                "current_after_page_id": page_predecessor(
+                    sorted(
+                        [item for item in after["items"] if item.get("section_id") == section["id"]],
+                        key=lambda item: int(item["order"]),
+                    ),
+                    original["id"],
+                ),
                 "original_page_level": original_level,
                 "current_page_level": args.page_level,
                 "verified": validation_error is None,
@@ -121,6 +191,7 @@ async def _execute_reorder_page(
                 "target_id": original["id"],
                 "temporary_after_page_id": after_target["id"],
                 "temporary_page_level": args.page_level,
+                "sort_result": sort_result,
                 "restored": False,
                 "worksite_preserved": True,
                 "remaining_state": worksite,
@@ -158,6 +229,8 @@ async def _execute_reorder_page(
             "target_id": original["id"],
             "temporary_after_page_id": after_target["id"],
             "temporary_page_level": args.page_level,
+            "sort_result": sort_result,
+            "expected_rejection": expected_rejection,
             "restored": True,
             "worksite_preserved": False,
         }
@@ -170,7 +243,10 @@ async def _execute_reorder_page(
 class ReorderPageScenario(Scenario):
     name = "reorder-page"
     fixture_recipe = RECIPE
-    help_text = "GATED: create, reorder/restore or preserve, report, then close or keep."
+    help_text = (
+        "GATED: validate Page reorder plus direct-child sort, prove conflicting child_type "
+        "is rejected before mutation, restore or preserve, report, then close or keep."
+    )
     included_in_all = True
     worksite_dry_run_action = "preserve-reordered-page"
     dry_run_variants = (DryRunVariant("level-one", ("--page-level", "1")),)

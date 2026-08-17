@@ -432,6 +432,8 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
         "group_a": source,
         "group_b": same_destination,
         "cross_notebook_group": cross_destination,
+        "parent_page": {"id": "source-parent-page", "resource_type": "page"},
+        "semantic_page": {"id": "source-semantic-page", "resource_type": "page"},
     }
     manifest = {
         "schema_version": 1,
@@ -472,10 +474,19 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
     monkeypatch.setattr(copy_runtime, "assert_restored", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(copy_runtime, "cleanup_copy", cleanup)
     monkeypatch.setattr(copy_runtime, "render_report", lambda _run_dir: None)
+    projection = {
+        "parent": {"semantic_signature": {"text": "parent"}},
+        "semantic_child": {"semantic_signature": {"text": "child"}},
+    }
+
+    async def capture_pair(*_args, **_kwargs):
+        return projection
+
+    monkeypatch.setattr(copy_runtime, "capture_page_text_pair", capture_pair)
 
     class FakeClient:
         policy = copy_runtime.COPY_POLICY
-        allowed_tools = set(copy_runtime.COPY_TOOLS) | {"health_check"}
+        allowed_tools = set(copy_runtime.COPY_TOOLS) | {"get_page_text", "health_check"}
         timeout_seconds = 1_800
 
         def __init__(self):
@@ -523,7 +534,11 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
                     },
                     "verified": True,
                     "lossless": True,
-                    "id_map": {"source-container": target_id},
+                    "id_map": {
+                        "source-container": target_id,
+                        "source-parent-page": f"target-parent-{number}",
+                        "source-semantic-page": f"target-semantic-{number}",
+                    },
                 },
             }
 
@@ -557,6 +572,17 @@ def test_container_copy_executor_runs_same_then_cross_notebook_cases(
     ]
     assert cleanup_order == ["target-2", "target-1"]
     assert result["restored"] is True
+    projection_path = run_dir / "scenarios" / scenario_name / "page-text-projection.json"
+    if scenario_name == "copy-section":
+        evidence = test_utils.read_json(projection_path)
+        assert evidence["content_persisted"] is False
+        assert [case["case"] for case in evidence["cases"]] == [
+            "same-notebook",
+            "cross-notebook",
+        ]
+        assert all(case["comparison"]["passed"] for case in evidence["cases"])
+    else:
+        assert not projection_path.exists()
 
 
 def test_keep_worksite_copy_spec_removes_cleanup_permissions(tmp_path) -> None:
@@ -1122,6 +1148,13 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
     monkeypatch.setattr(copy_runtime, "assert_restored", lambda *_a, **_k: None)
     monkeypatch.setattr(copy_runtime, "render_report", lambda _path: None)
 
+    async def capture_page_text(*_args, **_kwargs):
+        return {"schema_version": 1, "content_persisted": False}
+
+    monkeypatch.setattr(
+        copy_runtime, "capture_full_page_text_evidence", capture_page_text
+    )
+
     run_dir = tmp_path / "run"
     (run_dir / "scenarios" / "copy-page").mkdir(parents=True)
     result = asyncio.run(
@@ -1138,7 +1171,7 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                     "source": source_notebook,
                     "destination": destination_notebook,
                 },
-                "structure": {"parent_page": source},
+                "structure": {"parent_page": source, "semantic_page": child},
             },
             client=FakeClient(),
         )
@@ -1153,6 +1186,13 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
         None,
         "indentation_subtree",
     ]
+    projection_evidence = test_utils.read_json(
+        run_dir / "scenarios" / "copy-page" / "page-text-projection.json"
+    )
+    assert projection_evidence == {
+        "schema_version": 1,
+        "content_persisted": False,
+    }
     assert [item["destination_scope"] for item in result["case_results"]] == [
         "same-section",
         "same-section",

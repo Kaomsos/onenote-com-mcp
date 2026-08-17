@@ -20,7 +20,7 @@ class ReorderSectionScenario(Scenario):
     fixture_recipe = RECIPE
     included_in_all = True
     worksite_dry_run_action = "preserve-reordered-sections"
-    help_text = "GATED: reorder and restore Sections under Notebook and SectionGroup parents."
+    help_text = "GATED: reorder and sort direct Sections under Notebook and SectionGroup parents, then restore."
 
     async def execute(
         self,
@@ -40,6 +40,7 @@ class ReorderSectionScenario(Scenario):
             tool_name="reorder_section",
             id_parameter="section_id",
             after_parameter="after_section_id",
+            sort_tool_name="sort_children",
             plans=(
                 ("notebook-parent", "root_section_c", "root_section_a"),
                 ("section-group-parent", "group_section_c", "group_section_a"),

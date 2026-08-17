@@ -46,6 +46,11 @@ from .copy_invariants import (
     assert_copy_page_restored,
     assert_pages_unchanged,
 )
+from .page_text_evidence import (
+    assert_page_text_pair_equivalent,
+    capture_full_page_text_evidence,
+    capture_page_text_pair,
+)
 from .report import render_report
 from .specs import get_scenario_spec
 
@@ -63,7 +68,9 @@ def copy_spec(
     copy_tools = COPY_PRESERVE_TOOLS if keep_worksite else COPY_TOOLS
     if scenario == "copy-page":
         execution_contract = get_scenario_spec(scenario).execution_contract
-        page_tools = COPY_PAGE_PRESERVE_TOOLS if keep_worksite else COPY_PAGE_TOOLS
+        page_tools = (
+            COPY_PAGE_PRESERVE_TOOLS if keep_worksite else COPY_PAGE_TOOLS
+        ) | {"get_page_text"}
         anchor_keys = {
             "same-section": "semantic_page",
             "cross-section": "cross_section_anchor",
@@ -161,7 +168,11 @@ def copy_spec(
             "cases": cases,
             "tool": "copy_section" if scenario == "copy-section" else "copy_section_group",
             "policy": copy_policy,
-            "tools": copy_tools,
+            "tools": (
+                copy_tools | {"get_page_text"}
+                if scenario == "copy-section"
+                else copy_tools
+            ),
         }
     if scenario == "copy-notebook":
         disposable_targets = manifest.get("disposable_targets")
@@ -631,6 +642,12 @@ async def execute_copy_page(
     ) as client:
         original_before = await _capture_notebook_bundle(client, notebooks)
         write_json(out / "before.json", original_before)
+        page_text_evidence = await capture_full_page_text_evidence(
+            client,
+            str(resolve_manifest_item(manifest, "parent_page")["id"]),
+            str(resolve_manifest_item(manifest, "semantic_page")["id"]),
+        )
+        write_json(out / "page-text-projection.json", page_text_evidence)
         current_snapshot = original_before
         copied_results: list[dict[str, Any]] = []
         case_results: list[dict[str, Any]] = []
@@ -1132,6 +1149,23 @@ async def execute_copy_container(
     ) as active_client:
         original_before = await _capture_notebook_bundle(active_client, notebooks)
         write_json(out / "before.json", original_before)
+        page_text_evidence: dict[str, Any] | None = None
+        if args.scenario == "copy-section":
+            source_parent = resolve_manifest_item(manifest, "parent_page")
+            source_semantic = resolve_manifest_item(manifest, "semantic_page")
+            source_projection = await capture_page_text_pair(
+                active_client,
+                str(source_parent["id"]),
+                str(source_semantic["id"]),
+            )
+            page_text_evidence = {
+                "schema_version": 1,
+                "tool": "get_page_text",
+                "source": source_projection,
+                "cases": [],
+                "content_persisted": False,
+            }
+            write_json(out / "page-text-projection.json", page_text_evidence)
         current_snapshot = original_before
         copied_results: list[dict[str, Any]] = []
         case_results: list[dict[str, Any]] = []
@@ -1204,6 +1238,34 @@ async def execute_copy_container(
                 if item.get("resource_type") == "page" and item.get("id")
             ]
             assert_pages_unchanged(case_before, case_after, protected_pages)
+            if page_text_evidence is not None:
+                id_map = report.get("id_map", {})
+                target_parent_id = id_map.get(str(source_parent["id"]))
+                target_semantic_id = id_map.get(str(source_semantic["id"]))
+                if not isinstance(target_parent_id, str) or not isinstance(
+                    target_semantic_id, str
+                ):
+                    raise InvariantFailure(
+                        f"Copy case '{case_name}' did not map both projection fixture Pages."
+                    )
+                target_projection = await capture_page_text_pair(
+                    active_client,
+                    target_parent_id,
+                    target_semantic_id,
+                )
+                comparison = assert_page_text_pair_equivalent(
+                    page_text_evidence["source"],
+                    target_projection,
+                    label=f"copy-section/{case_name}",
+                )
+                page_text_evidence["cases"].append(
+                    {
+                        "case": case_name,
+                        "target": target_projection,
+                        "comparison": comparison,
+                    }
+                )
+                write_json(out / "page-text-projection.json", page_text_evidence)
             copied_results.append(copied)
             case_results.append(
                 {

@@ -36,7 +36,7 @@ class ReorderSectionGroupFixtureRecipe(RecipeBase):
         r = context.recorder
         ds = r.record_structure("description_section", await ensure_section(context.client, context.notebook_id, "00-Description"))
         dp = r.record_structure("description_page", await ensure_page(context.client, ds["id"], DESCRIPTION_TITLE, f"{DESCRIPTION}\nFixture token: {context.token}"))
-        text = str((await context.client.call_tool("get_page_text", {"page_id": dp["id"]}))["text"])
+        text = str((await context.client.call_tool("get_page_text", {"page_id": dp["id"], "mode": "plain"}))["text"])
         markers = ("场景一：父级为 Notebook", "场景二：父级为 00-Group-Parent（SectionGroup）", "操作后：00-Group-Parent, 01-Root-Group-A, 03-Root-Group-C, 02-Root-Group-B", "操作后：01-Nested-Group-A, 03-Nested-Group-C, 02-Nested-Group-B")
         if not all(marker in text for marker in markers):
             raise InvariantFailure("Reorder SectionGroup Description is missing a parent or order marker.")

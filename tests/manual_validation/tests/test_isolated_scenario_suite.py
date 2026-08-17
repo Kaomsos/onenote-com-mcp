@@ -165,6 +165,11 @@ def test_fixture_profiles_are_scenario_specific() -> None:
         },
     }
     assert "create_notebook" not in SCENARIO_SPECS["create"].tool_allowlist
+    assert {
+        "delete_page",
+        "delete_section",
+        "delete_section_group",
+    } <= SCENARIO_SPECS["create"].tool_allowlist
     assert "reparent_section" not in SCENARIO_SPECS["rename"].tool_allowlist
     assert "delete_section_group" not in SCENARIO_SPECS["reparent-section"].tool_allowlist
 
@@ -177,13 +182,13 @@ def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
         if recipe.consumer_scenario:
             if spec.execution_contract.get("interactive_copy_evidence"):
                 assert spec.policy.writes_enabled is True
-                assert spec.policy.copy_enabled is True
+                assert spec.policy.create_enabled is True
                 assert spec.policy.deletes_enabled is False
                 assert "copy_page" in spec.tool_allowlist
                 assert "plan_copy" not in spec.tool_allowlist
             else:
                 assert spec.policy.writes_enabled is False
-                assert spec.policy.copy_enabled is False
+                assert spec.policy.create_enabled is False
             runtime_creation_tools = (
                 {"create_section"}
                 if spec.execution_contract.get("same_and_cross_section")
@@ -850,6 +855,9 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
             {"id": "sandbox", "name": "Delete-Sandbox"},
             {"id": "target", "name": "Disposable-Group"},
             {"id": "sentinel", "name": "Disposable-Section"},
+            {"id": "section-target", "name": "Disposable-Section-Target"},
+            {"id": "page-section", "name": "Disposable-Page-Section"},
+            {"id": "page-target", "name": "Disposable-Page-Target"},
         ]
     )
 
@@ -857,6 +865,9 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
         return next(created)
 
     async def fake_section(*_args, **_kwargs):
+        return next(created)
+
+    async def fake_page(*_args, **_kwargs):
         return next(created)
 
     async def fake_snapshot(*_args, **_kwargs):
@@ -868,17 +879,33 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
                     "resource_type": "section_group",
                     "parent_id": "wrong",
                 },
-                {
-                    "id": "sentinel",
-                    "resource_type": "section",
-                    "parent_id": "target",
-                },
+                    {
+                        "id": "sentinel",
+                        "resource_type": "section",
+                        "parent_id": "target",
+                    },
+                    {
+                        "id": "section-target",
+                        "resource_type": "section",
+                        "parent_id": "sandbox",
+                    },
+                    {
+                        "id": "page-section",
+                        "resource_type": "section",
+                        "parent_id": "sandbox",
+                    },
+                    {
+                        "id": "page-target",
+                        "resource_type": "page",
+                        "section_id": "page-section",
+                    },
             ],
             "page_hashes": {},
         }
 
     monkeypatch.setattr(delete_fixture, "ensure_group", fake_group)
     monkeypatch.setattr(delete_fixture, "ensure_section", fake_section)
+    monkeypatch.setattr(delete_fixture, "ensure_page", fake_page)
     monkeypatch.setattr(fixture_runtime, "capture_snapshot", fake_snapshot)
     args = argparse.Namespace(scenario="delete")
     options = RuntimeOptions(tmp_path, 180, False, False)

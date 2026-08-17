@@ -19,8 +19,8 @@ class ReparentSectionGroupScenario(Scenario):
     name = "reparent-section-group"
     fixture_recipe = RECIPE
     help_text = (
-        "EXPERIMENTAL: validate typed Notebook→SectionGroup, SectionGroup→Notebook, and "
-        "SectionGroup→SectionGroup ID-preserving reparent, then restore or preserve."
+        "EXPERIMENTAL: validate SectionGroup reparent items for Notebook→SectionGroup, "
+        "SectionGroup→Notebook, and SectionGroup→SectionGroup, then restore or preserve."
     )
     included_in_all = True
     worksite_dry_run_action = "preserve-reparented-section-group"

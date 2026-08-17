@@ -119,7 +119,7 @@ def test_search_scenario_is_two_role_cache_supported_and_least_privilege() -> No
     )
     assert spec.policy.writes_enabled is True
     assert spec.policy.deletes_enabled is False
-    assert spec.policy.copy_enabled is False
+    assert spec.policy.create_enabled is True
     assert spec.policy.organize_enabled is False
     assert spec.policy.local_file_io_enabled is False
     assert spec.policy.ui_control_enabled is False

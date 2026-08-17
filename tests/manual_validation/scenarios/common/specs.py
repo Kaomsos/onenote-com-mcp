@@ -99,15 +99,22 @@ def _profile(
     )
 
 
-DELETE_SCENARIO_POLICY = ScenarioPolicy(writes_enabled=True, deletes_enabled=True)
+DELETE_SCENARIO_POLICY = ScenarioPolicy(
+    create_enabled=True,
+    writes_enabled=True,
+    deletes_enabled=True,
+)
 CONVERGENCE_SCENARIO_POLICY = ScenarioPolicy(
+    create_enabled=True,
     writes_enabled=True,
     deletes_enabled=True,
     local_file_io_enabled=True,
     ui_control_enabled=True,
     notebook_lifecycle_enabled=True,
 )
-CREATE_SCENARIO_TOOLS = READ_TOOLS | {"create_section", "create_page"}
+CREATE_SCENARIO_TOOLS = READ_TOOLS | {
+    "create_section_group", "create_section", "create_page",
+}
 LAYERED_PAGE_FIXTURE_TOOLS = {
     "create_page",
     "append_page_content",
@@ -186,27 +193,31 @@ SCENARIO_SPECS = {
             CREATE_SCENARIO_TOOLS,
             checks=(
                 "the exact target Section resolves under the disposable Notebook",
+                "a normalized duplicate Section batch is rejected before mutation and leaves the snapshot unchanged",
             ),
         ),
         DELETE_SCENARIO_POLICY,
-        frozenset(CREATE_SCENARIO_TOOLS | {"delete_page"}),
+        frozenset(
+            CREATE_SCENARIO_TOOLS
+            | {"delete_page", "delete_section", "delete_section_group"}
+        ),
     ),
     "rename": ScenarioSpec(
         "rename",
         _profile(
             "rename-target",
             (
-                "Rename-Group/Rename-Section",
+                "Rename-Group/Rename-Section/Rename-Page",
             ),
-            ("section_group_target", "section_target"),
-            {"create_section_group", "create_section"},
+            ("section_group_target", "section_target", "page_target"),
+            {"create_section_group", "create_section", "create_page"},
             checks=(
-                "one fixed SectionGroup and one nested fixed Section resolve to fresh active IDs",
-                "the scenario renames and restores both targets in one run",
+                "one fixed SectionGroup, nested Section, and Page resolve to fresh active IDs",
+                "the scenario batch-renames and restores all three typed targets in one run",
             ),
         ),
         WRITE_POLICY,
-        frozenset(RENAME_TOOLS | {"create_section_group", "create_section"}),
+        frozenset(RENAME_TOOLS | {"create_section_group", "create_section", "create_page"}),
     ),
     "reorder-page": ScenarioSpec(
         "reorder-page",
@@ -226,6 +237,7 @@ SCENARIO_SPECS = {
                 "all scenario Pages use stable 00/01/02/03 title prefixes",
                 "Description Page states 01,02,03 before; 01,03,02 after; 01,02,03 restored",
                 "numbered Page levels and derived relationships match the profile",
+                "Page-parent child_type=section is rejected before mutation and leaves the sorted snapshot unchanged",
             ),
         ),
         WRITE_POLICY,
@@ -385,7 +397,8 @@ SCENARIO_SPECS = {
             ),
         ),
         RICH_REPARENT_POLICY,
-        frozenset(REPARENT_PAGE_TOOLS | {"get_page_text"}),
+        frozenset(REPARENT_PAGE_TOOLS),
+        {"page_text_projection": "before_after_restore_default_rich_v1"},
     ),
     "reparent-page-with-level": ScenarioSpec(
         "reparent-page-with-level",
@@ -436,8 +449,8 @@ SCENARIO_SPECS = {
             (
                 "00-Description/00-Reparent-SectionGroup-Description explains all three transitions",
                 "Notebook/01-Notebook-To-Group-Target/{01-Descendant-Section/01-Descendant-Page} -> 01-Destination-Parent",
-                "02-Source-Parent/02-Group-To-Notebook-Target/{02-Descendant-Section/02-Descendant-Page} -> Notebook",
-                "03-Source-Parent/03-Group-To-Group-Target/{03-Descendant-Section/03-Descendant-Page} -> 03-Destination-Parent",
+                "02-Source-Parent/{00-Source-Anchor-A,02-Group-To-Notebook-Target/{02-Descendant-Section/02-Descendant-Page},99-Source-Anchor-B} -> Notebook",
+                "03-Source-Parent/{00-Source-Anchor-A,03-Group-To-Group-Target/{03-Descendant-Section/03-Descendant-Page},99-Source-Anchor-B} -> 03-Destination-Parent",
             ),
             (
                 "description_section",
@@ -449,12 +462,16 @@ SCENARIO_SPECS = {
                 "notebook_to_group_section",
                 "notebook_to_group_page",
                 "group_to_notebook_source",
+                "group_to_notebook_source_anchor_a",
+                "group_to_notebook_source_anchor_b",
                 "group_to_notebook_target",
                 "group_to_notebook_section",
                 "group_to_notebook_page",
                 "group_to_notebook_anchor_a",
                 "group_to_notebook_anchor_b",
                 "group_to_group_source",
+                "group_to_group_source_anchor_a",
+                "group_to_group_source_anchor_b",
                 "group_to_group_destination",
                 "group_to_group_anchor_a",
                 "group_to_group_anchor_b",
@@ -476,6 +493,7 @@ SCENARIO_SPECS = {
                 "case 3 source and destination are distinct root SectionGroups",
                 "all three reparent cases and descendants use stable numbering",
                 "all three reparent cases use distinct target Group IDs",
+                "both restorable source SectionGroups retain two distinct stability anchors",
                 "Description Page and Section belong to the fixture Notebook",
             ),
         ),
@@ -486,17 +504,24 @@ SCENARIO_SPECS = {
         "delete",
         _profile(
             "disposable-group",
-            ("Delete-Sandbox/Disposable-Group/Disposable-Section",),
-            ("delete_sandbox", "disposable_group", "disposable_section"),
-            {"create_section_group", "create_section"},
+            (
+                "Delete-Sandbox/Disposable-Group/Disposable-Section",
+                "Delete-Sandbox/Disposable-Section-Target",
+                "Delete-Sandbox/Disposable-Page-Section/Disposable-Page-Target",
+            ),
+            (
+                "delete_sandbox", "disposable_group", "disposable_section",
+                "disposable_section_target", "disposable_page_section", "disposable_page_target",
+            ),
+            {"create_section_group", "create_section", "create_page"},
             checks=(
                 "disposable_group is a descendant of delete_sandbox",
                 "disposable_group contains a persisted sentinel Section",
-                "delete target ID is manifest-allowlisted",
+                "Page, Section, and SectionGroup batch Delete target IDs are manifest-allowlisted",
             ),
         ),
         DELETE_SCENARIO_POLICY,
-        frozenset(DELETE_TOOLS | {"create_section_group", "create_section"}),
+        frozenset(DELETE_TOOLS | {"create_section_group", "create_section", "create_page"}),
     ),
     "copy-page": ScenarioSpec(
         "copy-page",
@@ -559,6 +584,7 @@ SCENARIO_SPECS = {
             | LAYERED_PAGE_FIXTURE_TOOLS
         ),
         {
+            "page_text_projection": "default_rich_plain_and_bounded_v1",
             "cases": [
                 {
                     "name": "same-section-root-only",
@@ -644,10 +670,11 @@ SCENARIO_SPECS = {
         RICH_COPY_POLICY,
         frozenset(
             COPY_TOOLS
-            | {"create_section_group", "create_section"}
+            | {"create_section_group", "create_section", "get_page_text"}
             | LAYERED_PAGE_FIXTURE_TOOLS
         ),
         {
+            "page_text_projection": "source_and_targets_default_rich_v1",
             "cases": [
                 {
                     "name": "same-notebook",

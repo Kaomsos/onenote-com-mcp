@@ -36,8 +36,30 @@ class FakeClient:
 
     async def call_tool(self, name: str, arguments: dict, **_: object) -> dict:
         self.calls.append((name, arguments))
-        self.last_response = {"ok": True, "complete": True, "item": self.response_item}
-        return self.last_response
+        inner = {"ok": True, "complete": True, "item": self.response_item}
+        if arguments.get("items"):
+            batch_item = arguments["items"][0]
+            target_id = (
+                batch_item.get("page_id")
+                or batch_item.get("section_id")
+                or batch_item.get("section_group_id")
+            )
+            inner["id_map"] = {target_id: target_id}
+            self.last_response = inner
+            return {
+                "operation": name,
+                "mode": "batch",
+                "items": [{"input_index": 0, "object_id": target_id, "status": "applied", "result": inner}],
+                "final_hierarchy": {
+                    "destination_parent_id": arguments.get("destination_section_id")
+                    or arguments.get("destination_parent_id"),
+                    "item_count": 1,
+                    "items": [{"input_index": 0, "current_id": target_id}],
+                    "verification_scope": {"page_content": "not_read"},
+                },
+            }
+        self.last_response = inner
+        return inner
 
 
 def test_create_duplicate_title_regression_uses_fresh_ids_and_exact_cleanup(
@@ -131,6 +153,181 @@ def test_create_duplicate_title_regression_uses_fresh_ids_and_exact_cleanup(
     assert [item["page_id"] for item in create_results["created"]] == page_ids
 
 
+def test_create_default_records_safe_batch_rejection_before_valid_batches(
+    monkeypatch, tmp_path
+) -> None:
+    notebook = {
+        "resource_type": "notebook",
+        "id": "notebook",
+        "name": "Notebook",
+        "modified": "notebook-before",
+    }
+    section = {
+        "resource_type": "section",
+        "id": "duplicate-section",
+        "name": "Duplicate-Title-Target",
+        "parent_id": "notebook",
+        "modified": "section-before",
+    }
+    duplicate_pages = [
+        {
+            "resource_type": "page",
+            "id": f"duplicate-page-{index}",
+            "title": "Duplicate-Title-Regression",
+            "section_id": section["id"],
+            "parent_id": section["id"],
+            "page_level": 1,
+            "parent_page_id": None,
+            "order": index,
+            "modified": f"duplicate-{index}",
+        }
+        for index in range(2)
+    ]
+    batch_targets = {
+        "create_section_group": [
+            {
+                "resource_type": "section_group",
+                "id": f"batch-group-{index}",
+                "name": f"Batch-Group-{'AB'[index]}",
+                "parent_id": notebook["id"],
+                "modified": f"group-{index}",
+            }
+            for index in range(2)
+        ],
+        "create_section": [
+            {
+                "resource_type": "section",
+                "id": f"batch-section-{index}",
+                "name": f"Batch-Section-{'AB'[index]}",
+                "parent_id": notebook["id"],
+                "modified": f"section-{index}",
+            }
+            for index in range(2)
+        ],
+        "create_page": [
+            {
+                "resource_type": "page",
+                "id": f"batch-page-{index}",
+                "title": f"Batch-Page-{'AB'[index]}",
+                "section_id": section["id"],
+                "parent_id": section["id"],
+                "page_level": 1,
+                "parent_page_id": None,
+                "order": index + 2,
+                "modified": f"page-{index}",
+            }
+            for index in range(2)
+        ],
+    }
+    before = {"items": [notebook, section], "page_hashes": {}, "page_objects": {}}
+    after = {
+        "items": [notebook, section, *duplicate_pages],
+        "page_hashes": {
+            "duplicate-page-0": "duplicate-hash-0",
+            "duplicate-page-1": "duplicate-hash-1",
+        },
+        "page_objects": {"duplicate-page-0": [], "duplicate-page-1": []},
+    }
+    batch_after = {
+        "items": [
+            *after["items"],
+            *batch_targets["create_section_group"],
+            *batch_targets["create_section"],
+            *batch_targets["create_page"],
+        ],
+        "page_hashes": after["page_hashes"],
+        "page_objects": after["page_objects"],
+    }
+    snapshots = iter([before, after, after, batch_after, before])
+
+    async def fake_snapshot(_client, _notebook_id):
+        return next(snapshots)
+
+    rejection_calls: list[dict] = []
+
+    async def fake_expected_rejection(
+        _client, tool_name, arguments, evidence_path, *, label, expected_message_fragment
+    ):
+        rejection_calls.append(arguments)
+        evidence = {
+            "tool": tool_name,
+            "label": label,
+            "expected_message_fragment": expected_message_fragment,
+            "mutation_attempted": False,
+        }
+        test_utils.write_json(evidence_path, evidence)
+        return evidence
+
+    class CreateBatchClient:
+        def __init__(self) -> None:
+            self.single_page_index = 0
+            self.calls: list[tuple[str, dict]] = []
+
+        async def call_tool(self, name: str, arguments: dict) -> dict:
+            self.calls.append((name, arguments))
+            if arguments.get("items"):
+                targets = batch_targets[name]
+                return {
+                    "operation": name,
+                    "mode": "batch",
+                    "applied_count": 2,
+                    "partial": False,
+                    "items": [
+                        {
+                            "input_index": index,
+                            "object_id": target["id"],
+                            "status": "applied",
+                            "result": {"item": target},
+                        }
+                        for index, target in enumerate(targets)
+                    ],
+                }
+            if name == "create_page":
+                page = duplicate_pages[self.single_page_index]
+                self.single_page_index += 1
+                return {
+                    "page_id": page["id"],
+                    "allocated_id": page["id"],
+                    "identity_remapped": False,
+                    "page": page,
+                }
+            assert name.startswith("delete_")
+            return {"deleted": True, "permanently": False}
+
+    monkeypatch.setattr(create_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(
+        create_scenario,
+        "expect_mutation_preflight_rejection",
+        fake_expected_rejection,
+    )
+    client = CreateBatchClient()
+    result = asyncio.run(
+        CreateScenario().execute(
+            SimpleNamespace(notebook_name=None, keep_worksite=False),
+            RuntimeOptions(tmp_path, 1_800, False, False),
+            {
+                "schema_version": 1,
+                "notebook": notebook,
+                "structure": {"duplicate_title_section": section},
+            },
+            client=client,
+            fixture_result={"status": "passed"},
+        )
+    )
+
+    assert rejection_calls[0]["items"] == [
+        {"name": "Rejected-Duplicate"},
+        {"name": "rejected-duplicate.one"},
+    ]
+    assert result["expected_rejection"]["mutation_attempted"] is False
+    assert all(value["applied_count"] == 2 for value in result["batch_results"].values())
+    assert len(result["cleanup_results"]) == 8
+    assert result["restored"] is True
+    assert (
+        tmp_path / "scenarios" / "create" / "expected-batch-rejection.json"
+    ).exists()
+
+
 def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
     section = {
         "resource_type": "section",
@@ -211,6 +408,116 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
         tmp_path / "scenarios" / "reorder-page" / "worksite.json"
     )
     assert worksite["target_ids"] == ["sibling-page"]
+
+
+def test_reorder_default_records_safe_sort_rejection_and_restores(
+    monkeypatch, tmp_path
+) -> None:
+    section = {
+        "resource_type": "section",
+        "id": "section-id",
+        "name": "01-Reorder-Page-Section",
+        "parent_id": "notebook-id",
+    }
+    parent = {
+        "resource_type": "page",
+        "id": "parent-page",
+        "title": "01-Parent",
+        "section_id": section["id"],
+        "parent_id": section["id"],
+        "order": 1,
+        "page_level": 1,
+        "parent_page_id": None,
+        "modified": "parent-before",
+    }
+    target = {
+        "resource_type": "page",
+        "id": "sibling-page",
+        "title": "03-Sibling",
+        "section_id": section["id"],
+        "parent_id": section["id"],
+        "order": 0,
+        "page_level": 1,
+        "parent_page_id": None,
+        "modified": "target-before",
+    }
+    changed_parent = {**parent, "order": 0, "modified": "parent-after"}
+    changed = {
+        **target,
+        "order": 1,
+        "page_level": 2,
+        "parent_page_id": parent["id"],
+        "modified": "target-after",
+    }
+    before = {
+        "items": [section, target, parent],
+        "page_hashes": {"parent-page": "a", "sibling-page": "b"},
+    }
+    after = {
+        "items": [section, changed_parent, changed],
+        "page_hashes": before["page_hashes"],
+    }
+    snapshots = iter([before, after, after, after, before])
+
+    async def fake_snapshot(_client, _notebook_id):
+        return next(snapshots)
+
+    rejection_calls: list[dict] = []
+
+    async def fake_expected_rejection(
+        _client, tool_name, arguments, evidence_path, *, label, expected_message_fragment
+    ):
+        rejection_calls.append(arguments)
+        evidence = {
+            "tool": tool_name,
+            "label": label,
+            "expected_message_fragment": expected_message_fragment,
+            "mutation_attempted": False,
+        }
+        test_utils.write_json(evidence_path, evidence)
+        return evidence
+
+    FakeClient.calls = []
+    FakeClient.last_response = None
+    FakeClient.response_item = changed
+    monkeypatch.setattr(reorder_page_scenario, "MCPStdioClient", FakeClient)
+    monkeypatch.setattr(reorder_page_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(
+        reorder_page_scenario,
+        "expect_mutation_preflight_rejection",
+        fake_expected_rejection,
+    )
+    monkeypatch.setattr(reorder_page_scenario, "render_report", lambda _run_dir: None)
+
+    result = asyncio.run(
+        ReorderPageScenario().execute(
+            SimpleNamespace(notebook_name=None, page_level=2, keep_worksite=False),
+            RuntimeOptions(tmp_path, 10, False, False),
+            {
+                "schema_version": 1,
+                "notebook": {"id": "notebook-id", "name": "Notebook"},
+                "structure": {
+                    "reorder_section": section,
+                    "parent_page": parent,
+                    "sibling_page": target,
+                },
+            },
+            client=None,
+            fixture_result={},
+        )
+    )
+
+    assert [name for name, _ in FakeClient.calls] == [
+        "reorder_page",
+        "sort_children",
+        "reorder_page",
+    ]
+    assert rejection_calls[0]["child_type"] == "section"
+    assert result["expected_rejection"]["mutation_attempted"] is False
+    assert result["restored"] is True
+    assert (
+        tmp_path / "scenarios" / "reorder-page" / "expected-sort-rejection.json"
+    ).exists()
 
 
 def test_reparent_section_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
@@ -455,7 +762,7 @@ def test_reparent_section_default_restores_three_cases_in_reverse_order(monkeypa
     )
 
     reparent_calls = [arguments for name, arguments in FakeClient.calls if name == "reparent_section"]
-    assert [call["section_id"] for call in reparent_calls] == [
+    assert [call["items"][0]["section_id"] for call in reparent_calls] == [
         "section-1",
         "section-2",
         "section-3",

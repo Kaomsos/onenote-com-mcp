@@ -36,12 +36,13 @@ async def _execute_delete(
 ) -> dict[str, Any]:
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     delete_sandbox = resolve_manifest_item(manifest, "delete_sandbox")
-    target_key = "disposable_group"
-    target = resolve_manifest_item(manifest, target_key)
-    allowed = {target["id"]: target_key}
-    if args.delete_target_id not in allowed:
-        allowed_text = ", ".join(sorted(allowed))
-        raise RunnerFailure(f"Delete target is not manifest-allowlisted. Allowed IDs: {allowed_text}")
+    target_keys = tuple(key for key in (
+        "disposable_page_target",
+        "disposable_section_target",
+        "disposable_group",
+    ) if key in manifest.get("structure", {}))
+    use_batch = len(target_keys) > 1
+    declared_targets = [resolve_manifest_item(manifest, key) for key in target_keys]
     out = scenario_dir(options.run_dir, "delete")
     async with scenario_client(
         client,
@@ -53,40 +54,63 @@ async def _execute_delete(
     ) as client:
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)
-        current = find_snapshot_item(before, args.delete_target_id)
-        if current is None:
-            raise RunnerFailure("Delete target is not active in the current notebook snapshot.")
-        if not is_descendant_of(before, current["id"], delete_sandbox["id"]):
-            raise RunnerFailure("Delete target is no longer a descendant of the manifest Delete-Sandbox.")
-        resource_type = current.get("resource_type")
-        if resource_type == "page":
-            tool = "delete_page"
-            arguments = {
-                "page_id": current["id"],
-                "expected_title": display_name(current),
-                "expected_section_id": current["section_id"],
-                "expected_modified": current.get("modified"),
-                "permanently": False,
-            }
-        elif resource_type in {"section", "section_group"}:
-            tool = "delete_section" if resource_type == "section" else "delete_section_group"
-            id_key = "section_id" if resource_type == "section" else "section_group_id"
-            arguments = {
-                id_key: current["id"],
-                "expected_name": display_name(current),
-                "expected_parent_id": current["parent_id"],
-                "expected_modified": current.get("modified"),
-                "permanently": False,
-            }
-        else:
-            raise RunnerFailure("Delete smoke supports only allowlisted Page/Section/SectionGroup targets.")
-        deleted = await client.call_tool(tool, arguments)
-        if deleted.get("permanently") is not False:
-            raise InvariantFailure("Delete response did not explicitly confirm permanently=false.")
+        currents = []
+        deleted_results = []
+        for declared in declared_targets:
+            current = find_snapshot_item(before, declared["id"])
+            if current is None:
+                raise RunnerFailure("Batch Delete target is not active in the current notebook snapshot.")
+            if not is_descendant_of(before, current["id"], delete_sandbox["id"]):
+                raise RunnerFailure("Batch Delete target escaped the manifest Delete-Sandbox.")
+            resource_type = current.get("resource_type")
+            if resource_type == "page":
+                tool = "delete_page"
+                batch_item = {
+                    "page_id": current["id"],
+                    "expected_title": display_name(current),
+                    "expected_section_id": current["section_id"],
+                    "expected_modified": current.get("modified"),
+                }
+            elif resource_type in {"section", "section_group"}:
+                tool = f"delete_{resource_type}"
+                batch_item = {
+                    ("section_id" if resource_type == "section" else "section_group_id"): current["id"],
+                    "expected_name": display_name(current),
+                    "expected_parent_id": current["parent_id"],
+                    "expected_modified": current.get("modified"),
+                }
+            else:
+                raise RunnerFailure("Batch Delete supports only Page/Section/SectionGroup targets.")
+            response = await client.call_tool(
+                tool,
+                {"items": [batch_item]}
+                if use_batch
+                else (
+                    {
+                        "page_id": current["id"],
+                        "expected_title": display_name(current),
+                        "expected_section_id": current["section_id"],
+                        "expected_modified": current.get("modified"),
+                    }
+                    if resource_type == "page"
+                    else {
+                        ("section_id" if resource_type == "section" else "section_group_id"): current["id"],
+                        "expected_name": display_name(current),
+                        "expected_parent_id": current["parent_id"],
+                        "expected_modified": current.get("modified"),
+                        "permanently": False,
+                    }
+                ),
+            )
+            deleted = response["items"][0]["result"] if use_batch else response
+            if deleted.get("permanently") is not False:
+                raise InvariantFailure("Batch Delete item did not explicitly confirm permanently=false.")
+            currents.append(current)
+            deleted_results.append(response)
         after = await capture_snapshot(client, notebook_id)
         write_json(out / "after.json", after)
-        if find_snapshot_item(after, current["id"]) is not None:
-            raise InvariantFailure("Deleted target is still visible in the default active snapshot.")
+        if any(find_snapshot_item(after, current["id"]) is not None for current in currents):
+            raise InvariantFailure("A Batch Delete target is still visible in the active snapshot.")
         recycle_tree_result = await client.call_tool(
             "expand_hierarchy",
             {"root_id": notebook_id, "max_depth": 8, "include_recycle_bin": True},
@@ -99,33 +123,32 @@ async def _execute_delete(
             "items": recycle_items,
         }
         write_json(out / "recycle-bin.json", recycle_snapshot)
-        recycled = next((item for item in recycle_items if item.get("id") == current["id"]), None)
-        if recycled is not None and recycled.get("is_in_recycle_bin") is not True:
-            raise InvariantFailure("Delete target remains visible without an is_in_recycle_bin marker.")
+        recycled_items = {
+            current["id"]: next((item for item in recycle_items if item.get("id") == current["id"]), None)
+            for current in currents
+        }
+        if any(value is not None and value.get("is_in_recycle_bin") is not True for value in recycled_items.values()):
+            raise InvariantFailure("A Batch Delete target remains visible without a recycle-bin marker.")
         restoration = {
             "status": "not_attempted",
             "reason": (
                 "The typed MCP profile has no recycle-bin restore tool. "
                 "A later scenario command creates its own fresh disposable fixture."
             ),
-            "target_id": current["id"],
+            "target_ids": [current["id"] for current in currents],
         }
         write_json(out / "restored.json", restoration)
         keep_worksite = bool(getattr(args, "keep_worksite", False))
         worksite = {
             "status": (
-                "deleted_target_in_recycle_bin"
-                if recycled is not None
-                else "deleted_target_absent_from_active_tree"
+                "batch_targets_in_recycle_bin_or_absent"
             ),
-            "target_ids": [current["id"]],
-            "target_id": current["id"],
+            "target_ids": [current["id"] for current in currents],
             "permanently": False,
-            "recycle_bin_verified": recycled is not None,
+            "recycle_bin_verified_ids": [object_id for object_id, value in recycled_items.items() if value is not None],
             "manual_cleanup_required": True,
             "cleanup": (
-                f"Restore or remove disposable target {current['id']} from the OneNote "
-                "recycle bin after inspection."
+                "Restore or remove the exact disposable batch targets from the OneNote recycle bin after inspection."
             ),
         }
         if keep_worksite:
@@ -133,8 +156,9 @@ async def _execute_delete(
         result = {
             "scenario": "delete",
             "status": "passed",
-            "target_id": current["id"],
-            "target_key": allowed[current["id"]],
+            "target_ids": [current["id"] for current in currents],
+            "target_keys": list(target_keys),
+            "batch_results": deleted_results,
             "permanently": False,
             "restored": False,
             "worksite_preserved": keep_worksite,
@@ -144,6 +168,9 @@ async def _execute_delete(
                 else "This run's disposable group remains in the recycle bin."
             ),
         }
+        if not use_batch:
+            result["target_id"] = currents[0]["id"]
+            result["target_key"] = target_keys[0]
         write_json(out / "result.json", result)
         render_report(options.run_dir)
         return result
@@ -154,7 +181,8 @@ class DeleteScenario(Scenario):
     name = "delete"
     fixture_recipe = RECIPE
     help_text = (
-        "GATED: create, non-permanently delete the disposable group, report, then close or keep."
+        "GATED: non-permanently delete disposable Page/Section/SectionGroup items, "
+        "report, then close or keep."
     )
     included_in_all = True
     worksite_dry_run_action = "preserve-recycle-bin-state"

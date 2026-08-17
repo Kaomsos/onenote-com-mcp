@@ -15,6 +15,7 @@ from tests.manual_validation.test_utils import (
     capture_snapshot,
     comparable_snapshot,
     is_descendant_of,
+    page_body_content_hash,
     page_content_hash,
     page_reparent_content_hash,
     write_json,
@@ -84,6 +85,15 @@ def test_snapshot_comparison_ignores_capture_time_and_item_order() -> None:
     }
     second = {**first, "captured_at": "after", "items": list(reversed(first["items"]))}
     assert comparable_snapshot(first) == comparable_snapshot(second)
+
+
+def test_page_body_hash_ignores_title_but_not_body_content() -> None:
+    before = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote"><one:Title><one:OE><one:T>Before</one:T></one:OE></one:Title><one:Outline><one:OEChildren><one:OE><one:T>Body</one:T></one:OE></one:OEChildren></one:Outline></one:Page>"""
+    renamed = before.replace(">Before<", ">After<")
+    changed_body = renamed.replace(">Body<", ">Changed<")
+
+    assert page_body_content_hash(before) == page_body_content_hash(renamed)
+    assert page_body_content_hash(before) != page_body_content_hash(changed_body)
 
 
 def test_page_tree_and_delete_sandbox_ancestry_checks() -> None:

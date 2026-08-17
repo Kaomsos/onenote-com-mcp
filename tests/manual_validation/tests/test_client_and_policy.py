@@ -90,7 +90,7 @@ def test_static_policy_matrix_is_minimal() -> None:
         "writes_enabled": False,
         "deletes_enabled": False,
         "organize_enabled": False,
-        "copy_enabled": False,
+        "create_enabled": False,
         "local_file_io_enabled": False,
         "ui_control_enabled": False,
         "notebook_lifecycle_enabled": False,
@@ -106,18 +106,18 @@ def test_static_policy_matrix_is_minimal() -> None:
     assert REORDER_SECTION_GROUP_POLICY.as_dict() == WRITE_POLICY.as_dict()
     assert DELETE_POLICY.deletes_enabled is True
     assert DELETE_POLICY.writes_enabled is False
-    assert COPY_POLICY.copy_enabled is True
+    assert COPY_POLICY.create_enabled is True
     assert COPY_POLICY.deletes_enabled is True
     assert COPY_NO_DELETE_POLICY.deletes_enabled is False
     assert RICH_COPY_POLICY.local_file_io_enabled is True
     assert RICH_COPY_NO_DELETE_POLICY.local_file_io_enabled is True
     assert RICH_COPY_NO_DELETE_POLICY.deletes_enabled is False
-    assert RICH_COPY_NOTEBOOK_POLICY.copy_enabled is True
+    assert RICH_COPY_NOTEBOOK_POLICY.create_enabled is True
     assert RICH_COPY_NOTEBOOK_POLICY.local_file_io_enabled is True
     assert RICH_COPY_NOTEBOOK_POLICY.notebook_lifecycle_enabled is True
     assert RICH_COPY_NOTEBOOK_POLICY.deletes_enabled is False
-    assert MOVE_PAGE_POLICY.copy_enabled is True
-    assert MOVE_CONTAINERS_POLICY.copy_enabled is True
+    assert MOVE_PAGE_POLICY.create_enabled is True
+    assert MOVE_CONTAINERS_POLICY.create_enabled is True
     for policy in (
         READ_ONLY_POLICY,
         WRITE_POLICY,
@@ -162,7 +162,8 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
     assert env["LOCAL_ONENOTE_ENABLE_WRITES"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_DELETES"] == "true"
     assert env["LOCAL_ONENOTE_ENABLE_ORGANIZE"] == "false"
-    assert env["LOCAL_ONENOTE_ENABLE_COPY"] == "false"
+    assert env["LOCAL_ONENOTE_ENABLE_CREATE"] == "false"
+    assert "LOCAL_ONENOTE_ENABLE_COPY" not in env
     assert env["LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_UI_CONTROL"] == "false"
     assert env["LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE"] == "false"
@@ -198,15 +199,25 @@ def test_non_read_only_tool_classification_never_retries_publish_or_copy() -> No
     assert is_mutation_tool("export_object_to_pdf") is True
     assert is_mutation_tool("copy_page") is True
     assert is_mutation_tool("move_page") is True
+    assert is_mutation_tool("sort_children") is True
     assert is_mutation_tool("get_page_xml") is False
 
 def test_audit_summary_redacts_page_payloads() -> None:
-    result = summarize({"xml": "<xml>secret</xml>", "content": "private", "id": "safe-id"})
+    result = summarize(
+        {
+            "xml": "<xml>secret</xml>",
+            "content": "private",
+            "html": "<p>short rich secret</p>",
+            "id": "safe-id",
+        }
+    )
     assert result["xml"]["redacted"] is True
     assert result["content"]["redacted"] is True
+    assert result["html"]["redacted"] is True
     assert result["id"] == "safe-id"
     assert "secret" not in str(result)
     assert "private" not in str(result)
+    assert "short rich secret" not in str(result)
 
 def test_tool_result_prefers_structured_envelope() -> None:
     result = SimpleNamespace(

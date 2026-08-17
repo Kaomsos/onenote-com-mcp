@@ -86,6 +86,7 @@ async def execute_container_reorder(
     tool_name: str,
     id_parameter: str,
     after_parameter: str,
+    sort_tool_name: str | None = None,
     plans: tuple[tuple[str, str, str], ...],
     policy: ScenarioPolicy,
     allowed_tools: set[str],
@@ -203,36 +204,57 @@ async def execute_container_reorder(
             return result
 
         try:
-            for index, plan in enumerate(reversed(original), start=1):
-                restore_started = time.monotonic()
-                options.progress.unit_started(
-                    "restore",
-                    plan["case"],
-                    index,
-                    len(original),
-                )
-                target = find_snapshot_item(current, plan["target_id"])
-                if target is None:
-                    raise RestoreFailure("Reorder target disappeared before restoration.")
-                await active_client.call_tool(
-                    tool_name,
-                    {
-                        id_parameter: target["id"],
-                        "expected_name": display_name(target),
-                        "expected_parent_id": target["parent_id"],
-                        after_parameter: plan["original_after_id"],
-                        "expected_modified": target.get("modified"),
-                    },
-                )
-                current = await capture_snapshot(active_client, notebook_id)
-                write_json(out / f"restore-{index}.json", current)
-                options.progress.unit_completed(
-                    "restore",
-                    plan["case"],
-                    index,
-                    len(original),
-                    elapsed_seconds=time.monotonic() - restore_started,
-                )
+            if sort_tool_name is not None:
+                for index, (parent_id, original_order) in enumerate(before_orders.items(), start=1):
+                    parent = find_snapshot_item(current, parent_id)
+                    if parent is None:
+                        raise RestoreFailure("Sort restore parent disappeared.")
+                    await active_client.call_tool(
+                        sort_tool_name,
+                        {
+                            "parent_id": parent_id,
+                            "expected_parent_name": display_name(parent),
+                            "expected_parent_modified": parent.get("modified"),
+                            "expected_child_ids": direct_order(current, parent_id, resource_type),
+                            "key": "name",
+                            "direction": "ascending",
+                        },
+                    )
+                    current = await capture_snapshot(active_client, notebook_id)
+                    write_json(out / f"sort-restore-{index}.json", current)
+                    if direct_order(current, parent_id, resource_type) != original_order:
+                        raise RestoreFailure("Sort did not restore the original direct-child order.")
+            else:
+                for index, plan in enumerate(reversed(original), start=1):
+                    restore_started = time.monotonic()
+                    options.progress.unit_started(
+                        "restore",
+                        plan["case"],
+                        index,
+                        len(original),
+                    )
+                    target = find_snapshot_item(current, plan["target_id"])
+                    if target is None:
+                        raise RestoreFailure("Reorder target disappeared before restoration.")
+                    await active_client.call_tool(
+                        tool_name,
+                        {
+                            id_parameter: target["id"],
+                            "expected_name": display_name(target),
+                            "expected_parent_id": target["parent_id"],
+                            after_parameter: plan["original_after_id"],
+                            "expected_modified": target.get("modified"),
+                        },
+                    )
+                    current = await capture_snapshot(active_client, notebook_id)
+                    write_json(out / f"restore-{index}.json", current)
+                    options.progress.unit_completed(
+                        "restore",
+                        plan["case"],
+                        index,
+                        len(original),
+                        elapsed_seconds=time.monotonic() - restore_started,
+                    )
             restored = current
             write_json(out / "restored.json", restored)
             assert_restored(before, restored)

@@ -31,10 +31,10 @@ SCENARIO_TOOL_POLICY_REQUIREMENTS: dict[str, frozenset[str]] = {
     "query_page": frozenset(),
     "search_pages": frozenset(),
     "get_hyperlink": frozenset(),
-    "create_notebook": frozenset({"writes_enabled"}),
-    "create_section_group": frozenset({"writes_enabled"}),
-    "create_section": frozenset({"writes_enabled"}),
-    "create_page": frozenset({"writes_enabled"}),
+    "create_notebook": frozenset({"create_enabled"}),
+    "create_section_group": frozenset({"create_enabled"}),
+    "create_section": frozenset({"create_enabled"}),
+    "create_page": frozenset({"create_enabled", "writes_enabled"}),
     "rename_page": frozenset({"writes_enabled"}),
     "rename_section": frozenset({"writes_enabled"}),
     "rename_section_group": frozenset({"writes_enabled"}),
@@ -42,6 +42,7 @@ SCENARIO_TOOL_POLICY_REQUIREMENTS: dict[str, frozenset[str]] = {
     "reorder_page": frozenset({"writes_enabled"}),
     "reorder_section": frozenset({"writes_enabled"}),
     "reorder_section_group": frozenset({"writes_enabled"}),
+    "sort_children": frozenset({"writes_enabled"}),
     "replace_page_body": frozenset({"writes_enabled", "deletes_enabled"}),
     "add_page_image_from_file": frozenset(
         {"writes_enabled", "local_file_io_enabled"}
@@ -55,18 +56,18 @@ SCENARIO_TOOL_POLICY_REQUIREMENTS: dict[str, frozenset[str]] = {
     "reparent_section_group": frozenset(
         {"writes_enabled", "organize_enabled"}
     ),
-    "copy_page": frozenset({"writes_enabled", "copy_enabled"}),
-    "copy_section": frozenset({"writes_enabled", "copy_enabled"}),
-    "copy_section_group": frozenset({"writes_enabled", "copy_enabled"}),
-    "copy_notebook": frozenset({"writes_enabled", "copy_enabled"}),
+    "copy_page": frozenset({"create_enabled", "writes_enabled"}),
+    "copy_section": frozenset({"create_enabled", "writes_enabled"}),
+    "copy_section_group": frozenset({"create_enabled", "writes_enabled"}),
+    "copy_notebook": frozenset({"create_enabled", "writes_enabled"}),
     "move_page": frozenset(
-        {"writes_enabled", "deletes_enabled", "copy_enabled"}
+        {"create_enabled", "writes_enabled", "deletes_enabled"}
     ),
     "move_section": frozenset(
-        {"writes_enabled", "deletes_enabled", "copy_enabled"}
+        {"create_enabled", "writes_enabled", "deletes_enabled"}
     ),
     "move_section_group": frozenset(
-        {"writes_enabled", "deletes_enabled", "copy_enabled"}
+        {"create_enabled", "writes_enabled", "deletes_enabled"}
     ),
     "export_object_to_pdf": frozenset({"local_file_io_enabled"}),
     "navigate_to": frozenset({"ui_control_enabled"}),

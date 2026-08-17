@@ -30,11 +30,12 @@ DESCRIPTION = """Reparent SectionGroup 人工验收说明
 默认恢复后：03-Group-To-Group-Target 回到 03-Source-Parent
 
 三个目标 Group 各自包含同编号 Section 和 Page。前后必须保持全树 ID、后代关系、Page 内容 hash 和内容对象 ID 不变。
+两个作为恢复目标的源 SectionGroup 各自保留两个固定 source anchor，目标搬出后源容器仍非空。
 """
 
 
 class ReparentSectionGroupFixtureRecipe(RecipeBase):
-    recipe_version = 2
+    recipe_version = 3
 
     def __init__(self) -> None:
         super().__init__("reparent-section-group")
@@ -48,8 +49,8 @@ class ReparentSectionGroupFixtureRecipe(RecipeBase):
         r = context.recorder
         ds = r.record_structure("description_section", await ensure_section(context.client, context.notebook_id, "00-Description"))
         dp = r.record_structure("description_page", await ensure_page(context.client, ds["id"], DESCRIPTION_TITLE, f"{DESCRIPTION}\nFixture token: {context.token}"))
-        text = str((await context.client.call_tool("get_page_text", {"page_id": dp["id"]}))["text"])
-        if not all(marker in text for marker in ("场景一：Notebook 父级 → SectionGroup 父级", "场景二：SectionGroup 父级 → Notebook 父级", "场景三：SectionGroup 父级 → SectionGroup 父级", "三个目标 Group 各自包含同编号 Section 和 Page")):
+        text = str((await context.client.call_tool("get_page_text", {"page_id": dp["id"], "mode": "plain"}))["text"])
+        if not all(marker in text for marker in ("场景一：Notebook 父级 → SectionGroup 父级", "场景二：SectionGroup 父级 → Notebook 父级", "场景三：SectionGroup 父级 → SectionGroup 父级", "三个目标 Group 各自包含同编号 Section 和 Page", "源 SectionGroup 各自保留两个固定 source anchor")):
             raise InvariantFailure("Reparent SectionGroup Description is missing a transition marker.")
         d1 = r.record_structure("notebook_to_group_destination", await ensure_group(context.client, context.notebook_id, "01-Destination-Parent"))
         for key, name in (
@@ -61,6 +62,11 @@ class ReparentSectionGroupFixtureRecipe(RecipeBase):
         await self._descendants(context, "notebook_to_group", t1, "01")
         s2 = r.record_structure("group_to_notebook_source", await ensure_group(context.client, context.notebook_id, "02-Source-Parent"))
         for key, name in (
+            ("group_to_notebook_source_anchor_a", "00-Source-Anchor-A"),
+            ("group_to_notebook_source_anchor_b", "99-Source-Anchor-B"),
+        ):
+            r.record_structure(key, await ensure_group(context.client, s2["id"], name))
+        for key, name in (
             ("group_to_notebook_anchor_a", "00-Notebook-Group-Anchor-A"),
             ("group_to_notebook_anchor_b", "99-Notebook-Group-Anchor-B"),
         ):
@@ -68,6 +74,11 @@ class ReparentSectionGroupFixtureRecipe(RecipeBase):
         t2 = r.record_structure("group_to_notebook_target", await ensure_group(context.client, s2["id"], "02-Group-To-Notebook-Target"))
         await self._descendants(context, "group_to_notebook", t2, "02")
         s3 = r.record_structure("group_to_group_source", await ensure_group(context.client, context.notebook_id, "03-Source-Parent"))
+        for key, name in (
+            ("group_to_group_source_anchor_a", "00-Source-Anchor-A"),
+            ("group_to_group_source_anchor_b", "99-Source-Anchor-B"),
+        ):
+            r.record_structure(key, await ensure_group(context.client, s3["id"], name))
         d3 = r.record_structure("group_to_group_destination", await ensure_group(context.client, context.notebook_id, "03-Destination-Parent"))
         for key, name in (
             ("group_to_group_anchor_a", "00-Group-Anchor-A"),
@@ -102,7 +113,29 @@ class ReparentSectionGroupFixtureRecipe(RecipeBase):
             "A Reparent SectionGroup destination is missing its two Group anchors.",
             "all three destinations contain two distinct SectionGroup anchors",
         )
-        expected = {"description_section":"00-Description", "description_page":DESCRIPTION_TITLE, "notebook_to_group_destination":"01-Destination-Parent", "notebook_to_group_target":"01-Notebook-To-Group-Target", "notebook_to_group_section":"01-Descendant-Section", "notebook_to_group_page":"01-Descendant-Page", "group_to_notebook_source":"02-Source-Parent", "group_to_notebook_target":"02-Group-To-Notebook-Target", "group_to_notebook_section":"02-Descendant-Section", "group_to_notebook_page":"02-Descendant-Page", "group_to_group_source":"03-Source-Parent", "group_to_group_destination":"03-Destination-Parent", "group_to_group_target":"03-Group-To-Group-Target", "group_to_group_section":"03-Descendant-Section", "group_to_group_page":"03-Descendant-Page"}
+        source_anchor_groups = (
+            (
+                "group_to_notebook_source",
+                "group_to_notebook_source_anchor_a",
+                "group_to_notebook_source_anchor_b",
+            ),
+            (
+                "group_to_group_source",
+                "group_to_group_source_anchor_a",
+                "group_to_group_source_anchor_b",
+            ),
+        )
+        checks.require(
+            all(
+                resolved[anchor_a].get("parent_id") == resolved[parent_key]["id"]
+                and resolved[anchor_b].get("parent_id") == resolved[parent_key]["id"]
+                and resolved[anchor_a]["id"] != resolved[anchor_b]["id"]
+                for parent_key, anchor_a, anchor_b in source_anchor_groups
+            ),
+            "A SectionGroup reparent source is missing its two stability anchors.",
+            "both restorable source SectionGroups retain two distinct stability anchors",
+        )
+        expected = {"description_section":"00-Description", "description_page":DESCRIPTION_TITLE, "notebook_to_group_destination":"01-Destination-Parent", "notebook_to_group_target":"01-Notebook-To-Group-Target", "notebook_to_group_section":"01-Descendant-Section", "notebook_to_group_page":"01-Descendant-Page", "group_to_notebook_source":"02-Source-Parent", "group_to_notebook_source_anchor_a":"00-Source-Anchor-A", "group_to_notebook_source_anchor_b":"99-Source-Anchor-B", "group_to_notebook_target":"02-Group-To-Notebook-Target", "group_to_notebook_section":"02-Descendant-Section", "group_to_notebook_page":"02-Descendant-Page", "group_to_group_source":"03-Source-Parent", "group_to_group_source_anchor_a":"00-Source-Anchor-A", "group_to_group_source_anchor_b":"99-Source-Anchor-B", "group_to_group_destination":"03-Destination-Parent", "group_to_group_target":"03-Group-To-Group-Target", "group_to_group_section":"03-Descendant-Section", "group_to_group_page":"03-Descendant-Page"}
         checks.require(all(display_name(resolved[key]) == name for key, name in expected.items()), "SectionGroup reparent fixture does not have stable numbering.", "all three reparent cases and descendants use stable numbering")
         for prefix in ("notebook_to_group", "group_to_notebook", "group_to_group"):
             target, section, page = (resolved[f"{prefix}_{suffix}"] for suffix in ("target", "section", "page"))
