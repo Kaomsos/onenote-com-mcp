@@ -13,6 +13,7 @@ import re
 from typing import Any, Iterable, Mapping
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 
 from ..constants import ONE_NS
 from .parser import (
@@ -64,6 +65,10 @@ SEMANTIC_MATHML_VERIFICATION = "semantic_mathml"
 SEMANTIC_DISPLAY_EQUATION_VERIFICATION = "semantic_display_equation"
 SEMANTIC_LIST_TAG_VERIFICATION = "semantic_list_tag"
 SEMANTIC_LIST_TAG_PAGE_TYPES = frozenset({"Outline", "RichText", "List", "Tag"})
+SEMANTIC_CONTENT_VERIFICATION = "semantic_content_v1"
+SEMANTIC_CONTENT_PAGE_TYPES = frozenset(
+    {"Outline", "RichText", "List", "Tag", "Table", "Image"}
+)
 SEMANTIC_INK_DRAWING_VERIFICATION = "semantic_ink_drawing"
 SEMANTIC_UI_SHAPE_VERIFICATION = "semantic_ui_shape"
 SEMANTIC_INK_DRAWING_PAGE_TYPES = frozenset({"Outline", "InkDrawing"})
@@ -1222,6 +1227,309 @@ def page_content_type_counts(xml: str) -> dict[str, int]:
     return {kind: count for kind, count in sorted(counts.items()) if count}
 
 
+SEMANTIC_INLINE_TAG_ALIASES = {
+    "b": "strong",
+    "i": "em",
+    "s": "del",
+    "strike": "del",
+}
+SEMANTIC_INLINE_TAGS = frozenset(
+    {
+        "a",
+        "b",
+        "br",
+        "code",
+        "del",
+        "em",
+        "font",
+        "i",
+        "s",
+        "span",
+        "strike",
+        "strong",
+        "sub",
+        "sup",
+        "u",
+    }
+)
+SEMANTIC_INLINE_ATTRIBUTES = {
+    "a": frozenset({"href", "title"}),
+    "font": frozenset({"color", "face", "size"}),
+    "span": frozenset({"lang", "style", "title"}),
+}
+
+
+class _SemanticInlineParser(HTMLParser):
+    """Project formatted text by effective runs, independent of T segmentation."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.stack: list[tuple[str, tuple[tuple[str, str], ...]]] = []
+        self.runs: list[tuple[str, tuple[Any, ...]]] = []
+        self.complete = True
+
+    @staticmethod
+    def _style(value: str) -> str:
+        declarations = []
+        for declaration in value.split(";"):
+            if ":" not in declaration:
+                continue
+            name, item = declaration.split(":", 1)
+            name = name.strip().casefold()
+            item = " ".join(item.strip().split())
+            if name and item:
+                declarations.append((name, item))
+        return ";".join(f"{name}:{value}" for name, value in sorted(declarations))
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.casefold()
+        if tag not in SEMANTIC_INLINE_TAGS:
+            self.complete = False
+            return
+        if tag == "br":
+            self.handle_data("\n")
+            return
+        allowed = SEMANTIC_INLINE_ATTRIBUTES.get(tag, frozenset())
+        projected: list[tuple[str, str]] = []
+        for name, value in attrs:
+            name = name.casefold()
+            if name not in allowed or value is None:
+                self.complete = False
+                continue
+            if name == "style":
+                value = self._style(value)
+                if not value:
+                    continue
+            projected.append((name, value))
+        self.stack.append(
+            (SEMANTIC_INLINE_TAG_ALIASES.get(tag, tag), tuple(sorted(projected)))
+        )
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag.casefold() != "br":
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = SEMANTIC_INLINE_TAG_ALIASES.get(tag.casefold(), tag.casefold())
+        if not self.stack or self.stack[-1][0] != tag:
+            self.complete = False
+            return
+        self.stack.pop()
+
+    def handle_data(self, data: str) -> None:
+        if not data:
+            return
+        style = tuple(self.stack)
+        if self.runs and self.runs[-1][1] == style:
+            previous, _ = self.runs[-1]
+            self.runs[-1] = (previous + data, style)
+        else:
+            self.runs.append((data, style))
+
+    def result(self) -> tuple[tuple[Any, ...], bool]:
+        if self.stack:
+            self.complete = False
+        return tuple(self.runs), self.complete
+
+
+def _semantic_inline_projection(fragments: Iterable[str]) -> tuple[tuple[Any, ...], bool]:
+    parser = _SemanticInlineParser()
+    for fragment in fragments:
+        parser.feed(fragment or "")
+    parser.close()
+    return parser.result()
+
+
+def _semantic_tag_definition_projection(root: ET.Element) -> dict[str, tuple[str, str]]:
+    return {
+        node.attrib["index"]: (
+            node.attrib.get("type", ""),
+            node.attrib.get("symbol", ""),
+        )
+        for node in root.iter()
+        if local_name(node.tag) == "TagDef" and "index" in node.attrib
+    }
+
+
+def semantic_content_projection(xml: str) -> dict[str, Any]:
+    """Project the reviewed COM-stable meaning of rich/list/table/image Pages."""
+
+    root = parse_xml(xml)
+    capability_projection = page_content_capability_projection(xml)
+    capabilities = set(capability_projection.get("capabilities", ()))
+    complete = bool(capability_projection.get("complete")) and capabilities.issubset(
+        SEMANTIC_CONTENT_PAGE_TYPES
+    )
+    tag_definitions = _semantic_tag_definition_projection(root)
+
+    def tag_projection(node: ET.Element) -> tuple[Any, ...] | None:
+        if local_name(node.tag) != "Tag":
+            return None
+        semantic_type, symbol = tag_definitions.get(
+            node.attrib.get("index", ""), ("", "")
+        )
+        return (
+            semantic_type,
+            symbol,
+            node.attrib.get("completed", "false").casefold() == "true",
+            node.attrib.get("disabled", "false").casefold() == "true",
+        )
+
+    def list_projection(node: ET.Element) -> str | None:
+        if local_name(node.tag) != "List":
+            return None
+        marker = next(iter(node), None)
+        return local_name(marker.tag).casefold() if marker is not None else "list"
+
+    def stable_attributes(node: ET.Element) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            sorted(
+                (local_name(name), value)
+                for name, value in node.attrib.items()
+                if local_name(name) not in IGNORED_ATTRIBUTES
+            )
+        )
+
+    def table_projection(table: ET.Element) -> tuple[Any, ...]:
+        nonlocal complete
+        columns = tuple(
+            stable_attributes(column)
+            for container in list(table)
+            if local_name(container.tag) == "Columns"
+            for column in list(container)
+            if local_name(column.tag) == "Column"
+        )
+        rows: list[tuple[Any, ...]] = []
+        for row in (child for child in list(table) if local_name(child.tag) == "Row"):
+            cells: list[tuple[Any, ...]] = []
+            for cell in (child for child in list(row) if local_name(child.tag) == "Cell"):
+                fragments = [
+                    node.text or ""
+                    for node in cell.iter()
+                    if local_name(node.tag) == "T"
+                ]
+                rich, rich_complete = _semantic_inline_projection(fragments)
+                complete = complete and rich_complete
+                lists = tuple(
+                    value
+                    for value in (list_projection(node) for node in cell.iter())
+                    if value is not None
+                )
+                tags = tuple(
+                    value
+                    for value in (tag_projection(node) for node in cell.iter())
+                    if value is not None
+                )
+                nested_tables = tuple(
+                    table_projection(node)
+                    for node in cell.iter()
+                    if node is not table and local_name(node.tag) == "Table"
+                )
+                cells.append(
+                    (stable_attributes(cell), rich, lists, tags, nested_tables)
+                )
+            rows.append((stable_attributes(row), tuple(cells)))
+        return stable_attributes(table), columns, tuple(rows)
+
+    def oe_projection(oe: ET.Element) -> tuple[Any, ...]:
+        nonlocal complete
+        fragments = [
+            child.text or ""
+            for child in list(oe)
+            if local_name(child.tag) == "T"
+        ]
+        rich, rich_complete = _semantic_inline_projection(fragments)
+        complete = complete and rich_complete
+        list_value = next(
+            (
+                value
+                for value in (list_projection(child) for child in list(oe))
+                if value is not None
+            ),
+            None,
+        )
+        tags = tuple(
+            value
+            for value in (tag_projection(child) for child in list(oe))
+            if value is not None
+        )
+        tables = tuple(
+            table_projection(child)
+            for child in list(oe)
+            if local_name(child.tag) == "Table"
+        )
+        binary_kinds = tuple(
+            local_name(child.tag)
+            for child in list(oe)
+            if local_name(child.tag) in {"Image"}
+        )
+        nested = tuple(
+            oe_projection(child)
+            for container in list(oe)
+            if local_name(container.tag) == "OEChildren"
+            for child in list(container)
+            if local_name(child.tag) == "OE"
+        )
+        return rich, list_value, tags, tables, binary_kinds, nested
+
+    title_fragments = [
+        node.text or ""
+        for title in root.iter()
+        if local_name(title.tag) == "Title"
+        for node in title.iter()
+        if local_name(node.tag) == "T" and not is_empty_selection_text_node(node)
+    ]
+    title = html_fragment_to_text("".join(title_fragments))
+
+    outlines: list[tuple[Any, ...]] = []
+    for outline in (node for node in root.iter() if local_name(node.tag) == "Outline"):
+        values = tuple(
+            oe_projection(child)
+            for container in list(outline)
+            if local_name(container.tag) == "OEChildren"
+            for child in list(container)
+            if local_name(child.tag) == "OE"
+        )
+        meaningful = any(
+            rich or list_value is not None or tags or tables or binary_kinds or nested
+            for rich, list_value, tags, tables, binary_kinds, nested in values
+        )
+        if meaningful:
+            outlines.append(values)
+
+    object_counts = page_content_type_counts(xml)
+    object_counts.pop("Outline", None)
+    return {
+        "complete": complete,
+        "title": title,
+        "outlines": tuple(outlines),
+        "object_counts": tuple(sorted(object_counts.items())),
+        "binary_sha256": tuple(page_binary_hashes(xml)),
+    }
+
+
+def semantic_content_comparison(expected_xml: str, actual_xml: str) -> dict[str, Any]:
+    source = semantic_content_projection(expected_xml)
+    target = semantic_content_projection(actual_xml)
+    checks = {
+        "title": source["title"] == target["title"],
+        "rich_list_tag_table_outline": source["outlines"] == target["outlines"],
+        "binary_objects": (
+            source["object_counts"] == target["object_counts"]
+            and source["binary_sha256"] == target["binary_sha256"]
+        ),
+    }
+    return {
+        "source_complete": bool(source["complete"]),
+        "target_complete": bool(target["complete"]),
+        "checks": checks,
+        "passed": bool(source["complete"])
+        and bool(target["complete"])
+        and all(checks.values()),
+    }
+
+
 def copy_verification_tier(
     content_types: Iterable[str],
     *,
@@ -1245,6 +1553,13 @@ def copy_verification_tier(
         SEMANTIC_INK_DRAWING_PAGE_TYPES
     ):
         return SEMANTIC_INK_DRAWING_VERIFICATION
+    if (
+        {"Table", "Image"}.intersection(observed)
+        and observed.issubset(SEMANTIC_CONTENT_PAGE_TYPES)
+        and page_xml is not None
+        and semantic_content_projection(page_xml)["complete"] is True
+    ):
+        return SEMANTIC_CONTENT_VERIFICATION
     return (
         SEMANTIC_LIST_TAG_VERIFICATION
         if {"List", "Tag"}.intersection(observed)
@@ -1521,6 +1836,30 @@ def page_equivalence(
             == semantic_list_tag_projection(actual_xml)
         )
         acceptance_checks = ["visible_text", "binary_sha256", "semantic_list_tag"]
+    elif verification_tier == SEMANTIC_CONTENT_VERIFICATION:
+        semantic_content = semantic_content_comparison(expected_xml, actual_xml)
+        checks["semantic_content"] = semantic_content["passed"]
+        checks["semantic_projection_complete"] = (
+            semantic_content["source_complete"]
+            and semantic_content["target_complete"]
+        )
+        if checks["semantic_projection_complete"]:
+            acceptance_checks = [
+                "binary_sha256",
+                "semantic_content",
+                "semantic_projection_complete",
+            ]
+        else:
+            checks["semantic_fallback_strict"] = all(
+                checks[name]
+                for name in (
+                    "canonical_xml",
+                    "visible_text",
+                    "content_objects",
+                    "binary_sha256",
+                )
+            )
+            acceptance_checks = ["semantic_fallback_strict"]
     elif verification_tier in {
         SEMANTIC_INK_DRAWING_VERIFICATION,
         SEMANTIC_UI_SHAPE_VERIFICATION,
@@ -1559,4 +1898,6 @@ def page_equivalence(
         result["mathml_projection_comparison"] = mathml_comparison
     elif verification_tier == SEMANTIC_DISPLAY_EQUATION_VERIFICATION:
         result["display_equation_comparison"] = display_equation_comparison
+    elif verification_tier == SEMANTIC_CONTENT_VERIFICATION:
+        result["semantic_content_comparison"] = semantic_content
     return result

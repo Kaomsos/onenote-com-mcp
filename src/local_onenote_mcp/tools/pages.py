@@ -37,10 +37,14 @@ async def get_page_metadata(page_id: str) -> dict[str, Any]:
     return invoke("get_page_metadata", page_id=page_id)
 
 
-async def get_page_text(page_id: str, max_chars: int = MAX_TEXT_CHARS) -> dict[str, Any]:
-    """Return visible text extracted from one Page."""
+async def get_page_text(
+    page_id: str,
+    max_chars: Annotated[int, Field(ge=1, le=MAX_TEXT_CHARS)] = MAX_TEXT_CHARS,
+    mode: Literal["plain", "rich"] = "rich",
+) -> dict[str, Any]:
+    """Read one Page as bounded sanitized rich HTML by default, or plain visible text; rich never exposes raw Page XML or binary payloads."""
 
-    return invoke("get_page_text", page_id=page_id, max_chars=max_chars)
+    return invoke("get_page_text", page_id=page_id, max_chars=max_chars, mode=mode)
 
 
 async def get_page_content_objects(page_id: str) -> dict[str, Any]:

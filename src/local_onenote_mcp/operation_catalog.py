@@ -58,18 +58,19 @@ AUTHORIZATION_POLICIES = {
     **{
         name: "write"
         for name in (
-            "create_notebook",
-            "create_section_group",
-            "create_section",
-            "create_page",
             "rename_page",
             "rename_section_group",
             "rename_section",
             "reorder_page",
             "reorder_section",
+            "sort_children",
             "append_page_content",
         )
     },
+    "create_notebook": "create",
+    "create_section_group": "create",
+    "create_section": "create",
+    "create_page": "create_write",
     "reparent_page": "organize",
     "reparent_section": "organize",
     "reparent_section_group": "organize",
@@ -78,13 +79,13 @@ AUTHORIZATION_POLICIES = {
     "delete_section_group": "delete",
     "delete_section": "delete",
     "delete_page": "delete",
-    "copy_page": "copy",
-    "copy_section": "copy",
-    "copy_section_group": "copy",
-    "copy_notebook": "copy",
-    "move_page": "move",
-    "move_section": "move",
-    "move_section_group": "move",
+    "copy_page": "create_write",
+    "copy_section": "create_write",
+    "copy_section_group": "create_write",
+    "copy_notebook": "create_write",
+    "move_page": "create_write_delete",
+    "move_section": "create_write_delete",
+    "move_section_group": "create_write_delete",
     "add_page_image_from_file": "write_local_file",
     "export_object_to_pdf": "local_file",
     "launch_onenote_gui": "ui_control",
@@ -108,6 +109,7 @@ PLATFORM_PREFLIGHT_POLICIES = {
         "rename_section",
         "reorder_page",
         "reorder_section",
+        "sort_children",
         "append_page_content",
         "reparent_page",
         "reparent_section",
@@ -138,7 +140,12 @@ def _authorizer(policy_id: str):
         if policy_id == "none":
             return
         policy = MutationPolicy.current()
-        if policy_id == "write":
+        if policy_id == "create":
+            policy.require_create()
+        elif policy_id == "write":
+            policy.require_write()
+        elif policy_id == "create_write":
+            policy.require_create()
             policy.require_write()
         elif policy_id == "delete":
             policy.require_delete(permanently=bool(arguments.get("permanently", False)))
@@ -147,10 +154,10 @@ def _authorizer(policy_id: str):
             policy.require_delete()
         elif policy_id == "organize":
             policy.require_organize()
-        elif policy_id == "copy":
-            policy.require_copy()
-        elif policy_id == "move":
-            policy.require_move()
+        elif policy_id == "create_write_delete":
+            policy.require_create()
+            policy.require_write()
+            policy.require_delete()
         elif policy_id == "local_file":
             policy.require_local_file_io()
         elif policy_id == "write_local_file":
@@ -198,6 +205,64 @@ def _positional(
         )
 
     return handler
+
+
+def _uses_batch_mode(
+    arguments: Mapping[str, Any],
+    *,
+    single_fields: tuple[str, ...],
+    optional_single_fields: tuple[str, ...] = (),
+    batch_confirmation_fields: tuple[str, ...] = (),
+    required_common_fields: tuple[str, ...] = (),
+    batch_default_only_fields: tuple[tuple[str, Any], ...] = (),
+) -> bool:
+    """Validate the mutually exclusive legacy-single and bounded-items modes."""
+
+    missing_common = [
+        field for field in required_common_fields if arguments.get(field) is None
+    ]
+    if missing_common:
+        raise ValueError("Both modes require: " + ", ".join(missing_common) + ".")
+    items = arguments.get("items")
+    if items is None:
+        missing = [field for field in single_fields if arguments.get(field) is None]
+        if missing:
+            raise ValueError(
+                "Single-item mode requires: " + ", ".join(missing) + "."
+            )
+        return False
+    supplied_single = [
+        field
+        for field in (*single_fields, *optional_single_fields)
+        if arguments.get(field) is not None
+    ]
+    if supplied_single:
+        raise ValueError(
+            "items batch mode is mutually exclusive with single-item fields: "
+            + ", ".join(supplied_single)
+            + "."
+        )
+    nondefault_single = [
+        field
+        for field, default in batch_default_only_fields
+        if arguments.get(field) != default
+    ]
+    if nondefault_single:
+        raise ValueError(
+            "items batch mode cannot use non-default single-item fields: "
+            + ", ".join(nondefault_single)
+            + "."
+        )
+    missing = [
+        field for field in batch_confirmation_fields if arguments.get(field) is None
+    ]
+    if missing:
+        raise ValueError(
+            "items batch mode requires parent confirmation fields: "
+            + ", ".join(missing)
+            + "."
+        )
+    return True
 
 
 def _mutation_policy(
@@ -417,7 +482,7 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
     # Page reads and search.
     for name, method, keys in (
         ("get_page_metadata", "get", ("page_id",)),
-        ("get_page_text", "get_text", ("page_id", "max_chars")),
+        ("get_page_text", "get_text", ("page_id", "max_chars", "mode")),
         ("get_page_content_objects", "get_content_objects", ("page_id",)),
         (
             "get_page_content_object_binary",
@@ -463,50 +528,66 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
             False,
         ),
         "create_section_group": (
-            lambda a: services.mutations.create_section_group(a["parent_id"], a["name"]),
+            lambda a: services.mutations.batch_create(
+                "section_group", a["parent_id"], a["expected_parent_name"],
+                a["expected_parent_modified"], a["items"]
+            ) if _uses_batch_mode(a, single_fields=("name",), batch_confirmation_fields=("expected_parent_name",)) else services.mutations.create_section_group(a["parent_id"], a["name"]),
             "mutations.create_section_group",
             None,
-            False,
+            True,
         ),
         "create_section": (
-            lambda a: services.mutations.create_section(a["parent_id"], a["name"]),
+            lambda a: services.mutations.batch_create(
+                "section", a["parent_id"], a["expected_parent_name"],
+                a["expected_parent_modified"], a["items"]
+            ) if _uses_batch_mode(a, single_fields=("name",), batch_confirmation_fields=("expected_parent_name",)) else services.mutations.create_section(a["parent_id"], a["name"]),
             "mutations.create_section",
             None,
-            False,
+            True,
         ),
         "create_page": (
-            lambda a: services.mutations.create_page(
+            lambda a: services.mutations.batch_create(
+                "page", a["section_id"], a["expected_section_name"],
+                a["expected_section_modified"], a["items"]
+            ) if _uses_batch_mode(
+                a,
+                single_fields=("title",),
+                batch_confirmation_fields=("expected_section_name",),
+                batch_default_only_fields=(("content", ""), ("content_format", "plain")),
+            ) else services.mutations.create_page(
                 a["section_id"], a["title"], a["content"], a["content_format"], "blank_with_title"
             ),
             "mutations.create_page",
             None,
-            False,
+            True,
         ),
         "rename_page": (
-            _positional(
-                services.mutations,
-                "update_page_title",
-                ("page_id", "title", "expected_title", "expected_section_id", "expected_modified"),
-            ),
+            lambda a: services.mutations.batch_rename("page", a["items"])
+            if _uses_batch_mode(a, single_fields=("page_id", "title", "expected_title", "expected_section_id"), optional_single_fields=("expected_modified",))
+            else services.mutations.update_page_title(a["page_id"], a["title"], a["expected_title"], a["expected_section_id"], a["expected_modified"]),
             "mutations.update_page_title",
             "update_page_title",
-            False,
+            True,
         ),
         "rename_section_group": (
-            lambda a: services.mutations.rename_resource(
+            lambda a: services.mutations.batch_rename("section_group", a["items"])
+            if _uses_batch_mode(a, single_fields=("section_group_id", "new_name", "expected_name", "expected_parent_id"), optional_single_fields=("expected_modified",))
+            else services.mutations.rename_resource(
                 a["section_group_id"], "section_group", a["new_name"], a["expected_name"], a["expected_parent_id"], a["expected_modified"]
             ),
             "mutations.rename_resource:section_group",
             "rename_resource",
-            False,
+            True,
         ),
         "rename_section": (
-            lambda a: services.mutations.rename_resource(
+            lambda a: services.mutations.batch_rename("section", a["items"])
+            if _uses_batch_mode(a, single_fields=("section_id", "new_name", "expected_name", "expected_parent_id"), optional_single_fields=("expected_modified",))
+            else services.mutations.rename_resource(
                 a["section_id"], "section", a["new_name"], a["expected_name"], a["expected_parent_id"], a["expected_modified"]
             ),
             "mutations.rename_resource:section",
             "rename_resource",
-            False,
+            True,
         ),
         "reorder_page": (
             lambda a: services.mutations.reorder_page(
@@ -524,8 +605,25 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
             "reorder_section",
             False,
         ),
+        "sort_children": (
+            lambda a: services.mutations.sort_children(
+                a["child_type"], a["parent_id"], a["expected_parent_name"], a["expected_parent_modified"],
+                a["expected_child_ids"], a["key"], a["direction"]
+            ),
+            "mutations.sort_children",
+            None,
+            False,
+        ),
         "reparent_page": (
-            lambda a: services.mutations.reparent_page(
+            lambda a: services.mutations.batch_reparent("page", a["destination_section_id"], a["items"])
+            if _uses_batch_mode(
+                a,
+                single_fields=("page_id", "expected_title", "expected_section_id"),
+                optional_single_fields=("expected_modified",),
+                required_common_fields=("destination_section_id",),
+                batch_default_only_fields=(("page_scope", "page_only"),),
+            )
+            else services.mutations.reparent_page(
                 a["page_id"], a["destination_section_id"], a["expected_title"], a["expected_section_id"], a["expected_modified"], a["page_scope"] == "indentation_subtree"
             ),
             "mutations.reparent_page",
@@ -533,16 +631,30 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
             True,
         ),
         "reparent_section": (
-            _positional(services.mutations, "reparent_section", ("section_id", "destination_parent_id", "expected_name", "expected_parent_id", "expected_modified")),
+            lambda a: services.mutations.batch_reparent("section", a["destination_parent_id"], a["items"])
+            if _uses_batch_mode(
+                a,
+                single_fields=("section_id", "expected_name", "expected_parent_id"),
+                optional_single_fields=("expected_modified",),
+                required_common_fields=("destination_parent_id",),
+            )
+            else services.mutations.reparent_section(a["section_id"], a["destination_parent_id"], a["expected_name"], a["expected_parent_id"], a["expected_modified"]),
             "mutations.reparent_section",
             "reparent_section",
-            False,
+            True,
         ),
         "reparent_section_group": (
-            _positional(services.mutations, "reparent_section_group", ("section_group_id", "destination_parent_id", "expected_name", "expected_parent_id", "expected_modified")),
+            lambda a: services.mutations.batch_reparent("section_group", a["destination_parent_id"], a["items"])
+            if _uses_batch_mode(
+                a,
+                single_fields=("section_group_id", "expected_name", "expected_parent_id"),
+                optional_single_fields=("expected_modified",),
+                required_common_fields=("destination_parent_id",),
+            )
+            else services.mutations.reparent_section_group(a["section_group_id"], a["destination_parent_id"], a["expected_name"], a["expected_parent_id"], a["expected_modified"]),
             "mutations.reparent_section_group",
             "reparent_section_group",
-            False,
+            True,
         ),
         "append_page_content": (
             _positional(services.mutations, "append_to_page", ("page_id", "content", "expected_title", "expected_section_id", "expected_modified", "content_format", "x", "y")),
@@ -590,20 +702,24 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
         add(
             name,
             **mutation,
-            handler=lambda a, resource_type=resource_type, id_key=id_key: services.mutations.delete_resource(
+            handler=lambda a, resource_type=resource_type, id_key=id_key: services.mutations.batch_delete(resource_type, a["items"])
+            if _uses_batch_mode(a, single_fields=(id_key, "expected_name", "expected_parent_id"), optional_single_fields=("expected_modified",))
+            else services.mutations.delete_resource(
                 a[id_key], resource_type, a["expected_name"], a["expected_parent_id"], a["expected_modified"], False
             ),
             handler_id=f"mutations.delete_resource:{resource_type}",
-            mutation=_mutation_policy(name, attempt_policy_id=attempt_id),
+            mutation=_mutation_policy(name, attempt_policy_id=attempt_id, saga=True),
         )
     add(
         "delete_page",
         **mutation,
-        handler=lambda a: services.mutations.delete_page(
+        handler=lambda a: services.mutations.batch_delete("page", a["items"])
+        if _uses_batch_mode(a, single_fields=("page_id", "expected_title", "expected_section_id"), optional_single_fields=("expected_modified",))
+        else services.mutations.delete_page(
             a["page_id"], a["expected_title"], a["expected_section_id"], a["expected_modified"], False
         ),
         handler_id="mutations.delete_page",
-        mutation=_mutation_policy("delete_page", attempt_policy_id="delete_hierarchy"),
+        mutation=_mutation_policy("delete_page", attempt_policy_id="delete_hierarchy", saga=True),
     )
 
     # Copy/Move are operation-wide sagas.  Internal planning is rebuilt live in
@@ -783,6 +899,12 @@ def _health_snapshot(
             "page_body_reads": False,
         },
         "content_formats": ["plain", "html", "markdown"],
+        "page_text_modes": {
+            "modes": ["plain", "rich"],
+            "default": "rich",
+            "rich_format": "sanitized_html_v1",
+            "raw_page_xml_exposed": False,
+        },
         "operation_runtime": {
             "enabled": True,
             "registered_operations": len(registry.bindings),
@@ -803,6 +925,16 @@ def _health_snapshot(
         "copy_move": {
             "tools": list(COPY_MOVE_OPERATIONS),
             "single_call": True,
+            "authorization": {
+                "copy": ["create", "writes"],
+                "move": ["create", "writes", "deletes"],
+                "independent_copy_gate": False,
+            },
+            "page_verification": {
+                "capability_aware": True,
+                "semantic_content_tier": "semantic_content_v1",
+                "unknown_projection": "strict_canonical_fail_closed",
+            },
             "public_planning_tools": False,
             "agent_managed_plan_state": False,
             "preview": {
@@ -811,10 +943,10 @@ def _health_snapshot(
             },
         },
         "mutation_policy": {
+            "create_enabled": policy.create_enabled,
             "writes_enabled": policy.writes_enabled,
             "deletes_enabled": policy.deletes_enabled,
             "organize_enabled": policy.organize_enabled,
-            "copy_enabled": policy.copy_enabled,
             "local_file_io_enabled": policy.local_file_io_enabled,
             "ui_control_enabled": policy.ui_control_enabled,
             "notebook_lifecycle_enabled": policy.notebook_lifecycle_enabled,

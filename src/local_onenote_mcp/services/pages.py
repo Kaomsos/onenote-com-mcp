@@ -12,8 +12,11 @@ from ..domain import content_objects
 from ..page import (
     canonical_page_digest,
     collect_page_objects,
+    RICH_HTML_FORMAT,
+    rich_html_from_page_xml,
     text_from_page_xml,
     title_from_page_xml,
+    truncate_rich_html,
 )
 from ..page.copying import is_empty_selection_text_node
 from .base import BaseService
@@ -171,10 +174,33 @@ class PageService(BaseService):
         self.hierarchy.resource(page_id, "page")
         return {"xml": self.xml(page_id, page_info)}
 
-    def get_text(self, page_id: str, max_chars: int | None = None) -> dict[str, Any]:
+    def get_text(
+        self,
+        page_id: str,
+        max_chars: int | None = None,
+        mode: str = "rich",
+    ) -> dict[str, Any]:
         self.hierarchy.resource(page_id, "page")
-        text = text_from_page_xml(self.xml(page_id, "basic"))
-        return {"text": self.truncate(text, max_chars or self.max_text_chars), "chars": len(text)}
+        if mode not in {"plain", "rich"}:
+            raise ValueError("mode must be plain or rich.")
+        limit = self.max_text_chars if max_chars is None else max_chars
+        if limit < 1 or limit > self.max_text_chars:
+            raise ValueError(
+                f"max_chars must be between 1 and {self.max_text_chars}."
+            )
+        xml = self.xml(page_id, "basic")
+        if mode == "plain":
+            text = text_from_page_xml(xml)
+            return {"text": self.truncate(text, limit), "chars": len(text)}
+        html = rich_html_from_page_xml(xml)
+        projected, truncated = truncate_rich_html(html, limit)
+        return {
+            "html": projected,
+            "chars": len(html),
+            "mode": "rich",
+            "format": RICH_HTML_FORMAT,
+            "truncated": truncated,
+        }
 
     def _content_object_snapshot(self, page_id: str) -> list[dict[str, Any]]:
         """Read object metadata and callback IDs without embedding binary payloads."""

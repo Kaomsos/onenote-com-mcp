@@ -23,11 +23,11 @@ def env_int(name: str, default: int, *, minimum: int = 1) -> int:
 
 @dataclass(frozen=True)
 class MutationPolicy:
+    create_enabled: bool
     writes_enabled: bool
     deletes_enabled: bool
     permanent_deletes_enabled: bool
     organize_enabled: bool
-    copy_enabled: bool
     local_file_io_enabled: bool
     ui_control_enabled: bool
     notebook_lifecycle_enabled: bool
@@ -37,11 +37,11 @@ class MutationPolicy:
     @classmethod
     def current(cls) -> "MutationPolicy":
         return cls(
+            create_enabled=env_bool("LOCAL_ONENOTE_ENABLE_CREATE"),
             writes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_WRITES"),
             deletes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_DELETES"),
             permanent_deletes_enabled=env_bool("LOCAL_ONENOTE_ENABLE_PERMANENT_DELETES"),
             organize_enabled=env_bool("LOCAL_ONENOTE_ENABLE_ORGANIZE"),
-            copy_enabled=env_bool("LOCAL_ONENOTE_ENABLE_COPY"),
             local_file_io_enabled=env_bool("LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO"),
             ui_control_enabled=env_bool("LOCAL_ONENOTE_ENABLE_UI_CONTROL"),
             notebook_lifecycle_enabled=env_bool(
@@ -52,6 +52,13 @@ class MutationPolicy:
             ),
             raw_xml_enabled=env_bool("LOCAL_ONENOTE_ENABLE_RAW_XML"),
         )
+
+    def require_create(self) -> None:
+        if not self.create_enabled:
+            raise PermissionError(
+                "Create operations are disabled. Set "
+                "LOCAL_ONENOTE_ENABLE_CREATE=true to materialize new typed objects."
+            )
 
     def require_write(self) -> None:
         if not self.writes_enabled:
@@ -87,12 +94,8 @@ class MutationPolicy:
             )
 
     def require_copy(self) -> None:
+        self.require_create()
         self.require_write()
-        if not self.copy_enabled:
-            raise PermissionError(
-                "Copy operations are disabled. Set LOCAL_ONENOTE_ENABLE_COPY=true "
-                "in addition to Writes."
-            )
 
     def require_move(self) -> None:
         self.require_copy()

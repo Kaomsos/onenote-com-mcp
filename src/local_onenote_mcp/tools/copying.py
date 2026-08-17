@@ -20,7 +20,7 @@ async def copy_page(
     destination_title: str | None = None,
     page_scope: Literal["page_only", "indentation_subtree"] = "page_only",
 ) -> dict[str, Any]:
-    """With Writes and Copy, copy one exact Page scope; OneNote chooses the reported destination position."""
+    """With Create and Writes, copy one exact Page scope using capability-aware fidelity checks; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "copy_page",
@@ -42,7 +42,7 @@ async def copy_section(
     expected_modified: str | None = None,
     destination_name: str | None = None,
 ) -> dict[str, Any]:
-    """With Writes and Copy, recursively copy a Section; OneNote chooses the reported destination position."""
+    """With Create and Writes, recursively copy a Section; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "copy_section",
@@ -63,7 +63,7 @@ async def copy_section_group(
     expected_modified: str | None = None,
     destination_name: str | None = None,
 ) -> dict[str, Any]:
-    """With Writes and Copy, recursively copy a SectionGroup; OneNote chooses the reported destination position."""
+    """With Create and Writes, recursively copy a SectionGroup; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "copy_section_group",
@@ -83,7 +83,7 @@ async def copy_notebook(
     destination_name: str | None = None,
     destination_base_folder: str | None = None,
 ) -> dict[str, Any]:
-    """With Writes and Copy, recursively copy an exact Notebook; destination position is not applicable."""
+    """With Create and Writes, recursively copy an exact Notebook; destination position is not applicable."""
 
     return invoke_mutation(
         "copy_notebook",
@@ -104,7 +104,7 @@ async def move_page(
     destination_title: str | None = None,
     page_scope: Literal["page_only", "indentation_subtree"] = "page_only",
 ) -> dict[str, Any]:
-    """With Writes, Copy, and Deletes, move one Page scope; OneNote chooses the reported destination position."""
+    """With Create, Writes, and Deletes, reconstructively move one Page scope only after capability-aware Copy verification; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "move_page",
@@ -126,7 +126,7 @@ async def move_section(
     expected_modified: str | None = None,
     destination_name: str | None = None,
 ) -> dict[str, Any]:
-    """With Writes, Copy, and Deletes, move a Section; OneNote chooses the reported destination position."""
+    """With Create, Writes, and Deletes, reconstructively move a Section after verified Copy; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "move_section",
@@ -147,7 +147,7 @@ async def move_section_group(
     expected_modified: str | None = None,
     destination_name: str | None = None,
 ) -> dict[str, Any]:
-    """With Writes, Copy, and Deletes, move a SectionGroup; OneNote chooses the reported destination position."""
+    """With Create, Writes, and Deletes, reconstructively move a SectionGroup after verified Copy; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "move_section_group",

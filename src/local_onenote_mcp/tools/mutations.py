@@ -6,9 +6,117 @@ and read-back verification belong to :mod:`local_onenote_mcp.services`.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from .responses import invoke as _invoke
+
+
+MAX_BATCH_ITEMS = 20
+MAX_SORT_CHILDREN = 1_000
+ExactId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+SafeName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)]
+
+
+class _BatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ContainerCreateItem(_BatchItem):
+    name: SafeName
+
+
+class PageCreateItem(_BatchItem):
+    title: SafeName
+    content: Annotated[str, Field(max_length=100_000)] = ""
+    content_format: Literal["plain", "html", "markdown"] = "plain"
+
+
+class _ContainerRenameItem(_BatchItem):
+    new_name: SafeName
+    expected_name: SafeName
+    expected_parent_id: ExactId
+    expected_modified: str | None = None
+
+
+class SectionRenameItem(_ContainerRenameItem):
+    section_id: ExactId
+
+
+class SectionGroupRenameItem(_ContainerRenameItem):
+    section_group_id: ExactId
+
+
+class PageRenameItem(_BatchItem):
+    page_id: ExactId
+    new_title: SafeName
+    expected_title: SafeName
+    expected_section_id: ExactId
+    expected_modified: str | None = None
+
+
+class _ContainerReparentItem(_BatchItem):
+    expected_name: SafeName
+    expected_parent_id: ExactId
+    expected_modified: str | None = None
+
+
+class SectionReparentItem(_ContainerReparentItem):
+    section_id: ExactId
+
+
+class SectionGroupReparentItem(_ContainerReparentItem):
+    section_group_id: ExactId
+
+
+class PageReparentItem(_BatchItem):
+    page_id: ExactId
+    expected_title: SafeName
+    expected_section_id: ExactId
+    expected_modified: str | None = None
+    page_scope: Literal["page_only", "indentation_subtree"] = "page_only"
+
+
+class _ContainerDeleteItem(_BatchItem):
+    expected_name: SafeName
+    expected_parent_id: ExactId
+    expected_modified: str | None = None
+
+
+class SectionDeleteItem(_ContainerDeleteItem):
+    section_id: ExactId
+
+
+class SectionGroupDeleteItem(_ContainerDeleteItem):
+    section_group_id: ExactId
+
+
+class PageDeleteItem(_BatchItem):
+    page_id: ExactId
+    expected_title: SafeName
+    expected_section_id: ExactId
+    expected_modified: str | None = None
+
+
+def _dump(items: list[_BatchItem] | None) -> list[dict[str, Any]] | None:
+    return None if items is None else [item.model_dump() for item in items]
+
+
+ContainerCreateItems = Annotated[list[ContainerCreateItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+PageCreateItems = Annotated[list[PageCreateItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+SectionRenameItems = Annotated[list[SectionRenameItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+SectionGroupRenameItems = Annotated[list[SectionGroupRenameItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+PageRenameItems = Annotated[list[PageRenameItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+SectionReparentItems = Annotated[list[SectionReparentItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+SectionGroupReparentItems = Annotated[list[SectionGroupReparentItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+PageReparentItems = Annotated[list[PageReparentItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+SectionDeleteItems = Annotated[list[SectionDeleteItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+SectionGroupDeleteItems = Annotated[list[SectionGroupDeleteItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+PageDeleteItems = Annotated[list[PageDeleteItem], Field(min_length=1, max_length=MAX_BATCH_ITEMS)]
+ExpectedChildIds = Annotated[
+    list[ExactId], Field(min_length=1, max_length=MAX_SORT_CHILDREN)
+]
 
 
 def invoke(operation: str, **arguments: Any) -> dict[str, Any]:
@@ -18,30 +126,45 @@ def invoke(operation: str, **arguments: Any) -> dict[str, Any]:
 
 
 async def create_notebook(name: str, base_folder: str | None = None) -> dict[str, Any]:
-    """With Writes, create a Notebook and verify it through the typed hierarchy model."""
+    """With Create, create a Notebook and verify it through the typed hierarchy model."""
 
     return invoke("create_notebook", name=name, base_folder=base_folder)
 
 
-async def create_section(parent_id: str, name: str) -> dict[str, Any]:
-    """With Writes, create a Section below an exact Notebook or SectionGroup ID."""
+async def create_section(
+    parent_id: str,
+    name: str | None = None,
+    items: ContainerCreateItems | None = None,
+    expected_parent_name: str | None = None,
+    expected_parent_modified: str | None = None,
+) -> dict[str, Any]:
+    """With Create, create one Section with name, or up to 20 Sections with items below one confirmed exact parent; the two modes are mutually exclusive."""
 
-    return invoke("create_section", parent_id=parent_id, name=name)
+    return invoke("create_section", parent_id=parent_id, name=name, items=_dump(items), expected_parent_name=expected_parent_name, expected_parent_modified=expected_parent_modified)
 
 
-async def create_section_group(parent_id: str, name: str) -> dict[str, Any]:
-    """With Writes, create a SectionGroup below an exact Notebook or SectionGroup ID."""
+async def create_section_group(
+    parent_id: str,
+    name: str | None = None,
+    items: ContainerCreateItems | None = None,
+    expected_parent_name: str | None = None,
+    expected_parent_modified: str | None = None,
+) -> dict[str, Any]:
+    """With Create, create one SectionGroup with name, or up to 20 SectionGroups with items below one confirmed exact parent; the two modes are mutually exclusive."""
 
-    return invoke("create_section_group", parent_id=parent_id, name=name)
+    return invoke("create_section_group", parent_id=parent_id, name=name, items=_dump(items), expected_parent_name=expected_parent_name, expected_parent_modified=expected_parent_modified)
 
 
 async def create_page(
     section_id: str,
-    title: str,
+    title: str | None = None,
     content: str = "",
     content_format: str = "plain",
+    items: PageCreateItems | None = None,
+    expected_section_name: str | None = None,
+    expected_section_modified: str | None = None,
 ) -> dict[str, Any]:
-    """With Writes, create a Page below an exact Section ID and verify its allocated identity."""
+    """With Create and Writes, create one Page with title/content, or up to 20 Pages with items below one confirmed exact Section; the two modes are mutually exclusive."""
 
     return invoke(
         "create_page",
@@ -49,17 +172,21 @@ async def create_page(
         title=title,
         content=content,
         content_format=content_format,
+        items=_dump(items),
+        expected_section_name=expected_section_name,
+        expected_section_modified=expected_section_modified,
     )
 
 
 async def rename_page(
-    page_id: str,
-    title: str,
-    expected_title: str,
-    expected_section_id: str,
+    page_id: str | None = None,
+    title: str | None = None,
+    expected_title: str | None = None,
+    expected_section_id: str | None = None,
     expected_modified: str | None = None,
+    items: PageRenameItems | None = None,
 ) -> dict[str, Any]:
-    """With Writes, rename an exact Page after optimistic confirmation."""
+    """With Writes, rename one exact confirmed Page, or up to 20 same-Notebook Pages through explicit items; modes are mutually exclusive."""
 
     return invoke(
         "rename_page",
@@ -68,17 +195,19 @@ async def rename_page(
         expected_title=expected_title,
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
+        items=_dump(items),
     )
 
 
 async def rename_section_group(
-    section_group_id: str,
-    new_name: str,
-    expected_name: str,
-    expected_parent_id: str,
+    section_group_id: str | None = None,
+    new_name: str | None = None,
+    expected_name: str | None = None,
+    expected_parent_id: str | None = None,
     expected_modified: str | None = None,
+    items: SectionGroupRenameItems | None = None,
 ) -> dict[str, Any]:
-    """With Writes, rename an exact SectionGroup after optimistic confirmation."""
+    """With Writes, rename one exact confirmed SectionGroup, or up to 20 same-Notebook SectionGroups through explicit items; modes are mutually exclusive."""
 
     return invoke(
         "rename_section_group",
@@ -87,17 +216,19 @@ async def rename_section_group(
         expected_name=expected_name,
         expected_parent_id=expected_parent_id,
         expected_modified=expected_modified,
+        items=_dump(items),
     )
 
 
 async def rename_section(
-    section_id: str,
-    new_name: str,
-    expected_name: str,
-    expected_parent_id: str,
+    section_id: str | None = None,
+    new_name: str | None = None,
+    expected_name: str | None = None,
+    expected_parent_id: str | None = None,
     expected_modified: str | None = None,
+    items: SectionRenameItems | None = None,
 ) -> dict[str, Any]:
-    """With Writes, rename an exact Section after optimistic confirmation."""
+    """With Writes, rename one exact confirmed Section, or up to 20 same-Notebook Sections through explicit items; modes are mutually exclusive."""
 
     return invoke(
         "rename_section",
@@ -106,6 +237,7 @@ async def rename_section(
         expected_name=expected_name,
         expected_parent_id=expected_parent_id,
         expected_modified=expected_modified,
+        items=_dump(items),
     )
 
 
@@ -149,14 +281,38 @@ async def reorder_section(
     )
 
 
-async def reparent_section(
-    section_id: str,
-    destination_parent_id: str,
-    expected_name: str,
-    expected_parent_id: str,
-    expected_modified: str | None = None,
+async def sort_children(
+    parent_id: ExactId,
+    expected_parent_name: SafeName,
+    expected_child_ids: ExpectedChildIds,
+    child_type: Literal["section", "page"] | None = None,
+    key: Literal["name", "created", "modified"] = "name",
+    direction: Literal["ascending", "descending"] = "ascending",
+    expected_parent_modified: str | None = None,
 ) -> dict[str, Any]:
-    """With Writes and Organize, reparent an exact Section within one Notebook and report observed position."""
+    """With Writes, stably sort only direct children: Notebook/SectionGroup parents imply Section, while Section/Page parents imply Page. child_type is an optional consistency check; recursive sorting is unsupported."""
+
+    return invoke(
+        "sort_children",
+        child_type=child_type,
+        parent_id=parent_id,
+        expected_parent_name=expected_parent_name,
+        expected_parent_modified=expected_parent_modified,
+        expected_child_ids=expected_child_ids,
+        key=key,
+        direction=direction,
+    )
+
+
+async def reparent_section(
+    section_id: str | None = None,
+    destination_parent_id: str | None = None,
+    expected_name: str | None = None,
+    expected_parent_id: str | None = None,
+    expected_modified: str | None = None,
+    items: SectionReparentItems | None = None,
+) -> dict[str, Any]:
+    """With Writes and Organize, reparent one exact Section or up to 20 confirmed Sections to one exact same-Notebook parent; a batch returns final observed live hierarchy positions in input order, and modes are mutually exclusive."""
 
     return invoke(
         "reparent_section",
@@ -165,18 +321,20 @@ async def reparent_section(
         expected_name=expected_name,
         expected_parent_id=expected_parent_id,
         expected_modified=expected_modified,
+        items=_dump(items),
     )
 
 
 async def reparent_page(
-    page_id: str,
-    destination_section_id: str,
-    expected_title: str,
-    expected_section_id: str,
+    page_id: str | None = None,
+    destination_section_id: str | None = None,
+    expected_title: str | None = None,
+    expected_section_id: str | None = None,
     expected_modified: str | None = None,
     page_scope: Literal["page_only", "indentation_subtree"] = "page_only",
+    items: PageReparentItems | None = None,
 ) -> dict[str, Any]:
-    """With Writes and Organize, reparent one exact Page scope within one Notebook.
+    """With Writes and Organize, reparent one exact Page scope or up to 20 non-overlapping Page scopes to one same-Notebook Section; a batch returns final observed live hierarchy positions in input order.
 
     The selected Page becomes a root Page in the destination Section.  By
     default only that Page moves and excluded descendants remain in the source
@@ -193,17 +351,19 @@ async def reparent_page(
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
         page_scope=page_scope,
+        items=_dump(items),
     )
 
 
 async def reparent_section_group(
-    section_group_id: str,
-    destination_parent_id: str,
-    expected_name: str,
-    expected_parent_id: str,
+    section_group_id: str | None = None,
+    destination_parent_id: str | None = None,
+    expected_name: str | None = None,
+    expected_parent_id: str | None = None,
     expected_modified: str | None = None,
+    items: SectionGroupReparentItems | None = None,
 ) -> dict[str, Any]:
-    """With Writes and Organize, reparent a SectionGroup and report its observed destination position."""
+    """With Writes and Organize, reparent one exact SectionGroup or up to 20 non-overlapping SectionGroups to one exact same-Notebook parent; a batch returns final observed live hierarchy positions in input order."""
 
     return invoke(
         "reparent_section_group",
@@ -212,6 +372,7 @@ async def reparent_section_group(
         expected_name=expected_name,
         expected_parent_id=expected_parent_id,
         expected_modified=expected_modified,
+        items=_dump(items),
     )
 
 
@@ -308,12 +469,13 @@ async def delete_page_content_object(
 
 
 async def delete_section_group(
-    section_group_id: str,
-    expected_name: str,
-    expected_parent_id: str,
+    section_group_id: str | None = None,
+    expected_name: str | None = None,
+    expected_parent_id: str | None = None,
     expected_modified: str | None = None,
+    items: SectionGroupDeleteItems | None = None,
 ) -> dict[str, Any]:
-    """With Deletes, non-permanently delete an exact confirmed SectionGroup to recoverable state."""
+    """With Deletes, non-permanently delete one exact SectionGroup or up to 20 non-overlapping same-Notebook SectionGroups; modes are mutually exclusive."""
 
     return invoke(
         "delete_section_group",
@@ -321,16 +483,18 @@ async def delete_section_group(
         expected_name=expected_name,
         expected_parent_id=expected_parent_id,
         expected_modified=expected_modified,
+        items=_dump(items),
     )
 
 
 async def delete_section(
-    section_id: str,
-    expected_name: str,
-    expected_parent_id: str,
+    section_id: str | None = None,
+    expected_name: str | None = None,
+    expected_parent_id: str | None = None,
     expected_modified: str | None = None,
+    items: SectionDeleteItems | None = None,
 ) -> dict[str, Any]:
-    """With Deletes, non-permanently delete an exact confirmed Section to recoverable state."""
+    """With Deletes, non-permanently delete one exact Section or up to 20 same-Notebook Sections; modes are mutually exclusive."""
 
     return invoke(
         "delete_section",
@@ -338,16 +502,18 @@ async def delete_section(
         expected_name=expected_name,
         expected_parent_id=expected_parent_id,
         expected_modified=expected_modified,
+        items=_dump(items),
     )
 
 
 async def delete_page(
-    page_id: str,
-    expected_title: str,
-    expected_section_id: str,
+    page_id: str | None = None,
+    expected_title: str | None = None,
+    expected_section_id: str | None = None,
     expected_modified: str | None = None,
+    items: PageDeleteItems | None = None,
 ) -> dict[str, Any]:
-    """With Deletes, non-permanently delete an exact confirmed Page to recoverable state."""
+    """With Deletes, non-permanently delete one exact Page or up to 20 non-overlapping same-Notebook Pages; modes are mutually exclusive."""
 
     return invoke(
         "delete_page",
@@ -355,6 +521,7 @@ async def delete_page(
         expected_title=expected_title,
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
+        items=_dump(items),
     )
 
 
@@ -368,6 +535,7 @@ TOOLS = [
     rename_section,
     reorder_page,
     reorder_section,
+    sort_children,
     reparent_page,
     reparent_section,
     reparent_section_group,

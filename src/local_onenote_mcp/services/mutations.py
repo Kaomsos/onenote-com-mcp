@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 from pathlib import Path
 import re
 import time
@@ -28,7 +29,12 @@ from ..page import (
 )
 from ..policy import CopyBudget, MutationPolicy
 from .base import BaseService
-from .convergence import DEFAULT_CONVERGENCE, ConvergenceResult, converge
+from .convergence import (
+    DEFAULT_CONVERGENCE,
+    ConvergenceConfig,
+    ConvergenceResult,
+    converge,
+)
 from .errors import MutationFailure, MutationPreflightFailure, PartialFailure
 from .hierarchy import HierarchyService
 from .mutation_control import (
@@ -43,6 +49,14 @@ from .reconciliation import ReconciliationState, reconcile_mutation
 
 
 REPLACE_BODY_OBJECT_TYPES = {"Outline", "Image", "InkDrawing", "FileAttachment", "InsertedFile", "MediaFile"}
+MAX_BATCH_ITEMS = 20
+MAX_SORT_CHILDREN = 1_000
+SECTION_GROUP_REPARENT_CONVERGENCE = ConvergenceConfig(
+    deadline_seconds=DEFAULT_CONVERGENCE.deadline_seconds,
+    interval_seconds=DEFAULT_CONVERGENCE.interval_seconds,
+    required_stable_observations=4,
+    max_observations=DEFAULT_CONVERGENCE.max_observations,
+)
 
 
 class MutationService(BaseService):
@@ -288,7 +302,11 @@ class MutationService(BaseService):
             for item in self.hierarchy.resources(include_recycle_bin=True)
             if item.get("id")
         }
-        MutationPolicy.current().require_write()
+        policy = MutationPolicy.current()
+        if self.create_resource_type(normalized_create_type) is not None:
+            policy.require_create()
+        else:
+            policy.require_write()
         result = self.call(
             "open_hierarchy",
             path=path,
@@ -365,7 +383,7 @@ class MutationService(BaseService):
         return data
 
     def create_notebook(self, name_or_path: str, base_folder: str = "") -> dict[str, Any]:
-        MutationPolicy.current().require_write()
+        MutationPolicy.current().require_create()
         before_ids = {
             str(item["id"])
             for item in self.hierarchy.resources(include_recycle_bin=True)
@@ -421,7 +439,7 @@ class MutationService(BaseService):
         }
 
     def create_section(self, parent_id: str, section_name: str) -> dict[str, Any]:
-        MutationPolicy.current().require_write()
+        MutationPolicy.current().require_create()
         parent = self.hierarchy.resource(parent_id)
         if parent["resource_type"] not in {"notebook", "section_group"}:
             raise ValueError("parent_id must identify a notebook or section_group.")
@@ -476,7 +494,7 @@ class MutationService(BaseService):
         }
 
     def create_section_group(self, parent_id: str, group_name: str) -> dict[str, Any]:
-        MutationPolicy.current().require_write()
+        MutationPolicy.current().require_create()
         parent = self.hierarchy.resource(parent_id)
         if parent["resource_type"] not in {"notebook", "section_group"}:
             raise ValueError("parent_id must identify a notebook or section_group.")
@@ -537,7 +555,9 @@ class MutationService(BaseService):
         *,
         forbidden_ids: set[str] | None = None,
     ) -> dict[str, Any]:
-        MutationPolicy.current().require_write()
+        policy = MutationPolicy.current()
+        policy.require_create()
+        policy.require_write()
         section = self.hierarchy.resource(section_id, "section")
         before_ids = {
             str(item["id"])
@@ -835,28 +855,6 @@ class MutationService(BaseService):
             for item in items
         )
 
-    def _page_digests(self, pages: list[dict[str, Any]]) -> dict[str, str]:
-        budget = CopyBudget.current()
-        if len(pages) > budget.max_pages:
-            raise ValueError(
-                f"Reorder verification includes {len(pages)} Pages, above the configured "
-                f"maximum of {budget.max_pages}."
-            )
-        total_bytes = 0
-        digests: dict[str, str] = {}
-        for page in pages:
-            xml = self.pages.xml(page["id"], "all")
-            size = len(xml.encode("utf-8"))
-            if size > budget.max_page_xml_bytes:
-                raise ValueError(
-                    f"Reorder verification Page {page['id']} exceeds the configured per-Page XML budget."
-                )
-            total_bytes += size
-            if total_bytes > budget.max_total_xml_bytes:
-                raise ValueError("Reorder verification exceeds the configured total XML budget.")
-            digests[page["id"]] = self.pages.digest(xml)
-        return digests
-
     def _reorder_container(
         self,
         object_id: str,
@@ -944,8 +942,6 @@ class MutationService(BaseService):
         if len(before_subtree) > CopyBudget.current().max_resources:
             raise ValueError("Reorder verification exceeds the configured hierarchy resource budget.")
         before_signature = self._container_subtree_signature(before_subtree)
-        before_pages = [node for node in before_subtree if node["resource_type"] == "page"]
-        before_page_digests = self._page_digests(before_pages)
         before_direct_ids = {child["id"] for child in direct_children}
         expected_sibling_ids = [candidate["id"] for candidate in ordered_siblings]
 
@@ -1022,11 +1018,6 @@ class MutationService(BaseService):
             refreshed_subtree = self._container_subtree(refreshed_items, object_id)
             if self._container_subtree_signature(refreshed_subtree) != before_signature:
                 return None
-            refreshed_pages = [
-                node for node in refreshed_subtree if node["resource_type"] == "page"
-            ]
-            if self._page_digests(refreshed_pages) != before_page_digests:
-                return None
             return {"item": refreshed, "siblings": refreshed_siblings}
 
         stable = self._converge(
@@ -1050,8 +1041,8 @@ class MutationService(BaseService):
                 "parent_unchanged": True,
                 "sibling_ids_unchanged": True,
                 "descendants_unchanged": True,
-                "page_content_unchanged": True,
             },
+            "verification_scope": {"page_content": "not_read"},
             "convergence": stable.summary(),
             "reconciliation": reconciliation.summary(),
         }
@@ -1894,6 +1885,11 @@ class MutationService(BaseService):
             last_topology = {"items": items, "current": current, "id_map": id_map}
             return last_topology
 
+        convergence_config = (
+            SECTION_GROUP_REPARENT_CONVERGENCE
+            if resource_type == "section_group"
+            else DEFAULT_CONVERGENCE
+        )
         stable: ConvergenceResult[Any] | None = None
         topology_read_error: Exception | None = None
         try:
@@ -1905,7 +1901,7 @@ class MutationService(BaseService):
                     tuple(sorted(value["id_map"].items())),
                     self._reparent_hierarchy_signature(value["items"]),
                 ),
-                config=DEFAULT_CONVERGENCE,
+                config=convergence_config,
                 clock=time.monotonic,
                 sleeper=time.sleep,
                 transient=transient_read_error,
@@ -1919,7 +1915,7 @@ class MutationService(BaseService):
                 else (
                     "deadline exceeded after "
                     f"{stable.stable_observations}/"
-                    f"{DEFAULT_CONVERGENCE.required_stable_observations} stable observations"
+                    f"{convergence_config.required_stable_observations} stable observations"
                 )
             )
             topology_read_error = RuntimeError(diagnostic)
@@ -2585,6 +2581,796 @@ class MutationService(BaseService):
             "convergence": stable.summary(),
             "reconciliation": reconciliation.summary(),
         }
+
+    @staticmethod
+    def _validate_batch_size(items: list[dict[str, Any]]) -> None:
+        if not 1 <= len(items) <= MAX_BATCH_ITEMS:
+            raise MutationPreflightFailure(
+                f"Batch items must contain between 1 and {MAX_BATCH_ITEMS} entries.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+                max_items=MAX_BATCH_ITEMS,
+            )
+
+    @staticmethod
+    def _batch_item_id(item: dict[str, Any]) -> str | None:
+        value = (
+            item.get("page_id")
+            or item.get("section_id")
+            or item.get("section_group_id")
+            or item.get("object_id")
+        )
+        return str(value) if value else None
+
+    def _batch_snapshot(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        snapshot = self.hierarchy.resources(include_recycle_bin=True)
+        return snapshot, {
+            str(item["id"]): item for item in snapshot if item.get("id")
+        }
+
+    @staticmethod
+    def _active_item(
+        by_id: dict[str, dict[str, Any]], object_id: str, resource_type: str
+    ) -> dict[str, Any]:
+        item = by_id.get(object_id)
+        if item is None or item.get("resource_type") != resource_type:
+            raise MutationPreflightFailure(
+                f"Exact ID '{object_id}' does not identify an active {resource_type}.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        if item.get("is_in_recycle_bin") is True:
+            raise MutationPreflightFailure(
+                f"Batch target '{object_id}' is in the recycle bin.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        return item
+
+    @staticmethod
+    def _confirm_batch_item(
+        actual: dict[str, Any], supplied: dict[str, Any], resource_type: str
+    ) -> None:
+        if resource_type == "page":
+            expected_name = supplied["expected_title"]
+            expected_parent = supplied["expected_section_id"]
+        else:
+            expected_name = supplied["expected_name"]
+            expected_parent = supplied["expected_parent_id"]
+        if display_name(actual) != expected_name:
+            raise MutationPreflightFailure(
+                f"Confirmation mismatch for exact ID '{actual['id']}': display name changed.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        actual_parent = (
+            actual.get("section_id") if resource_type == "page" else actual.get("parent_id")
+        )
+        if actual_parent != expected_parent:
+            raise MutationPreflightFailure(
+                f"Confirmation mismatch for exact ID '{actual['id']}': parent changed.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        expected_modified = supplied.get("expected_modified")
+        if expected_modified is not None and actual.get("modified") != expected_modified:
+            raise MutationPreflightFailure(
+                f"Confirmation mismatch for exact ID '{actual['id']}': modified value changed.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+
+    def _preflight_batch_targets(
+        self, items: list[dict[str, Any]], resource_type: str
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+        self._validate_batch_size(items)
+        snapshot, by_id = self._batch_snapshot()
+        ids = [self._batch_item_id(item) for item in items]
+        if any(value is None for value in ids) or len(ids) != len(set(ids)):
+            raise MutationPreflightFailure(
+                "Batch target IDs must be present and unique.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        targets = []
+        for supplied, object_id in zip(items, ids):
+            assert object_id is not None
+            actual = self._active_item(by_id, object_id, resource_type)
+            self._confirm_batch_item(actual, supplied, resource_type)
+            targets.append(actual)
+        notebook_ids = {self._resource_notebook_id(item) for item in targets}
+        if None in notebook_ids or len(notebook_ids) != 1:
+            raise MutationPreflightFailure(
+                "All batch targets must belong to one active Notebook.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        notebook_id = str(next(iter(notebook_ids)))
+        budget = CopyBudget.current()
+        notebook_items = self._notebook_items(snapshot, notebook_id)
+        if len(notebook_items) > budget.max_resources:
+            raise MutationPreflightFailure(
+                "Batch preflight exceeds the configured hierarchy resource budget.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        if sum(item.get("resource_type") == "page" for item in notebook_items) > budget.max_pages:
+            raise MutationPreflightFailure(
+                "Batch preflight exceeds the configured Page budget.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        return snapshot, targets, by_id
+
+    @staticmethod
+    def _has_selected_ancestor(
+        target: dict[str, Any], selected_ids: set[str], by_id: dict[str, dict[str, Any]]
+    ) -> bool:
+        parent_id = target.get("parent_page_id") or target.get("parent_id")
+        seen: set[str] = set()
+        while parent_id and parent_id not in seen:
+            if parent_id in selected_ids:
+                return True
+            seen.add(str(parent_id))
+            parent = by_id.get(str(parent_id))
+            parent_id = None if parent is None else parent.get("parent_page_id") or parent.get("parent_id")
+        return False
+
+    def _execute_batch(
+        self,
+        operation: str,
+        items: list[dict[str, Any]],
+        execute,
+    ) -> dict[str, Any]:
+        outcomes: list[dict[str, Any]] = []
+        for index, supplied in enumerate(items):
+            reference = self._batch_item_id(supplied)
+            try:
+                result = execute(supplied)
+            except Exception as exc:
+                outcomes.append(
+                    {
+                        "input_index": index,
+                        "object_id": reference,
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                outcomes.extend(
+                    {
+                        "input_index": pending,
+                        "object_id": self._batch_item_id(items[pending]),
+                        "status": "not_attempted",
+                    }
+                    for pending in range(index + 1, len(items))
+                )
+                raise PartialFailure(
+                    "Batch execution stopped at the first failed or uncertain item; no rollback was attempted.",
+                    partial=True,
+                    operation=operation,
+                    applied_count=index,
+                    failed_index=index,
+                    items=outcomes,
+                    completed_steps=[
+                        {"operation": operation, "status": "applied"}
+                        for _ in range(index)
+                    ],
+                    failed_step=f"{operation}[{index}]",
+                    manual_recovery_required=True,
+                    retryability="inspect_live_state_before_new_call",
+                    rollback_attempted=False,
+                    mutation_replayed=False,
+                ) from exc
+            outcomes.append(
+                {
+                    "input_index": index,
+                    "object_id": reference,
+                    "status": "applied",
+                    "result": result,
+                }
+            )
+        return {
+            "operation": operation,
+            "mode": "batch",
+            "partial": False,
+            "applied_count": len(outcomes),
+            "items": outcomes,
+            "max_items": MAX_BATCH_ITEMS,
+        }
+
+    def _final_reparent_hierarchy(
+        self,
+        resource_type: str,
+        destination_parent_id: str,
+        items: list[dict[str, Any]],
+        batch_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Re-read every applied target after the complete batch, in input order."""
+
+        try:
+            snapshot = self.hierarchy.resources(include_recycle_bin=True)
+            by_id = {
+                str(value["id"]): value for value in snapshot if value.get("id")
+            }
+            final_items: list[dict[str, Any]] = []
+            current_ids: set[str] = set()
+            for index, (supplied, outcome) in enumerate(
+                zip(items, batch_result["items"])
+            ):
+                original_id = self._batch_item_id(supplied)
+                result = outcome.get("result", {})
+                id_map = result.get("id_map", {})
+                current_id = str(id_map.get(original_id, original_id))
+                actual = by_id.get(current_id)
+                actual_parent = (
+                    None
+                    if actual is None
+                    else actual.get("section_id")
+                    if resource_type == "page"
+                    else actual.get("parent_id")
+                )
+                if (
+                    original_id is None
+                    or actual is None
+                    or actual.get("resource_type") != resource_type
+                    or actual.get("is_in_recycle_bin") is True
+                    or actual_parent != destination_parent_id
+                    or current_id in current_ids
+                ):
+                    raise ValueError(
+                        "A final batch target is missing, duplicated, mistyped, recycled, or outside the destination."
+                    )
+                current_ids.add(current_id)
+                projected = {
+                    "input_index": index,
+                    "original_id": original_id,
+                    "current_id": current_id,
+                    "resource_type": resource_type,
+                    "parent_id": actual_parent,
+                }
+                if resource_type == "page":
+                    projected.update(
+                        order=actual.get("order"),
+                        page_level=actual.get("page_level"),
+                        parent_page_id=actual.get("parent_page_id"),
+                    )
+                final_items.append(projected)
+        except Exception as exc:
+            raise PartialFailure(
+                "All item calls returned, but the complete batch Reparent final hierarchy could not be verified; inspect live state before any new call.",
+                partial=True,
+                operation=f"reparent_{resource_type}",
+                applied_count=batch_result["applied_count"],
+                failed_step="batch_final_hierarchy",
+                items=batch_result["items"],
+                completed_steps=[
+                    {
+                        "operation": f"reparent_{resource_type}",
+                        "status": "applied",
+                    }
+                    for _ in batch_result["items"]
+                ],
+                manual_recovery_required=True,
+                retryability="inspect_live_state_before_new_call",
+                rollback_attempted=False,
+                mutation_replayed=False,
+            ) from exc
+        return {
+            "destination_parent_id": destination_parent_id,
+            "item_count": len(final_items),
+            "items": final_items,
+            "verification_scope": {"page_content": "not_read"},
+        }
+
+    def batch_reparent(
+        self,
+        resource_type: str,
+        destination_parent_id: str,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        MutationPolicy.current().require_organize()
+        snapshot, targets, by_id = self._preflight_batch_targets(items, resource_type)
+        destination_type = "section" if resource_type == "page" else None
+        destination = self._active_item(by_id, destination_parent_id, destination_type or str(by_id.get(destination_parent_id, {}).get("resource_type", "")))
+        if resource_type != "page" and destination.get("resource_type") not in {"notebook", "section_group"}:
+            raise MutationPreflightFailure(
+                "Container batch destination must be an active Notebook or SectionGroup.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        notebook_id = self._resource_notebook_id(targets[0])
+        if self._resource_notebook_id(destination) != notebook_id:
+            raise MutationPreflightFailure(
+                "Batch Reparent cannot cross Notebook boundaries.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        selected_ids = {str(item["id"]) for item in targets}
+        if any(self._has_selected_ancestor(item, selected_ids, by_id) for item in targets):
+            raise MutationPreflightFailure(
+                "Batch Reparent targets must not contain overlapping ancestor/descendant scopes.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        destination_cursor: dict[str, Any] | None = destination
+        while destination_cursor is not None:
+            if destination_cursor.get("id") in selected_ids:
+                raise MutationPreflightFailure(
+                    "Batch destination cannot be a selected target or its descendant.",
+                    mutation_stage="preflight",
+                    mutation_attempted=False,
+                )
+            parent_id = destination_cursor.get("parent_id")
+            destination_cursor = by_id.get(str(parent_id)) if parent_id else None
+
+        if resource_type == "page":
+            result = self._execute_batch(
+                "reparent_page",
+                items,
+                lambda item: self.reparent_page(
+                    item["page_id"], destination_parent_id, item["expected_title"],
+                    item["expected_section_id"], item.get("expected_modified"),
+                    item.get("page_scope") == "indentation_subtree",
+                ),
+            )
+        else:
+            method = self.reparent_section if resource_type == "section" else self.reparent_section_group
+            result = self._execute_batch(
+                f"reparent_{resource_type}",
+                items,
+                lambda item: method(
+                    self._batch_item_id(item), destination_parent_id, item["expected_name"],
+                    item["expected_parent_id"], item.get("expected_modified"),
+                ),
+            )
+        result["final_hierarchy"] = self._final_reparent_hierarchy(
+            resource_type, destination_parent_id, items, result
+        )
+        return result
+
+    def batch_delete(
+        self, resource_type: str, items: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        MutationPolicy.current().require_delete(permanently=False)
+        _snapshot, targets, by_id = self._preflight_batch_targets(items, resource_type)
+        selected_ids = {str(item["id"]) for item in targets}
+        if any(self._has_selected_ancestor(item, selected_ids, by_id) for item in targets):
+            raise MutationPreflightFailure(
+                "Batch Delete targets must not contain overlapping ancestor/descendant scopes.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        if resource_type == "page":
+            return self._execute_batch(
+                "delete_page",
+                items,
+                lambda item: self.delete_page(
+                    item["page_id"], item["expected_title"], item["expected_section_id"],
+                    item.get("expected_modified"), False,
+                ),
+            )
+        return self._execute_batch(
+            f"delete_{resource_type}",
+            items,
+            lambda item: self.delete_resource(
+                self._batch_item_id(item), resource_type, item["expected_name"],
+                item["expected_parent_id"], item.get("expected_modified"), False,
+            ),
+        )
+
+    def batch_rename(
+        self, resource_type: str, items: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        MutationPolicy.current().require_write()
+        snapshot, targets, _by_id = self._preflight_batch_targets(items, resource_type)
+        selected_ids = {str(item["id"]) for item in targets}
+        planned: list[tuple[str, str, str]] = []
+        for supplied, target in zip(items, targets):
+            raw_name = supplied["new_title"] if resource_type == "page" else supplied["new_name"]
+            normalized = self.safe_leaf_name(raw_name)
+            planned.append((str(target["id"]), str(target.get("parent_id")), normalized))
+            if normalized == display_name(target):
+                raise MutationPreflightFailure(
+                    "Batch Rename rejects no-op name mappings.",
+                    mutation_stage="preflight",
+                    mutation_attempted=False,
+                )
+        for parent_id in {entry[1] for entry in planned}:
+            siblings = [
+                item for item in snapshot
+                if item.get("resource_type") == resource_type
+                and str(item.get("parent_id")) == parent_id
+                and item.get("is_in_recycle_bin") is not True
+            ]
+            current_by_name = {display_name(item).casefold(): str(item["id"]) for item in siblings}
+            parent_plans = [entry for entry in planned if entry[1] == parent_id]
+            new_names = [entry[2].casefold() for entry in parent_plans]
+            if len(new_names) != len(set(new_names)):
+                raise MutationPreflightFailure(
+                    "Batch Rename produces duplicate sibling names.",
+                    mutation_stage="preflight",
+                    mutation_attempted=False,
+                )
+            for object_id, _parent, new_name in parent_plans:
+                occupant = current_by_name.get(new_name.casefold())
+                if occupant is not None and occupant != object_id:
+                    reason = "name exchange/cycle" if occupant in selected_ids else "existing sibling collision"
+                    raise MutationPreflightFailure(
+                        f"Batch Rename rejects {reason}.",
+                        mutation_stage="preflight",
+                        mutation_attempted=False,
+                    )
+        if resource_type == "page":
+            return self._execute_batch(
+                "rename_page",
+                items,
+                lambda item: self.update_page_title(
+                    item["page_id"], item["new_title"], item["expected_title"],
+                    item["expected_section_id"], item.get("expected_modified"),
+                ),
+            )
+        return self._execute_batch(
+            f"rename_{resource_type}",
+            items,
+            lambda item: self.rename_resource(
+                self._batch_item_id(item), resource_type, item["new_name"],
+                item["expected_name"], item["expected_parent_id"], item.get("expected_modified"),
+            ),
+        )
+
+    def batch_create(
+        self,
+        resource_type: str,
+        parent_id: str,
+        expected_parent_name: str,
+        expected_parent_modified: str | None,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        policy = MutationPolicy.current()
+        policy.require_create()
+        if resource_type == "page":
+            policy.require_write()
+        self._validate_batch_size(items)
+        snapshot, by_id = self._batch_snapshot()
+        expected_parent_type = "section" if resource_type == "page" else None
+        parent = by_id.get(parent_id)
+        if parent is None or parent.get("is_in_recycle_bin") is True:
+            raise MutationPreflightFailure(
+                "Batch Create parent must be active and exact.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        if expected_parent_type and parent.get("resource_type") != expected_parent_type:
+            raise MutationPreflightFailure(
+                "Page batch parent must be a Section.", mutation_stage="preflight", mutation_attempted=False
+            )
+        if not expected_parent_type and parent.get("resource_type") not in {"notebook", "section_group"}:
+            raise MutationPreflightFailure(
+                "Container batch parent must be a Notebook or SectionGroup.", mutation_stage="preflight", mutation_attempted=False
+            )
+        if display_name(parent) != expected_parent_name or (
+            expected_parent_modified is not None
+            and parent.get("modified") != expected_parent_modified
+        ):
+            raise MutationPreflightFailure(
+                "Batch Create parent confirmation changed.", mutation_stage="preflight", mutation_attempted=False
+            )
+        budget = CopyBudget.current()
+        notebook_id = self._resource_notebook_id(parent)
+        notebook_items = self._notebook_items(snapshot, str(notebook_id))
+        if len(notebook_items) + len(items) > budget.max_resources:
+            raise MutationPreflightFailure(
+                "Batch Create exceeds the configured hierarchy resource budget.", mutation_stage="preflight", mutation_attempted=False
+            )
+        if resource_type == "page" and (
+            sum(item.get("resource_type") == "page" for item in notebook_items) + len(items)
+            > budget.max_pages
+        ):
+            raise MutationPreflightFailure(
+                "Batch Create exceeds the configured Page budget.", mutation_stage="preflight", mutation_attempted=False
+            )
+        if resource_type == "page" and sum(len(str(item.get("content", ""))) for item in items) > 500_000:
+            raise MutationPreflightFailure(
+                "Batch Create Page content exceeds the 500000-character request budget.", mutation_stage="preflight", mutation_attempted=False
+            )
+        name_key = "title" if resource_type == "page" else "name"
+        normalized_names = []
+        for item in items:
+            name = self.safe_leaf_name(item[name_key])
+            if resource_type == "section" and name.casefold().endswith(".one"):
+                name = name[:-4]
+            normalized_names.append(name.casefold())
+            if resource_type == "page" and item.get("content_format", "plain") not in {"plain", "html", "markdown"}:
+                raise MutationPreflightFailure(
+                    "Page content_format must be plain, html, or markdown.", mutation_stage="preflight", mutation_attempted=False
+                )
+        if resource_type != "page" and len(normalized_names) != len(set(normalized_names)):
+            raise MutationPreflightFailure(
+                "Batch Create item names must be unique after normalization.", mutation_stage="preflight", mutation_attempted=False
+            )
+        existing_names = {
+            display_name(item).casefold()
+            for item in snapshot
+            if item.get("resource_type") == resource_type
+            and item.get("parent_id") == parent_id
+            and item.get("is_in_recycle_bin") is not True
+        }
+        if resource_type != "page" and existing_names.intersection(normalized_names):
+            raise MutationPreflightFailure(
+                "Batch Create name collides with an active direct child.", mutation_stage="preflight", mutation_attempted=False
+            )
+        if resource_type == "page":
+            return self._execute_batch(
+                "create_page",
+                items,
+                lambda item: self.create_page(
+                    parent_id, item["title"], item.get("content", ""), item.get("content_format", "plain"), "blank_with_title"
+                ),
+            )
+        method = self.create_section if resource_type == "section" else self.create_section_group
+        return self._execute_batch(
+            f"create_{resource_type}", items, lambda item: method(parent_id, item["name"])
+        )
+
+    @staticmethod
+    def _sort_value(item: dict[str, Any], key: str) -> Any:
+        if key == "name":
+            return display_name(item).casefold()
+        raw = item.get(key)
+        if not raw:
+            raise MutationPreflightFailure(
+                f"Sort key '{key}' is missing for exact ID '{item.get('id')}'.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        try:
+            return datetime.fromisoformat(str(raw)[:-1] + "+00:00" if str(raw)[-1:] in {"Z", "z"} else str(raw))
+        except ValueError as exc:
+            raise MutationPreflightFailure(
+                f"Sort key '{key}' is not a comparable timestamp for exact ID '{item.get('id')}'.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            ) from exc
+
+    def _ordered_for_sort(
+        self, items: list[dict[str, Any]], key: str, direction: str
+    ) -> list[dict[str, Any]]:
+        try:
+            return sorted(
+                items,
+                key=lambda item: self._sort_value(item, key),
+                reverse=direction == "descending",
+            )
+        except TypeError as exc:
+            raise MutationPreflightFailure(
+                f"Sort key '{key}' values are not mutually comparable.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            ) from exc
+
+    def _confirm_sort_parent(
+        self,
+        by_id: dict[str, dict[str, Any]],
+        parent_id: str,
+        expected_name: str,
+        expected_modified: str | None,
+        allowed_types: set[str],
+    ) -> dict[str, Any]:
+        parent = by_id.get(parent_id)
+        if parent is None or parent.get("resource_type") not in allowed_types or parent.get("is_in_recycle_bin") is True:
+            raise MutationPreflightFailure(
+                "Sort parent has an invalid type, is missing, or is in the recycle bin.", mutation_stage="preflight", mutation_attempted=False
+            )
+        if display_name(parent) != expected_name or (
+            expected_modified is not None and parent.get("modified") != expected_modified
+        ):
+            raise MutationPreflightFailure(
+                "Sort parent confirmation changed.", mutation_stage="preflight", mutation_attempted=False
+            )
+        return parent
+
+    @staticmethod
+    def _validate_expected_child_ids(actual: list[dict[str, Any]], expected: list[str]) -> None:
+        if not 1 <= len(expected) <= MAX_SORT_CHILDREN or len(expected) != len(set(expected)):
+            raise MutationPreflightFailure(
+                f"expected_child_ids must contain 1 to {MAX_SORT_CHILDREN} unique IDs.", mutation_stage="preflight", mutation_attempted=False
+            )
+        if [str(item["id"]) for item in actual] != expected:
+            raise MutationPreflightFailure(
+                "The complete ordered direct-child confirmation no longer matches live hierarchy.", mutation_stage="preflight", mutation_attempted=False
+            )
+
+    def sort_sections(
+        self,
+        parent_id: str,
+        expected_parent_name: str,
+        expected_parent_modified: str | None,
+        expected_child_ids: list[str],
+        key: str,
+        direction: str,
+    ) -> dict[str, Any]:
+        MutationPolicy.current().require_write()
+        if key not in {"name", "created", "modified"} or direction not in {"ascending", "descending"}:
+            raise MutationPreflightFailure("Invalid Sort key or direction.", mutation_stage="preflight", mutation_attempted=False)
+        snapshot, by_id = self._batch_snapshot()
+        parent = self._confirm_sort_parent(by_id, parent_id, expected_parent_name, expected_parent_modified, {"notebook", "section_group"})
+        active = self.hierarchy.without_recycle_bin(snapshot)
+        budget = CopyBudget.current()
+        notebook_items = self._notebook_items(active, str(self._resource_notebook_id(parent)))
+        if len(notebook_items) > budget.max_resources or sum(item.get("resource_type") == "page" for item in notebook_items) > budget.max_pages:
+            raise MutationPreflightFailure(
+                "Section Sort verification exceeds the configured hierarchy budget.", mutation_stage="preflight", mutation_attempted=False
+            )
+        direct = [item for item in active if item.get("parent_id") == parent_id and item.get("resource_type") in {"section", "section_group"}]
+        sections = [item for item in direct if item.get("resource_type") == "section"]
+        self._validate_expected_child_ids(sections, expected_child_ids)
+        ordered_sections = self._ordered_for_sort(sections, key, direction)
+        expected_ids = [str(item["id"]) for item in ordered_sections]
+        before_ids = [str(item["id"]) for item in sections]
+        if expected_ids == before_ids:
+            return {"changed": False, "parent": parent, "key": key, "direction": direction, "child_ids": before_ids, "verification_scope": {"page_content": "not_read"}}
+        iterator = iter(ordered_sections)
+        ordered_direct = [next(iterator) if item.get("resource_type") == "section" else item for item in direct]
+        before_direct_set = {str(item["id"]) for item in direct}
+        subtree_signature = self._container_subtree_signature(
+            [candidate for section in sections for candidate in self._container_subtree(active, str(section["id"]))]
+        )
+        update_xml = self.hierarchy.container_order_xml(parent, ordered_direct, catalog=active)
+
+        def observe():
+            values = self.hierarchy.resources(include_recycle_bin=False)
+            refreshed_direct = [item for item in values if item.get("parent_id") == parent_id and item.get("resource_type") in {"section", "section_group"}]
+            refreshed_sections = [item for item in refreshed_direct if item.get("resource_type") == "section"]
+            refreshed_signature = self._container_subtree_signature(
+                [candidate for section in refreshed_sections for candidate in self._container_subtree(values, str(section["id"]))]
+            )
+            return refreshed_direct, refreshed_sections, refreshed_signature
+
+        before_state = tuple(str(item["id"]) for item in direct)
+        expected_state = tuple(str(item["id"]) for item in ordered_direct)
+        signature = lambda value: tuple(str(item["id"]) for item in value[0])
+        reconciliation = self._execute_mutation_attempt(
+            operation="reorder_section",
+            execute=lambda: self.call("update_hierarchy", xml=update_xml, schema=XML_SCHEMA_2013),
+            observe=observe,
+            is_pre_state=lambda value: signature(value) == before_state,
+            is_post_state=lambda value: signature(value) == expected_state and value[2] == subtree_signature,
+            is_partial_state=lambda value: {
+                str(item["id"]) for item in value[0]
+            } != before_direct_set,
+        )
+        stable = self._converge(
+            operation="sort_sections", observe=observe,
+            accept=lambda value: signature(value) == expected_state and value[2] == subtree_signature,
+            project_identity=lambda value: signature(value),
+            failure_message="Sort was accepted, but Section order or topology did not converge.",
+        )
+        return {"changed": True, "parent": parent, "key": key, "direction": direction, "child_ids": expected_ids, "children": stable.value[1], "verification_scope": {"page_content": "not_read"}, "convergence": stable.summary(), "reconciliation": reconciliation.summary()}
+
+    def sort_children(
+        self,
+        child_type: str | None,
+        parent_id: str,
+        expected_parent_name: str,
+        expected_parent_modified: str | None,
+        expected_child_ids: list[str],
+        key: str,
+        direction: str,
+    ) -> dict[str, Any]:
+        MutationPolicy.current().require_write()
+        parent = self.hierarchy.resource(parent_id)
+        parent_type = str(parent.get("resource_type", ""))
+        inferred = (
+            "section"
+            if parent_type in {"notebook", "section_group"}
+            else "page"
+            if parent_type in {"section", "page"}
+            else None
+        )
+        if inferred is None:
+            raise MutationPreflightFailure(
+                "Sort parent must be a Notebook, SectionGroup, Section, or Page.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        if child_type is not None and child_type != inferred:
+            raise MutationPreflightFailure(
+                f"child_type '{child_type}' conflicts with parent type '{parent_type}', which requires '{inferred}'.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        if inferred == "section":
+            return self.sort_sections(
+                parent_id, expected_parent_name, expected_parent_modified,
+                expected_child_ids, key, direction,
+            )
+        if inferred == "page":
+            return self.sort_pages(
+                parent_id, expected_parent_name, expected_parent_modified,
+                expected_child_ids, key, direction,
+            )
+        raise AssertionError("unreachable sort child inference")
+
+    def sort_pages(
+        self,
+        parent_id: str,
+        expected_parent_name: str,
+        expected_parent_modified: str | None,
+        expected_child_ids: list[str],
+        key: str,
+        direction: str,
+    ) -> dict[str, Any]:
+        MutationPolicy.current().require_write()
+        if key not in {"name", "created", "modified"} or direction not in {"ascending", "descending"}:
+            raise MutationPreflightFailure("Invalid Sort key or direction.", mutation_stage="preflight", mutation_attempted=False)
+        snapshot, by_id = self._batch_snapshot()
+        parent = self._confirm_sort_parent(by_id, parent_id, expected_parent_name, expected_parent_modified, {"section", "page"})
+        section_id = parent_id if parent.get("resource_type") == "section" else str(parent.get("section_id"))
+        section = self._active_item(by_id, section_id, "section")
+        pages = sorted(
+            [item for item in self.hierarchy.without_recycle_bin(snapshot) if item.get("resource_type") == "page" and item.get("section_id") == section_id],
+            key=lambda item: int(item.get("order", 0)),
+        )
+        if len(pages) > CopyBudget.current().max_pages:
+            raise MutationPreflightFailure(
+                "Page Sort verification exceeds the configured Page budget.", mutation_stage="preflight", mutation_attempted=False
+            )
+        direct_children = [
+            item for item in pages
+            if (item.get("parent_page_id") or section_id) == parent_id
+        ]
+        self._validate_expected_child_ids(direct_children, expected_child_ids)
+        ordered_children = self._ordered_for_sort(direct_children, key, direction)
+        before_child_ids = [str(item["id"]) for item in direct_children]
+        expected_ids = [str(item["id"]) for item in ordered_children]
+        if expected_ids == before_child_ids:
+            return {"changed": False, "parent": parent, "key": key, "direction": direction, "child_ids": before_child_ids, "pages": pages, "verification_scope": {"page_content": "not_read"}}
+        index_by_id = {str(item["id"]): index for index, item in enumerate(pages)}
+        starts = [index_by_id[str(item["id"])] for item in direct_children]
+        last_start = starts[-1]
+        child_level = int(direct_children[-1].get("page_level", 1))
+        end = len(pages)
+        for index in range(last_start + 1, len(pages)):
+            if int(pages[index].get("page_level", 1)) <= child_level:
+                end = index
+                break
+        blocks: dict[str, list[dict[str, Any]]] = {}
+        for position, child in enumerate(direct_children):
+            start = starts[position]
+            stop = starts[position + 1] if position + 1 < len(starts) else end
+            blocks[str(child["id"])] = pages[start:stop]
+        start = starts[0]
+        ordered_pages = [
+            *pages[:start],
+            *(page for child in ordered_children for page in blocks[str(child["id"])]),
+            *pages[end:],
+        ]
+        expected_signature = tuple((str(item["id"]), order, int(item.get("page_level", 1))) for order, item in enumerate(ordered_pages))
+        before_signature = tuple((str(item["id"]), int(item.get("order", 0)), int(item.get("page_level", 1))) for item in pages)
+
+        def observe():
+            return sorted(
+                [item for item in self.hierarchy.resources(include_recycle_bin=False) if item.get("resource_type") == "page" and item.get("section_id") == section_id],
+                key=lambda item: int(item.get("order", 0)),
+            )
+
+        signature = lambda values: tuple((str(item["id"]), int(item.get("order", 0)), int(item.get("page_level", 1))) for item in values)
+        reconciliation = self._execute_mutation_attempt(
+            operation="reorder_page",
+            execute=lambda: self.call("update_hierarchy", xml=self.hierarchy.page_order_xml(section, ordered_pages), schema=XML_SCHEMA_2013),
+            observe=observe,
+            is_pre_state=lambda values: signature(values) == before_signature,
+            is_post_state=lambda values: signature(values) == expected_signature,
+            is_partial_state=lambda values: {item[0] for item in signature(values)} != {item[0] for item in before_signature},
+        )
+        stable = self._converge(
+            operation="sort_pages", observe=observe,
+            accept=lambda values: signature(values) == expected_signature,
+            project_identity=signature,
+            failure_message="Sort was accepted, but Page block order or indentation did not converge.",
+        )
+        refreshed_by_id = {str(item["id"]): item for item in stable.value}
+        return {"changed": True, "parent": parent, "key": key, "direction": direction, "child_ids": expected_ids, "children": [refreshed_by_id[value] for value in expected_ids], "pages": stable.value, "verification_scope": {"page_content": "not_read"}, "convergence": stable.summary(), "reconciliation": reconciliation.summary()}
 
     def delete_page_content(
         self,

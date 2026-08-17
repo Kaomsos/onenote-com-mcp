@@ -44,9 +44,17 @@ USER_TOOL_CATEGORIES: MappingProxyType[str, tuple[str, ...]] = MappingProxyType(
             "create_section",
             "create_page",
         ),
-        "rename": ("rename_page", "rename_section_group", "rename_section"),
-        "reorder": ("reorder_page", "reorder_section"),
-        "organize": ("reparent_page", "reparent_section", "reparent_section_group"),
+        "rename": (
+            "rename_page",
+            "rename_section_group",
+            "rename_section",
+        ),
+        "reorder": ("reorder_page", "reorder_section", "sort_children"),
+        "organize": (
+            "reparent_page",
+            "reparent_section",
+            "reparent_section_group",
+        ),
         "page_content_mutation": (
             "append_page_content",
             "add_page_image_from_file",
