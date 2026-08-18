@@ -105,47 +105,30 @@ def _page_xml(
 
 
 @pytest.mark.parametrize(
-    "scenario_name,bootstrap_name,capability",
+    "scenario_name,capability",
     [
-        (
-            "interactive-copy-inserted-file",
-            "bootstrap-inserted-file-fixture",
-            "InsertedFile",
-        ),
-        (
-            "interactive-copy-ink-drawing",
-            "bootstrap-ink-drawing-fixture",
-            "InkDrawing",
-        ),
-        (
-            "interactive-copy-media-file",
-            "bootstrap-media-file-fixture",
-            "MediaFile",
-        ),
-        (
-            "interactive-copy-ui-shape",
-            "bootstrap-shape-fixture",
-            "UIShape",
-        ),
-        (
-            "interactive-copy-inline-equation",
-            "bootstrap-inline-equation-fixture",
-            "InlineEquation",
-        ),
+        ("interactive-copy-inserted-file", "InsertedFile"),
+        ("interactive-copy-ink-drawing", "InkDrawing"),
+        ("interactive-copy-media-file", "MediaFile"),
+        ("interactive-copy-ui-shape", "UIShape"),
+        ("interactive-copy-inline-equation", "InlineEquation"),
     ],
 )
-def test_copy_consumers_share_bootstrap_identity_and_never_get_delete(
+def test_interactive_copy_scenarios_use_copy_only_policy_without_delete(
     scenario_name: str,
-    bootstrap_name: str,
     capability: str,
 ) -> None:
     scenario = SCENARIO_REGISTRY.get(scenario_name)
-    bootstrap = SCENARIO_REGISTRY.get(bootstrap_name)
+    recipe = scenario.fixture_recipe
 
-    assert scenario.fixture_recipe.cache_fingerprint == bootstrap.fixture_recipe.cache_fingerprint
-    assert scenario.fixture_recipe.consumer_scenario is True
+    assert recipe.capability == capability
     assert scenario.included_in_all is False
-    assert scenario.spec.policy == COPY_NO_DELETE_POLICY
+    if scenario_name == "interactive-copy-inline-equation":
+        from tests.manual_validation.scenarios.common.specs import RICH_COPY_POLICY
+
+        assert scenario.spec.policy == RICH_COPY_POLICY
+    else:
+        assert scenario.spec.policy == COPY_NO_DELETE_POLICY
     assert "copy_page" in scenario.spec.tool_allowlist
     assert "plan_copy" not in scenario.spec.tool_allowlist
     assert not any(tool.startswith("delete_") for tool in scenario.spec.tool_allowlist)
@@ -154,7 +137,8 @@ def test_copy_consumers_share_bootstrap_identity_and_never_get_delete(
         assert "create_section" in scenario.spec.tool_allowlist
         assert scenario.spec.execution_contract["same_and_cross_section"] is True
     else:
-        assert "create_section" not in scenario.spec.tool_allowlist
+        assert "create_section" in scenario.spec.tool_allowlist
+        assert "create_page" in scenario.spec.tool_allowlist
         assert scenario.spec.execution_contract["same_and_cross_section"] is False
 
 
@@ -455,7 +439,7 @@ def _shape_snapshot(*, anchor_points: int = 0, freehand: bool = False) -> dict:
 def test_shape_detector_requires_inkdrawing_plus_one_shape_info(
     anchor_points: int,
 ) -> None:
-    recipe = SCENARIO_REGISTRY.get("bootstrap-shape-fixture").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-copy-ui-shape").fixture_recipe
 
     report = recipe.content_report(
         _shape_snapshot(anchor_points=anchor_points),
@@ -473,7 +457,7 @@ def test_shape_detector_requires_inkdrawing_plus_one_shape_info(
 
 
 def test_shape_detector_rejects_plain_ink_and_invalid_marker_schema() -> None:
-    recipe = SCENARIO_REGISTRY.get("bootstrap-shape-fixture").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-copy-ui-shape").fixture_recipe
 
     freehand = recipe.content_report(_shape_snapshot(freehand=True), "canvas-page")
     assert freehand["passed"] is False

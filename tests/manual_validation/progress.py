@@ -363,28 +363,17 @@ def print_compact_scenario_result(
     processes = metrics.get("observed_mcp_process_starts", 0)
     print(f"  execution: mcp_processes={processes} mcp_tool_calls={calls}", flush=True)
     template_instance_id = scenario_result.get("template_instance_id")
-    consumer_scenario = scenario_result.get("consumer_scenario")
     if (
-        scenario_result.get("interactive_bootstrap") is True
-        and scenario_result.get("template_published") is True
+        scenario_result.get("template_published") is True
         and scenario_result.get("template_state") == "ready"
         and isinstance(template_instance_id, str)
-        and isinstance(consumer_scenario, str)
-        and consumer_scenario
+        and template_instance_id
     ):
-        notebook_label = result.get("notebook_label")
-        label_option = (
-            f" --notebook-label {notebook_label}"
-            if isinstance(notebook_label, str) and notebook_label
-            else ""
+        print(
+            f"  cache_reuse: template_instance_id={template_instance_id} "
+            f"(rerun with --use-cache to reuse this template)",
+            flush=True,
         )
-        command = (
-            ".venv\\Scripts\\python.exe tests\\manual_validation\\run.py "
-            f"{consumer_scenario} --use-cache --template-instance-id "
-            f"{template_instance_id}{label_option} --keep-worksite"
-        )
-        print(f"  handoff: template_instance_id={template_instance_id}", flush=True)
-        print(f"  next command: {command}", flush=True)
     if verbosity == "verbose":
         phases = metrics.get("phases_seconds")
         if isinstance(phases, Mapping):

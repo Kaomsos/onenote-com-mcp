@@ -51,7 +51,7 @@ def _recorded_unexpected_content_snapshot() -> dict:
 def test_detection_failure_persists_authored_snapshot_before_validator(
     monkeypatch, tmp_path
 ) -> None:
-    scenario = SCENARIO_REGISTRY.get("bootstrap-ink-drawing-fixture")
+    scenario = SCENARIO_REGISTRY.get("interactive-copy-ink-drawing")
     run_dir = tmp_path / "run-recorded"
     baseline = {"captured_at": "baseline", "page_objects": {"canvas-page": []}}
     write_json(run_dir / "fixture-snapshot.json", baseline)
@@ -82,7 +82,8 @@ def test_detection_failure_persists_authored_snapshot_before_validator(
         ),
     ) as exc_info:
         asyncio.run(
-            scenario.execute(
+            interactive_bootstrap.run_interactive_bootstrap_phase(
+                scenario,
                 args,
                 RuntimeOptions(run_dir, 1_800, False, False),
                 manifest,
@@ -110,7 +111,7 @@ def test_detection_failure_persists_authored_snapshot_before_validator(
 def test_representative_move_bootstrap_captures_and_freezes_both_roles(
     monkeypatch, tmp_path
 ) -> None:
-    scenario = SCENARIO_REGISTRY.get("bootstrap-move-page-content-fixture")
+    scenario = SCENARIO_REGISTRY.get("interactive-move-page-content")
     run_dir = tmp_path / "run-move-content"
     source_structure = {
         "source_instructions_section": {
@@ -255,7 +256,8 @@ def test_representative_move_bootstrap_captures_and_freezes_both_roles(
         },
     }
     result = asyncio.run(
-        scenario.execute(
+        interactive_bootstrap.run_interactive_bootstrap_phase(
+            scenario,
             argparse.Namespace(interactive_timeout=60),
             RuntimeOptions(run_dir, 1_800, False, False),
             manifest,
@@ -266,7 +268,6 @@ def test_representative_move_bootstrap_captures_and_freezes_both_roles(
 
     assert result["template_state"] == "ready"
     assert result["template_instance_id"].startswith("authored-")
-    assert result["consumer_scenario"] == "interactive-move-page-content"
     assert result["template_instance"]["move_source_deletion_allowed"] is True
     assert result["template_instance"]["observed_capabilities"] == (
         "Outline",

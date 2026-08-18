@@ -19,6 +19,7 @@ from local_onenote_mcp.services.convergence import DEFAULT_CONVERGENCE, converge
 from local_onenote_mcp.services.hierarchy import HierarchyService
 
 from .runtime import EXIT_MCP, RestoreFailure, RunnerFailure
+from .path_budget import validate_onenote_open_path, validate_working_name
 from .progress import RunProgressReporter
 from .test_utils import read_json, stable_item, utc_now, write_json
 
@@ -64,6 +65,9 @@ class NotebookLifecycleWrapper:
 
     def create_fresh_notebook(self, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         self.progress.unit_started("lifecycle", f"{self.role} create", 1, 1)
+        validate_working_name(name)
+        target_path = (self.notebook_root / name).resolve()
+        validate_onenote_open_path(target_path)
         if self.lease_path.exists():
             raise RunnerFailure("Lifecycle lease already exists; refusing to create another source Notebook.")
         exact = [
@@ -75,7 +79,6 @@ class NotebookLifecycleWrapper:
             raise RunnerFailure(
                 "Isolated scenario requires a fresh Notebook, but an exact-name Notebook already exists."
             )
-        target_path = (self.notebook_root / name).resolve()
         if target_path.parent != self.notebook_root:
             raise RunnerFailure("Notebook lifecycle target escaped the run-scoped Notebook root.")
         if target_path.exists():
@@ -265,6 +268,7 @@ class NotebookLifecycleWrapper:
         if role != self.role:
             raise RunnerFailure("Lifecycle role argument differs from its frozen wrapper role.")
         working_path = working_path.resolve(strict=True)
+        validate_onenote_open_path(working_path)
         if working_path.parent != self.notebook_root:
             raise RunnerFailure("Working Notebook path escaped the run-scoped Notebook root.")
         templates = tuple(path.resolve(strict=True) for path in template_paths)

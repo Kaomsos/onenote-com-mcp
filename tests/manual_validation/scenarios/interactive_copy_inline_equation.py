@@ -1,6 +1,6 @@
 from .common.interactive_copy import InteractiveCopyEvidenceScenario
 from .common.registry import SCENARIO_REGISTRY
-from .fixture_recipes.inline_equation_copy import RECIPE
+from .fixture_recipes.inline_equation import RECIPE
 
 
 @SCENARIO_REGISTRY.register

@@ -154,6 +154,86 @@ def test_semantic_persistence_identity_ignores_outline_merge_but_keeps_oe_order(
     )
 
 
+def test_materialization_identity_ignores_presentation_only_rich_text_span_rewrite() -> None:
+    before = (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">'
+        '<one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>'
+        '<one:Outline><one:OEChildren><one:OE><one:T><![CDATA[Body]]>'
+        '</one:T></one:OE></one:OEChildren></one:Outline></one:Page>'
+    )
+    materialized = before.replace(
+        "<![CDATA[Body]]>",
+        '<![CDATA[<span lang="zh-CN" style="font-size:11pt">Body</span>]]>',
+    )
+
+    before_identity = page_semantic_content_identity(before)
+    materialized_identity = page_semantic_content_identity(materialized)
+
+    assert (
+        before_identity["persistence_sha256"]
+        != materialized_identity["persistence_sha256"]
+    )
+    assert (
+        before_identity["materialization_sha256"]
+        == materialized_identity["materialization_sha256"]
+    )
+    changed_text_identity = page_semantic_content_identity(
+        materialized.replace("Body</span>", "Changed</span>")
+    )
+    assert (
+        before_identity["materialization_sha256"]
+        != changed_text_identity["materialization_sha256"]
+    )
+
+
+def test_materialization_identity_ignores_table_presentation_rewrite_but_keeps_topology() -> None:
+    before = (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">'
+        '<one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>'
+        '<one:Outline><one:OEChildren><one:OE>'
+        '<one:Table bordersVisible="true"><one:Columns>'
+        '<one:Column index="0" width="100"/></one:Columns>'
+        '<one:Row><one:Cell shadingColor="#ffffff"><one:OEChildren>'
+        '<one:OE><one:T>Cell</one:T></one:OE>'
+        '</one:OEChildren></one:Cell></one:Row></one:Table>'
+        '</one:OE></one:OEChildren></one:Outline></one:Page>'
+    )
+    materialized = (
+        before.replace('bordersVisible="true"', 'bordersVisible="false"')
+        .replace('width="100"', 'width="104.25"')
+        .replace('shadingColor="#ffffff"', 'shadingColor="#fefefe"')
+    )
+
+    before_identity = page_semantic_content_identity(before)
+    materialized_identity = page_semantic_content_identity(materialized)
+
+    assert (
+        before_identity["persistence_sha256"]
+        != materialized_identity["persistence_sha256"]
+    )
+    assert (
+        before_identity["materialization_sha256"]
+        == materialized_identity["materialization_sha256"]
+    )
+    changed_text = page_semantic_content_identity(
+        materialized.replace("<one:T>Cell</one:T>", "<one:T>Changed</one:T>")
+    )
+    assert (
+        before_identity["materialization_sha256"]
+        != changed_text["materialization_sha256"]
+    )
+    changed_topology = page_semantic_content_identity(
+        materialized.replace(
+            "</one:Columns>",
+            '<one:Column index="1" width="50"/></one:Columns>',
+        )
+    )
+    assert (
+        before_identity["materialization_sha256"]
+        != changed_topology["materialization_sha256"]
+    )
+
+
 def test_page_tree_and_delete_sandbox_ancestry_checks() -> None:
     snapshot = {
         "items": [
@@ -334,6 +414,7 @@ def test_capture_snapshot_refreshes_hierarchy_after_page_evidence() -> None:
     assert snapshot["page_semantic_content_identities"]["page"]["complete"] is True
     assert snapshot["page_semantic_content_identities"]["page"]["sha256"]
     assert snapshot["page_semantic_content_identities"]["page"]["persistence_sha256"]
+    assert snapshot["page_semantic_content_identities"]["page"]["materialization_sha256"]
     assert snapshot["page_xml_hashes"]["page"]
     assert snapshot["page_capability_projections"]["page"] == {
         "schema_version": 4,

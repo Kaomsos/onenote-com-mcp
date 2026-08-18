@@ -12,6 +12,7 @@ from .runtime import PathBudgetFailure, RunnerFailure
 
 
 MAX_MANAGED_PATH_UNITS = 240
+MAX_ONENOTE_OPEN_PATH_UNITS = 147
 MAX_COMPONENT_UNITS = 120
 MAX_OPAQUE_RELATIVE_UNITS = 96
 MAX_OPAQUE_DEPTH = 8
@@ -139,6 +140,24 @@ def validate_working_name(name: str) -> str:
         raise RunnerFailure("Working Notebook name must be a Windows-safe leaf name.")
     validate_physical_name_has_no_onenote_id(name)
     return name
+
+
+def validate_onenote_open_path(
+    path: str | Path,
+    *,
+    phase: str = "onenote_open_path_preflight",
+) -> Path:
+    resolved = managed_absolute(path)
+    actual = windows_path_units(resolved)
+    if actual > MAX_ONENOTE_OPEN_PATH_UNITS:
+        _raise_budget(
+            resolved,
+            phase=phase,
+            target_kind="onenote_open_path",
+            actual_utf16=actual,
+            limit_utf16=MAX_ONENOTE_OPEN_PATH_UNITS,
+        )
+    return resolved
 
 
 def validate_physical_name_has_no_onenote_id(value: str | Path) -> str | Path:
@@ -338,6 +357,7 @@ __all__ = [
     "MAX_MANAGED_PATH_UNITS",
     "MAX_OPAQUE_DEPTH",
     "MAX_OPAQUE_RELATIVE_UNITS",
+    "MAX_ONENOTE_OPEN_PATH_UNITS",
     "MAX_ROLE_UNITS",
     "MAX_RUN_EVIDENCE_LEAF_UNITS",
     "MAX_WORKING_NAME_UNITS",
@@ -354,6 +374,7 @@ __all__ = [
     "programmatic_location",
     "remediation_for",
     "validate_opaque_relative",
+    "validate_onenote_open_path",
     "validate_physical_name_has_no_onenote_id",
     "validate_role",
     "validate_run_evidence_leaf",

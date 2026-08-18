@@ -177,7 +177,7 @@ TODO 040 的 recipe v14 首次真实复验 `run-2026-08-18-19-34-01`，随后 `r
 
 Cache 固定为未纳入版本控制的 `.local-validation/fixture-cache/`。除上述 proof-backed 空壳激活外，只有带新 schema managed marker 的该根目录可被 cache runtime 操作；完整 64-hex fingerprint 与 logical instance identity 保存在 index/entry/lock/evidence，磁盘只使用 `<fp32>/instances/p` 或 `<fp32>/instances/a/<1..24 hex>`。失效清理只允许精确 typed entry，并要求 root containment、ownership、无 reparse point且 template 实际路径未被 OneNote 打开。Run-local working Notebook 是物理独立副本，不参与 cache cleanup 门禁。`.one` 和 `.onetoc2` 只作为 opaque bytes 复制/散列，绝不解析、编辑或回写。模板从不由 OneNote 打开。
 
-所有新建的 cache、`.s-<16 hex>` publish staging、`.m-<16 hex>` materialize staging、working copy、inventory/artifact 和 JSON/XML 原子临时路径都使用普通绝对 Windows 路径，并在 copy、atomic publish 或 OneNote open 前完成 240 UTF-16 code units preflight。Role 最多 12 字符，working leaf 最多 64 UTF-16 units，run evidence leaf 最多 64 units，opaque relative path 最多 96 units/8 层；项目不依赖 `LongPathsEnabled`，不使用 `\\?\`。Opaque tree 每层先预算子路径再 `stat`/进入/读取，避免无界扫描先触发裸 `WinError 3`；authored working bundle 的 live projection 同时核对完整 64-hex digest 和 24-hex instance key。Maintenance 在取得只读 COM snapshot 前预算自身将生成的 open lock、marker、receipt、summary、必要 index 与原子临时路径，但把已经存在的 managed payload 当作 cleanup 输入：路径预算不会成为删除门限，ownership、固定根 containment、plain-tree/reparse、实际打开状态和交互确认仍全部 fail closed。新建路径预算失败仍以非零 `path_budget_exceeded` 返回 phase、target、limit/actual/over-by、触发路径、零/已发生副作用、`failure_evidence_written` 和 typed remediation；`WinError 3` 不进入仅面向 `WinError 5/32` 的状态守卫重试。
+所有新建的 cache、`.s-<16 hex>` publish staging、`.m-<16 hex>` materialize staging、working copy、inventory/artifact 和 JSON/XML 原子临时路径都使用普通绝对 Windows 路径，并在 copy、atomic publish 或 OneNote open 前完成 240 UTF-16 code units preflight。传给 OneNote COM 用于 Notebook root create/open 的 working 路径另受真实 Fresh 双 Notebook create 证据支持的 147-unit 安全兼容上限；run identity 会按实际 run root 动态把 working leaf 压缩到 12–64 units，无法容纳最短 digest 名时在零 COM 调用前 fail closed。Role 最多 12 字符，run evidence leaf 最多 64 units，opaque relative path最多 96 units/8 层；项目不依赖 `LongPathsEnabled`，不使用 `\\?\`。Opaque tree 每层先预算子路径再 `stat`/进入/读取，避免无界扫描先触发裸 `WinError 3`；authored working bundle 的 live projection 同时核对完整 64-hex digest 和 24-hex instance key。Maintenance 在取得只读 COM snapshot 前预算自身将生成的 open lock、marker、receipt、summary、必要 index 与原子临时路径，但把已经存在的 managed payload 当作 cleanup 输入：路径预算不会成为删除门限，ownership、固定根 containment、plain-tree/reparse、实际打开状态和交互确认仍全部 fail closed。新建路径预算失败仍以非零 `path_budget_exceeded` 返回 phase、target、limit/actual/over-by、触发路径、零/已发生副作用、`failure_evidence_written` 和 typed remediation；`WinError 3` 不进入仅面向 `WinError 5/32` 的状态守卫重试。
 
 OneNote COM 返回的 Notebook、SectionGroup、Section、Page 和内容对象 ID 永不进入受管物理名称。Scenario artifact 使用固定语义名与有界 ordinal（例如 `cleanup-created-page-02-result.json`）；完整 ID 继续保存在 response、manifest、lease 和其他 JSON evidence 内。JSON/XML evidence 与 working name 在运行时拒绝 canonical OneNote ID，纯测试还会扫描 manual-validation 源码，阻止 `*_id` 或 `["id"]` 再被插值到路径型 f-string。
 
@@ -193,15 +193,15 @@ Cache lookup 会区分真正不存在的实例与目录仍被保留的 `invalid`
 
 2026-08-11 TODO 015 增强复验：`run-2026-08-11-15-41-20` 的同标题 Create 返回两个 fresh、互异且 allocated/read-back 一致的 ID，正文独立可读，并完成默认非永久 cleanup、restore 和 close；`run-2026-08-11-15-43-26` 的 Move 返回两个 fresh target、`verified=true/lossless=true`、anchor unchanged，之后才按叶到根非永久删除源并关闭 Notebook。v4 `copy-page` 的 `run-2026-08-11-15-46-34` 暴露空 selection T 比较误报；`run-2026-08-11-16-06-07` 随后暴露同一占位符因转换顺序造成“目标标题 + 原标题”；`run-2026-08-11-16-11-01` 再暴露最终 restore 对无关 Description Page 后台重序列化比较过宽。三项均按严格保护对象边界修复。最终 `run-2026-08-11-16-18-20` 以同一 v4 fingerprint validated-hit，六个 case 按 `1/2/1/2/1/2` 映射 9 个 fresh、互异且与 source/anchors 不相交的 target；全部 `verified=true/lossless=true`，source/anchors 不变。默认反向清理 9 个 target 后 `restored=true`，source/destination 双 Notebook 均 closed，cache template inventories unchanged；全程只启动一个 MCP process。TODO 015 据此闭合。
 
-当前保留的具体交互 recipe 和一个 bounded UserAuthored recipe 各有固定、不会进入 `all` 的 bootstrap Scenario。它们创建 fresh disposable Canvas/authoring zones，写 run-bound checkpoint，以有界 timeout 等待用户本人添加 synthetic 内容并给出精确 verdict；成功后关闭源、发布模板、再 materialize 第二份 working copy并 live validate。`--keep-worksite` 明确阻止发布。Agent、pytest、CI、hook 和后台进程不得执行这些真实命令。
+七个 `interactive-<operation>` 场景（5 个 Interactive Copy、`interactive-move-page-content`、`interactive-user-authored-fixture`）是 HUMAN-GATED、排除于 `all` 的统一入口。不带 `--use-cache` 时，同一次 run 按六阶段串联 `notebook → bootstrap → fixture → scenario → report → lifecycle`：bootstrap 创建 fresh disposable Canvas/authoring zone、写 run-bound checkpoint、以有界 timeout 等待用户本人添加 synthetic 内容并给出精确 verdict，成功后精确关闭 authored bundle、发布 immutable template，并在 fixture 阶段 materialize 第二份 working copy 完成 live validation；scenario 阶段才执行 Copy/Move 或一致性校验。带 `--use-cache` 时跳过 bootstrap，按五阶段直接从 ready template materialize 新 working copy；cache miss、歧义、evidence-only 或 invalid entry 一律 fail closed，提示不带 `--use-cache` 重新 authoring，不得隐式重建。Fresh 路径禁止传入 `--template-instance-id`；cache 路径可显式传入，或在恰好存在一个 ready、mutation-eligible 且 fingerprint 匹配的 instance 时自动选择。`--keep-worksite` 只保留 scenario working bundle 并跳过契约内 restore/cleanup；fresh 路径的 template 发布是继续执行的前提，不再由 keep-worksite 抑制。Agent、pytest、CI、hook 和后台进程不得执行这些真实命令。
 
 交互 detector 只接受公开 Page 对象模型的 `kind`，并把 `Outline`/`OE` 作为结构支撑节点；请求类型必须精确匹配。TODO 004 已闭合 `InkDrawing`（自由墨迹）、OneNote UI Shape（形状）、通过“插入 → 录制视频”创建的 `MediaFile`，以及复用既有 ready fixture 的 `InsertedFile` Copy 证据。两次用户 discovery 证明矩形和箭头都公开为 `kind=InkDrawing`，而不是字面量 `kind=Shape`；两者共同含 `ShapeInfo`，箭头还含形状相关的 `AnchorPoint`。因此 Shape detector 固定要求“恰好一个公开 `InkDrawing` 对象 + content-free projection 中恰好一个 `ShapeInfo` + capability `UIShape`”，普通自由墨迹必须拒绝；`AnchorPoint` 作为可选结构保存并在 Copy 前后精确比较。`FileAttachment` 的专属 bootstrap/Recipe 已删除，因为当前 OneNote GUI 多次只生成 `InsertedFile`、无法形成独立可验证 fixture；`MeetingInfo` 的专属入口也已删除，因为内容小众、难生成且当前价值低。`Embedded Spreadsheet`（内嵌电子表格）同样明确不支持且没有专属入口；尚未观察到它的公开 `kind` 或 XML 表示，不得把它映射为 Table、InsertedFile 或 FileAttachment。三类排除项都不获得共享 Copy 合同或 Move 源删除放行。FileAttachment 的历史证据、`kind` 边界和观察环境只保留在 [`docs/lesson/onenote_page_object_kind_and_file_attachment_representation.md`](../../docs/lesson/onenote_page_object_kind_and_file_attachment_representation.md)；完整排除边界见 [`docs/lesson/copy_content_type_exclusions.md`](../../docs/lesson/copy_content_type_exclusions.md)。
 
 用户确认后，runner 在验证前先写 `interactive-authored-snapshot.json` 和 content-free `interactive-detection.json`。后者固定记录 requested/observed/missing/unexpected/supporting、对象计数和 capability projection。失败时初始 `fixture-snapshot.json` 不被覆盖，cache 不初始化、不发布；working files 和诊断保留，Notebook 默认由 failure finalizer 精确关闭，只有显式 keep 模式才保持打开。错误摘要会显示精确类型和计数。
 
-`interactive-copy-ink-drawing`、`interactive-copy-ui-shape` 与 `interactive-copy-media-file` 是各自 bootstrap 的 cache-only、Copy-only consumer。它们只接受固定 `ready` instance，materialize 后先重跑精确 detector，再用连续两次相同的只读 plan 绑定 source/destination。InkDrawing/UIShape 各执行一次 root-only Page Copy；MediaFile 在同一场景中先复制到原 Section，再创建一个 run-bound 新 Section并执行第二次 root-only Copy。第二个 case 必须证明第一个 target 和 source 都未变化，两个 target 分别写入独立 plan/copy/machine-comparison evidence，最后一个 run-bound 人工 verdict 同时确认两者的显示与播放。静态 policy 使用 Create + Writes；MediaFile 为创建精确目标 Section 使用同一 Create gate，但仍没有 Delete、Move、Permanent Delete 或 Raw XML。Copy targets 永远保留在 disposable working artifact。若 `copy_page` 已精确创建唯一 target、源未触碰且唯一失败是 canonical read-back，场景会把结构化 `partial_failure` 作为诊断证据继续处理，而不是把它当作生产成功。MediaFile 仍要求 strict canonical；InkDrawing 使用 `semantic_ink_drawing`：请求/目标 detector、公开对象稳定签名、InkDrawing 节点结构、非几何属性和 Ink 数据 hash 必须精确一致；仅 `Position.x/y/z` 与 `Size.width/height` 允许基于真实 COM 量化证据的 `1e-4` 绝对容差。UI Shape 的 `semantic_ui_shape` 复用相同的 Decimal 逐字段 comparator、结构/data hash 和失败证据，但基于 `run-2026-08-11-22-18-48` 的真实 Shape bounding-box 重算证据使用独立 `0.02` 绝对容差；同时额外要求 source/target 各有一个 `ShapeInfo`、完整 shape marker 计数相等，因此矩形与箭头的 `AnchorPoint` 差异不会被动态忽略。evidence 固定记录每个几何字段的 source/target、absolute delta、最大 delta 和是否越界；非数字、缺失/额外字段或越界一律失败。visible text、content-object/binary checks、无 omitted content 和受限 issue 集也必须通过。Ink 子树之外的 Page canonical 漂移会被记录但不单独否定 Ink/Shape 证据。证据只保存 count/hash，并固定记录 `payloads_exposed=false`，不落盘 raw payload。随后用户必须对精确 target 给出 run-bound `ACCEPT` 或 `REJECT`；机器或人工任一失败都保留现场并且不产生放权。
+`interactive-copy-ink-drawing`、`interactive-copy-ui-shape` 与 `interactive-copy-media-file` 各自对应一个 Interactive Copy recipe。Fresh 路径在同一次 run 内完成 authoring、发布与 Copy 验证；`--use-cache` 只接受固定 `ready` instance，materialize 后先重跑精确 detector，再用连续两次相同的只读 plan 绑定 source/destination。InkDrawing/UIShape 各执行一次 root-only Page Copy；MediaFile 在同一场景中先复制到原 Section，再创建一个 run-bound 新 Section并执行第二次 root-only Copy。第二个 case 必须证明第一个 target 和 source 都未变化，两个 target 分别写入独立 plan/copy/machine-comparison evidence，最后一个 run-bound 人工 verdict 同时确认两者的显示与播放。静态 policy 使用 Create + Writes；MediaFile 为创建精确目标 Section 使用同一 Create gate，但仍没有 Delete、Move、Permanent Delete 或 Raw XML。Copy targets 永远保留在 disposable working artifact。若 `copy_page` 已精确创建唯一 target、源未触碰且唯一失败是 canonical read-back，场景会把结构化 `partial_failure` 作为诊断证据继续处理，而不是把它当作生产成功。MediaFile 仍要求 strict canonical；InkDrawing 使用 `semantic_ink_drawing`：请求/目标 detector、公开对象稳定签名、InkDrawing 节点结构、非几何属性和 Ink 数据 hash 必须精确一致；仅 `Position.x/y/z` 与 `Size.width/height` 允许基于真实 COM 量化证据的 `1e-4` 绝对容差。UI Shape 的 `semantic_ui_shape` 复用相同的 Decimal 逐字段 comparator、结构/data hash 和失败证据，但基于 `run-2026-08-11-22-18-48` 的真实 Shape bounding-box 重算证据使用独立 `0.02` 绝对容差；同时额外要求 source/target 各有一个 `ShapeInfo`、完整 shape marker 计数相等，因此矩形与箭头的 `AnchorPoint` 差异不会被动态忽略。evidence 固定记录每个几何字段的 source/target、absolute delta、最大 delta 和是否越界；非数字、缺失/额外字段或越界一律失败。visible text、content-object/binary checks、无 omitted content 和受限 issue 集也必须通过。Ink 子树之外的 Page canonical 漂移会被记录但不单独否定 Ink/Shape 证据。证据只保存 count/hash，并固定记录 `payloads_exposed=false`，不落盘 raw payload。随后用户必须对精确 target 给出 run-bound `ACCEPT` 或 `REJECT`；机器或人工任一失败都保留现场并且不产生放权。
 
-`bootstrap-shape-fixture` 的 recipe version 5 已把上述真实 representation 冻结为可缓存的交互 fixture。它只接受一个小矩形作为稳定 fixture；discovery run `run-2026-08-11-21-57-18`（矩形）和 `run-2026-08-11-22-00-08`（箭头）是历史 `evidence_only` 证据，不会自动升级为 cache entry。后续 bootstrap 和 `interactive-copy-ui-shape --use-cache` 已完成；最终 `run-2026-08-11-22-23-29` 通过 `semantic_ui_shape`、完整 Shape marker/data 比较、`0.02` 有界几何门和人工 verdict，`UIShape` 已进入生产 validated allowlist 并可复用共享 Move 门。
+`interactive-copy-ui-shape` 的 recipe version 5 已把上述真实 representation 冻结为可缓存的交互 fixture。它只接受一个小矩形作为稳定 fixture；discovery run `run-2026-08-11-21-57-18`（矩形）和 `run-2026-08-11-22-00-08`（箭头）是历史 `evidence_only` 证据，不会自动升级为 cache entry。后续 fresh authoring 与 `interactive-copy-ui-shape --use-cache` 已完成；最终 `run-2026-08-11-22-23-29` 通过 `semantic_ui_shape`、完整 Shape marker/data 比较、`0.02` 有界几何门和人工 verdict，`UIShape` 已进入生产 validated allowlist 并可复用共享 Move 门。
 
 `copy-display-equation` 是不读取 stdin、无需 bootstrap 或人工 verdict 的程序化场景。Recipe 会在 fresh 或显式 `--use-cache` 的 disposable working Notebook 中构建 `Source/01-Source-Parent` 富文本/表格/图片基线，并自动追加一个 `display="block"` 的独立单行 MathML。Fixture detector 要求 capability projection 明确包含 `DisplayEquation` 且恰好有一个完整 standalone MathML root；随后固定执行三跳 root-only Page Copy。每一跳都必须由生产 comparator 返回 `semantic_display_equation`、`verified=true`、`lossless=true`、`copy_contract_satisfied=true`，发送前恰好清理一个空白 span 和一个 break，目标回读仍只有一个已知空白 span/break。默认按逆序非永久清理三个 target 并验证原始 fixture 恢复；`--keep-worksite` 才保留三个目标供检查。场景不保存 Page 正文或 raw XML。
 
@@ -214,20 +214,20 @@ Cache lookup 会区分真正不存在的实例与目录仍被保留的 `invalid`
 .venv\Scripts\python.exe tests\manual_validation\run.py copy-display-equation --keep-worksite
 ```
 
-`bootstrap-inline-equation-fixture` 与 `interactive-copy-inline-equation` 是用于对照 block MathML 空行问题的独立 recipe 对。Bootstrap 自动构建相同的 Source Parent 富文本/表格/图片基线，并通过受限 HTML 写入一个无 `display` 属性、前后均有普通正文的 Presentation MathML；用户不编辑 Page，只确认自动 fixture 在一行内正常显示。Detector 固定要求恰好一个完整 MathML、同一 `OE` 内存在可见前后文（可为同一个 `T`，也可为 OneNote 规范化产生的 `T(before) → T(math) → T(after)`）、零 `display` 属性和零相关 `<br>`。Copy consumer 要求 source/target 都继续满足相同 inline 门禁，任何公式周围新增 `<br>` 都单独失败；配合 `--capture-page-xml` 可直接保存两侧 XML。
+`interactive-copy-inline-equation` 用于对照 block MathML 空行问题。Fresh 路径在 bootstrap 阶段自动构建相同的 Source Parent 富文本/表格/图片基线，并通过受限 HTML 写入一个无 `display` 属性、前后均有普通正文的 Presentation MathML；用户不编辑 Page，只确认自动 fixture 在一行内正常显示。Detector 固定要求恰好一个完整 MathML、同一 `OE` 内存在可见前后文（可为同一个 `T`，也可为 OneNote 规范化产生的 `T(before) → T(math) → T(after)`）、零 `display` 属性和零相关 `<br>`。Copy 阶段要求 source/target 都继续满足相同 inline 门禁，任何公式周围新增 `<br>` 都单独失败；配合 `--capture-page-xml` 可直接保存两侧 XML。
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-inline-equation-fixture --dry-run --json
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-inline-equation-fixture
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inline-equation --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inline-equation
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inline-equation --use-cache --capture-page-xml --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inline-equation --use-cache --capture-page-xml
 ```
 
-TODO 004 的首次真实取证必须逐类型串行执行，任一非零结果立即停止并保留现场。InkDrawing 先发布精确 fixture，再消费 immutable cache 做一次 Copy：
+TODO 004 的首次真实取证必须逐类型串行执行，任一非零结果立即停止并保留现场。InkDrawing 先以 fresh 路径发布精确 fixture，再以 `--use-cache` 做一次 Copy：
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-ink-drawing-fixture --dry-run --json
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-ink-drawing-fixture
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ink-drawing --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ink-drawing
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ink-drawing --use-cache --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ink-drawing --use-cache
 ```
@@ -237,8 +237,8 @@ Bootstrap Canvas 只用 OneNote Draw pen 画一条很短的 synthetic freehand s
 MediaFile v8 使用 OneNote `Insert → Record Video` 创建一段 1–2 秒的 synthetic video recording；不要拖放、附加已有媒体文件或使用“文件附件”，否则可能得到不同的 `InsertedFile` 表示。录像结构先由 bootstrap detector/projection fail closed 验证；若出现尚未建模的节点，必须保留失败现场后再按真实证据更新，不能继承音频表示的假设：
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-media-file-fixture --dry-run --json
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-media-file-fixture
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-media-file --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-media-file
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-media-file --use-cache --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-media-file --use-cache
 ```
@@ -249,11 +249,11 @@ v8 录像 bootstrap `run-2026-08-11-23-21-38` 已发布 ready template 并通过
 
 Copy 阶段除视觉对象外还应在 OneNote UI 中播放 source/target，确认两者都能播放且持续时间/控件表现一致，再输入 run-bound verdict。机器 evidence 会记录 COM Page XML 中可回读的 binary payload count/hash，但不会保存 raw payload；零 payload 不能写成已经证明二进制相等，只能结合 canonical metadata 与人工播放 verdict 评审。
 
-UI Shape 使用一个小矩形作为固定 fixture；不要在 bootstrap 中改用箭头，因为箭头的 `AnchorPoint` 结构属于另一种形状变体：
+UI Shape 使用一个小矩形作为固定 fixture；不要在 authoring 阶段改用箭头，因为箭头的 `AnchorPoint` 结构属于另一种形状变体：
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-shape-fixture --dry-run --json
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-shape-fixture
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ui-shape --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ui-shape
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ui-shape --use-cache --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ui-shape --use-cache
 ```
@@ -262,22 +262,24 @@ UI Shape 使用一个小矩形作为固定 fixture；不要在 bootstrap 中改�
 
 固定 `cache-invalidation --use-cache` 只绑定自己的 programmatic Recipe fingerprint/instance，不接受任何 path、ID 或 fingerprint 参数。若已有 entry，它会在 materialize/open 之前精确失效；若是 cold miss，则先发布受验证 entry、立即对该精确 entry 执行同一清理门，再重新发布并 materialize。cleanup tombstone 必须证明 cache-root containment、ownership、无 reparse point且 template 实际路径未打开；run-local working lease 不参与 cache cleanup 判断。任何清理失败都会停止且不覆盖。
 
-`user-authored-fixture-consumer --use-cache --template-instance-id authored-<24 hex>` 与 bootstrap 共享同一 contract fingerprint，但拥有独立 Scenario/Recipe instance。Consumer 不枚举或猜测实例；缺失、格式错误、未知实例以及 `evidence_only` 都在 working Notebook 打开前 fail closed。省略 `--use-cache` 的 dry-run 只报告 `preflight-cache-required`，真实执行也会在 lifecycle/MCP/cache 访问之前拒绝；只有显式选择的 `ready` 实例会 materialize，并再次通过 reserved marker、authoring-zone 和 live content validation。该能力当前定位为足够开发取证使用的临时脚手架；完整 authoring-zone、多实例和状态真实矩阵已作为低优先级 [TODO 020](../../docs/todo/020_user_authored_fixture_development_scaffold.md) 单独维护，不再阻塞 TODO 014 或生产 Copy/Move。
+`interactive-user-authored-fixture` 是 bounded UserAuthored 的统一入口，不进入 `all`。Recipe v4 将 `mutation_eligible` 与 `move_source_deletion_allowed` 固化进 authored cache entry，并在 materialized identity gate 复核；旧 v3 fingerprint 不再命中。Fresh 路径在同一次 run 内完成 authoring zone 创建、用户编辑、detector/validator、template 发布与 live revalidation；`--use-cache` 可显式传入 `--template-instance-id authored-<24 hex>`，或在恰好存在一个 ready、mutation-eligible 且 fingerprint 匹配的 instance 时自动选择。缺失、格式错误、未知实例、歧义以及 `evidence_only` 都在 working Notebook 打开前 fail closed；fresh 产生的 `evidence_only` 只形成只读取证结果，必须报告 `mutation_eligible=false`。该能力当前定位为足够开发取证使用的临时脚手架；完整 authoring-zone、多实例和状态真实矩阵已作为低优先级 [TODO 020](../../docs/todo/020_user_authored_fixture_development_scaffold.md) 单独维护，不再阻塞 TODO 014 或生产 Copy/Move。
 
-`bootstrap-move-page-content-fixture` 与 `interactive-move-page-content` 是 [TODO 039](../../docs/todo/039_interactive_real_page_move_lossless_validation.md) 建立的双 Notebook human-gated 开发配对，均不进入 `all`。Bootstrap 创建 source instructions、一个 exact leaf Canvas，以及独立 destination Section/anchor；用户只能在 Canvas 中制作或粘贴非敏感的代表性内容。Recipe v7 接受 typed projection 明确观察到的有效 `RichText`，也接受 List/Tag、Table、Image 等其他已验证结构化能力；只有 `Outline` 的未编辑纯占位形状仍不能发布 ready 模板。Canvas 标题可以改为代表性 Page 标题；确认后其 live title/path 会作为 authored template identity 冻结，后续 materialize 必须按该冻结地址重绑。完整 typed projection 才发布 `ready`；unknown/incomplete 内容只能成为 `evidence_only`，不能进入 Move。发布会先精确关闭 source/destination 两个 role，再把完整 bundle 作为 immutable template 发布并 materialize 第二份 working bundle做 live validation。成功发布 ready 模板后，普通终端输出会明确打印 `template_instance_id` 及一条可复制的、仍显式传入该 ID 的 `interactive-move-page-content` 命令。该 bootstrap/consumer 约定不是 TODO 040 自动回归的验收入口，不得改造成 programmatic fresh scenario。
+`interactive-move-page-content` 是 [TODO 039](../../docs/todo/039_interactive_real_page_move_lossless_validation.md) 建立的双 Notebook human-gated 开发场景，不进入 `all`。Fresh 路径在 bootstrap 阶段创建 source instructions、一个 exact leaf Canvas，以及独立 destination Section/anchor；用户只能在 Canvas 中制作或粘贴非敏感的代表性内容。Recipe v11 接受 typed projection 明确观察到的有效 `RichText`，也接受 List/Tag、Table、Image 等其他已验证结构化能力；只有 `Outline` 的未编辑纯占位形状仍不能发布 ready 模板。v11 将 `mutation_eligible` 与 `move_source_deletion_allowed` 固化进 authored cache entry 并在 materialized identity gate 复核，因此旧 v10 fingerprint 不再命中。该 identity 在 template/working inventory byte-for-byte 相等、typed rebind、双稳定和 live validation 都已通过后，使用 materialization-stable 64-hex projection：保留可见文本、Table 列数与 Row/Cell 拓扑、List/Tag、对象计数和 binary hash，但忽略 OneNote 打开 opaque copy 时可自动重写的富文本展示 span/style 及 Table/Column/Row/Cell 展示属性；不放宽内容能力、标题、拓扑或后续 Move 的严格 Copy-before-delete fidelity gate。Canvas 标题可以改为代表性 Page 标题；确认后其 live title/path 会作为 authored template identity 冻结，后续 materialize 必须按该冻结地址重绑。完整 typed projection 才发布 `ready`；unknown/incomplete 内容只能成为 `evidence_only`，不能进入 Move。发布会先精确关闭 source/destination 两个 role，再把完整 bundle 作为 immutable template 发布并在 fixture 阶段 materialize 第二份 working bundle 做 live validation。成功 fresh run 会在终端展示已发布 `template_instance_id`，提示后续可用 `--use-cache` 复用该 template。该场景不是 TODO 040 自动回归的验收入口，不得改造成 programmatic fresh scenario。
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-move-page-content-fixture --notebook-label move-page-content --dry-run --json
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-move-page-content-fixture --notebook-label move-page-content
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --notebook-label move-page-content --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --notebook-label move-page-content
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --use-cache --template-instance-id authored-<24 hex> --notebook-label move-page-content --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --use-cache --template-instance-id authored-<24 hex> --notebook-label move-page-content --keep-worksite
 ```
 
 Consumer 只允许一次公开 `move_page(include_subpages=false)`，不传 `destination_title`，从而同时验证默认标题保真；静态权限为 Create + Writes + Deletes，既不启用 Organize、Local File IO、Permanent Delete，也不增加 Move-only 内容 allowlist。`copy_only` / `copy_unverified` 时必须证明 source 仍 active，保留未验证 target 和 `lossless-diagnostic.json`，不询问人工 ACCEPT、不补调 mutation；适用 `semantic_content_v1` 时，诊断从生产 `page_results[*].semantic_content_stages` 保存 source→transformed 与 transformed→target 的完整性、check、摘要 hash、有界 mismatch path、typed content-object failures 及 Table width threshold/relative delta，且不保存标题、正文、style 值、原始 width、raw XML 或 binary。成功路径还会独立按 exact target ID 验证 destination Section 和 title 与 source 完全一致。只有生产报告同时满足 `verified=true`、`lossless=true`、`copy_contract_satisfied=true`、target title fidelity 且已非永久删源后，才要求用户检查 exact target 标题/内容并输入 run-bound `ACCEPT ... MovePageContent`。Agent、pytest、CI 或后台任务不得执行上述两条真实命令。
 
-`interactive-copy-inserted-file` 是 cache-only、HUMAN-GATED 的 Copy 验证 Scenario，与 `bootstrap-inserted-file-fixture` 共用同一个 fingerprint 和固定 instance。它不重新创建 fixture，也不进入 `all`；命中后 materialize 全新的 working copy，显式加载层级、重绑定 live ID、重跑 `InsertedFile` detector/projection，然后执行一次同 Section root-only `copy_page`。机器门要求 source/target 都精确观察到一个公开 `kind=InsertedFile`、稳定对象签名一致、可见文本/内容对象/strict canonical read-back 通过且没有 omitted content；当前公开 XML 没有内联 `Data`，因此普通 binary SHA-256 项只记录其 absence，用户还必须实际打开目标附件并确认其合成文件内容一致，再输入 run-bound `ACCEPT ... InsertedFile COPY`。Copy plan 优先使用仍存在的 `pathSource`，否则回退到可读 `pathCache/path`；全部不可读时在创建目标前 fail closed，普通 evidence 不保存实际路径。场景没有 Delete 权限，不会删除源。缺少可命中的 `ready` entry 时会在 Notebook/MCP 启动前返回 `interactive_bootstrap_required` 并提示运行已有 bootstrap，而不是隐式重建：
+`interactive-copy-inserted-file` 是 HUMAN-GATED 的 Copy 验证 Scenario，不进入 `all`。Fresh 路径在同一次 run 内完成 Canvas authoring、发布与 Copy 验证；`--use-cache` 命中后 materialize 全新的 working copy，显式加载层级、重绑定 live ID、重跑 `InsertedFile` detector/projection，然后执行一次同 Section root-only `copy_page`。机器门要求 source/target 都精确观察到一个公开 `kind=InsertedFile`、稳定对象签名一致、可见文本/内容对象/strict canonical read-back 通过且没有 omitted content；当前公开 XML 没有内联 `Data`，因此普通 binary SHA-256 项只记录其 absence，用户还必须实际打开目标附件并确认其合成文件内容一致，再输入 run-bound `ACCEPT ... InsertedFile COPY`。Copy plan 优先使用仍存在的 `pathSource`，否则回退到可读 `pathCache/path`；全部不可读时在创建目标前 fail closed，普通 evidence 不保存实际路径。场景没有 Delete 权限，不会删除源。缺少可命中的 `ready` entry 时会在 Notebook/MCP 启动前返回 `interactive_cache_miss` 并提示不带 `--use-cache` 重新 authoring，而不是隐式重建：
 
 ```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inserted-file --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inserted-file
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inserted-file --use-cache --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inserted-file --use-cache
 ```
@@ -377,7 +379,7 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 
 这些真实命令只能由用户本人在前台运行；它们不读取 stdin，全部验收由机器 gate 完成。需要保留打开的现场时可以显式追加 `--keep-worksite`。Agent、pytest、CI 与后台任务只可执行相应 `--dry-run`。
 
-2026-08-18 用户已在前台完成该矩阵：`hierarchy-navigation` 的 `run-2026-08-18-19-33-05`、`copy-page` 的 `run-2026-08-18-20-03-25`，以及 `move-page` 的 `run-2026-08-18-19-39-02` 与独立复跑 `run-2026-08-18-19-49-05` 均通过。三者完全使用自动 disposable fixture；`interactive-move-page-content` 未参与本轮验收，仍保持 bootstrap/cache consumer 开发约定。
+2026-08-18 用户已在前台完成该矩阵：`hierarchy-navigation` 的 `run-2026-08-18-19-33-05`、`copy-page` 的 `run-2026-08-18-20-03-25`，以及 `move-page` 的 `run-2026-08-18-19-39-02` 与独立复跑 `run-2026-08-18-19-49-05` 均通过。三者完全使用自动 disposable fixture；`interactive-move-page-content` 未参与本轮验收，现保持 fresh/cache unified authored-template 开发约定。
 
 ## 安全审查与执行
 
@@ -485,54 +487,19 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 .venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation --dry-run --json
 ```
 
-<!-- dry-run-case: bootstrap-inserted-file-fixture.default -->
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-inserted-file-fixture --dry-run --json
-```
-
-<!-- dry-run-case: bootstrap-ink-drawing-fixture.default -->
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-ink-drawing-fixture --dry-run --json
-```
-
-<!-- dry-run-case: bootstrap-media-file-fixture.default -->
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-media-file-fixture --dry-run --json
-```
-
-<!-- dry-run-case: bootstrap-shape-fixture.default -->
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-shape-fixture --dry-run --json
-```
-
 <!-- dry-run-case: copy-display-equation.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py copy-display-equation --dry-run --json
 ```
 
-<!-- dry-run-case: bootstrap-inline-equation-fixture.default -->
+<!-- dry-run-case: interactive-user-authored-fixture.default -->
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-inline-equation-fixture --dry-run --json
-```
-
-<!-- dry-run-case: bootstrap-user-authored-fixture.default -->
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-user-authored-fixture --dry-run --json
-```
-
-<!-- dry-run-case: bootstrap-move-page-content-fixture.default -->
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-move-page-content-fixture --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-user-authored-fixture --dry-run --json
 ```
 
 <!-- dry-run-case: cache-invalidation.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py cache-invalidation --dry-run --json
-```
-
-<!-- dry-run-case: user-authored-fixture-consumer.default -->
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py user-authored-fixture-consumer --dry-run --json
 ```
 
 <!-- dry-run-case: interactive-copy-inserted-file.default -->
@@ -652,7 +619,7 @@ Notebook 直属 child 仍先用 absolute working path 与空 relative ID；Secti
 
 每个 scenario 都在本次独占的 disposable working Notebook 中运行，并最多启动一个 MCP 子进程。默认 fresh 路径创建新 Notebook；cache 路径只打开刚 materialize 的 working directory。Notebook 的 create/open/get/close 由窄 lifecycle wrapper 完成；wrapper 不提供 Section、Page 或内容写入能力。它立即写入 `lifecycle-lease.json`，绑定本次 run 的精确 Notebook ID、名称、本地 working path、template paths 和 `opened_template=false`。
 
-唯一 MCP 子进程同时完成该 scenario 的最小 fixture、所选 mutation、before/after/restored 回读和契约内 restore/cleanup。它启动时使用 `scenarios/common/specs.py` 中固定的完整闭包 policy 和 tool allowlist，并在 fixture 创建前用 `health_check` 精确核对 policy、timeout 和 Copy budget；启动后不得扩权。Runner 不使用所有 scenario 的权限并集。Registry 会在导入注册时把每个 programmatic fixture 的 `creation_tools` 映射到必需 policy gate；例如 `create_section` 要求 Create，`create_page` 要求 Create + Writes，`add_page_image_from_file` 要求 Writes + Local File I/O，缺任一 gate 都会在创建 Notebook 或启动 MCP 前直接拒绝。Cache-only consumer 不会被误判为 fresh builder，也不会因此扩权。
+唯一 MCP 子进程同时完成该 scenario 的最小 fixture、所选 mutation、before/after/restored 回读和契约内 restore/cleanup。它启动时使用 `scenarios/common/specs.py` 中固定的完整闭包 policy 和 tool allowlist，并在 fixture 创建前用 `health_check` 精确核对 policy、timeout 和 Copy budget；启动后不得扩权。Runner 不使用所有 scenario 的权限并集。Registry 会在导入注册时把每个 programmatic fixture 的 `creation_tools` 映射到必需 policy gate；例如 `create_section` 要求 Create，`create_page` 要求 Create + Writes，`add_page_image_from_file` 要求 Writes + Local File I/O，缺任一 gate 都会在创建 Notebook 或启动 MCP 前直接拒绝。Interactive/UserAuthored unified 场景的静态 allowlist 同时覆盖 fresh scaffold 与 scenario mutation；`--use-cache` 只跳过 bootstrap，不会在运行时扩权。
 
 | Scenario | Fixture 与权限限制 |
 | --- | --- |

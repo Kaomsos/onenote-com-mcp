@@ -23,7 +23,7 @@ from ...run_identity import run_safe_timestamp
 from ..base import Scenario
 from .copy_invariants import assert_copy_mapping, assert_pages_unchanged
 from .copy_runtime import call_with_result_evidence
-from .interactive_bootstrap import MAX_INTERACTIVE_TIMEOUT, _bounded_input
+from .interactive_bootstrap import MAX_INTERACTIVE_TIMEOUT, InteractiveBootstrapScenarioMixin, _bounded_input
 
 
 def build_interactive_copy_comparison(
@@ -306,21 +306,15 @@ async def capture_copy_xml_structure_evidence(
     return source_xml, target_xml
 
 
-class InteractiveCopyEvidenceScenario(Scenario):
-    """Copy one cached authored Page without Delete or runtime allowlist changes."""
+class InteractiveCopyEvidenceScenario(InteractiveBootstrapScenarioMixin, Scenario):
+    """Copy one authored Page without Delete or runtime allowlist changes."""
 
     included_in_all = False
-    timeout_default = 1_800
     worksite_dry_run_action = "preserve-interactive-copy-evidence-target"
     include_cross_section_case = False
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "--interactive-timeout",
-            type=int,
-            default=900,
-            help="Bounded seconds for the exact run-bound Copy UI verdict (max 1800).",
-        )
+        InteractiveBootstrapScenarioMixin.add_arguments(self, parser)
         parser.add_argument(
             "--capture-page-xml",
             action="store_true",

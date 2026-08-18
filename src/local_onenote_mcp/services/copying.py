@@ -29,7 +29,7 @@ from .convergence import (
     ConvergenceRuntime,
     converge,
 )
-from .errors import PartialFailure
+from .errors import PageReadbackMismatch, PartialFailure, page_readback_mismatch_error
 from .hierarchy import HierarchyService
 from .mutations import MutationService
 from .operation_runtime import record_backend_call
@@ -1196,28 +1196,44 @@ class CopyService(BaseService):
             if source["resource_type"] == "notebook":
                 copy_report["destination_path"] = notebook_destination_path
             if not copy_report["verified"]:
-                raise PartialFailure(
-                    "Copy created the target, but content or topology read-back verification failed.",
-                    partial=True,
-                    outcome="copy_unverified",
-                    source_untouched=True,
-                    source_touched=False,
-                    topology_touched=True,
-                    manual_recovery_required=True,
-                    source_deleted=False,
-                    destination=target_root,
-                    destination_position=self._snapshot_destination_position(
+                failure_details = {
+                    "partial": True,
+                    "outcome": "copy_unverified",
+                    "source_untouched": True,
+                    "source_touched": False,
+                    "topology_touched": True,
+                    "manual_recovery_required": True,
+                    "source_deleted": False,
+                    "destination": target_root,
+                    "destination_position": self._snapshot_destination_position(
                         refreshed,
                         target_root,
                         str(source["resource_type"]),
                         "destination_target_not_uniquely_observed",
                     ),
-                    copy_report=copy_report,
-                    created_ids=[item["target_id"] for item in created],
-                    allocated_ids=list(allocated_ids),
-                    resolved_target_ids=list(resolved_target_ids),
-                    completed_steps=completed_steps,
-                    failed_step=failed_step,
+                    "copy_report": copy_report,
+                    "created_ids": [item["target_id"] for item in created],
+                    "allocated_ids": list(allocated_ids),
+                    "resolved_target_ids": list(resolved_target_ids),
+                    "completed_steps": completed_steps,
+                    "failed_step": failed_step,
+                }
+                if not pages_verified:
+                    failed_content_object_types = {
+                        str(content_type)
+                        for page_result in page_results
+                        for content_type in page_result["equivalence"].get(
+                            "failed_content_object_types", ()
+                        )
+                    }
+                    raise page_readback_mismatch_error(
+                        "Copy created the target, but Page content read-back verification failed.",
+                        failed_content_object_types,
+                        **failure_details,
+                    )
+                raise PartialFailure(
+                    "Copy created the target, but content or topology read-back verification failed.",
+                    **failure_details,
                 )
             return {
                 "item": target_root,
@@ -1546,7 +1562,12 @@ class CopyService(BaseService):
             if details.get("outcome") == "copy_unverified":
                 details["outcome"] = "copy_only"
                 details["source_deleted"] = False
-                raise PartialFailure(
+                error_type = (
+                    type(exc)
+                    if isinstance(exc, PageReadbackMismatch)
+                    else PartialFailure
+                )
+                raise error_type(
                     "The selected Page target was created, but Copy read-back verification failed; "
                     "source deletion was blocked.",
                     **details,
@@ -1816,7 +1837,12 @@ class CopyService(BaseService):
             if details.get("outcome") == "copy_unverified":
                 details["outcome"] = "copy_only"
             details.setdefault("source_deleted", False)
-            raise PartialFailure(
+            error_type = (
+                type(exc)
+                if isinstance(exc, PageReadbackMismatch)
+                else PartialFailure
+            )
+            raise error_type(
                 "The container target was created, but Copy verification did not authorize source deletion.",
                 **details,
             ) from exc

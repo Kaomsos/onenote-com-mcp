@@ -12,6 +12,8 @@
 
 关闭 039 不表示真实 Page Move 已经达到最终 `verified/lossless/copy_contract_satisfied=true`，也不表示目标标题、纯 RichText verification tier、Table 列宽或 typed equivalence failure 已解决。上述剩余 P0 范围及最终 Copy-before-delete 用户验收全部由 TODO 040 接管。本文自此作为只读历史台账关闭，不再与 040 并行维护同一问题。
 
+> 兼容说明（2026-08-18）：本文后续出现的独立 bootstrap/consumer 命令属于 TODO 041 之前的历史设计与真实证据。当前公开入口只有 `interactive-move-page-content`：fresh 路径内含 bootstrap 阶段，`--use-cache` 路径跳过 bootstrap。
+
 [TODO 037 / UT-009](037_user_testing_experience_feedback_and_optimization.md) 已修复三类已知 OneNote COM 规范化造成的 `verify_copy` 误报，并在受控 disposable fixture 上证明 `semantic_content_v1`、其他既有 verification tier 和 Copy-before-delete 安全链能够通过。但用户继续用 `move_page` 处理代表性真实 Page content 时，目标副本仍会被回读判定为非 `lossless`，因此结果停在 `partial_failure` / `copy_only`，源 Page 按设计不删除。
 
 这是未解决的 P0 用户体感 bug，范围同时覆盖正文/富文本 fidelity 和默认标题 fidelity。当前证据只说明 lossless gate 阻塞了 Move，尚不能证明具体失败来自 verification tier 选择、能力投影不完整、已知但未建模的 COM 规范化、正文/表格/对象/二进制差异，还是 Copy 转换确实丢失了内容。不得把它描述为耗时或 timeout 问题，也不得通过提高 timeout、跳过回读、把 `copy_only` 当成功或先删源来掩盖。
@@ -22,11 +24,11 @@
 
 2026-08-18 已完成第一阶段 scaffold：
 
-- 新增 `bootstrap-move-page-content-fixture` 与 `interactive-move-page-content` 两个显式注册、`included_in_all=false` 的场景；
+- 新增 `interactive-move-page-content` 显式注册、`included_in_all=false` 的统一场景（fresh 路径含 bootstrap 阶段；`--use-cache` 跳过 bootstrap）；
 - 新增共享同一 cache fingerprint 的双 Notebook `MovePageContentRecipe`，source 只允许一个 exact root leaf Canvas，destination 具有独立 Section/anchor；
 - shared interactive bootstrap 已从单 source 发布路径泛化为完整 role bundle：逐 role 重读 authored snapshot、精确关闭全部 role、opaque 发布 immutable template、materialize 第二份双 role working bundle并 live validate；
-- bootstrap 要求至少一种受支持的非平凡 Page capability；unknown/incomplete projection 只能冻结为 `evidence_only`，不能被 Move consumer 使用；
-- consumer 要求显式 `authored-<24 hex>` instance、Create + Writes + Deletes 最小策略，固定一次 `move_page(include_subpages=false)`；lossless failure 保存 source/target after snapshot 与逐 tier/check 的 content-free `lossless-diagnostic.json` 后原样失败，绝不补调 mutation；
+- fresh bootstrap 阶段要求至少一种受支持的非平凡 Page capability；unknown/incomplete projection 只能冻结为 `evidence_only`，不能进入 Move；
+- scenario 阶段消费 fresh 已发布的 instance，或在 `--use-cache` 时接受显式/唯一 ready `authored-<24 hex>` instance；使用 Create + Writes + Deletes 最小策略，固定一次 `move_page(include_subpages=false)`；lossless failure 保存 source/target after snapshot 与逐 tier/check 的 content-free `lossless-diagnostic.json` 后原样失败，绝不补调 mutation；
 - success 路径只在生产 `verified/lossless/copy_contract_satisfied=true` 且 `source_deleted_nonpermanently=true` 后请求 run-bound UI ACCEPT；
 - 新增纯合同覆盖 recipe identity、ready/evidence-only、双 role bootstrap、单次 Move、lossless 失败 envelope 解包、失败保源、诊断脱敏和成功后人工门；当前 manual-validation 纯测试为 `627 passed`，全量 pytest 为 `1361 passed`，bootstrap 的 `--dry-run --json` 通过，`all` 仍只包含原 18 个稳定场景。ready template 发布成功的普通终端输出会给出显式实例 ID 和可复制的下一条 Move 命令，不据此自动选择实例。
 
@@ -76,15 +78,15 @@ exact-ID confirmation + bounded source plan
 - `copy_contract_satisfied` 不是人工 ACCEPT 可以覆盖的字段。interactive 场景只能提供真实表现与机器 mismatch 证据，不能在运行时修改生产 allowlist、verification tier 或删源资格。
 - `copy_only`、`copy_unverified`、partial 或 indeterminate 结果不得自动重试、replay、rollback 或删除源；target 和完整失败现场必须留给用户审阅。
 
-## 专用 Bootstrap
+## 历史专用 Bootstrap（已由统一入口取代）
 
-新增具名命令，名称暂定为 `bootstrap-move-page-content-fixture`：
+历史实现曾以 `bootstrap-move-page-content-fixture` 为独立入口；TODO 041 后由 `interactive-move-page-content` fresh 路径内部的 bootstrap 阶段承担同一职责：
 
 - 使用 fresh、disposable、双 Notebook role bundle，预先创建 exact source Canvas、destination Section、reserved marker 和 bounded authoring zone；不得接受用户业务 Notebook、外部 Notebook/Page ID 或任意本地 `.one` 路径。
 - 用户只在 exact Canvas 中制作或粘贴一页经过筛选的、非敏感的代表性真实内容。它可以组合日常 Page 中实际出现的富文本、链接、List/Tag、表格、图片、附件、公式或其他已公开能力，而不是只依赖现有最小 synthetic fixture。
 - bootstrap 在用户 run-bound 确认后至少连续读取两次 exact source Page，冻结 capability projection、对象计数、verification tier 候选、稳定的正文 digest、标题/层级语义和 immutable template inventory；模板实例摘要不得纳入复制后必然变化的 Notebook/Page/Object COM ID、working path 或 identity-sensitive page digest。证据不得保存正文、标题、原始 XML、binary、用户路径或真实 COM ID 到版本库。
 - 出现未知节点、投影不完整、越界编辑、reserved marker 变化、额外 Page、身份歧义或不稳定 source 时，模板只能标记为 `evidence_only` 或拒绝发布，不能获得 Move deletion eligibility。
-- ready template 必须关闭后才允许 opaque byte-for-byte cache publication；后续 consumer 只 materialize 物理独立 working copy并重新绑定 live ID，绝不打开或修改 cache master。
+- ready template 必须关闭后才允许 opaque byte-for-byte cache publication；随后同一 fresh run 或后续 `--use-cache` 路径只 materialize 物理独立 working copy并重新绑定 live ID，绝不打开或修改 cache master。
 - bootstrap 真实命令只能由用户在交互式前台执行。Agent、pytest、CI、hook、timer、watcher 和后台任务只能运行 `--dry-run`。
 
 该专用 recipe 可以复用 `InteractiveFixtureRecipe`、checkpoint、freeze、cache 和 explicit instance selection 基础设施，但不依赖完成 P3 [TODO 020](020_user_authored_fixture_development_scaffold.md) 的整个自由创作矩阵，也不得借 `UserAuthoredRecipe.ready` 自动授予 Move 权限。
@@ -93,8 +95,8 @@ exact-ID confirmation + bounded source plan
 
 新增具名命令，名称暂定为 `interactive-move-page-content`：
 
-- `included_in_all = False`；cache miss/invalid 只返回对应 bootstrap handoff，不自动进入 authoring，也不猜测最近的 template instance。
-- 只消费显式 ready 的 `template_instance_id`，materialize fresh source/destination working bundle，启动一个 scenario-scoped MCP，使用 Create + Writes + Deletes 的最小静态 policy；不启用 Permanent Delete 或 Raw XML。
+- `included_in_all = False`；`--use-cache` 的 miss/invalid 返回 `interactive_cache_miss` 并提示移除该选项，不自动进入 authoring，也不猜测最近的 template instance。
+- Fresh 自动消费刚发布的 ready instance；cache 路径消费显式或唯一 ready、mutation-eligible 的 `template_instance_id`，materialize fresh source/destination working bundle，启动一个 scenario-scoped MCP，使用 Create + Writes + Deletes 的最小静态 policy；不启用 Permanent Delete 或 Raw XML。
 - 对 exact source Page 调用一次公开 `move_page`，且不传 `destination_title`，以验证默认标题与代表性真实内容一并保真。首个验收 case 固定 `include_subpages=false` 且 source 为叶子 Page，从而把本 TODO 的核心范围锁定在 Page content/title lossless gate；子页范围行为继续由 UT-010 的既有 `move-page` 场景覆盖，不用复杂拓扑掩盖 comparator 问题。
 - mutation 前保存 content-free source contract；响应中保存完整 Copy report、逐 Page tier/check、issue code、target identity 和 source deletion gate。场景可在失败后对仍存在的 source/target 做有界只读诊断，但不得再次调用 mutation。
 - `lossless=false` 或 `copy_contract_satisfied=false` 时必须断言 source 仍 active、target 明确标为未验证、场景非零退出并默认保留 working evidence；用户可用 `--keep-worksite` 保持 OneNote 现场打开。
@@ -120,9 +122,9 @@ exact-ID confirmation + bounded source plan
 
 ## 自动化合同
 
-- Registry、dry-run catalog、policy 和 help 固定 bootstrap/consumer 配对、`included_in_all=false`、explicit instance、双 role、最小 gate 与 human-only 边界；
+- Registry、dry-run catalog、policy 和 help 固定 unified fresh/cache 入口、`included_in_all=false`、显式或唯一 ready instance、双 role、最小 gate 与 human-only 边界；
 - bootstrap 覆盖 confirmation、EOF/timeout/cancel、authoring-zone 越界、不稳定 source、unknown/incomplete projection、ready/evidence-only、发布前 close 和 immutable cache；
-- consumer 覆盖 cache miss/invalid、错误 instance、一次 Move 调用、失败后零第二次 mutation、source untouched、target/evidence 保留、成功时 verified Copy 后才非永久删源；
+- cache 路径覆盖 miss/invalid/歧义/错误 instance；scenario 覆盖一次 Move 调用、失败后零第二次 mutation、source untouched、target/evidence 保留、成功时 verified Copy 后才非永久删源；
 - comparator 使用保存的最小去敏 fixture 或构造样本覆盖观察到的规范化正向分支，以及文本、style/link、List/Tag、表格、Outline、对象和 binary 丢失负向分支；
 - 响应和 manual evidence 冻结 `verification_tier`、`acceptance_checks`、checks、projection completeness、issue codes、`lossless`、`verified`、`copy_contract_satisfied` 与 deletion decision，不泄露 Page content；
 - 聚焦纯测试通过后运行完整 `.venv\Scripts\python.exe -m pytest -q`，并运行两个新命令及受影响 Copy/Move 命令的 `--dry-run --json`。自动化不得启动 OneNote 或执行真实 mutation。
@@ -131,8 +133,8 @@ exact-ID confirmation + bounded source plan
 
 真实验收只能由用户本人前台完成：
 
-1. 运行专用 bootstrap，在 exact disposable Canvas 中建立代表性真实内容并发布一个 ready instance；
-2. 运行 `interactive-move-page-content --use-cache --template-instance-id ... --keep-worksite`，确认其只调用一次公开 Move；
+1. 运行 `interactive-move-page-content` fresh 路径，在 exact disposable Canvas 中建立代表性真实内容、发布 ready instance，并由同一 run 执行一次公开 Move；
+2. 再运行 `interactive-move-page-content --use-cache --template-instance-id ... --keep-worksite`（只有一个 ready instance 时可省略 ID），确认 cache 路径跳过 bootstrap 且仍只调用一次公开 Move；
 3. 若首次结果为 `copy_only`，保留 source、target 和 content-free mismatch evidence，完成根因修复后从同一 immutable template materialize 新 working bundle复测；
 4. 最终 run 必须报告 `verified=true`、`lossless=true`、`copy_contract_satisfied=true`，随后才有 `source_deleted_nonpermanently=true`；用户检查目标 Page 后提交 run-bound ACCEPT；
 5. 记录 Office/OneNote 版本、代码 commit、template fingerprint/instance、场景状态和 lifecycle，结论只覆盖该代表性 fixture 与环境，不外推为所有未知 Page 能力。

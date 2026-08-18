@@ -2,10 +2,8 @@ from .interactive import MediaFileInteractiveFixtureRecipe
 
 
 class MediaFileRecipe(MediaFileInteractiveFixtureRecipe):
-    bootstrap_scenario_name = "bootstrap-media-file-fixture"
-
     def __init__(self) -> None:
-        super().__init__(self.bootstrap_scenario_name)
+        super().__init__("interactive-copy-media-file")
 
 
 RECIPE = MediaFileRecipe()

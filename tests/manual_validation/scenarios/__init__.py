@@ -9,12 +9,17 @@ from typing import Any
 from ..runtime import RunnerFailure, RuntimeOptions
 from ..progress import RunProgressReporter
 from ..path_budget import (
+    MAX_ONENOTE_OPEN_PATH_UNITS,
     MAX_RUN_EVIDENCE_LEAF_UNITS,
+    MAX_WORKING_NAME_UNITS,
     fingerprint_disk_key,
     instance_location_from_id,
     managed_absolute,
+    preflight_path,
     preflight_paths,
     validate_working_name,
+    validate_onenote_open_path,
+    windows_path_units,
 )
 from ..run_identity import new_run_identity, validation_notebook_names
 
@@ -42,15 +47,8 @@ from .onenote_convergence import OneNoteConvergenceScenario
 from .search_all_open_notebooks import SearchAllOpenNotebooksScenario
 from .query import QueryScenario
 from .hierarchy_navigation import HierarchyNavigationScenario
-from .bootstrap_inserted_file_fixture import BootstrapInsertedFileFixtureScenario
-from .bootstrap_ink_drawing_fixture import BootstrapInkDrawingFixtureScenario
-from .bootstrap_media_file_fixture import BootstrapMediaFileFixtureScenario
-from .bootstrap_shape_fixture import BootstrapShapeFixtureScenario
-from .bootstrap_inline_equation_fixture import BootstrapInlineEquationFixtureScenario
-from .bootstrap_user_authored_fixture import BootstrapUserAuthoredFixtureScenario
-from .bootstrap_move_page_content_fixture import BootstrapMovePageContentFixtureScenario
 from .cache_invalidation import CacheInvalidationScenario
-from .user_authored_fixture_consumer import UserAuthoredFixtureConsumerScenario
+from .interactive_user_authored_fixture import InteractiveUserAuthoredFixtureScenario
 from .interactive_copy_inserted_file import InteractiveCopyInsertedFileScenario
 from .interactive_copy_ink_drawing import InteractiveCopyInkDrawingScenario
 from .interactive_copy_media_file import InteractiveCopyMediaFileScenario
@@ -68,6 +66,23 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
     args.scenario = args.command
     scenario = SCENARIO_REGISTRY.get(args.scenario)
     identity = new_run_identity()
+    run_dir = args.run_dir or Path(".local-validation") / f"run-{identity.safe_timestamp}"
+    run_root = managed_absolute(run_dir)
+    notebook_root = run_root / "notebooks"
+    preflight_path(
+        run_root,
+        phase="run_identity_preflight",
+        target_kind="run_root",
+    )
+    open_name_budget = min(
+        MAX_WORKING_NAME_UNITS,
+        MAX_ONENOTE_OPEN_PATH_UNITS - windows_path_units(notebook_root) - 1,
+    )
+    if open_name_budget < 12:
+        validate_onenote_open_path(
+            notebook_root / ("x" * 12),
+            phase="run_identity_preflight",
+        )
     notebook_label = getattr(args, "notebook_label", None)
     legacy_label = getattr(args, "notebook_name", None)
     if notebook_label is not None and legacy_label is not None:
@@ -81,6 +96,7 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
             roles,
             cached=False,
             label=selected_label,
+            max_units=open_name_budget,
         )
         cached_names = validation_notebook_names(
             args.scenario,
@@ -88,6 +104,7 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
             roles,
             cached=True,
             label=selected_label,
+            max_units=open_name_budget,
         )
     except ValueError as exc:
         raise RunnerFailure(str(exc)) from exc
@@ -96,7 +113,6 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
     args.fresh_notebook_names = fresh_names
     args.cached_notebook_names = cached_names
     args.notebook_name = fresh_names["source"]
-    run_dir = args.run_dir or Path(".local-validation") / f"run-{identity.safe_timestamp}"
     args.run_dir = run_dir
     if args.timeout < 1:
         raise RunnerFailure("--timeout must be at least 1 second.")
@@ -115,7 +131,6 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
         verbosity=str(getattr(args, "verbosity", "normal")),
         progress=progress,
     )
-    run_root = managed_absolute(run_dir)
     budget_paths: list[tuple[Path, str, str | None]] = [
         (run_root, "run_root", None),
     ]
@@ -155,10 +170,13 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
         )
     for role, name in cached_names.items():
         validate_working_name(name)
+        validate_onenote_open_path(run_root / "notebooks" / name)
         budget_paths.append(
             (run_root / "notebooks" / name, "working_copy", None)
         )
     for name in fresh_names.values():
+        validate_working_name(name)
+        validate_onenote_open_path(run_root / "notebooks" / name)
         budget_paths.append(
             (run_root / "notebooks" / name, "run_notebook_root", None)
         )
@@ -209,15 +227,8 @@ __all__ = [
     "SearchAllOpenNotebooksScenario",
     "QueryScenario",
     "HierarchyNavigationScenario",
-    "BootstrapInsertedFileFixtureScenario",
-    "BootstrapInkDrawingFixtureScenario",
-    "BootstrapMediaFileFixtureScenario",
-    "BootstrapShapeFixtureScenario",
-    "BootstrapInlineEquationFixtureScenario",
-    "BootstrapUserAuthoredFixtureScenario",
-    "BootstrapMovePageContentFixtureScenario",
     "CacheInvalidationScenario",
-    "UserAuthoredFixtureConsumerScenario",
+    "InteractiveUserAuthoredFixtureScenario",
     "InteractiveCopyInsertedFileScenario",
     "InteractiveCopyInkDrawingScenario",
     "InteractiveCopyMediaFileScenario",

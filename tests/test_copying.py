@@ -15,7 +15,15 @@ from local_onenote_mcp.page import (
     semantic_content_comparison,
     transform_page_for_copy,
 )
-from local_onenote_mcp.services import PartialFailure
+from local_onenote_mcp.services import (
+    PageMixedContentReadbackMismatch,
+    PageReadbackMismatch,
+    PageRichTextReadbackMismatch,
+    PageTableReadbackMismatch,
+    PageUnknownContentReadbackMismatch,
+    PartialFailure,
+    page_readback_mismatch_error,
+)
 from local_onenote_mcp.services.pages import stable_page_content_digest
 from local_onenote_mcp.tools.copying import copy_page
 from local_onenote_mcp.tools.responses import caught
@@ -1241,6 +1249,52 @@ def test_semantic_content_effective_span_projection_still_rejects_style_loss():
     assert result["equivalent"] is False
 
 
+def test_semantic_content_accepts_whitespace_moved_between_formatted_runs():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Outline><one:OEChildren><one:OE><one:T><![CDATA[
+      <strong>Bold </strong><em>Italic</em>
+    ]]></one:T></one:OE></one:OEChildren></one:Outline></one:Page>"""
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        "<strong>Bold </strong><em>Italic</em>",
+        "<strong>Bold</strong><em> Italic</em>",
+    )
+
+    result = page_equivalence(
+        source,
+        target,
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["checks"]["visible_text"] is True
+    assert result["semantic_content_comparison"]["checks"][
+        "rich_list_tag_table_outline"
+    ] is True
+    assert result["equivalent"] is True
+
+
+def test_semantic_content_rejects_non_whitespace_moved_between_formatted_runs():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Outline><one:OEChildren><one:OE><one:T><![CDATA[
+      <strong>Bold </strong><em>Italic</em>
+    ]]></one:T></one:OE></one:OEChildren></one:Outline></one:Page>"""
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        "<strong>Bold </strong><em>Italic</em>",
+        "<strong>Bold I</strong><em>talic</em>",
+    )
+
+    result = page_equivalence(
+        source,
+        target,
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["checks"]["visible_text"] is True
+    assert result["semantic_content_comparison"]["checks"][
+        "rich_list_tag_table_outline"
+    ] is False
+    assert result["equivalent"] is False
+
+
 def test_semantic_content_mismatch_evidence_is_bounded_and_content_free():
     source = page_xml(
         "source",
@@ -1581,6 +1635,83 @@ def test_semantic_failures_report_multiple_types_in_stable_content_free_order():
         }
     ) == len(failures)
     assert all(failure["content_exposed"] is False for failure in failures)
+
+
+@pytest.mark.parametrize(
+    ("content_type", "exception_name", "readback_error_code"),
+    [
+        ("PageTitle", "PageTitleReadbackMismatch", "page_title_readback_mismatch"),
+        ("RichText", "PageRichTextReadbackMismatch", "page_rich_text_readback_mismatch"),
+        ("List", "PageListReadbackMismatch", "page_list_readback_mismatch"),
+        ("Tag", "PageTagReadbackMismatch", "page_tag_readback_mismatch"),
+        ("Table", "PageTableReadbackMismatch", "page_table_readback_mismatch"),
+        ("Outline", "PageOutlineReadbackMismatch", "page_outline_readback_mismatch"),
+        ("Image", "PageImageReadbackMismatch", "page_image_readback_mismatch"),
+        (
+            "InsertedFile",
+            "PageInsertedFileReadbackMismatch",
+            "page_inserted_file_readback_mismatch",
+        ),
+        (
+            "FileAttachment",
+            "PageFileAttachmentReadbackMismatch",
+            "page_file_attachment_readback_mismatch",
+        ),
+        (
+            "MediaFile",
+            "PageMediaFileReadbackMismatch",
+            "page_media_file_readback_mismatch",
+        ),
+        (
+            "DisplayEquation",
+            "PageDisplayEquationReadbackMismatch",
+            "page_display_equation_readback_mismatch",
+        ),
+        (
+            "InkDrawing",
+            "PageInkDrawingReadbackMismatch",
+            "page_ink_drawing_readback_mismatch",
+        ),
+        ("UIShape", "PageUIShapeReadbackMismatch", "page_ui_shape_readback_mismatch"),
+        (
+            "Unknown",
+            "PageUnknownContentReadbackMismatch",
+            "page_unknown_content_readback_mismatch",
+        ),
+    ],
+)
+def test_page_readback_mismatch_factory_raises_typed_content_category(
+    content_type,
+    exception_name,
+    readback_error_code,
+):
+    exc = page_readback_mismatch_error(
+        "Page read-back mismatch.",
+        [content_type],
+        partial=True,
+    )
+    envelope = caught(exc)
+
+    assert isinstance(exc, PageReadbackMismatch)
+    assert type(exc).__name__ == exception_name
+    assert exc.details["failed_content_object_types"] == [content_type]
+    assert exc.details["readback_content_category"] == content_type
+    assert exc.details["readback_error_code"] == readback_error_code
+    assert exc.details["content_exposed"] is False
+    assert envelope["error"]["code"] == "partial_failure"
+    assert envelope["error"]["details"]["error_type"] == exception_name
+
+
+def test_page_readback_mismatch_factory_types_mixed_and_unclassified_failures():
+    mixed = page_readback_mismatch_error("mixed", ["Table", "RichText", "Table"])
+    unclassified = page_readback_mismatch_error("unclassified", [])
+
+    assert isinstance(mixed, PageMixedContentReadbackMismatch)
+    assert mixed.details["failed_content_object_types"] == ["RichText", "Table"]
+    assert mixed.details["readback_content_category"] == "Mixed"
+    assert isinstance(unclassified, PageUnknownContentReadbackMismatch)
+    assert unclassified.details["failed_content_object_types"] == ["Unknown"]
+    assert unclassified.details["readback_content_category"] == "Unknown"
 
 
 def test_strict_binary_failure_identifies_verified_non_image_object_type():
@@ -2539,6 +2670,54 @@ def test_copy_report_exposes_content_free_semantic_stage_diagnostics(monkeypatch
 
 
 @pytest.mark.write_contract
+def test_copy_raises_typed_exception_for_page_readback_content_category(monkeypatch):
+    install_recursive_execute_fakes(
+        monkeypatch,
+        source_page_body="<strong>Body</strong>",
+        include_destination_section=True,
+    )
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.copying.page_equivalence",
+        lambda *_args, verification_tier, **_kwargs: {
+            "equivalent": False,
+            "verification_tier": verification_tier,
+            "checks": {"semantic_content": False},
+            "failed_content_object_types": ["Table"],
+            "content_object_failures": [
+                {
+                    "code": "table_cell_content_mismatch",
+                    "content_object_type": "Table",
+                    "path": "$.outlines[0].table",
+                    "content_exposed": False,
+                }
+            ],
+            "content_object_failure_summary": {
+                "limit": 24,
+                "reported": 1,
+                "truncated": False,
+                "total": 1,
+            },
+        },
+    )
+    plan = server.services.copying._build_plan(
+        "source-page",
+        "destination-section",
+    )
+
+    with pytest.raises(PageTableReadbackMismatch) as caught_error:
+        server.services.copying._execute_copy(plan)
+
+    assert caught_error.value.details["outcome"] == "copy_unverified"
+    assert caught_error.value.details["failed_step"] == "verify_copy"
+    assert caught_error.value.details["source_untouched"] is True
+    assert caught_error.value.details["source_deleted"] is False
+    assert caught_error.value.details["readback_content_category"] == "Table"
+    assert caught_error.value.details["readback_error_code"] == (
+        "page_table_readback_mismatch"
+    )
+
+
+@pytest.mark.write_contract
 def test_title_readback_stages_apply_to_non_semantic_content_tier(monkeypatch):
     source_title = "Topic / Subtopic\\:  %~界"
     install_recursive_execute_fakes(
@@ -3460,12 +3639,14 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
         server.services.copying,
         "_execute_copy",
         lambda value: (_ for _ in ()).throw(
-            PartialFailure(
+            PageRichTextReadbackMismatch(
                 "readback failed",
                 partial=True,
                 outcome="copy_unverified",
                 source_untouched=True,
                 source_deleted=False,
+                failed_content_object_types=["RichText"],
+                readback_content_category="RichText",
                 copy_report=report,
                 created_ids=["new-parent"],
                 failed_step="verify_copy",
@@ -3473,7 +3654,7 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
         ),
     )
 
-    with pytest.raises(PartialFailure) as caught:
+    with pytest.raises(PageRichTextReadbackMismatch) as caught:
         server.services.copying.move_page(
             "parent",
             "destination-section",
@@ -3487,6 +3668,9 @@ def test_move_page_normalizes_copy_readback_failure_to_copy_only(monkeypatch):
     assert caught.value.details["source_deleted"] is False
     assert caught.value.details["copy_report"] == report
     assert caught.value.details["created_ids"] == ["new-parent"]
+    assert caught.value.details["readback_error_code"] == (
+        "page_rich_text_readback_mismatch"
+    )
 
 
 @pytest.mark.write_contract

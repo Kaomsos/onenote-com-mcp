@@ -4,7 +4,9 @@
 > 状态：已完成
 > 优先级：P2
 > 类型：验证架构 / Fixture 性能与本地缓存安全
-> 更新日期：2026-08-12
+> 更新日期：2026-08-18
+
+> 兼容说明（2026-08-18）：本 TODO 已完成，正文保留的 `bootstrap_scenario_name`、独立 bootstrap/consumer、`interactive_bootstrap_required` 与 cache-only consumer 均是 TODO 041 之前的设计和真实证据术语，不是当前操作说明。当前 Interactive/UserAuthored 公开入口统一为 `interactive-<operation>`；fresh 路径内含 bootstrap，`--use-cache` miss 返回 `interactive_cache_miss` 并提示用同一命令移除 `--use-cache`。当前操作合同以 [Manual Validation Runner](../../tests/manual_validation/README.md) 和[缓存 Fixture 驱动的操作验证推荐实践](../dev/cached_fixture_operation_validation.md)为准。
 
 ## 实施进展（2026-08-11）
 
@@ -181,7 +183,7 @@ create fresh disposable Notebook bundle for all declared roles
 - Bootstrap 失败、超时、EOF、用户取消、验证失败或任一 role 无法精确关闭时，不得发布 `ready` entry；保留 disposable bundle、lease、checkpoint 和人工接管证据。
 - `--keep-worksite` 可以保留 bootstrap 现场用于诊断，但保留打开的 Notebook 不能同时发布为模板；结果必须明确为 `template_not_published`。
 - Bootstrap scenario 的 dry-run 只展示 role、checkpoint、交互、验证、close、stage 和 publish 计划，不创建或读取 cache、不等待 stdin、不启动 MCP 或访问 OneNote。
-- Bootstrap scenario 本身就是交互 Recipe 的真实发布验收：发布后必须立即从 cache master 创建第二组全新工作副本并重新执行完整 live validation，不能把最初供用户编辑的 Notebook 当作 cache-hit 证据。TODO 004 使用固定的 `bootstrap-ink-drawing-fixture`、`bootstrap-shape-fixture`、`bootstrap-media-file-fixture`；三者均已有精确 detector 和 cache-only Copy consumer。实际名称不能实现为接受任意 recipe 名的通用命令。
+- Interactive fresh 路径（TODO 041 起统一为 `interactive-<operation>` 单入口的 bootstrap 阶段）本身就是交互 Recipe 的真实发布验收：发布后必须立即从 cache master 创建第二组全新工作副本并重新执行完整 live validation，不能把最初供用户编辑的 Notebook 当作 cache-hit 证据。TODO 004 使用固定的 `interactive-copy-ink-drawing`、`interactive-copy-ui-shape`、`interactive-copy-media-file` fresh 路径；三者均已有精确 detector 与 `--use-cache` Copy 验证。实际名称不能实现为接受任意 recipe 名的通用命令。
 - 真实 cold bootstrap、发布后的首次 validated materialization 和强制失效后的重新 bootstrap 都只能由用户本人显式运行并确认。
 
 ### 3. 本地 Bundle Cache Index 与 Lease
@@ -436,13 +438,13 @@ create fresh disposable Notebook bundle for all declared roles
 
 当前代码与真实证据进度（更新至 2026-08-12）：`interactive-copy-ink-drawing`、`interactive-copy-ui-shape`、`interactive-copy-media-file` 与 `interactive-copy-inserted-file` 均作为 cache-only、Copy-only consumer 注册；只启用 Writes + Experimental Copy，不含 Delete/Move/Permanent Delete/Raw XML。InkDrawing 的最终 run `run-2026-08-11-21-53-24` 通过 `semantic_ink_drawing`，仅对 Position/Size 使用 `1e-4` 容差；UIShape 的 `run-2026-08-11-22-23-29` 通过 `semantic_ui_shape`、`ShapeInfo`/可选 `AnchorPoint` 完整比较和 `0.02` 容差；录像 MediaFile 的 v8 bootstrap `run-2026-08-11-23-21-38` 与双 case consumer `run-2026-08-11-23-23-16` 通过 strict canonical、materialized live validation、同/跨 Section Copy 与人工播放 verdict。用户随后人工删除源 Section并确认两个录像副本仍有效。InsertedFile 的 `run-2026-08-12-12-34-58` 通过 strict canonical、detector/comparator 和用户打开目标附件后的 run-bound verdict。四类均已通过静态代码变更进入生产 `VALIDATED_COPY_CONTENT_TYPES`；未知节点、越界几何和未验证类型仍 fail closed。
 
-[TODO 004](004_interactive_copy_move_content_fidelity_validation.md) 的三个目标 Recipe 子类都必须分别获得用户 bootstrap 和 Copy 证据，不能只运行一个混合场景后把全部类型记为通过。目标具名 bootstrap Scenario 至少包括：
+[TODO 004](004_interactive_copy_move_content_fidelity_validation.md) 的三个目标 Recipe 子类都必须分别获得用户 fresh authoring 和 Copy 证据，不能只运行一个混合场景后把全部类型记为通过。TODO 041 起目标统一为下列 `interactive-<operation>` fresh 路径（历史上曾以独立 bootstrap 命令发布）：
 
 ```text
-bootstrap-ink-drawing-fixture
-bootstrap-shape-fixture
-bootstrap-media-file-fixture
-bootstrap-inserted-file-fixture
+interactive-copy-ink-drawing
+interactive-copy-ui-shape
+interactive-copy-media-file
+interactive-copy-inserted-file
 ```
 
 FileAttachment/MeetingInfo/Embedded Spreadsheet 不得重新加入注册表或 catalog；排除原因只记录在 [`lesson/copy_content_type_exclusions.md`](../lesson/copy_content_type_exclusions.md)。Embedded Spreadsheet 在观察到真实公开表示前只作为产品能力类别记录，不能凭名称创建 detector。

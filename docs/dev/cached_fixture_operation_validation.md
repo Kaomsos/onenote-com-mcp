@@ -36,7 +36,7 @@ Scenario/Recipe/cache/lifecycle 的设计原理与架构不变量以[Manual Vali
 优先为每个 Scenario 定义显式 `RecipeBase`，以 recipe version、角色集合、fixture 参数、manifest keys 和 validation conditions 形成稳定 fingerprint。
 
 - Programmatic recipe 的 cold path 必须先在 fresh disposable bundle 上完成 live validation，精确关闭后才能 opaque-copy 并发布 immutable template。
-- Interactive/UserAuthored recipe 必须由固定、human-gated bootstrap Scenario 创建。用户编辑后先运行 detector 和边界 validator，再决定发布 `ready` 或仅保留 `evidence_only`。
+- Interactive/UserAuthored recipe 由统一 `interactive-<operation>` 入口承载。Fresh 路径在同一次 run 的 bootstrap 阶段完成 human-gated authoring；用户编辑后先运行 detector 和边界 validator，再决定发布 `ready` 或仅保留 `evidence_only`。`--use-cache` 路径跳过 bootstrap，只 materialize 已有 ready template。
 - Cache hit 必须 materialize 到本次 run 独有的 working paths，打开完整 hierarchy，记录 old→live ID 映射，并重新执行 live Recipe validation。
 - Cache template 永远不能由 OneNote 打开；运行中的 mutation 只能触及 working copy。
 - Recipe 内容、detector、结构门或 comparator 的输入合同变化时提升 recipe version，使旧 entry 不会命中新合同。
@@ -138,7 +138,7 @@ AND human verdict accepted（当该场景要求人工判断时）
 
 | 停止点 | 结论 | 处置 |
 | --- | --- | --- |
-| Cache miss，且 recipe 只能人工创建 | `interactive_bootstrap_required` | 提示固定 bootstrap Scenario；不得自动创作或猜测实例。 |
+| Interactive cache miss，且 recipe 只能人工创建 | `interactive_cache_miss` | 提示使用同一 `interactive-<operation>` 命令并移除 `--use-cache`；不得在 cache 路径隐式进入 authoring 或猜测实例。 |
 | Materialization/open/ID rebind 失败 | fixture 尚不可用于操作 | mutation 前停止，保留 working bundle 和 lease，默认精确关闭 Notebook；不得写回 template。 |
 | Live Recipe validation 失败 | cached fixture 不满足当前合同 | exact entry quarantine/invalid；保留失败现场，不以人工观察放行。 |
 | Operation partial/uncertain failure | 操作结果未知或不完整 | 不重试 mutation；保存 created/allocated/resolved IDs 和人工接管说明。 |
@@ -148,7 +148,7 @@ AND human verdict accepted（当该场景要求人工判断时）
 
 ## Windows 路径预算与 pytest 临时根
 
-Fixture cache、publish/materialize staging、working copy、inventory/artifact、最长 64 UTF-16 units 的 run evidence leaf 和原子临时文件统一在副作用前执行 240 UTF-16 code units preflight。磁盘使用 32-hex fingerprint key、typed `p`/`a/<hex>` instance 与 16-hex staging nonce；完整 identity 保存在 metadata/evidence。Opaque tree 逐层先预算再进入，避免在检查前暴露裸 `WinError 3`；authored materialization 会以 live projection 重新核对完整 64-hex digest。Runtime 使用普通绝对 Windows 路径，不依赖 `LongPathsEnabled`，也不使用 `\\?\` extended-length path。
+Fixture cache、publish/materialize staging、working copy、inventory/artifact、最长 64 UTF-16 units 的 run evidence leaf 和原子临时文件统一在副作用前执行 240 UTF-16 code units preflight。磁盘使用 32-hex fingerprint key、typed `p`/`a/<hex>` instance 与 16-hex staging nonce；完整 identity 保存在 metadata/evidence。Opaque tree 逐层先预算再进入，避免在检查前暴露裸 `WinError 3`；authored materialization 会以 live projection 重新核对完整 64-hex materialization-stable digest。该 digest 只可忽略已有真实证据边界内，OneNote 打开 opaque copy 时对富文本展示 span/style 及 Table/Column/Row/Cell 展示属性的重序列化；仍保留可见文本、表格拓扑、List/Tag、对象计数与 binary hash。Template inventory、typed rebind、live validation 与 operation 的严格 content fidelity gate 仍独立 fail closed。Runtime 使用普通绝对 Windows 路径，不依赖 `LongPathsEnabled`，也不使用 `\\?\` extended-length path。
 
 深层 cache/maintenance 纯测试通过 `tmp_path_factory.mktemp("fc")` 自动取得进程内唯一的短根，并在需要 canonical 形状时使用 `<short-root>/w/.local-validation/fixture-cache`。`Open Notebook.onetoc2`、`Section.one` 等 payload 名称仍保持真实形状。
 
@@ -159,7 +159,7 @@ Fixture cache、publish/materialize staging、working copy、inventory/artifact�
 开发时推荐按以下顺序提交：
 
 1. 定义 Recipe/fixture invariant，并决定 programmatic build 还是 human bootstrap；
-2. 定义固定 consumer Scenario、静态 policy、tool allowlist、budget 和 `included_in_all=False` 默认值；
+2. 定义固定 operation Scenario、静态 policy、tool allowlist、budget 和 `included_in_all=False` 默认值；Interactive/UserAuthored 使用同一 Scenario 的 fresh/cache 两条路径；
 3. 定义 before/plan/after 与 operation response evidence；
 4. 先实现自动 comparator 和负向合同，再接 mutation；
 5. 若真实 UI 行为无法由 COM 完整证明，增加后置、run-bound 的 ACCEPT/REJECT verdict；

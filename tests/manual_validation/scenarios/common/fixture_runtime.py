@@ -58,6 +58,15 @@ MATERIALIZED_STRUCTURE_STABLE_OBSERVATIONS = 2
 MATERIALIZED_STRUCTURE_OBSERVATION_DELAY_SECONDS = 0.75
 
 
+def requires_interactive_scaffold(recipe, options: RuntimeOptions) -> bool:
+    """True when a human-bootstrap recipe must build scaffold instead of materializing."""
+
+    return (
+        recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED
+        and not options.use_cache
+    )
+
+
 def _refresh_materialized_current_contract(
     manifest: dict[str, Any],
     spec: ScenarioSpec,
@@ -82,12 +91,24 @@ def _assert_authored_cache_identity(hit: CacheHit, frozen: Any) -> None:
     recorded_digest = (
         location.get("projection_digest") if isinstance(location, Mapping) else None
     )
+    mismatches: list[str] = []
+    if frozen.template_instance_id != hit.template_instance_id:
+        mismatches.append("template_instance_id")
+    if recorded_digest != frozen.projection_digest:
+        mismatches.append("projection_digest")
+    if hit.entry.get("state") != frozen.state:
+        mismatches.append("state")
+    if hit.entry.get("mutation_eligible") is not frozen.mutation_eligible:
+        mismatches.append("mutation_eligible")
     if (
-        frozen.template_instance_id != hit.template_instance_id
-        or recorded_digest != frozen.projection_digest
+        hit.entry.get("move_source_deletion_allowed")
+        is not frozen.move_source_deletion_allowed
     ):
+        mismatches.append("move_source_deletion_allowed")
+    if mismatches:
         raise InvariantFailure(
-            "User-authored working bundle differs from the cache entry's full frozen identity."
+            "User-authored working bundle differs from the cache entry's full frozen "
+            f"identity: {', '.join(mismatches)}."
         )
 
 
@@ -314,10 +335,7 @@ async def prepare_fixture(
         recorder=recorder,
     )
     try:
-        if (
-            recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED
-            and getattr(recipe, "bootstrap_scenario_name", None) == scenario.name
-        ):
+        if requires_interactive_scaffold(recipe, options):
             build = await recipe.build_scaffold(context)
         else:
             build = await recipe.build(context)
@@ -471,10 +489,7 @@ async def prepare_fixture_bundle(
                 notebooks=notebooks,
                 notebook_paths=notebook_paths,
             )
-            if (
-                recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED
-                and getattr(recipe, "bootstrap_scenario_name", None) == scenario.name
-            ):
+            if requires_interactive_scaffold(recipe, options):
                 build = await recipe.build_scaffold(context)
             else:
                 build = await recipe.build(context)
@@ -1498,6 +1513,11 @@ async def prepare_materialized_fixture_bundle(
             "decision": "validated_hit",
             "fingerprint": hit.fingerprint,
             "template_instance_id": hit.template_instance_id,
+            "template_state": hit.entry.get("state"),
+            "mutation_eligible": hit.entry.get("mutation_eligible"),
+            "move_source_deletion_allowed": hit.entry.get(
+                "move_source_deletion_allowed"
+            ),
             "roles": {
                 role: {
                     "template_path": str(materialized.template_paths[role]),

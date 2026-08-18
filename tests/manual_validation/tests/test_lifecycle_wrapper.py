@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from tests.manual_validation.lifecycle import NotebookLifecycleWrapper
-from tests.manual_validation.runtime import EXIT_MCP, RestoreFailure, RunnerFailure
+from tests.manual_validation.runtime import (
+    EXIT_MCP,
+    PathBudgetFailure,
+    RestoreFailure,
+    RunnerFailure,
+)
 from tests.manual_validation.test_utils import read_json, write_json
 
 
@@ -628,6 +633,17 @@ def test_create_writes_exact_id_name_path_lease(tmp_path) -> None:
     assert lease["state"] == "active"
     assert bridge.calls[0][0] == "open_hierarchy"
     assert read_json(wrapper.lease_path) == lease
+
+
+def test_create_rejects_overlong_working_name_before_com(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+
+    with pytest.raises(PathBudgetFailure) as exc_info:
+        wrapper.create_fresh_notebook("x" * 65)
+
+    assert exc_info.value.target_kind == "working_name"
+    assert bridge.calls == []
+    assert not wrapper.lease_path.exists()
 
 
 def test_close_is_bound_to_exact_lease_and_preserves_files(tmp_path) -> None:

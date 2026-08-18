@@ -1,7 +1,7 @@
 # 041：统一 Interactive Bootstrap 与 Scenario 验证流程
 
 > ID：041
-> 状态：待办
+> 状态：已完成
 > 优先级：P1
 > 类型：Manual Validation / Interactive Fixture / CLI UX / Lifecycle
 > 更新日期：2026-08-18
@@ -120,16 +120,54 @@ notebook / cache selection
 - 不在 authored Notebook bundle 上直接执行测试案例，也不省略 publish 后重新打开 working copy；
 - 不把 Interactive 场景加入 `all`，不引入任意路径、用户业务 Notebook 或 raw XML 输入。
 
+## 实现证据（2026-08-18）
+
+- 七个 `bootstrap-<operation>-fixture` 公开命令已从 registry、parser 与 `scenarios/__init__.py` 移除；argparse 对旧名报未知命令。
+- 七个 `interactive-<operation>` 统一入口已注册，`user-authored-fixture-consumer` 更名为 `interactive-user-authored-fixture`。
+- Orchestrator fresh 六阶段 / cache 五阶段已落地；bootstrap 逻辑下沉为 `run_interactive_bootstrap_phase()` 内部组件。
+- 各 operation 的 bootstrap/consumer recipe 已合并为单一 recipe；dry-run catalog 与合同测试已同步。
+- Orchestrator 解析或发布的 authored instance 通过 materialized manifest 交给 scenario，不再从原始 CLI 参数二次选择；fresh 自动消费刚发布的 instance，cache 路径支持显式 ID 或唯一 ready 自动选择。
+- Authored cache entry 现在持久化并在 live identity gate 复核 `state`、`mutation_eligible` 与 `move_source_deletion_allowed`；`evidence_only` 结果保持 mutation-ineligible。UserAuthored recipe 为 v4；Move 因 materialization identity 修复升至 v11，旧 v10 fingerprint 确定性 miss。
+- 新增 ready/evidence-only 元数据、状态不一致、唯一/歧义选择、无显式 ID 的 UserAuthored/Move scenario 消费合同，以及 programmatic interactive bootstrap 的 null `template_instance` 发布回归合同。
+- Move Fresh 真实尝试 `run-2026-08-18-21-57-36` 与 `run-2026-08-18-22-06-02` 都在第一个 destination Notebook create 前以 OneNote `0x80042006` 失败；两处现场均没有 Notebook 目录内容或 lifecycle lease，未进入 bootstrap/fixture/Move。第一次仅把 working name 从 65 压到 62 units，完整路径仍从 154 只降到 151，因此第二次复现推翻了名称 64-unit 单因解释。对照历史 Fresh 双 Notebook 的 147-unit create 成功证据，以及 inserted-file existing working root 在 150 units 的 materialized open 成功后，当前合同保守采用 Notebook root COM create/open 的 147-unit 已验证安全上限，并按实际 run root 动态压缩 Fresh/Cache physical name；Move dry-run 现将四个规划 root 全部限制到不超过 147 units。
+- 用户真实 Fresh `run-2026-08-18-22-30-05` 已证明该路径修复：destination/source create、bootstrap、template publication、opaque materialization、typed rebind、双稳定与 scenario-before snapshot 均已通过。fixture 随后在 frozen identity gate 停止：同一页面的 RichText capability、object kind/count、标题与结构未变，但 OneNote 打开 working copy 时新增一个默认 `span lang`，导致旧 persistence digest 漂移。v9 最初仅忽略该语言标记；用户随后真实运行 `run-2026-08-18-22-40-20`，仍在同一 gate 停止，fresh/working 的 persistence 与 materialization digest 分别为 `c0e9…` / `9737…`，而 typed capability、object kind/count、标题、结构和 byte inventory 仍一致。这证明 OneNote 还会重序列化富文本展示 span/style。v10 的 materialization identity 因而保留可见富文本和结构化内容、忽略仅展示的富文本 span/style；template/working inventory、typed rebind、live validation 和后续 Move 的严格 fidelity gate 仍全部独立 fail closed。两次失败 run 都精确关闭 lease 并保留 working files/evidence；均不构成 Move 成功证据。
+- 用户真实 v10 Fresh `run-2026-08-18-22-46-50` 再次进入同一 frozen identity gate；增强诊断明确列出 `template_instance_id, projection_digest`，其中前者由后者前 24 hex 派生，并非第二个独立差异。Fresh/materialized 的 materialization digest 为 `65b798…` / `c58c2a…`；两侧 capability 均为 `List, Outline, RichText, Table`，对象均为 92 个且 kind/count 完全相同，Table/Row/Cell/OE 分别为 `1/6/18/66`，template/working pre-open inventory byte-for-byte 相同。富文本展示已在 v10 排除，当前含 Table 页面仍有差异，因此剩余漂移推断为 semantic projection 中保留的 Table/Column/Row/Cell 展示属性。v11 排除这些打开时可重算的属性，但继续冻结可见文本、列数、Row/Cell 拓扑、List/Tag、对象计数与 binary hash；真实 Move 仍使用原先严格 Copy-before-delete fidelity gate。该失败 run 精确关闭双 lease 并保留现场，不构成 Move 成功证据。
+- v11 materialization focused pure tests 已通过 `99 passed`；新增正向边界覆盖列宽/边框/底色重写，负向边界证明单元格正文或列拓扑变化仍改变 identity。Move v11 fresh/cache `--dry-run --json` 均通过并使用新 fingerprint `e2ca245f…fa241b3d`，分别保持六阶段（含零 stdin 的 checkpoint）与五阶段（无 bootstrap/checkpoint）计划。
+- 用户真实 v11 Fresh `run-2026-08-18-22-54-06` 已完整通过 bootstrap、template publication、post-publish materialization identity 与 fixture live validation；随后 `run-2026-08-18-22-57-06` 也从同一 ready instance 以 cache 五阶段越过 fixture。两次 Move 都确定性停在 `verify_copy`：目标 Page 已创建，source→transformed 语义投影全通过，transformed→target 仅有同一 RichText run 的两个文本分段 path（`rich_text[2][0]` / `[3][0]`）不匹配；title、完整 visible text、content objects、binary、projection completeness 均通过，源/目标的 `span=187`、`span@lang=5`、`span@style=182` 与 Table/Row/Cell/OE=`1/6/18/66` 也一致。证据将差异限定在格式 run 的文本边界，但 content-free 现场不暴露具体字符；生产 `semantic_content_v1` 因而只接受可证明不改变非空白字符格式的边界空白移动：空白 style 中性化后合并，完整文本序列及每个非空白字符的有效 style/link 仍精确比较。若真实差异涉及非空白字符跨 style 移动，后续 run 仍会 fail closed。两次 run 均保持 `copy_only/source_untouched/source_deleted=false`，目标留存、双 lease 精确关闭；它们不构成真实 Move 成功证据。该读回修复的相关生产/场景测试为 `266 passed`，manual-validation 纯合同为 `618 passed`，完整 pytest 为 `1405 passed`；同一 v11 ready template 可直接用于下一次 `--use-cache` 真实复测。
+- 用户随后确认 v11 Cache `run-2026-08-18-23-01-03` 真实通过：`decision=validated_hit`、`opened_template=false`，同一 ready instance materialize 后 `semantic_content_v1` 的 source→transformed 与 transformed→target 均通过，`copy_contract_satisfied=true`、`verified=true`、`lossless=true`、`outcome=moved`，源 Page 以非永久方式从 active hierarchy 移除。该次显式 keep 模式按契约保留双 Notebook 打开和 Move 现场供人工检查，并记录 `manual_cleanup_required=true`；没有删除 working files 或 template。
+- Page 回读失败合同在真实成功后继续加固：单一 content category 抛对应 `PageReadbackMismatch` 子类，多类别与未知类别分别抛 `PageMixedContentReadbackMismatch` / `PageUnknownContentReadbackMismatch`；Move 收敛为 `copy_only` 时保留子类、稳定 `readback_error_code` 和 content-free details，同时继续使用顶层 `partial_failure` 兼容响应并阻止删源。该加固的 `tests/test_copying.py` 为 `183 passed`，相邻 server/manual Move 回读合同为 `80 passed`，manual-validation 纯合同为 `618 passed`，完整 pytest 为 `1421 passed`。
+- 七个 fresh/cache `--dry-run --json` 均通过：fresh 为六运行阶段、八个声明式计划步骤并含 `interactive-checkpoint(stdin_read_performed=false)`、publish/materialize 与二次 live validation；cache 为五步且无 bootstrap/checkpoint。
+- 用户已确认 `interactive-copy-inserted-file` 的真实 Fresh/Cache 配对通过：Fresh `run-2026-08-18-21-51-01` 为 `cache_mode=fresh`、`decision=bootstrap_published`，发布后 materialization validation 通过；Cache `run-2026-08-18-21-52-57` 为 `cache_mode=use_cache`、`decision=validated_hit`。两次 run 均为 `status=passed`、`opened_template=false`、`production_verified=true`、`production_lossless=true`，使用不同的 working Notebook identity，并以 `closed_preserved` 完成 lifecycle。
+- 下列「完成定义」已由自动化合同、Interactive Copy Fresh/Cache 配对，以及 Interactive Move Fresh bootstrap/fixture 与最终 Cache lossless Move 的组合真实证据闭环。
+
+## 真实验收命令（已完成）
+
+以下命令只能由用户在 OneNote Desktop 已启动且 GUI 可见的交互式前台 PowerShell 中执行；本 TODO 所需验收已经完成，保留命令仅用于后续人工回归：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --use-cache
+```
+
+`--notebook-label` 是可选项；省略时使用 scenario 名称。若当前 fingerprint 恰好只有一个 ready instance，cache 命令可以省略 `--template-instance-id` 以使用唯一实例自动选择。若错误明确报告多个 ready instance，再使用 fresh 输出的精确 `authored-<24 hex>` ID 重试。为额外回归 bounded UserAuthored v4 的同一 handoff/eligibility 修复，可运行：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-user-authored-fixture --notebook-label todo-041-authored
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-user-authored-fixture --use-cache --notebook-label todo-041-authored-cache
+```
+
+只把用户确认的真实 run 结果写入完成证据；mock 和 dry-run 不能替代上述真实验收。
+
 ## 完成定义
 
-- [ ] 所有 UserAuthored / Interactive operation 只暴露统一的 `interactive-<operation>` 用户入口；
-- [ ] 不带 `--use-cache` 的一次命令完整串联 bootstrap、重新 materialize fixture 与 scenario；
-- [ ] 带 `--use-cache` 时确定性跳过 bootstrap，只消费匹配的 ready immutable template；
-- [ ] Progress、checkpoint、failure phase、report 与 lifecycle 统一呈现六阶段顺序，并正确归属用户确认；
-- [ ] 自动化覆盖 fresh/cache、成功/拒绝/超时/发布失败/rebind 失败/scenario 失败及 fail-closed 边界；
-- [ ] Manual Validation README、开发流程、help、dry-run catalog 与 AGENTS 安全约束同步；
-- [ ] 用户完成至少一项 Interactive Copy 和一项 Interactive Move 的 fresh/cache 真实验收并确认体验；
-- [ ] 聚焦测试、manual-validation 纯测试、完整 pytest 和相关 `--dry-run --json` 全部通过。
+- [x] 所有 UserAuthored / Interactive operation 只暴露统一的 `interactive-<operation>` 用户入口；
+- [x] 不带 `--use-cache` 的一次命令完整串联 bootstrap、重新 materialize fixture 与 scenario；
+- [x] 带 `--use-cache` 时确定性跳过 bootstrap，只消费匹配的 ready immutable template；
+- [x] Progress、checkpoint、failure phase、report 与 lifecycle 统一呈现六阶段顺序，并正确归属用户确认；
+- [x] 自动化覆盖 fresh/cache、成功/拒绝/超时/发布失败/rebind 失败/scenario 失败及 fail-closed 边界；
+- [x] Manual Validation README、开发流程、help、dry-run catalog 与 AGENTS 安全约束同步；
+- [x] 用户完成至少一项 Interactive Copy 和一项 Interactive Move 的 fresh/cache 真实验收并确认体验；
+- [x] 聚焦测试、manual-validation 纯测试、完整 pytest 和相关 `--dry-run --json` 全部通过。
 
 ## 关联
 
@@ -137,6 +175,6 @@ notebook / cache selection
 - [TODO 014](014_recipe_fixture_validation_and_local_notebook_cache.md)：immutable template cache 与隔离 working copy。
 - [TODO 020](020_user_authored_fixture_development_scaffold.md)：UserAuthored fixture 通用脚手架。
 - [TODO 026](026_manual_validation_progress_verbosity.md)：实时阶段进度与 verbosity 输出。
-- [TODO 039](039_interactive_real_page_move_lossless_validation.md)：当前双入口暴露实际体验问题的 Interactive Move 验证。
+- [TODO 039](039_interactive_real_page_move_lossless_validation.md)：历史双入口暴露实际体验问题的 Interactive Move 验证，现已由统一入口承接。
 - [Manual Validation Runner](../../tests/manual_validation/README.md)
 - [OneNote mutation 隔离验证流程](../dev/isolated_mutation_validation.md)

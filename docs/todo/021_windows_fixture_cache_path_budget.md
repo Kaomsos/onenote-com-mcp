@@ -4,13 +4,21 @@
 > 状态：已完成
 > 优先级：P3
 > 类型：Manual Validation / Windows 文件系统兼容性
-> 更新日期：2026-08-13
+> 更新日期：2026-08-18
 
 ## 决策摘要
 
 Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫的有界原子发布重试，但 cache fingerprint、template instance、staging、run 和 role-specific working 名称叠加后仍可能形成很深的物理路径。测试中已观察到较长 pytest 临时根会触发 `WinError 3`。这是独立于 `WinError 5/32` 锁竞争的路径预算问题，当前优先级较低，不属于原子发布修复范围。
 
-目标方案已经落地，权威当前合同见 [Windows Fixture Cache 路径配额设计](../design/windows_fixture_cache_path_budget.md)：所有受管绝对路径限制为 `240` 个 UTF-16 code units；完整 identity 保留在 metadata/evidence，磁盘使用 32-hex fingerprint key、programmatic `p`、authored `a/<1..24 hex>`、16-hex staging nonce、最长 12 字符 role 和最长 64 UTF-16 units working name。方案采用一次性 schema 切换，不提供旧 cache/run payload 兼容；用户已通过升级前版本的 human-gated `clear all` 清理旧 cache 与历史 runs。旧命令留下的空 v1 marker/index 已在 durable 成功 summary 与零旧 payload/run 共同证明后由新 runtime 原子 stamp 为 v2；空壳未用于 legacy lookup、entry 迁移或删除。实现、纯测试、默认全量基线和一次性 schema 切换均已完成。
+目标方案已经落地，权威当前合同见 [Windows Fixture Cache 路径配额设计](../design/windows_fixture_cache_path_budget.md)：所有受管绝对路径限制为 `240` 个 UTF-16 code units；Notebook root COM create/open 另受真实 Fresh 双 Notebook create 证据支持的 `147`-unit 安全兼容上限，working name 按实际 run root 在 12–64 units 内确定性压缩。完整 identity 保留在 metadata/evidence，磁盘使用 32-hex fingerprint key、programmatic `p`、authored `a/<1..24 hex>`、16-hex staging nonce 和最长 12 字符 role。方案采用一次性 schema 切换，不提供旧 cache/run payload 兼容；用户已通过升级前版本的 human-gated `clear all` 清理旧 cache 与历史 runs。旧命令留下的空 v1 marker/index 已在 durable 成功 summary 与零旧 payload/run 共同证明后由新 runtime 原子 stamp 为 v2；空壳未用于 legacy lookup、entry 迁移或删除。实现、纯测试、默认全量基线和一次性 schema 切换均已完成。
+
+## 2026-08-18 OneNote Notebook root 兼容上限补充
+
+- 用户真实运行中，两个 Move Fresh destination root 在 154/151 UTF-16 units 时均由 `OpenHierarchy(cftFolder)` 返回 `0x80042006`，而同一环境已通过的 inserted-file Fresh/Cache working root 均恰好为 150 units；失败现场均未创建 Notebook 内容或 lifecycle lease。
+- Run identity 现在基于实际 `<run-root>/notebooks` 长度同时压缩 Fresh/Cache working name；普通格式保留可读 scenario/时间，空间不足时使用绑定 scenario、role、模式与时间的 12-hex digest，最短 12 units。
+- 同一环境的历史 Fresh 双 Notebook run 已证明 147-unit create 成功；inserted-file materialized open 虽在 150 units 成功，但不把 existing open 扩大解释成 Fresh create 上限。Runtime 因此保守采用 147-unit 的已验证安全值。
+- Dispatch、fresh lifecycle create 与 materialized Notebook root open 在任何对应 COM 调用前复核 147-unit 上限；无法容纳最短名称时返回结构化 `onenote_open_path` 预算失败。
+- 新增 147/148 预算边界、动态 Move 名称、超紧凑 role/cache 唯一性及全部 registered dry-run 路径合同；manual-validation 纯测试 `616 passed`，完整 pytest `1401 passed`。
 
 ## 2026-08-13 实现进度
 
@@ -133,7 +141,7 @@ Fixture cache 已对 Windows 短暂文件扫描/共享冲突提供状态守卫�
 
 ## 完成定义
 
-- [x] [目标设计](../design/windows_fixture_cache_path_budget.md) 已由实现强制执行，所有必需路径在复制、发布或 COM 调用前完成 240 UTF-16 units preflight；
+- [x] [目标设计](../design/windows_fixture_cache_path_budget.md) 已由实现强制执行，所有必需路径在复制、发布或 COM 调用前完成 240 UTF-16 units preflight，Notebook root COM create/open 另完成 147-unit 安全兼容预算；
 - [x] 32-hex fingerprint disk key、`p`/`a` instance layout、role/working/staging/opaque path 配额均已落地，完整 identity 保存在新 schema metadata/evidence；
 - [x] 用户已确认升级前 `clear all` 的旧 cache/run 清理结果；新 runtime 仅激活 summary 证明的空 ownership 壳，对任何旧 payload/run 残留 fail closed；
 - [x] publish、materialize、lookup、失效与新 schema maintenance 在 `239/240/241` 和碰撞边界上有纯测试；

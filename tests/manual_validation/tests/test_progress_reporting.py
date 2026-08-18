@@ -155,11 +155,11 @@ def test_compact_non_json_result_never_expands_nested_payload(tmp_path, capsys) 
     assert "response" not in output
 
 
-def test_ready_interactive_bootstrap_prints_explicit_copyable_handoff(tmp_path, capsys) -> None:
+def test_ready_interactive_bootstrap_prints_cache_reuse_hint(tmp_path, capsys) -> None:
     instance_id = "authored-" + "a" * 24
     result = {
         "status": "passed",
-        "scenario": "bootstrap-move-page-content-fixture",
+        "scenario": "interactive-move-page-content",
         "run_dir": str(tmp_path),
         "notebook_label": "move-page-content",
         "scenario_result": {
@@ -167,7 +167,6 @@ def test_ready_interactive_bootstrap_prints_explicit_copyable_handoff(tmp_path, 
             "template_published": True,
             "template_state": "ready",
             "template_instance_id": instance_id,
-            "consumer_scenario": "interactive-move-page-content",
         },
         "metrics": {
             "observed_mcp_process_starts": 1,
@@ -180,11 +179,9 @@ def test_ready_interactive_bootstrap_prints_explicit_copyable_handoff(tmp_path, 
     print_compact_scenario_result(result, verbosity="normal", dry_run=False)
 
     output = capsys.readouterr().out
-    assert f"handoff: template_instance_id={instance_id}" in output
-    assert (
-        "interactive-move-page-content --use-cache --template-instance-id "
-        f"{instance_id} --notebook-label move-page-content --keep-worksite"
-    ) in output
+    assert f"cache_reuse: template_instance_id={instance_id}" in output
+    assert "--use-cache" in output
+    assert "next command:" not in output
 
 
 @pytest.mark.parametrize("verbosity", ["quiet", "normal", "verbose"])

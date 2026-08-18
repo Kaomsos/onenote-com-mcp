@@ -61,7 +61,6 @@ class InteractiveFixtureRecipe(RecipeBase):
     """Base for one exact UI-created content capability; never auto-bootstraps."""
 
     build_mode = BuildMode.HUMAN_BOOTSTRAP_REQUIRED
-    bootstrap_scenario_name = ""
     capability = ""
     canvas_title = "01-Interactive-Canvas"
     requested_object_types: frozenset[str] = frozenset()
@@ -69,7 +68,6 @@ class InteractiveFixtureRecipe(RecipeBase):
     required_plan_capabilities: frozenset[str] | None = None
     expected_object_count = 1
     authoring_instruction = "Add exactly one requested synthetic content object."
-    consumer_scenario = False
     recipe_version = 3
     supporting_object_kinds = frozenset({"Outline", "OE"})
     representation_discovery_only = False
@@ -89,7 +87,7 @@ class InteractiveFixtureRecipe(RecipeBase):
 
     async def build(self, context: FixtureContext) -> FixtureBuildResult:
         raise InteractiveBootstrapRequired(
-            f"interactive_bootstrap_required: {self.bootstrap_scenario_name}"
+            f"interactive_bootstrap_required: run {self.scenario_name} without --use-cache"
         )
 
     async def build_scaffold(self, context: FixtureContext) -> FixtureBuildResult:
@@ -117,10 +115,6 @@ class InteractiveFixtureRecipe(RecipeBase):
 
     def validate_registration(self, spec) -> None:
         super().validate_registration(spec)
-        if not self.bootstrap_scenario_name or (
-            self.bootstrap_scenario_name != self.scenario_name and not self.consumer_scenario
-        ):
-            raise ValueError("Interactive Recipe must bind a fixed bootstrap Scenario.")
         if not self.capability or (
             not self.requested_object_types
             and not self.requested_projected_capabilities
@@ -1276,18 +1270,37 @@ class UserAuthoredRecipe(InteractiveFixtureRecipe):
         args: argparse.Namespace,
         *,
         allow_unselected: bool = False,
+        cache_store: Any | None = None,
     ) -> str:
         value = str(getattr(args, "template_instance_id", "") or "")
-        if not value:
-            if allow_unselected:
-                return "required-explicit-template-instance"
-            raise RunnerFailure(
-                "UserAuthoredRecipe requires an explicit --template-instance-id; "
-                "selection is never inferred."
+        if value:
+            if not value.startswith("authored-") or len(value) != 33:
+                raise RunnerFailure("User-authored template instance ID has an invalid typed format.")
+            return value
+        if allow_unselected and cache_store is None:
+            return "required-explicit-template-instance"
+        if cache_store is not None:
+            ready = cache_store.list_ready_instances(
+                self,
+                mutation_eligible_only=True,
             )
-        if not value.startswith("authored-") or len(value) != 33:
-            raise RunnerFailure("User-authored template instance ID has an invalid typed format.")
-        return value
+            if len(ready) == 1:
+                return ready[0]
+            if not ready:
+                raise RunnerFailure(
+                    "interactive_cache_miss: no ready mutation-eligible template; "
+                    f"run {self.scenario_name} without --use-cache to author a new template."
+                )
+            raise RunnerFailure(
+                "interactive_cache_ambiguous: multiple ready templates match this recipe; "
+                "pass --template-instance-id explicitly."
+            )
+        if allow_unselected:
+            return "required-explicit-template-instance"
+        raise RunnerFailure(
+            "UserAuthoredRecipe requires --template-instance-id on --use-cache when "
+            "multiple ready templates exist; run without --use-cache to author fresh."
+        )
 
     async def build_scaffold(self, context: FixtureContext) -> FixtureBuildResult:
         instructions = context.recorder.record_structure(

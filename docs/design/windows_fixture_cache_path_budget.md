@@ -1,13 +1,13 @@
 # Windows Fixture Cache 路径配额设计
 
 > 状态：当前实现合同
-> 更新日期：2026-08-13
+> 更新日期：2026-08-18
 > 实施跟踪：[TODO 021](../todo/021_windows_fixture_cache_path_budget.md)
 > 相关架构：[当前架构](architecture.md) · [Manual Validation Runner](../../tests/manual_validation/README.md)
 
 ## 1. 结论
 
-Manual-validation 管理的 fixture cache、publish staging、materialize staging 和 working copy 统一采用普通 Windows 路径，并在任何复制、原子发布或 OneNote COM 调用前执行确定性路径预算。所有推导出的受管绝对路径不得超过 **240 个 UTF-16 code units**；项目不依赖系统 `LongPathsEnabled`，也不使用 `\\?\` extended-length path。
+Manual-validation 管理的 fixture cache、publish staging、materialize staging 和 working copy 统一采用普通 Windows 路径，并在任何复制、原子发布或 OneNote COM 调用前执行确定性路径预算。所有推导出的受管绝对路径不得超过 **240 个 UTF-16 code units**；传给 OneNote COM 用于 Notebook root create/open 的精确 working 路径另有基于真实 Fresh 双 Notebook create 证据的 **147-unit 安全兼容上限**。项目不依赖系统 `LongPathsEnabled`，也不使用 `\\?\` extended-length path。
 
 磁盘布局采用短定位键，完整身份继续保存在 metadata/evidence 中：
 
@@ -16,7 +16,7 @@ Manual-validation 管理的 fixture cache、publish staging、materialize stagin
 - user-authored instance 使用类型键 `a` 和不超过 `24` 个小写 hex 的 instance key；
 - role 最多 `12` 个字符；
 - publish/materialize staging 使用 `16`-hex nonce；
-- working directory name 最多 `64` 个 UTF-16 code units；
+- working directory name 最多 `64` 个 UTF-16 code units，并根据当前 run root 的 OneNote 147-unit 预算确定性压缩；
 - run evidence 最终文件名最多 `64` 个 UTF-16 code units，并为其 16-hex 原子临时名预留预算；
 - OneNote 返回的 Notebook、SectionGroup、Section、Page 与内容对象 ID 是逻辑身份，不得进入任何受管物理文件名、目录名、working name 或临时名；artifact 使用固定语义 token 与有界 ordinal，完整 ID 只保存在 metadata/evidence；
 - opaque Notebook 相对路径最多 `96` 个 UTF-16 code units，但最终可用值还受 240 总预算约束。
@@ -38,6 +38,7 @@ def windows_path_units(path: Path) -> int:
 
 ```text
 MAX_MANAGED_PATH_UNITS = 240
+MAX_ONENOTE_OPEN_PATH_UNITS = 147
 ```
 
 计数不包含结尾 NUL。每个普通文件或目录 component 最多 `120` 个 UTF-16 code units。任一必需路径超过配额时，runtime 必须在 `copytree`、`os.replace`、inventory 写入或 OneNote COM 调用前 fail closed，并报告路径类别、root/固定布局/相对路径长度、实际总长和超额量。
@@ -52,7 +53,7 @@ MAX_MANAGED_PATH_UNITS = 240
 | Fixture cache — authored | `<cache-root>/<fp32>/instances/a/<id24>/notebooks/<role>/template-notebook/<relative>` | `fp32=32`、`a=1`、`id24<=24`、`role<=12`、`relative<=96` | `cache_root + 112 + relative <= 240` |
 | Materialize staging | `<run-root>/.m-<nonce16>/<role>/<relative>` | staging name `19`、`role<=12`、`relative<=96` | `run_root + 34 + relative <= 240` |
 | Cache publish staging | `<cache-root>/.s-<nonce16>/notebooks/<role>/template-notebook/<relative>` | staging name `19`、`role<=12`、`relative<=96` | `cache_root + 62 + relative <= 240` |
-| Working copy | `<run-root>/notebooks/<working-name>/<relative>` | `working-name<=64`、`relative<=96` | `run_root + 76 + relative <= 240` |
+| Working copy | `<run-root>/notebooks/<working-name>/<relative>` | `working-name<=64`、`relative<=96` | 完整受管 tree：`run_root + 76 + relative <= 240`；Notebook root COM create/open：`<run-root>/notebooks/<working-name> <= 147` |
 | Run evidence | `<run-root>/<evidence-name>` 与 `.<evidence-name>.<nonce16>.tmp` | `evidence-name<=64`、atomic suffix `22` | `run_root + 87 <= 240`（最坏临时名） |
 
 “Run staging”不是独立的第三种 runtime 目录：发布 template 的 `.s-*` 位于 cache root；复制 working bundle 的 `.m-*` 位于 run root。
@@ -68,6 +69,14 @@ working copy        = min(96, 164 - run_root_units)
 ```
 
 其中公式按最长 role 和 working name 计算。实现仍应枚举每个实际目标，而不能只依赖公式估计。
+
+Notebook root 的物理名称预算另按当前绝对 run root 动态计算：
+
+```text
+working_name = min(64, 147 - units(<run-root>/notebooks) - 1)
+```
+
+普通可读名称超出该预算时保留时间并加入 logical identity digest；更深但仍可支持的显式 run root 使用 `<12hex>` 的 12-unit 紧凑名称。若连 12-unit 名称也无法使 Notebook root 落入 147-unit 上限，则在任何 OneNote COM 调用前以 `onenote_open_path` fail closed，并要求改用更短的唯一 run directory。完整 scenario、role、cache/fresh 模式与时间仍保存在 run evidence 中。
 
 ## 4. 身份与磁盘定位键
 
@@ -110,7 +119,7 @@ Role 使用：
 [a-z][a-z0-9_-]{0,11}
 ```
 
-Working name 是 Windows-safe 单一叶名称，最多 `64` 个 UTF-16 code units。完整 scenario、role、时间和显示信息保存在 evidence 中，不要求全部进入目录名。
+Working name 是 Windows-safe 单一叶名称，最多 `64` 个 UTF-16 code units，并受上述 Notebook root 147-unit COM 安全兼容上限进一步约束。完整 scenario、role、时间和显示信息保存在 evidence 中，不要求全部进入目录名；压缩 digest 同时绑定这些 logical identity 字段以保持 role 与 Fresh/Cache 唯一性。
 
 ## 5. Staging 与原子临时文件
 

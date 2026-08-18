@@ -17,9 +17,9 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.copy_runtime import call_with_result_evidence
-from .common.interactive_bootstrap import MAX_INTERACTIVE_TIMEOUT, _bounded_input
+from .common.interactive_bootstrap import InteractiveBootstrapScenarioMixin, MAX_INTERACTIVE_TIMEOUT, _bounded_input
 from .common.registry import SCENARIO_REGISTRY
-from .fixture_recipes.move_page_content import CONSUMER_RECIPE
+from .fixture_recipes.move_page_content import RECIPE
 
 
 def _partial_details(envelope: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -131,27 +131,24 @@ def _lossless_diagnostic(
 
 
 @SCENARIO_REGISTRY.register
-class InteractiveMovePageContentScenario(Scenario):
+class InteractiveMovePageContentScenario(InteractiveBootstrapScenarioMixin, Scenario):
     name = "interactive-move-page-content"
     help_text = (
-        "HUMAN-GATED: move one explicitly selected representative-content Page "
+        "HUMAN-GATED: author or reuse one representative-content Page, then move it "
         "across disposable Notebooks and capture the lossless gate."
     )
-    fixture_recipe = CONSUMER_RECIPE
+    fixture_recipe = RECIPE
     included_in_all = False
-    timeout_default = 1_800
     worksite_dry_run_action = "preserve-interactive-move-content-evidence"
 
     def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        InteractiveBootstrapScenarioMixin.add_arguments(self, parser)
         parser.add_argument(
             "--template-instance-id",
-            help="Exact authored-<24 hex> instance ID emitted by the Move content bootstrap.",
-        )
-        parser.add_argument(
-            "--interactive-timeout",
-            type=int,
-            default=900,
-            help="Bounded seconds for the exact run-bound target UI verdict (max 1800).",
+            help=(
+                "Exact authored-<24 hex> instance ID for --use-cache; "
+                "omit on fresh runs or when exactly one ready template exists."
+            ),
         )
 
     async def execute(
@@ -171,11 +168,24 @@ class InteractiveMovePageContentScenario(Scenario):
         if args.interactive_timeout < 1 or args.interactive_timeout > MAX_INTERACTIVE_TIMEOUT:
             raise InvariantFailure("--interactive-timeout must be between 1 and 1800 seconds.")
         validate_manifest_notebook(manifest, args.notebook_name)
-        selected = self.fixture_recipe.select_template_instance_id(args)
         cache = manifest.get("fixture_cache", {})
-        if cache.get("template_instance_id") != selected:
+        selected = str(cache.get("template_instance_id", "") or "")
+        if not selected:
+            raise InvariantFailure(
+                "Live representative-content fixture has no resolved instance."
+            )
+        explicit = str(getattr(args, "template_instance_id", "") or "")
+        if explicit and explicit != selected:
             raise InvariantFailure(
                 "Live representative-content fixture differs from the explicit instance."
+            )
+        if not (
+            cache.get("template_state") == "ready"
+            and cache.get("mutation_eligible") is True
+            and cache.get("move_source_deletion_allowed") is True
+        ):
+            raise InvariantFailure(
+                "Representative-content template is not eligible for source deletion."
             )
         live_validation = cache.get("interactive_live_validation", {})
         if not isinstance(live_validation, Mapping) or live_validation.get("passed") is not True:

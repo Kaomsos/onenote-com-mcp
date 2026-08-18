@@ -106,7 +106,9 @@ def build_isolated_dry_run_plan(
     """Build a serializable plan without creating paths, clients, or lifecycle objects."""
 
     use_cache = bool(getattr(args, "use_cache", False))
-    consumer_cache_required = bool(recipe.consumer_scenario and not use_cache)
+    interactive_scenario = recipe.build_mode.value == "human_bootstrap_required"
+    interactive_fresh = interactive_scenario and not use_cache
+    interactive_cache = interactive_scenario and use_cache
     roles = [role.role for role in recipe.cache_identity.notebook_roles]
     multi_role = len(roles) > 1
     mutation_target = {
@@ -172,13 +174,9 @@ def build_isolated_dry_run_plan(
             }
         )
     run_dir = options.run_dir.resolve()
-    interactive_bootstrap = (
-        recipe.build_mode.value == "human_bootstrap_required"
-        and getattr(recipe, "bootstrap_scenario_name", None) == args.scenario
-    )
+    interactive_bootstrap = interactive_fresh
     representation_discovery = bool(
-        interactive_bootstrap
-        and getattr(recipe, "representation_discovery_only", False)
+        interactive_fresh and getattr(recipe, "representation_discovery_only", False)
     )
     discovery_cache_rejected = representation_discovery and use_cache
     fresh_only_cache_rejected = use_cache and not getattr(recipe, "supports_cache", True)
@@ -214,22 +212,11 @@ def build_isolated_dry_run_plan(
                 "index-only Search against checkpointed rebound live IDs",
             ),
         ]
-    if use_cache and not interactive_bootstrap:
-        cache_operations = (
-            [
-                "validated-hit materialization and live validation",
-                "cache miss/invalid fail closed with named bootstrap guidance",
-            ]
-            if recipe.consumer_scenario
-            else [
-                "validated-hit materialization",
-                (
-                    "programmatic cold build, SyncHierarchy, CloseNotebook(false), "
-                    "publish, then materialize"
-                ),
-                "exact invalid-entry cleanup before rebuild",
-            ]
-        )
+    if use_cache and not interactive_fresh:
+        cache_operations = [
+            "validated-hit materialization and live validation",
+            "cache miss/invalid/ambiguous fail closed without fresh authoring fallback",
+        ]
         steps[0] = {
             "step": "resolve-fixture-bundle",
             "trust_boundary": "managed immutable fixture cache",
@@ -259,7 +246,7 @@ def build_isolated_dry_run_plan(
                 ),
             ),
         ]
-    if interactive_bootstrap:
+    if interactive_fresh:
         steps[1:2] = [
             _step(
                 args.scenario,
@@ -271,12 +258,13 @@ def build_isolated_dry_run_plan(
                 "step": "interactive-checkpoint",
                 "trust_boundary": "run-bound user confirmation with bounded timeout",
                 "target": "exact disposable role/Canvas or authoring zone",
+                "stdin_read_performed": False,
             },
             {
                 "step": (
                     "record-evidence-only-and-close"
                     if representation_discovery
-                    else "close-stage-publish-materialize-live-validate"
+                    else "close-stage-publish-materialize"
                 ),
                 "trust_boundary": (
                     "local content-free evidence"
@@ -286,10 +274,27 @@ def build_isolated_dry_run_plan(
                 "target": (
                     "no template publication or mutation eligibility"
                     if representation_discovery
-                    else "closed opaque template bundle then a second working bundle"
+                    else "closed opaque template bundle for immutable publication"
                 ),
                 "templates_opened": False,
             },
+            {
+                "step": "prepare-materialized-fixture",
+                "trust_boundary": "typed fixture observer and validator",
+                "allowed_operations": [
+                    "batch OpenHierarchy(exact parent)",
+                    "typed relative-address ID rebind",
+                    "two stable hierarchy observations",
+                    "one full read per declared Page",
+                ],
+                "target": "the first exact live identity for every materialized role",
+            },
+            _step(
+                args.scenario,
+                spec.policy,
+                set(spec.tool_allowlist),
+                mutation_target,
+            ),
         ]
     if discovery_cache_rejected:
         steps = [
@@ -311,14 +316,14 @@ def build_isolated_dry_run_plan(
                 "reason": recipe.fresh_only_reason,
             }
         ]
-    if consumer_cache_required:
+    if getattr(args, "template_instance_id", None) and interactive_fresh:
         steps = [
             {
-                "step": "preflight-cache-required",
-                "trust_boundary": "static consumer contract",
+                "step": "preflight-fresh-rejects-template-instance-id",
+                "trust_boundary": "static interactive fresh contract",
                 "allowed_operations": [],
                 "target": "reject before lifecycle, MCP, cache, stdin, or mutation",
-                "reason": "interactive fixture consumers require --use-cache",
+                "reason": "Fresh interactive runs must not pass --template-instance-id",
             }
         ]
     fresh_names = getattr(args, "fresh_notebook_names", None)
@@ -329,7 +334,7 @@ def build_isolated_dry_run_plan(
         cached_names = {role: f"{role}-working-copy" for role in roles}
     effective_name = (
         str(cached_names["source"])
-        if use_cache and not interactive_bootstrap and not fresh_only_cache_rejected
+        if use_cache and not interactive_fresh and not fresh_only_cache_rejected
         else str(fresh_names["source"])
     )
     result = {
@@ -363,7 +368,9 @@ def build_isolated_dry_run_plan(
         },
         "expected_mcp_process_starts": (
             0
-            if consumer_cache_required or discovery_cache_rejected or fresh_only_cache_rejected
+            if discovery_cache_rejected
+            or fresh_only_cache_rejected
+            or (getattr(args, "template_instance_id", None) and interactive_fresh)
             else 1
         ),
         "server_started": False,
@@ -391,20 +398,18 @@ def build_isolated_dry_run_plan(
         instance_location = None
     result["cache"] = {
         "cache_mode": (
-            "cache_required"
-            if consumer_cache_required
-            else "fresh_only"
+            "fresh_only"
             if fresh_only_cache_rejected
             else "representation_discovery"
             if representation_discovery
-            else "interactive_bootstrap"
-            if interactive_bootstrap
+            else "interactive_fresh"
+            if interactive_fresh
             else "use_cache"
             if use_cache
             else "fresh"
         ),
         "enabled": (
-            (use_cache or interactive_bootstrap)
+            (use_cache or interactive_fresh)
             and not representation_discovery
             and not fresh_only_cache_rejected
         ),
@@ -432,71 +437,48 @@ def build_isolated_dry_run_plan(
             for role in roles
         },
         "decision": (
-            "rejected_missing_use_cache"
-            if consumer_cache_required
-            else "rejected_fresh_only"
+            "rejected_fresh_only"
             if fresh_only_cache_rejected
             else "rejected_cache_for_representation_discovery"
             if discovery_cache_rejected
+            else "rejected_fresh_template_instance_id"
+            if getattr(args, "template_instance_id", None) and interactive_fresh
             else "evidence_only_no_publish"
             if representation_discovery
             else "bootstrap_plan_not_executed"
-            if interactive_bootstrap
+            if interactive_fresh
             else "runtime_lookup_not_performed_in_dry_run"
             if use_cache
             else "fresh"
         ),
         "planned_branches": (
-            ["fail closed before lifecycle: rerun with --use-cache and an exact instance"]
-            if consumer_cache_required
-            else ["fail closed before lifecycle: fresh-only Recipe forbids --use-cache"]
+            ["fail closed before lifecycle: fresh-only Recipe forbids --use-cache"]
             if fresh_only_cache_rejected
             else ["fail closed before lifecycle: representation discovery forbids --use-cache"]
             if discovery_cache_rejected
-            else [
-                "fresh scaffold and run-bound UI confirmation",
-                "record content-free kind/capability delta as evidence_only",
-                "never publish a template or enable Copy/Move",
-            ]
+            else ["fail closed before lifecycle: fresh interactive forbids --template-instance-id"]
+            if getattr(args, "template_instance_id", None) and interactive_fresh
+            else ["fail closed before lifecycle: evidence-only discovery never publishes cache"]
             if representation_discovery
-            else [
-                "validated-hit: materialize, batch import, close, exact-path reopen, then rebind and validate",
-                "working activation failure: preserve run/lease; validated template remains retryable after close",
-                f"miss/invalid: interactive_bootstrap_required {recipe.bootstrap_scenario_name}",
-            ]
-            if recipe.consumer_scenario and use_cache
-            else
-            [
-                "validated-hit: lock, inventory, materialize, batch open hierarchy, live validate",
-                (
-                    "cold-miss: build fresh, live validate, SyncHierarchy, close all, "
-                    "stage, inventory, publish, materialize, batch open hierarchy, "
-                    "live validate"
-                ),
-                (
-                    "invalid: exact safe cleanup then interactive bootstrap"
-                    if interactive_bootstrap
-                    else "invalid: exact safe cleanup then programmatic rebuild"
-                ),
-            ]
-            if use_cache or interactive_bootstrap
-            else ["fresh build and live validation; zero cache access"]
+            else ["bootstrap phase planned but not executed in dry-run"]
+            if interactive_fresh
+            else ["runtime cache lookup and materialization are not executed in dry-run"]
+            if use_cache
+            else ["fresh run-scoped Notebook creation only"]
         ),
         "cache_access_performed": False,
         "templates_opened": False,
         "interactive_checkpoint": (
             {
-                "bootstrap_scenario": recipe.bootstrap_scenario_name,
+                "scenario": args.scenario,
                 "capability": getattr(recipe, "capability", ""),
-                "authoring_instruction": getattr(
-                    recipe, "authoring_instruction", ""
-                ),
+                "authoring_instruction": getattr(recipe, "authoring_instruction", ""),
                 "stdin_read_performed": False,
                 "authoring_zones": [
                     zone.manifest_key for zone in getattr(recipe, "authoring_zones", ())
                 ],
             }
-            if interactive_bootstrap
+            if interactive_fresh
             else None
         ),
         "fixed_invalidation_probe": bool(recipe.invalidation_probe),

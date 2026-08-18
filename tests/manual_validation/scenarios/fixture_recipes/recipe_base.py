@@ -149,7 +149,7 @@ class RecipeBase(ABC):
     invalidation_probe = False
     requires_instance_selection = False
     accepts_evidence_only = False
-    consumer_scenario = False
+    consumer_scenario = False  # legacy flag; unified interactive scenarios no longer use this
     supports_cache = True
     fresh_only_reason = "this Recipe requires a new run-scoped fixture"
     bundle_invariants = ("all role Notebook IDs and resolved paths are unique",)
@@ -196,7 +196,9 @@ class RecipeBase(ABC):
         args: argparse.Namespace,
         *,
         allow_unselected: bool = False,
+        cache_store: Any | None = None,
     ) -> str:
+        del cache_store
         return self.default_template_instance_id
 
     def required_manifest_keys(self, args: argparse.Namespace) -> frozenset[str]:
@@ -244,10 +246,7 @@ class RecipeBase(ABC):
         ):
             raise ValueError(f"Fixture recipe roles are invalid: {self.scenario_name}")
         for role in self.notebook_roles:
-            if (
-                not self.consumer_scenario
-                and not role.profile.creation_tools.issubset(spec.tool_allowlist)
-            ):
+            if not role.profile.creation_tools.issubset(spec.tool_allowlist):
                 raise ValueError(
                     f"Fixture recipe role creation tools exceed allowlist: {self.scenario_name}/{role.role}"
                 )

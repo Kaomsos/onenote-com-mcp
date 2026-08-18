@@ -12,6 +12,7 @@ import pytest
 from tests.manual_validation import local_filesystem
 from tests.manual_validation.path_budget import (
     MAX_MANAGED_PATH_UNITS,
+    MAX_ONENOTE_OPEN_PATH_UNITS,
     MAX_RUN_EVIDENCE_LEAF_UNITS,
     fingerprint_disk_key,
     managed_absolute,
@@ -20,6 +21,7 @@ from tests.manual_validation.path_budget import (
     validate_role,
     validate_run_evidence_leaf,
     validate_physical_name_has_no_onenote_id,
+    validate_onenote_open_path,
     validate_working_name,
     windows_path_units,
 )
@@ -105,6 +107,22 @@ def test_managed_path_exact_239_240_241_boundaries(cache_tmp_path) -> None:
     assert captured.value.over_by_utf16 == 1
 
 
+def test_onenote_open_path_exact_147_148_boundary(cache_tmp_path) -> None:
+    accepted = validate_onenote_open_path(
+        _path_at_units(cache_tmp_path, MAX_ONENOTE_OPEN_PATH_UNITS)
+    )
+    assert windows_path_units(accepted) == MAX_ONENOTE_OPEN_PATH_UNITS
+
+    with pytest.raises(PathBudgetFailure) as captured:
+        validate_onenote_open_path(
+            _path_at_units(cache_tmp_path, MAX_ONENOTE_OPEN_PATH_UNITS + 1)
+        )
+
+    assert captured.value.target_kind == "onenote_open_path"
+    assert captured.value.actual_utf16 == 148
+    assert captured.value.limit_utf16 == 147
+
+
 @pytest.mark.parametrize(
     "target_kind",
     (
@@ -181,7 +199,8 @@ def test_run_evidence_leaf_limit_and_dispatch_reserve(cache_tmp_path, capsys) ->
     ) != 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["error_type"] == "path_budget_exceeded"
-    assert payload["target_kind"] == "run_evidence_temp"
+    assert payload["target_kind"] == "onenote_open_path"
+    assert payload["limit_utf16"] == MAX_ONENOTE_OPEN_PATH_UNITS
     assert payload["filesystem_changes_started"] is False
     assert not run_root.exists()
 

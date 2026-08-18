@@ -95,7 +95,7 @@ Fixture 准备、working activation、ID rebind、双稳定、内容验证和 sc
 
 ## 8. Interactive 与 User-Authored Fixture
 
-Programmatic Recipe 可以在 cache miss 时自动构建 disposable template。Interactive/UserAuthored Recipe 只能由静态注册、排除于 `all` 的 human-gated bootstrap Scenario 发布；普通 consumer 的 miss 只返回 `interactive_bootstrap_required`，不得动态创作、猜测实例或读取任意用户 Notebook。
+Programmatic Recipe 可以在 cache miss 时自动构建 disposable template。Interactive/UserAuthored Recipe 由统一公开入口 `interactive-<operation>` 承载：fresh 路径在同一次 run 的 bootstrap 阶段完成 human-gated authoring、detection 与 immutable template 发布；`--use-cache` 路径确定性跳过 bootstrap，只 materialize 已验证为 ready、mutation-eligible 且 fingerprint 匹配的 template。Cache miss、歧义、evidence-only 或 invalid entry 返回 `interactive_cache_miss` 或等价 fail-closed 错误，提示不带 `--use-cache` 重新 authoring，不得动态创作、猜测实例或读取任意用户 Notebook。
 
 人工 verdict 只能补充 COM 无法证明的视觉、播放或交互证据，不能覆盖机器 validator、ID/topology/content comparator 或 policy 失败。
 

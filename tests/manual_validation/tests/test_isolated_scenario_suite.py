@@ -14,6 +14,7 @@ from tests.manual_validation import runtime, test_utils
 from tests.manual_validation.mcp_stdio_client import ClientFailure
 from tests.manual_validation.runner import build_parser, main
 from tests.manual_validation.runtime import RuntimeOptions
+from tests.manual_validation.scenarios.common import interactive_bootstrap
 from tests.manual_validation.scenarios.common import orchestrator as validation
 from tests.manual_validation.scenarios.common import fixture_runtime
 from tests.manual_validation.scenarios.common.fixture_models import FixtureBuildResult, FixtureValidationContext
@@ -139,36 +140,7 @@ def test_fixture_profiles_are_scenario_specific() -> None:
         for profile in set(names.values())
         if list(names.values()).count(profile) > 1
     }
-    assert duplicates == {
-        "user-authored-zone": {
-            "bootstrap-user-authored-fixture",
-            "user-authored-fixture-consumer",
-        },
-        "interactive-insertedfile": {
-            "bootstrap-inserted-file-fixture",
-            "interactive-copy-inserted-file",
-        },
-        "interactive-inkdrawing": {
-            "bootstrap-ink-drawing-fixture",
-            "interactive-copy-ink-drawing",
-        },
-        "interactive-mediafile": {
-            "bootstrap-media-file-fixture",
-            "interactive-copy-media-file",
-        },
-        "interactive-uishape": {
-            "bootstrap-shape-fixture",
-            "interactive-copy-ui-shape",
-        },
-        "interactive-inline-equation": {
-            "bootstrap-inline-equation-fixture",
-            "interactive-copy-inline-equation",
-        },
-        "interactive-move-page-content": {
-            "bootstrap-move-page-content-fixture",
-            "interactive-move-page-content",
-        },
-    }
+    assert duplicates == {}
     assert "create_notebook" not in SCENARIO_SPECS["create"].tool_allowlist
     assert {
         "delete_page",
@@ -183,36 +155,31 @@ def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
     for name in SCENARIO_REGISTRY.public_names:
         spec = SCENARIO_SPECS[name]
         missing = spec.fixture.creation_tools - spec.tool_allowlist
-        recipe = SCENARIO_REGISTRY.get(name).fixture_recipe
-        if recipe.consumer_scenario:
-            if spec.execution_contract.get("interactive_copy_evidence"):
-                assert spec.policy.writes_enabled is True
-                assert spec.policy.create_enabled is True
-                assert spec.policy.deletes_enabled is False
-                assert "copy_page" in spec.tool_allowlist
-                assert "plan_copy" not in spec.tool_allowlist
-            elif spec.execution_contract.get("interactive_move_evidence"):
-                assert spec.policy.create_enabled is True
-                assert spec.policy.writes_enabled is True
-                assert spec.policy.deletes_enabled is True
-                assert spec.policy.organize_enabled is False
-                assert spec.policy.local_file_io_enabled is False
-                assert "move_page" in spec.tool_allowlist
-                assert not {
-                    "copy_page",
-                    "delete_page",
-                    "reparent_page",
-                    "reorder_page",
-                }.intersection(spec.tool_allowlist)
-            else:
-                assert spec.policy.writes_enabled is False
-                assert spec.policy.create_enabled is False
-            runtime_creation_tools = (
-                {"create_section"}
-                if spec.execution_contract.get("same_and_cross_section")
-                else set()
-            )
-            assert missing == spec.fixture.creation_tools - runtime_creation_tools
+        if spec.execution_contract.get("interactive_copy_evidence"):
+            assert spec.policy.writes_enabled is True
+            assert spec.policy.create_enabled is True
+            assert not any(tool.startswith("delete_") for tool in spec.tool_allowlist)
+            assert "copy_page" in spec.tool_allowlist
+            assert "plan_copy" not in spec.tool_allowlist
+            assert not missing, f"{name} fixture tools missing from allowlist: {sorted(missing)}"
+            continue
+        if spec.execution_contract.get("interactive_move_evidence"):
+            assert spec.policy.create_enabled is True
+            assert spec.policy.writes_enabled is True
+            assert spec.policy.deletes_enabled is True
+            assert spec.policy.organize_enabled is False
+            assert spec.policy.local_file_io_enabled is False
+            assert "move_page" in spec.tool_allowlist
+            assert not {
+                "copy_page",
+                "delete_page",
+                "reparent_page",
+                "reorder_page",
+            }.intersection(spec.tool_allowlist)
+            assert not missing, f"{name} fixture tools missing from allowlist: {sorted(missing)}"
+            continue
+        if spec.execution_contract.get("user_authored"):
+            assert not missing, f"{name} fixture tools missing from allowlist: {sorted(missing)}"
             continue
         assert not missing, f"{name} fixture tools missing from allowlist: {sorted(missing)}"
 
@@ -1243,23 +1210,11 @@ def _install_orchestration_fakes(monkeypatch, calls: list[str]) -> None:
         "delete",
         "copy-page",
         "query",
-        "user-authored-fixture-consumer",
     ),
 )
 def test_each_scenario_uses_exactly_one_mcp_process(monkeypatch, tmp_path, scenario) -> None:
     calls: list[str] = []
     _install_orchestration_fakes(monkeypatch, calls)
-
-    if SCENARIO_REGISTRY.get(scenario).fixture_recipe.consumer_scenario:
-        with pytest.raises(runtime.RunnerFailure, match="require --use-cache"):
-            asyncio.run(
-                validation.run_validate(
-                    _args(tmp_path / scenario, scenario),
-                    RuntimeOptions(tmp_path / scenario, 1_800, False, False),
-                )
-            )
-        assert FakeMCP.starts == 0
-        return
 
     async def fake_scenario(
         args,
@@ -1424,8 +1379,12 @@ def test_interactive_detection_failure_defers_close_and_does_not_initialize_cach
         calls.append("interactive-detector")
         raise runtime.InvariantFailure("requested InkDrawing=1; observed=0")
 
-    scenario = SCENARIO_REGISTRY.get("bootstrap-ink-drawing-fixture")
-    monkeypatch.setattr(scenario, "execute", failing)
+    scenario = SCENARIO_REGISTRY.get("interactive-copy-ink-drawing")
+    monkeypatch.setattr(
+        validation,
+        "run_interactive_bootstrap_phase",
+        failing,
+    )
     monkeypatch.setattr(validation, "BundleCacheStore", ForbiddenCacheStore)
     args = _args(tmp_path / "run", scenario.name)
 

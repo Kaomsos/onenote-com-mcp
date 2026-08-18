@@ -1491,7 +1491,25 @@ class _SemanticInlineParser(HTMLParser):
     def result(self) -> tuple[tuple[Any, ...], bool]:
         if self.stack:
             self.complete = False
-        return tuple(self.runs), self.complete
+        normalized_runs: list[tuple[str, tuple[Any, ...]]] = []
+        for text, style in self.runs:
+            # OneNote can move the boundary whitespace between adjacent formatted
+            # spans during UpdatePageContent read-back.  Formatting ownership of
+            # whitespace is not a stable rich-text semantic, while the exact text
+            # sequence and the effective style of every non-whitespace character
+            # remain meaningful.  Give whitespace a neutral style, then coalesce
+            # adjacent equal-style pieces.  This accepts only boundary movement;
+            # moving or losing formatting on visible characters still differs.
+            for piece in re.split(r"(\s+)", text):
+                if not piece:
+                    continue
+                effective_style = () if piece.isspace() else style
+                if normalized_runs and normalized_runs[-1][1] == effective_style:
+                    previous, _ = normalized_runs[-1]
+                    normalized_runs[-1] = (previous + piece, effective_style)
+                else:
+                    normalized_runs.append((piece, effective_style))
+        return tuple(normalized_runs), self.complete
 
 
 def _semantic_inline_projection(fragments: Iterable[str]) -> tuple[tuple[Any, ...], bool]:

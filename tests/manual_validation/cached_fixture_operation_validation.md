@@ -20,7 +20,7 @@
 ## 开始前确认
 
 - 只使用 Scenario 创建的 disposable Notebook 和 synthetic 内容，不打开或选择业务 Notebook。
-- 先在 [`README.md`](README.md) 确认目标 Scenario 已注册、是否需要 bootstrap、是否要求 `--use-cache`、人工输入格式和最终 cleanup 行为。
+- 先在 [`README.md`](README.md) 确认目标 Scenario 已注册、fresh 还是 `--use-cache` 路径、人工输入格式和最终 cleanup 行为。
 - 关闭或处理之前失败 run 明确列出的 working Notebook；不要按相似名称猜测，也不要删除其本地目录。
 - Cache template 不应出现在 OneNote UI 中。你看到并操作的必须是本次 run 名称对应的 working Notebook。
 - Agent、pytest、CI、hook 和后台任务不能代替用户运行真实命令。
@@ -37,25 +37,25 @@
 
 - Scenario 名称和有序阶段；
 - Notebook roles、working 名称和 run directory；
-- cache 模式、固定 recipe/instance，以及 miss 时要求的 bootstrap Scenario；
+- cache 模式、固定 recipe/instance，以及 miss 时要求的 fresh authoring 路径；
 - policy、tool allowlist、Copy/Move budget；
 - 是否要求交互输入、timeout 和人工 verdict；
 - lifecycle 是默认 restore/cleanup/close，还是显式 `--keep-worksite`。
 
 `--dry-run` 不会访问 cache、启动 MCP、打开 OneNote 或读取 stdin。它只能证明计划和静态合同正确，不能代替真实验证。
 
-## 第二步：缺少 ready fixture 时先 bootstrap
+## 第二步：Interactive 场景选择 fresh 或 cache 路径
 
-如果真实 consumer 返回 `interactive_bootstrap_required`，按错误中给出的**固定具名 bootstrap Scenario**操作。不要改用外部 Notebook、旧 working copy 或任意 cache path。
+Interactive/UserAuthored 场景只有统一入口 `interactive-<operation>`，不再存在独立的 bootstrap 命令。
 
-推荐顺序：
+**Fresh 路径（不带 `--use-cache`）** 在同一次 run 内完成 authoring、template 发布、working copy materialize 与 scenario 执行。推荐顺序：
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py <bootstrap-scenario> --dry-run --json
-.venv\Scripts\python.exe tests\manual_validation\run.py <bootstrap-scenario>
+.venv\Scripts\python.exe tests\manual_validation\run.py <interactive-scenario> --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py <interactive-scenario>
 ```
 
-真实 bootstrap 中：
+真实 fresh run 中：
 
 1. 只编辑终端显示的精确 Canvas 或 authoring zone；
 2. 只添加说明要求的 synthetic 对象和数量；
@@ -63,14 +63,23 @@
 4. 阅读 detector 的 requested/observed/missing/unexpected 摘要；
 5. 只有 UI 结果正确时才输入该 run 的 `ACCEPT`；否则拒绝或让场景失败并保留现场。
 
-成功 bootstrap 应先验证 authored snapshot/detection，再关闭源、发布 immutable template，并 materialize 第二份 working copy完成 live validation。`--keep-worksite` 会阻止发布，适合诊断，不适合建立可供 consumer 使用的 ready cache。
+成功后 runner 会先验证 authored snapshot/detection，再精确关闭 authored bundle、发布 immutable template，并在 fixture 阶段 materialize 第二份 working copy 完成 live validation，随后自动进入 scenario 阶段。Fresh 路径禁止传入 `--template-instance-id`。
+
+**Cache 路径（带 `--use-cache`）** 跳过 bootstrap，直接从 ready template materialize 新 working copy。若 cache miss，错误会提示不带 `--use-cache` 重新 authoring，而不是隐式重建：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py <interactive-scenario> --use-cache --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py <interactive-scenario> --use-cache
+```
+
+需要显式 instance 的场景（如 `interactive-move-page-content`、`interactive-user-authored-fixture` 在多个 ready instance 并存时）按 README 传入 `--template-instance-id authored-<24 hex>`；恰好只有一个 ready、mutation-eligible 且 fingerprint 匹配的 instance 时可自动选择。
 
 ## 第三步：运行待验证操作
 
-确认 ready cache 已存在后，再由用户运行实际 consumer：
+Interactive fresh 路径在 bootstrap 与 fixture 阶段完成后自动进入 scenario；cache 路径 materialize 完成后同样进入 scenario。非 Interactive 场景则按各自 README 说明运行：
 
 ```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py <consumer-scenario> --use-cache
+.venv\Scripts\python.exe tests\manual_validation\run.py <scenario> --use-cache
 ```
 
 运行期间不要在 OneNote 中修改 fixture，除非该 Scenario 明确要求。Runner 会依次完成：
@@ -166,7 +175,7 @@ fixture live validation passed
 
 | 错误 | 用户动作 |
 | --- | --- |
-| `interactive_bootstrap_required` | 运行错误指定的 bootstrap；不要尝试从外部 Notebook 补 cache。 |
+| `interactive_cache_miss` | 使用同一 `interactive-<operation>` 命令并移除 `--use-cache` 重新 authoring；不要尝试从外部 Notebook 补 cache。 |
 | active/live ID 或 path 冲突 | 根据旧 run ID 和 working paths，关闭精确 working Notebook 后再重试。 |
 | hierarchy activation / ID rebind 失败 | 保留 working files/evidence，默认精确关闭本次 working Notebook；不要修改 cache template，不要删除 working 目录。 |
 | detector missing/unexpected | 检查是否编辑了错误 Canvas、数量不对或 OneNote 生成了不同公开 `kind`；保留 evidence。 |

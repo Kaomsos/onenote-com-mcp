@@ -376,7 +376,7 @@ def test_display_equation_scaffold_generates_standalone_block_mathml(
 
 
 def test_inline_equation_detector_requires_inline_text_without_display_or_break() -> None:
-    recipe = SCENARIO_REGISTRY.get("bootstrap-inline-equation-fixture").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-copy-inline-equation").fixture_recipe
     inline_xml = _xml(display=False, surrounding_text=True)
 
     report = recipe.content_report(_snapshot(inline_xml), "page")
@@ -401,7 +401,7 @@ def test_inline_equation_detector_requires_inline_text_without_display_or_break(
 
 
 def test_inline_equation_detector_accepts_real_onenote_split_t_shape() -> None:
-    recipe = SCENARIO_REGISTRY.get("bootstrap-inline-equation-fixture").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-copy-inline-equation").fixture_recipe
     projection = mathml_structure_projection(_split_t_inline_xml())
     candidate = projection["candidates"][0]
 
@@ -465,7 +465,7 @@ def test_inline_equation_copy_readback_rejects_added_break() -> None:
 def test_inline_equation_scaffold_generates_mathml_without_display_attribute(
     monkeypatch, tmp_path: Path
 ) -> None:
-    recipe = SCENARIO_REGISTRY.get("bootstrap-inline-equation-fixture").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-copy-inline-equation").fixture_recipe
     calls: dict[str, object] = {}
 
     async def ensure_section(_client, _notebook_id, _name):

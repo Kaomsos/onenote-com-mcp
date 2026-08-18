@@ -4,7 +4,7 @@
 > 状态：已完成
 > 优先级：P2
 > 类型：真实后端验证 / Page 内容保真
-> 更新日期：2026-08-12
+> 更新日期：2026-08-18
 
 ## 背景与证据边界
 
@@ -23,10 +23,10 @@
 
 截至 2026-08-11，代码取证入口已经按类型拆分并保持 `included_in_all=False`：
 
-- `bootstrap-ink-drawing-fixture` / `interactive-copy-ink-drawing --use-cache`；
-- `bootstrap-media-file-fixture` / `interactive-copy-media-file --use-cache`；
-- `bootstrap-shape-fixture` / `interactive-copy-ui-shape --use-cache`；
-- `bootstrap-inserted-file-fixture` / `interactive-copy-inserted-file --use-cache`（复用已有 ready fixture，不重复 bootstrap）。
+- `interactive-copy-ink-drawing`（fresh 或 `--use-cache`）；
+- `interactive-copy-media-file`（fresh 或 `--use-cache`）；
+- `interactive-copy-ui-shape`（fresh 或 `--use-cache`）；
+- `interactive-copy-inserted-file`（fresh 或 `--use-cache`；可复用已有 ready fixture，不重复 fresh authoring）。
 
 交互 Copy consumer 使用固定 ready cache instance、root-only Page Copy 和无 Delete 的 `COPY_NO_DELETE_POLICY`。机器门同时检查 source/target 的公开 `kind` detector、去除生成 ID 后的稳定对象签名、无 omitted content；评审结果只能在完整 comparator 通过后静态登记为 lossless，未知能力仍为 `content_type_unverified`。MediaFile 使用 strict canonical；InkDrawing/UIShape 使用各自有界几何语义 tier。场景本身从不在运行时修改静态类型集合，Copy target 保留在 disposable working artifact。
 
@@ -67,12 +67,15 @@ Shape consumer 校准 run `run-2026-08-11-22-18-48` 使用用户在 v5 bootstrap
 当前公开命令：
 
 ```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ink-drawing --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-media-file --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ui-shape --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ink-drawing --use-cache --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-media-file --use-cache --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-ui-shape --use-cache --dry-run --json
 ```
 
-三个场景都设置 `included_in_all = False`，特殊入口 `all` 永远不得透传或自动选择交互场景。cache miss/invalid 在打开 Notebook 前返回对应具名 bootstrap 提示；consumer 绝不自动进入 stdin authoring。
+三个场景都设置 `included_in_all = False`，特殊入口 `all` 永远不得透传或自动选择交互场景。Fresh 路径显式进入 stdin authoring；`--use-cache` 的 miss/invalid 在打开 Notebook 前返回 `interactive_cache_miss`，绝不隐式进入 authoring。
 
 Runner 的有界状态机：
 
@@ -107,7 +110,7 @@ Copy 取证阶段允许预期的 `content_type_unverified`，因为它的职责�
 
 ## 实施范围
 
-1. 为 InkDrawing、MediaFile、UI Shape 分别注册独立 Copy-only consumer；全部设置 `included_in_all = False`，不得新增 `prepare/resume/inspect` 等公开 helper action。
+1. 为 InkDrawing、MediaFile、UI Shape 分别注册独立 unified Copy 场景；全部设置 `included_in_all = False`，fresh/cache 共用同一公开入口，不得新增 `prepare/resume/inspect` 等公开 helper action。
 2. 为交互 checkpoint、run-bound confirmation、timeout、取消和 stdin EOF 建立可测试的 runtime abstraction，合同测试不得真实等待用户输入。
 3. 为 `InkDrawing`、UI `Shape` 和 `MediaFile` 分别创建独立 scaffold Page 和 exact-ID manifest；`InsertedFile` 复用既有 ready recipe/cache。fixture 构建本身不得伪造 raw XML 内容，待验证对象必须由用户在 OneNote UI 中加入。Shape 在首次真实观察前只表示 UI 操作类别，不得预注册未经证实的公开 `kind`。
 4. 新增内容检测器，输出 requested/observed/missing/unexpected 类型和对象计数；检测不到精确类型时禁止 Copy。

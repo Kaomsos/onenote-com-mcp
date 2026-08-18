@@ -968,6 +968,52 @@ class BundleCacheStore:
             )
         return str(state)
 
+    def list_ready_instances(
+        self,
+        recipe: RecipeBase,
+        *,
+        mutation_eligible_only: bool = False,
+    ) -> list[str]:
+        """Return owned ready instance IDs for one fingerprint."""
+
+        self._assert_fingerprint_identity(recipe.cache_fingerprint)
+        disk_key = fingerprint_disk_key(recipe.cache_fingerprint)
+        bucket = self.cache_root / disk_key / "instances"
+        if not bucket.is_dir():
+            return []
+        instance_ids: list[str] = []
+        programmatic = bucket / "p" / "bundle-entry.json"
+        if programmatic.is_file():
+            entry = _read_json(programmatic)
+            if (
+                entry.get("state") == "ready"
+                and entry.get("fingerprint") == recipe.cache_fingerprint
+                and (
+                    not mutation_eligible_only
+                    or entry.get("mutation_eligible") is not False
+                )
+            ):
+                instance_ids.append(str(entry.get("template_instance_id", "")))
+        authored_root = bucket / "a"
+        if authored_root.is_dir():
+            for child in sorted(authored_root.iterdir()):
+                if not child.is_dir():
+                    continue
+                if AUTHORED_INSTANCE_KEY_PATTERN.fullmatch(child.name) is None:
+                    continue
+                entry_path = child / "bundle-entry.json"
+                if not entry_path.is_file():
+                    continue
+                entry = _read_json(entry_path)
+                if entry.get("state") != "ready":
+                    continue
+                if entry.get("fingerprint") != recipe.cache_fingerprint:
+                    continue
+                if mutation_eligible_only and entry.get("mutation_eligible") is not True:
+                    continue
+                instance_ids.append(str(entry.get("template_instance_id", "")))
+        return [value for value in instance_ids if value]
+
     def _validate_hit(
         self,
         recipe: RecipeBase,
@@ -1108,6 +1154,8 @@ class BundleCacheStore:
         artifacts: Mapping[str, Mapping[str, Any]] | None = None,
         projection_digest: str | None = None,
         state: str = "ready",
+        mutation_eligible: bool | None = None,
+        move_source_deletion_allowed: bool | None = None,
     ) -> CacheHit:
         if state not in {"ready", "evidence_only"}:
             raise RunnerFailure("Only validated ready/evidence_only bundles can be published.")
@@ -1118,10 +1166,24 @@ class BundleCacheStore:
             raise RunnerFailure("Every Notebook role must be precisely closed before cache publish.")
         if artifacts is not None and set(artifacts) != set(roles):
             raise RunnerFailure("Cache publish artifacts must cover the complete role bundle.")
-        if AUTHORED_INSTANCE_PATTERN.fullmatch(instance_id) and projection_digest is None:
-            raise RunnerFailure(
-                "User-authored cache publication requires the full projection digest."
-            )
+        authored_instance = AUTHORED_INSTANCE_PATTERN.fullmatch(instance_id) is not None
+        if authored_instance:
+            if projection_digest is None:
+                raise RunnerFailure(
+                    "User-authored cache publication requires the full projection digest."
+                )
+            expected_eligible = state == "ready"
+            if mutation_eligible is None:
+                mutation_eligible = expected_eligible
+            if move_source_deletion_allowed is None:
+                move_source_deletion_allowed = expected_eligible
+            if (
+                mutation_eligible is not expected_eligible
+                or move_source_deletion_allowed is not expected_eligible
+            ):
+                raise RunnerFailure(
+                    "User-authored cache eligibility must match its ready/evidence_only state."
+                )
         self._assert_fingerprint_identity(recipe.cache_fingerprint)
         final = self.instance_path(recipe.cache_fingerprint, instance_id)
         self._assert_owned_instance(recipe.cache_fingerprint, instance_id, final)
@@ -1245,6 +1307,11 @@ class BundleCacheStore:
                     artifacts,
                 ),
             }
+            if authored_instance:
+                entry.update(
+                    mutation_eligible=mutation_eligible,
+                    move_source_deletion_allowed=move_source_deletion_allowed,
+                )
             _atomic_json(
                 staging / "bundle-entry.json",
                 entry,

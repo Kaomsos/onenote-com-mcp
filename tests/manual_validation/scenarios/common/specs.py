@@ -1110,11 +1110,14 @@ SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
 
 _INTERACTIVE_TOOLS = READ_TOOLS | {"create_section", "create_page"}
 for _scenario_name, _capability in (
-    ("bootstrap-inserted-file-fixture", "InsertedFile"),
-    ("bootstrap-ink-drawing-fixture", "InkDrawing"),
-    ("bootstrap-media-file-fixture", "MediaFile"),
-    ("bootstrap-shape-fixture", "UIShape"),
+    ("interactive-copy-inserted-file", "InsertedFile"),
+    ("interactive-copy-ink-drawing", "InkDrawing"),
+    ("interactive-copy-media-file", "MediaFile"),
+    ("interactive-copy-ui-shape", "UIShape"),
 ):
+    _copy_tools = READ_TOOLS | {"copy_page"}
+    if _scenario_name == "interactive-copy-media-file":
+        _copy_tools |= {"create_section"}
     SCENARIO_SPECS[_scenario_name] = ScenarioSpec(
         _scenario_name,
         _profile(
@@ -1129,37 +1132,83 @@ for _scenario_name, _capability in (
                 "unexpected or misplaced content fails closed",
             ),
         ),
-        WRITE_POLICY,
-        frozenset(_INTERACTIVE_TOOLS),
-        {"interactive_bootstrap": True, "included_in_all": False},
-    )
-
-for _scenario_name, _bootstrap_name, _capability in (
-    ("interactive-copy-inserted-file", "bootstrap-inserted-file-fixture", "InsertedFile"),
-    ("interactive-copy-ink-drawing", "bootstrap-ink-drawing-fixture", "InkDrawing"),
-    ("interactive-copy-media-file", "bootstrap-media-file-fixture", "MediaFile"),
-    ("interactive-copy-ui-shape", "bootstrap-shape-fixture", "UIShape"),
-):
-    _copy_tools = READ_TOOLS | {"copy_page"}
-    if _scenario_name == "interactive-copy-media-file":
-        _copy_tools |= {"create_section"}
-    SCENARIO_SPECS[_scenario_name] = ScenarioSpec(
-        _scenario_name,
-        SCENARIO_SPECS[_bootstrap_name].fixture,
         COPY_NO_DELETE_POLICY,
-        frozenset(_copy_tools),
+        frozenset(_copy_tools | {"create_section", "create_page"}),
         {
+            "interactive": True,
             "interactive_copy_evidence": True,
             "capability": _capability,
-            "cache_only": True,
-            "bootstrap_on_miss": _bootstrap_name,
             "delete_permission": False,
             "page_xml_capture": "explicit_opt_in_sensitive_evidence",
-            "same_and_cross_section": _scenario_name
-            == "interactive-copy-media-file",
+            "same_and_cross_section": _scenario_name == "interactive-copy-media-file",
             "included_in_all": False,
         },
     )
+
+_INLINE_EQUATION_PROFILE = _profile(
+    "interactive-inline-equation",
+    (
+        "Source/01-Source-Parent[prepared rich text, table, image, and one automatic inline equation]",
+    ),
+    ("canvas_section", "canvas_page"),
+    {"create_section", "create_page", "append_page_content", "add_page_image_from_file"},
+    content=("Outline", "RichText", "Table", "Image", "InlineEquation"),
+    checks=(
+        "exact Source Parent IDs remain active",
+        "prepared rich text, table, and image remain present",
+        "exactly one complete MathML equation remains inline with visible surrounding text",
+        "the inline equation has no display attribute and no standalone formula line",
+    ),
+)
+
+SCENARIO_SPECS["interactive-copy-inline-equation"] = ScenarioSpec(
+    "interactive-copy-inline-equation",
+    _INLINE_EQUATION_PROFILE,
+    RICH_COPY_POLICY,
+    frozenset(
+        READ_TOOLS
+        | {"copy_page", "create_section", "create_page", "append_page_content", "add_page_image_from_file"}
+    ),
+    {
+        "interactive": True,
+        "interactive_copy_evidence": True,
+        "capability": "InlineEquation",
+        "programmatic_inline_equation": True,
+        "delete_permission": False,
+        "page_xml_capture": "explicit_opt_in_sensitive_evidence",
+        "same_and_cross_section": False,
+        "included_in_all": False,
+    },
+)
+
+_USER_AUTHORED_PROFILE = _profile(
+    "user-authored-zone",
+    (
+        "00-System-Instructions/00-Reserved-Marker-Do-Not-Edit",
+        "01-Authoring-Zone/01-Author-Here",
+    ),
+    (
+        "instructions_section",
+        "instructions_page",
+        "authoring_zone_section",
+        "authoring_zone_page",
+    ),
+    {"create_section", "create_page"},
+    content=("bounded_user_authored_content",),
+    checks=(
+        "reserved marker remains unchanged",
+        "all edits remain inside the exact authoring zone",
+        "unknown capabilities publish evidence_only and are mutation-ineligible",
+    ),
+)
+
+SCENARIO_SPECS["interactive-user-authored-fixture"] = ScenarioSpec(
+    "interactive-user-authored-fixture",
+    _USER_AUTHORED_PROFILE,
+    WRITE_POLICY,
+    frozenset(_INTERACTIVE_TOOLS),
+    {"interactive": True, "user_authored": True, "included_in_all": False},
+)
 
 SCENARIO_SPECS["copy-display-equation"] = ScenarioSpec(
     "copy-display-equation",
@@ -1193,83 +1242,6 @@ SCENARIO_SPECS["copy-display-equation"] = ScenarioSpec(
     },
 )
 
-SCENARIO_SPECS["bootstrap-inline-equation-fixture"] = ScenarioSpec(
-    "bootstrap-inline-equation-fixture",
-    _profile(
-        "interactive-inline-equation",
-        (
-            "Source/01-Source-Parent[prepared rich text, table, image, and one automatic inline equation]",
-        ),
-        ("canvas_section", "canvas_page"),
-        {"create_section", "create_page", "append_page_content", "add_page_image_from_file"},
-        content=("Outline", "RichText", "Table", "Image", "InlineEquation"),
-        checks=(
-            "exact Source Parent IDs remain active",
-            "prepared rich text, table, and image remain present",
-            "exactly one complete MathML equation remains inline with visible surrounding text",
-            "the inline equation has no display attribute and no standalone formula line",
-        ),
-    ),
-    RICH_WRITE_POLICY,
-    frozenset(_INTERACTIVE_TOOLS | {"append_page_content", "add_page_image_from_file"}),
-    {
-        "interactive_bootstrap": True,
-        "programmatic_inline_equation": True,
-        "included_in_all": False,
-    },
-)
-
-SCENARIO_SPECS["interactive-copy-inline-equation"] = ScenarioSpec(
-    "interactive-copy-inline-equation",
-    SCENARIO_SPECS["bootstrap-inline-equation-fixture"].fixture,
-    COPY_NO_DELETE_POLICY,
-    frozenset(READ_TOOLS | {"copy_page"}),
-    {
-        "interactive_copy_evidence": True,
-        "capability": "InlineEquation",
-        "cache_only": True,
-        "bootstrap_on_miss": "bootstrap-inline-equation-fixture",
-        "delete_permission": False,
-        "page_xml_capture": "explicit_opt_in_sensitive_evidence",
-        "same_and_cross_section": False,
-        "included_in_all": False,
-    },
-)
-
-SCENARIO_SPECS["bootstrap-user-authored-fixture"] = ScenarioSpec(
-    "bootstrap-user-authored-fixture",
-    _profile(
-        "user-authored-zone",
-        (
-            "00-System-Instructions/00-Reserved-Marker-Do-Not-Edit",
-            "01-Authoring-Zone/01-Author-Here",
-        ),
-        (
-            "instructions_section",
-            "instructions_page",
-            "authoring_zone_section",
-            "authoring_zone_page",
-        ),
-        {"create_section", "create_page"},
-        content=("bounded_user_authored_content",),
-        checks=(
-            "reserved marker remains unchanged",
-            "all edits remain inside the exact authoring zone",
-            "unknown capabilities publish evidence_only and are mutation-ineligible",
-        ),
-    ),
-    WRITE_POLICY,
-    frozenset(_INTERACTIVE_TOOLS),
-    {"interactive_bootstrap": True, "user_authored": True, "included_in_all": False},
-)
-
-SCENARIO_SPECS["user-authored-fixture-consumer"] = ScenarioSpec(
-    "user-authored-fixture-consumer",
-    SCENARIO_SPECS["bootstrap-user-authored-fixture"].fixture,
-    ScenarioPolicy(),
-    frozenset(READ_TOOLS),
-    {"interactive_consumer": True, "requires_explicit_instance": True, "included_in_all": False},
-)
 
 _MOVE_PAGE_CONTENT_PROFILE = _profile(
     "interactive-move-page-content",
@@ -1296,29 +1268,15 @@ _MOVE_PAGE_CONTENT_PROFILE = _profile(
     ),
 )
 
-SCENARIO_SPECS["bootstrap-move-page-content-fixture"] = ScenarioSpec(
-    "bootstrap-move-page-content-fixture",
-    _MOVE_PAGE_CONTENT_PROFILE,
-    WRITE_POLICY,
-    frozenset(_INTERACTIVE_TOOLS),
-    {
-        "interactive_bootstrap": True,
-        "representative_move_content": True,
-        "notebook_roles": ["destination", "source"],
-        "included_in_all": False,
-    },
-)
-
 SCENARIO_SPECS["interactive-move-page-content"] = ScenarioSpec(
     "interactive-move-page-content",
     _MOVE_PAGE_CONTENT_PROFILE,
     MOVE_PAGE_POLICY,
-    frozenset(MOVE_PAGE_TOOLS),
+    frozenset(MOVE_PAGE_TOOLS | {"create_section", "create_page"}),
     {
+        "interactive": True,
         "interactive_move_evidence": True,
-        "cache_only": True,
-        "requires_explicit_instance": True,
-        "bootstrap_on_miss": "bootstrap-move-page-content-fixture",
+        "representative_move_content": True,
         "include_subpages": False,
         "single_public_move_call": True,
         "verified_copy_before_delete": True,

@@ -209,7 +209,7 @@ def page_body_content_hash(xml: str) -> str:
 
 
 def page_semantic_content_identity(xml: str) -> dict[str, Any]:
-    """Return full and persistence-stable digests of reviewed Page semantics."""
+    """Return full, persistence, and materialization-stable Page semantic digests."""
 
     projection = semantic_content_projection(xml)
 
@@ -289,11 +289,77 @@ def page_semantic_content_identity(xml: str) -> dict[str, Any]:
         for outline in compatibility_projection.get("outlines", ())
         for oe in outline
     )
+
+    def materialization_rich_text(value: Any) -> Any:
+        """Retain visible text while ignoring OneNote's presentation-only span rewrite."""
+
+        if not isinstance(value, (tuple, list)):
+            return value
+        text_fragments: list[str] = []
+        for run in value:
+            if not isinstance(run, (tuple, list)) or len(run) != 2:
+                return value
+            text_fragments.append(str(run[0]))
+        text = "".join(text_fragments)
+        return ((text, ()),) if text else ()
+
+    def materialization_table(value: Any) -> Any:
+        if not isinstance(value, tuple) or len(value) != 3:
+            return value
+        _attributes_value, columns, rows = value
+        normalized_rows: list[Any] = []
+        for row in rows:
+            if not isinstance(row, tuple) or len(row) != 2:
+                normalized_rows.append(row)
+                continue
+            _row_attributes, cells = row
+            normalized_cells: list[Any] = []
+            for cell in cells:
+                if not isinstance(cell, tuple) or len(cell) != 5:
+                    normalized_cells.append(cell)
+                    continue
+                _cell_attributes, rich_text, lists, tags, nested_tables = cell
+                normalized_cells.append(
+                    (
+                        materialization_rich_text(rich_text),
+                        lists,
+                        tags,
+                        tuple(materialization_table(table) for table in nested_tables),
+                    )
+                )
+            normalized_rows.append(tuple(normalized_cells))
+        # A closed byte-for-byte template copy is independently proven before open.
+        # OneNote may then rewrite presentation-only Table/Column/Row/Cell attributes
+        # (notably calculated widths) while retaining the exact logical table.  Keep
+        # column count, row/cell topology, visible content, lists/tags, and nesting;
+        # the later Copy-before-delete comparator remains the strict style/fidelity
+        # gate for the actual Move operation.
+        return len(columns), tuple(normalized_rows)
+
+    def materialization_oe(value: Any) -> Any:
+        if not isinstance(value, tuple) or len(value) != 6:
+            return value
+        rich_text, list_value, tags, tables, binary_objects, children = value
+        return (
+            materialization_rich_text(rich_text),
+            list_value,
+            tags,
+            tuple(materialization_table(table) for table in tables),
+            binary_objects,
+            tuple(materialization_oe(child) for child in children),
+        )
+
+    materialization_projection = dict(persistence_projection)
+    materialization_projection["outlines"] = tuple(
+        materialization_oe(oe) for oe in persistence_projection["outlines"]
+    )
+
     return {
         "schema_version": 2,
         "complete": projection.get("complete") is True,
         "sha256": digest(compatibility_projection),
         "persistence_sha256": digest(persistence_projection),
+        "materialization_sha256": digest(materialization_projection),
     }
 
 

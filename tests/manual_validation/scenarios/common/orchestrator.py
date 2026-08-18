@@ -37,7 +37,9 @@ from .fixture_runtime import (
     bundle_cache_artifacts,
     prepare_fixture_bundle,
     prepare_materialized_fixture_bundle,
+    requires_interactive_scaffold,
 )
+from .interactive_bootstrap import run_interactive_bootstrap_phase
 from .fixture_cache import (
     CACHE_SCHEMA_VERSION,
     MANAGED_MARKER,
@@ -68,6 +70,111 @@ def _keep_source_notebook(args: argparse.Namespace) -> bool:
         getattr(args, "keep_notebook", False)
         or getattr(args, "keep_worksite", False)
     )
+
+
+def _interactive_phase_flags(recipe, options: RuntimeOptions) -> tuple[bool, bool, bool, int]:
+    interactive = recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED
+    interactive_fresh = interactive and not options.use_cache
+    interactive_cache = interactive and options.use_cache
+    phase_total = 6 if interactive_fresh else 5
+    return interactive, interactive_fresh, interactive_cache, phase_total
+
+
+async def _publish_interactive_bootstrap_template(
+    *,
+    scenario,
+    args: argparse.Namespace,
+    options: RuntimeOptions,
+    bootstrap_result: dict[str, Any],
+    manifest: dict[str, Any],
+    fixture_result: dict[str, Any],
+    wrappers,
+    roles: tuple[str, ...],
+    notebooks: dict[str, Any],
+    leases: dict[str, Mapping[str, Any]],
+    cache_store: BundleCacheStore,
+    wrapper: NotebookLifecycleWrapper,
+) -> tuple[CacheHit, MaterializedBundle, dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Close authored bundle, publish immutable template, and materialize working copy."""
+
+    _close_bundle(wrappers, roles, sync_to_disk=True)
+    recipe = scenario.fixture_recipe
+    instance_id = str(bootstrap_result["template_instance_id"])
+    final_manifest = read_json(options.run_dir / "manifest.json")
+    artifacts = bundle_cache_artifacts(options.run_dir, roles, final_manifest, fixture_result)
+    source_paths = {
+        role: Path(str(leases[role]["expected_local_path"])) for role in roles
+    }
+    template_instance = bootstrap_result.get("template_instance")
+    if template_instance is not None and not isinstance(template_instance, Mapping):
+        raise RunnerFailure(
+            "Interactive bootstrap template_instance must be an object or null."
+        )
+    authored_instance = template_instance or {}
+    with cache_store.lock(recipe.cache_fingerprint, run_id=options.run_dir.name):
+        existing, _resolution, _resolved_invalidation = _resolve_exact_cache_entry(
+            cache_store,
+            recipe,
+            instance_id,
+            run_id=options.run_dir.name,
+            open_state_probe=wrapper.any_cache_template_open,
+            allow_open_failure_recovery=True,
+        )
+        if existing is not None:
+            cache_store.invalidate_exact(
+                recipe,
+                instance_id,
+                reason="explicit named interactive re-bootstrap",
+                open_state_probe=wrapper.any_cache_template_open,
+            )
+        cache_hit = cache_store.publish(
+            recipe,
+            instance_id,
+            source_paths=source_paths,
+            source_notebooks=notebooks,
+            closed_roles=set(roles),
+            validation=final_manifest["fixture_validation"],
+            artifacts=artifacts,
+            projection_digest=str(authored_instance.get("projection_digest", "") or "")
+            or None,
+            state=str(bootstrap_result.get("template_state", "ready")),
+            mutation_eligible=authored_instance.get("mutation_eligible"),
+            move_source_deletion_allowed=authored_instance.get(
+                "move_source_deletion_allowed"
+            ),
+        )
+        materialized = _materialize_with_budget_context(
+            cache_store,
+            cache_hit,
+            options.run_dir,
+            working_names=_cached_working_names(args, scenario),
+            cache_entry_published=True,
+            cache_origin="interactive_bootstrap",
+        )
+    try:
+        notebooks, leases = _open_materialized_bundle(
+            cache_store,
+            materialized,
+            wrappers,
+            roles,
+        )
+    except Exception as exc:
+        if roles == ("source",):
+            _record_failed_materialized_open(cache_store, wrapper, materialized, options)
+        _record_materialized_failure(
+            cache_store,
+            scenario,
+            cache_hit,
+            options,
+            exc,
+            phase="bootstrap-materialized-open",
+            quarantine=False,
+        )
+        raise
+    args.notebook_name = str(notebooks["source"].get("name", args.notebook_name))
+    bootstrap_result["template_published"] = True
+    bootstrap_result["post_publish_materialization_validated"] = False
+    return cache_hit, materialized, notebooks, leases, manifest, fixture_result
 
 
 def _validate_notebook_name(name: str) -> None:
@@ -554,9 +661,14 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     state = _initial_state(args, options)
     state_path = options.run_dir / "run-state.json"
     write_json(state_path, state)
-    if scenario.fixture_recipe.consumer_scenario and not options.use_cache:
+    recipe = scenario.fixture_recipe
+    interactive, interactive_fresh, interactive_cache, phase_total = _interactive_phase_flags(
+        recipe, options
+    )
+    if interactive_fresh and getattr(args, "template_instance_id", None):
         raise RunnerFailure(
-            "Interactive fixture consumers require --use-cache and never build a fresh authored fixture."
+            "Fresh interactive runs must not pass --template-instance-id; "
+            "the run publishes and consumes the template automatically."
         )
     spec = scenario.runtime_spec(args)
     metrics_path = options.run_dir / "run-metrics.json"
@@ -582,7 +694,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     roles = tuple(
         role.role for role in scenario.fixture_recipe.cache_identity.notebook_roles
     )
-    progress.phase_started("notebook", 1, 5)
+    progress.phase_started("notebook", 1, phase_total)
     wrappers = _role_wrappers(
         options.run_dir,
         options.timeout,
@@ -595,21 +707,19 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     materialized: MaterializedBundle | None = None
     cache_decision = "fresh"
     invalidation_performed = False
-    interactive_bootstrap = (
-        scenario.fixture_recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED
-        and getattr(scenario.fixture_recipe, "bootstrap_scenario_name", None) == scenario.name
-    )
     selected_instance_id: str | None = None
-    if options.use_cache and not interactive_bootstrap:
-        selected_instance_id = scenario.fixture_recipe.select_template_instance_id(args)
-    phase_started = time.perf_counter()
     if options.use_cache:
         cache_store = BundleCacheStore(
             options.cache_root or (options.run_dir.parent / "fixture-cache")
         )
         cache_store.initialize()
-    if options.use_cache and not interactive_bootstrap:
-        recipe = scenario.fixture_recipe
+    if options.use_cache:
+        selected_instance_id = recipe.select_template_instance_id(
+            args,
+            cache_store=cache_store,
+        )
+    phase_started = time.perf_counter()
+    if options.use_cache:
         instance_id = str(selected_instance_id)
         with cache_store.lock(recipe.cache_fingerprint, run_id=options.run_dir.name):
             cache_hit, resolution, resolved_invalidation = _resolve_exact_cache_entry(
@@ -655,9 +765,9 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 if cache_decision != "recovered_retryable_open_failure":
                     cache_decision = "validated_hit"
         if cache_hit is None and recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED:
-            bootstrap = getattr(recipe, "bootstrap_scenario_name", "")
             raise RunnerFailure(
-                f"interactive_bootstrap_required: run the named scenario {bootstrap!r}."
+                f"interactive_cache_miss: run {scenario.name} without --use-cache "
+                "to author a new template."
             )
     if cache_hit is not None and materialized is not None and cache_store is not None:
         try:
@@ -716,7 +826,14 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     _refresh_call_metrics(metrics, options.run_dir)
     write_json(metrics_path, metrics)
 
-    progress.phase_started("fixture", 2, 5)
+    phase_fixture = 3 if interactive_fresh else 2
+    phase_scenario = 4 if interactive_fresh else 3
+    phase_report = 5 if interactive_fresh else 4
+    phase_lifecycle = 6 if interactive_fresh else 5
+    if interactive_fresh:
+        progress.phase_started("bootstrap", 2, phase_total)
+    else:
+        progress.phase_started("fixture", phase_fixture, phase_total)
     fixture_progress_started = time.perf_counter()
     phase_started = time.perf_counter()
     metrics["mcp_process_start_attempts"] = 1
@@ -736,6 +853,8 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     client_handle = MCPStdioClient(**client_options)
     client_handle.progress = progress
     entered_client = False
+    bootstrap_result: dict[str, Any] | None = None
+    scenario_result: dict[str, Any] = {}
     try:
         async with client_handle as client:
             entered_client = True
@@ -747,7 +866,92 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 ),
                 tool_count=len(spec.tool_allowlist),
             )
-            if cache_hit is not None and materialized is not None:
+            if interactive_fresh:
+                manifest, fixture_result = await prepare_fixture_bundle(
+                    scenario,
+                    args,
+                    options,
+                    client,
+                    notebooks,
+                    {
+                        role: str(leases[role]["expected_local_path"])
+                        for role in roles
+                    },
+                    spec,
+                )
+                bootstrap_result = await run_interactive_bootstrap_phase(
+                    scenario,
+                    args,
+                    options,
+                    manifest,
+                    client=client,
+                    fixture_result=fixture_result,
+                )
+                if cache_store is None:
+                    cache_store = BundleCacheStore(
+                        options.cache_root or (options.run_dir.parent / "fixture-cache")
+                    )
+                    cache_store.initialize()
+                (
+                    cache_hit,
+                    materialized,
+                    notebooks,
+                    leases,
+                    _manifest,
+                    _fixture_result,
+                ) = await _publish_interactive_bootstrap_template(
+                    scenario=scenario,
+                    args=args,
+                    options=options,
+                    bootstrap_result=bootstrap_result,
+                    manifest=manifest,
+                    fixture_result=fixture_result,
+                    wrappers=wrappers,
+                    roles=roles,
+                    notebooks=notebooks,
+                    leases=leases,
+                    cache_store=cache_store,
+                    wrapper=wrapper,
+                )
+                del _manifest, _fixture_result
+                cache_decision = "bootstrap_published"
+                state["completed_steps"].append(
+                    {"step": "interactive-bootstrap", "result": bootstrap_result}
+                )
+                write_json(state_path, state)
+                progress.phase_completed(
+                    "bootstrap",
+                    elapsed_seconds=time.perf_counter() - fixture_progress_started,
+                )
+                progress.phase_started("fixture", phase_fixture, phase_total)
+                fixture_progress_started = time.perf_counter()
+                try:
+                    manifest, fixture_result = await prepare_materialized_fixture_bundle(
+                        scenario,
+                        args,
+                        options,
+                        client,
+                        notebooks,
+                        {
+                            role: str(leases[role]["expected_local_path"])
+                            for role in roles
+                        },
+                        spec,
+                        cache_hit,
+                        materialized,
+                    )
+                except Exception as exc:
+                    _record_materialized_failure(
+                        cache_store,
+                        scenario,
+                        cache_hit,
+                        options,
+                        exc,
+                        phase="bootstrap-materialized-live-validation",
+                    )
+                    raise
+                bootstrap_result["post_publish_materialization_validated"] = True
+            elif cache_hit is not None and materialized is not None:
                 try:
                     manifest, fixture_result = await prepare_materialized_fixture_bundle(
                         scenario,
@@ -937,7 +1141,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                 "fixture",
                 elapsed_seconds=time.perf_counter() - fixture_progress_started,
             )
-            progress.phase_started("scenario", 3, 5)
+            progress.phase_started("scenario", phase_scenario, phase_total)
             if materialized is not None:
                 if not hasattr(client, "stage_scenario_before_snapshots"):
                     raise RunnerFailure(
@@ -979,130 +1183,15 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     client=client,
                     fixture_result=fixture_result,
                 )
-            if interactive_bootstrap and scenario_result.get("interactive_bootstrap") is True:
-                if bool(getattr(args, "keep_worksite", False)):
-                    scenario_result["template_published"] = False
-                    scenario_result["template_not_published_reason"] = "keep_worksite"
-                    cache_decision = "template_not_published"
-                else:
-                    if cache_store is None:
-                        cache_store = BundleCacheStore(
-                            options.cache_root
-                            or (options.run_dir.parent / "fixture-cache")
-                        )
-                        cache_store.initialize()
-                    _close_bundle(wrappers, roles, sync_to_disk=True)
-                    recipe = scenario.fixture_recipe
-                    instance_id = str(scenario_result["template_instance_id"])
-                    final_manifest = read_json(options.run_dir / "manifest.json")
-                    artifacts = bundle_cache_artifacts(
-                        options.run_dir,
-                        roles,
-                        final_manifest,
-                        fixture_result,
-                    )
-                    source_paths = {
-                        role: Path(str(leases[role]["expected_local_path"]))
-                        for role in roles
-                    }
-                    with cache_store.lock(recipe.cache_fingerprint, run_id=options.run_dir.name):
-                        existing, _resolution, _resolved_invalidation = (
-                            _resolve_exact_cache_entry(
-                                cache_store,
-                                recipe,
-                                instance_id,
-                                run_id=options.run_dir.name,
-                                open_state_probe=wrapper.any_cache_template_open,
-                                allow_open_failure_recovery=True,
-                            )
-                        )
-                        if existing is not None:
-                            cache_store.invalidate_exact(
-                                recipe,
-                                instance_id,
-                                reason="explicit named interactive re-bootstrap",
-                                open_state_probe=wrapper.any_cache_template_open,
-                            )
-                        cache_hit = cache_store.publish(
-                            recipe,
-                            instance_id,
-                            source_paths=source_paths,
-                            source_notebooks=notebooks,
-                            closed_roles=set(roles),
-                            validation=final_manifest["fixture_validation"],
-                            artifacts=artifacts,
-                            projection_digest=str(
-                                scenario_result.get("template_instance", {}).get(
-                                    "projection_digest", ""
-                                )
-                                or ""
-                            )
-                            or None,
-                            state=str(scenario_result.get("template_state", "ready")),
-                        )
-                        materialized = _materialize_with_budget_context(
-                            cache_store,
-                            cache_hit,
-                            options.run_dir,
-                            working_names=_cached_working_names(args, scenario),
-                            cache_entry_published=True,
-                            cache_origin="interactive_bootstrap",
-                        )
-                    try:
-                        notebooks, leases = _open_materialized_bundle(
-                            cache_store,
-                            materialized,
-                            wrappers,
-                            roles,
-                        )
-                    except Exception as exc:
-                        if roles == ("source",):
-                            _record_failed_materialized_open(
-                                cache_store,
-                                wrapper,
-                                materialized,
-                                options,
-                            )
-                        _record_materialized_failure(
-                            cache_store,
-                            scenario,
-                            cache_hit,
-                            options,
-                            exc,
-                            phase="bootstrap-materialized-open",
-                            quarantine=False,
-                        )
-                        raise
-                    notebook, lease = notebooks["source"], leases["source"]
-                    args.notebook_name = str(notebook.get("name", args.notebook_name))
-                    try:
-                        manifest, fixture_result = await prepare_materialized_fixture_bundle(
-                            scenario,
-                            args,
-                            options,
-                            client,
-                            notebooks,
-                            {
-                                role: str(leases[role]["expected_local_path"])
-                                for role in roles
-                            },
-                            spec,
-                            cache_hit,
-                            materialized,
-                        )
-                    except Exception as exc:
-                        _record_materialized_failure(
-                            cache_store,
-                            scenario,
-                            cache_hit,
-                            options,
-                            exc,
-                            phase="bootstrap-materialized-live-validation",
-                        )
-                        raise
-                    cache_decision = "bootstrap_published"
-                    scenario_result["template_published"] = True
-                    scenario_result["post_publish_materialization_validated"] = True
+            if bootstrap_result is not None:
+                scenario_result = {
+                    **bootstrap_result,
+                    **scenario_result,
+                    "template_published": bootstrap_result.get("template_published", True),
+                    "post_publish_materialization_validated": bootstrap_result.get(
+                        "post_publish_materialization_validated", False
+                    ),
+                }
             progress.phase_completed("scenario")
     finally:
         metrics["observed_mcp_process_starts"] = int(
@@ -1124,7 +1213,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     state["current_step"] = "report"
     write_json(state_path, state)
 
-    progress.phase_started("report", 4, 5)
+    progress.phase_started("report", phase_report, phase_total)
     phase_started = time.perf_counter()
     report_path = render_report(options.run_dir)
     metrics["phases_seconds"]["report"] = round(time.perf_counter() - phase_started, 6)
@@ -1140,7 +1229,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     )
     state["finalization_started"] = True
     write_json(state_path, state)
-    progress.phase_started("lifecycle", 5, 5)
+    progress.phase_started("lifecycle", phase_lifecycle, phase_total)
     phase_started = time.perf_counter()
     lifecycle = await finalize_bundle(
         args,

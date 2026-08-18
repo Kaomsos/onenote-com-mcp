@@ -31,18 +31,15 @@ from .recipe_base import (
 )
 
 
-BOOTSTRAP_SCENARIO = "bootstrap-move-page-content-fixture"
-CONSUMER_SCENARIO = "interactive-move-page-content"
+INTERACTIVE_SCENARIO = "interactive-move-page-content"
 CACHE_RECIPE_NAME = "interactive-move-page-content"
 
 
 class MovePageContentRecipe(UserAuthoredRecipe):
     """Freeze one exact representative Page plus an isolated Move destination."""
 
-    bootstrap_scenario_name = BOOTSTRAP_SCENARIO
-    consumer_scenario_name = CONSUMER_SCENARIO
     capability = "MovePageContent"
-    recipe_version = 7
+    recipe_version = 11
     requested_object_types = frozenset({"Outline"})
     stable_capabilities = frozenset(VALIDATED_COPY_CAPABILITIES)
     # Outline alone is the scaffold/placeholder shape.  RichText is a validated
@@ -71,9 +68,8 @@ class MovePageContentRecipe(UserAuthoredRecipe):
         "the Move destination belongs only to the destination Notebook role",
     )
 
-    def __init__(self, scenario_name: str, *, consumer: bool) -> None:
-        self.consumer_scenario = consumer
-        profile = get_scenario_spec(scenario_name).fixture
+    def __init__(self) -> None:
+        profile = get_scenario_spec(INTERACTIVE_SCENARIO).fixture
         source_keys = (
             "source_instructions_section",
             "source_instructions_page",
@@ -110,7 +106,7 @@ class MovePageContentRecipe(UserAuthoredRecipe):
             ),
         )
         super().__init__(
-            scenario_name,
+            INTERACTIVE_SCENARIO,
             notebook_roles=(
                 NotebookRoleSpec(
                     "destination",
@@ -124,6 +120,20 @@ class MovePageContentRecipe(UserAuthoredRecipe):
                 ),
             ),
             cache_recipe_name=CACHE_RECIPE_NAME,
+        )
+
+    def select_template_instance_id(
+        self,
+        args: argparse.Namespace,
+        *,
+        allow_unselected: bool = False,
+        cache_store: Any | None = None,
+    ) -> str:
+        return UserAuthoredRecipe.select_template_instance_id(
+            self,
+            args,
+            allow_unselected=allow_unselected,
+            cache_store=cache_store,
         )
 
     async def build_scaffold(self, context: FixtureContext) -> FixtureBuildResult:
@@ -268,9 +278,11 @@ class MovePageContentRecipe(UserAuthoredRecipe):
         Page/Object IDs, Notebook IDs, and resolved paths are expected to differ even
         when the opaque working bundle is byte-for-byte derived from the published
         template.  For the reviewed rich/list/table/image tier, the identity uses
-        the same semantic projection as Copy read-back so OneNote's persistence-time
-        layout stabilization cannot invalidate an opaque byte-for-byte copy.  Other
-        capability tiers retain the stricter stable body-hash fallback.
+        a materialization-stable semantic projection: OneNote may reserialize
+        presentation-only rich-text spans and calculated table attributes while
+        opening an opaque byte-for-byte copy. The later Move read-back remains the
+        strict fidelity gate. Other capability tiers retain the stricter stable
+        body-hash fallback.
         """
 
         pages = [
@@ -303,10 +315,10 @@ class MovePageContentRecipe(UserAuthoredRecipe):
             isinstance(semantic_identity, Mapping)
             and semantic_identity.get("complete") is True
         ):
-            semantic_digest = semantic_identity.get("persistence_sha256")
+            semantic_digest = semantic_identity.get("materialization_sha256")
             if not isinstance(semantic_digest, str) or not semantic_digest:
                 raise InvariantFailure(
-                    "Representative Move Canvas has an invalid persistence semantic digest."
+                    "Representative Move Canvas has an invalid materialization semantic digest."
                 )
         projections = snapshot.get("page_capability_projections")
         projection = (
@@ -322,7 +334,7 @@ class MovePageContentRecipe(UserAuthoredRecipe):
             "is_root_page": page.get("parent_page_id") is None,
             "content_identity": (
                 {
-                    "kind": "semantic_content_persistence_v2",
+                    "kind": "semantic_content_materialization_v2",
                     "sha256": semantic_digest,
                 }
                 if semantic_digest is not None
@@ -565,25 +577,10 @@ class MovePageContentRecipe(UserAuthoredRecipe):
         )
 
 
-class BootstrapMovePageContentRecipe(MovePageContentRecipe):
-    def __init__(self) -> None:
-        super().__init__(BOOTSTRAP_SCENARIO, consumer=False)
-
-
-class InteractiveMovePageContentRecipe(MovePageContentRecipe):
-    def __init__(self) -> None:
-        super().__init__(CONSUMER_SCENARIO, consumer=True)
-
-
-BOOTSTRAP_RECIPE = BootstrapMovePageContentRecipe()
-CONSUMER_RECIPE = InteractiveMovePageContentRecipe()
+RECIPE = MovePageContentRecipe()
 
 __all__ = [
-    "BOOTSTRAP_RECIPE",
-    "BOOTSTRAP_SCENARIO",
-    "BootstrapMovePageContentRecipe",
-    "CONSUMER_RECIPE",
-    "CONSUMER_SCENARIO",
-    "InteractiveMovePageContentRecipe",
+    "INTERACTIVE_SCENARIO",
     "MovePageContentRecipe",
+    "RECIPE",
 ]

@@ -30,13 +30,12 @@ from tests.manual_validation.scenarios.common.fixture_models import FixtureBuild
 
 CASES = required_recipe_contract_cases(SCENARIO_REGISTRY)
 PINNED_RECIPE_VERSIONS = {
-    "bootstrap-ink-drawing-fixture": 3,
-    "bootstrap-inserted-file-fixture": 3,
-    "bootstrap-media-file-fixture": 8,
-    "bootstrap-shape-fixture": 5,
-    "bootstrap-user-authored-fixture": 3,
-    "bootstrap-move-page-content-fixture": 7,
-    "interactive-move-page-content": 7,
+    "interactive-copy-ink-drawing": 3,
+    "interactive-copy-inserted-file": 3,
+    "interactive-copy-media-file": 8,
+    "interactive-copy-ui-shape": 5,
+    "interactive-user-authored-fixture": 4,
+    "interactive-move-page-content": 11,
     "copy-notebook": 3,
     "copy-page": 14,
     "hierarchy-navigation": 4,
@@ -177,7 +176,7 @@ def test_fingerprint_is_structural_deterministic_and_runtime_value_free() -> Non
 
 
 def test_interactive_miss_never_calls_scaffold_or_waits_for_input(monkeypatch) -> None:
-    recipe = SCENARIO_REGISTRY.get("bootstrap-ink-drawing-fixture").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-copy-ink-drawing").fixture_recipe
     assert isinstance(recipe, InteractiveFixtureRecipe)
     called = False
 
@@ -196,10 +195,10 @@ def test_interactive_miss_never_calls_scaffold_or_waits_for_input(monkeypatch) -
 @pytest.mark.parametrize(
     "scenario_name",
     [
-        "bootstrap-inserted-file-fixture",
-        "bootstrap-ink-drawing-fixture",
-        "bootstrap-media-file-fixture",
-        "bootstrap-shape-fixture",
+        "interactive-copy-inserted-file",
+        "interactive-copy-ink-drawing",
+        "interactive-copy-media-file",
+        "interactive-copy-ui-shape",
     ],
 )
 def test_each_concrete_interactive_detector_has_success_and_failure_cases(scenario_name) -> None:
@@ -248,12 +247,12 @@ def test_each_concrete_interactive_detector_has_success_and_failure_cases(scenar
 
 
 def test_user_authored_catalog_requires_ready_evidence_only_and_ambiguity() -> None:
-    recipe = SCENARIO_REGISTRY.get("bootstrap-user-authored-fixture").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-user-authored-fixture").fixture_recipe
     assert isinstance(recipe, UserAuthoredRecipe)
     outcomes = {
         (case.variant, case.expected_outcome)
         for case in CASES
-        if case.scenario_name == "bootstrap-user-authored-fixture"
+        if case.scenario_name == "interactive-user-authored-fixture"
         and case.dimension == RecipeContractDimension.USER_AUTHORED
     }
     assert outcomes == {
@@ -264,7 +263,7 @@ def test_user_authored_catalog_requires_ready_evidence_only_and_ambiguity() -> N
 
 
 def test_user_authored_freeze_uses_kind_and_fails_closed_on_unknown_or_legacy_schema() -> None:
-    recipe = SCENARIO_REGISTRY.get("bootstrap-user-authored-fixture").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-user-authored-fixture").fixture_recipe
     stable = _interactive_observation(
         recipe,
         ({"kind": "Outline"}, {"kind": "OE"}),
@@ -298,13 +297,46 @@ def test_user_authored_freeze_uses_kind_and_fails_closed_on_unknown_or_legacy_sc
     assert "invalid-object-schema" in legacy_instance.unknown_capabilities
 
 
-def test_user_authored_consumer_shares_contract_fingerprint_but_requires_exact_instance() -> None:
-    bootstrap = SCENARIO_REGISTRY.get("bootstrap-user-authored-fixture").fixture_recipe
-    consumer = SCENARIO_REGISTRY.get("user-authored-fixture-consumer").fixture_recipe
-    assert bootstrap is not consumer
-    assert bootstrap.cache_fingerprint == consumer.cache_fingerprint
-    with pytest.raises(RunnerFailure, match="explicit --template-instance-id"):
-        consumer.select_template_instance_id(argparse.Namespace())
-    assert consumer.select_template_instance_id(
+def test_user_authored_selects_explicit_or_unique_ready_instance() -> None:
+    recipe = SCENARIO_REGISTRY.get("interactive-user-authored-fixture").fixture_recipe
+    with pytest.raises(RunnerFailure, match="template-instance-id|interactive_cache"):
+        recipe.select_template_instance_id(argparse.Namespace())
+    assert recipe.select_template_instance_id(
         argparse.Namespace(template_instance_id="authored-" + "a" * 24)
     ) == "authored-" + "a" * 24
+
+
+@pytest.mark.parametrize(
+    ("template_state", "mutation_eligible"),
+    (("ready", True), ("evidence_only", False)),
+)
+def test_user_authored_scenario_consumes_resolved_manifest_instance(
+    template_state,
+    mutation_eligible,
+) -> None:
+    import asyncio
+
+    scenario = SCENARIO_REGISTRY.get("interactive-user-authored-fixture")
+    instance_id = "authored-" + "e" * 24
+    result = asyncio.run(
+        scenario.execute(
+            argparse.Namespace(template_instance_id=None),
+            None,
+            {
+                "fixture_cache": {
+                    "template_instance_id": instance_id,
+                    "template_state": template_state,
+                    "mutation_eligible": mutation_eligible,
+                    "roles": {"source": {"working_path": "working"}},
+                    "opened_template": False,
+                }
+            },
+            client=None,
+            fixture_result={},
+        )
+    )
+
+    assert result["template_instance_id"] == instance_id
+    assert result["template_state"] == template_state
+    assert result["mutation_eligible"] is mutation_eligible
+    assert result["working_path"] == "working"

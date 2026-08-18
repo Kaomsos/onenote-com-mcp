@@ -13,7 +13,6 @@ from .path_budget import MAX_WORKING_NAME_UNITS, windows_path_units
 
 
 _LABEL_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-_MAX_NOTEBOOK_NAME_LENGTH = 120
 
 
 @dataclass(frozen=True)
@@ -60,6 +59,7 @@ def validation_notebook_name(
     cached: bool,
     role: str | None = None,
     label: str | None = None,
+    max_units: int = MAX_WORKING_NAME_UNITS,
 ) -> str:
     selected = validate_notebook_label(label or scenario_name)
     parts = [selected]
@@ -69,14 +69,20 @@ def validation_notebook_name(
         parts.append("CACHED")
     parts.append(identity.safe_timestamp)
     name = f"__{'-'.join(parts)}__"
-    limit = MAX_WORKING_NAME_UNITS if cached else _MAX_NOTEBOOK_NAME_LENGTH
-    if cached and windows_path_units(name) > limit:
+    limit = min(MAX_WORKING_NAME_UNITS, max_units)
+    if limit < 1:
+        raise ValueError("Validation Notebook name budget must be positive.")
+    if windows_path_units(name) > limit:
         logical = "-".join(parts)
-        digest = hashlib.sha256(logical.encode("utf-8")).hexdigest()[:8]
-        fixed = f"-{digest}-CACHED-{identity.safe_timestamp}__"
-        prefix_budget = limit - windows_path_units(fixed) - 2
-        readable = selected[:prefix_budget].rstrip("-")
-        name = f"__{readable}{fixed}"
+        digest = hashlib.sha256(logical.encode("utf-8")).hexdigest()
+        cache_marker = "-CACHED" if cached else ""
+        fixed = f"-{digest[:8]}{cache_marker}-{identity.safe_timestamp}__"
+        if limit >= windows_path_units(fixed) + 2:
+            prefix_budget = limit - windows_path_units(fixed) - 2
+            readable = selected[:prefix_budget].rstrip("-")
+            name = f"__{readable}{fixed}"
+        else:
+            name = digest[:12]
     if windows_path_units(name) > limit:
         raise ValueError(
             f"Generated validation Notebook name exceeds {limit} UTF-16 units."
@@ -91,6 +97,7 @@ def validation_notebook_names(
     *,
     cached: bool,
     label: str | None = None,
+    max_units: int = MAX_WORKING_NAME_UNITS,
 ) -> dict[str, str]:
     canonical_roles = tuple(roles)
     if not canonical_roles or len(set(canonical_roles)) != len(canonical_roles):
@@ -103,6 +110,7 @@ def validation_notebook_names(
             cached=cached,
             role=role if multi_role else None,
             label=label,
+            max_units=max_units,
         )
         for role in canonical_roles
     }

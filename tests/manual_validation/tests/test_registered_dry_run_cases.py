@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -11,6 +12,10 @@ import pytest
 
 from tests.manual_validation import all_scenarios, lifecycle, mcp_stdio_client, test_utils
 from tests.manual_validation.runner import build_parser, main
+from tests.manual_validation.path_budget import (
+    MAX_ONENOTE_OPEN_PATH_UNITS,
+    windows_path_units,
+)
 from tests.manual_validation.scenarios.common import fixture_runtime, orchestrator
 from tests.manual_validation.scenarios.common.dry_run import DryRunCase
 from tests.manual_validation.scenarios.common.registry import (
@@ -54,16 +59,9 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         assert f"{scenario.name}.keep-worksite" in {case.case_id for case in scenario_cases}
     excluded = set(SCENARIO_REGISTRY.public_names) - set(get_all_scenario_names())
     assert excluded == {
-        "bootstrap-inserted-file-fixture",
-        "bootstrap-ink-drawing-fixture",
-        "bootstrap-media-file-fixture",
-        "bootstrap-shape-fixture",
         "copy-display-equation",
-        "bootstrap-inline-equation-fixture",
-        "bootstrap-user-authored-fixture",
-        "bootstrap-move-page-content-fixture",
         "cache-invalidation",
-        "user-authored-fixture-consumer",
+        "interactive-user-authored-fixture",
         "interactive-copy-inserted-file",
         "interactive-copy-ink-drawing",
         "interactive-copy-media-file",
@@ -81,7 +79,9 @@ def test_registered_named_case_round_trips_through_guarded_cli(
     case: DryRunCase, monkeypatch, tmp_path, capsys
 ) -> None:
     _install_sentinels(monkeypatch)
-    run_dir = tmp_path / case.case_id
+    run_dir = Path(".local-validation") / (
+        "dry-" + hashlib.sha256(case.case_id.encode("utf-8")).hexdigest()[:12]
+    )
     argv = case.argv(run_dir)
     parsed = build_parser().parse_args(argv)
     assert parsed.command == case.scenario_name
@@ -104,22 +104,22 @@ def test_registered_named_case_round_trips_through_guarded_cli(
     assert payload["human_only"] is True
     assert payload["agent_execution_prohibited"] is True
     assert payload["copy_budget"]["max_pages"] == 200
-    if case.scenario_name.startswith("bootstrap-"):
+    for name in payload["notebook_names"]["fresh"].values():
+        assert windows_path_units(
+            Path(payload["notebook_base_folder"]) / name
+        ) <= MAX_ONENOTE_OPEN_PATH_UNITS
+    for role in payload["cache"]["roles"].values():
+        assert windows_path_units(role["working_path"]) <= MAX_ONENOTE_OPEN_PATH_UNITS
+    if (
+        scenario.fixture_recipe.build_mode.value == "human_bootstrap_required"
+        and "--use-cache" not in case.scenario_args
+    ):
         checkpoint = payload["cache"]["interactive_checkpoint"]
         assert checkpoint["stdin_read_performed"] is False
         assert checkpoint["authoring_instruction"] == (
             scenario.fixture_recipe.authoring_instruction
         )
-    consumer_cache_required = (
-        scenario.fixture_recipe.consumer_scenario
-        and "--use-cache" not in case.scenario_args
-    )
-    if consumer_cache_required:
-        assert [step["step"] for step in payload["ordered_steps"]] == [
-            "preflight-cache-required"
-        ]
-        assert payload["cache"]["decision"] == "rejected_missing_use_cache"
-    elif (
+    if (
         getattr(scenario.fixture_recipe, "representation_discovery_only", False)
         and "--use-cache" in case.scenario_args
     ):
@@ -134,7 +134,7 @@ def test_registered_named_case_round_trips_through_guarded_cli(
         assert payload["ordered_steps"][0]["step"] == (
             "resolve-fixture-bundle"
             if "--use-cache" in case.scenario_args
-            and payload["cache"]["cache_mode"] != "interactive_bootstrap"
+            and payload["cache"]["cache_mode"] != "interactive_fresh"
             else (
                 "create-notebook-bundle" if multi_role else "create-source-notebook"
             )
@@ -147,7 +147,7 @@ def test_registered_named_case_round_trips_through_guarded_cli(
         assert mutation_step["tool_allowlist"] == sorted(spec.tool_allowlist)
         if (
             "--use-cache" in case.scenario_args
-            and payload["cache"]["cache_mode"] != "interactive_bootstrap"
+            and payload["cache"]["cache_mode"] != "interactive_fresh"
         ):
             assert payload["ordered_steps"][1]["step"] == (
                 "prepare-materialized-fixture"
@@ -163,7 +163,7 @@ def test_registered_named_case_round_trips_through_guarded_cli(
         assert payload["cache"]["cache_mode"] == "representation_discovery"
         assert payload["cache"]["enabled"] is False
         assert payload["cache"]["templates_opened"] is False
-        if case.case_id == f"{scenario.name}.default" and not consumer_cache_required:
+        if case.case_id == f"{scenario.name}.default":
             expected_steps = [
                 "create-notebook-bundle" if multi_role else "create-source-notebook",
             ]
@@ -177,7 +177,7 @@ def test_registered_named_case_round_trips_through_guarded_cli(
                 )
             else:
                 expected_steps.append(scenario.name)
-        if scenario.name.startswith("bootstrap-"):
+        if scenario.fixture_recipe.build_mode.value == "human_bootstrap_required":
             expected_steps.extend(
                 [
                     "interactive-checkpoint",
@@ -188,8 +188,10 @@ def test_registered_named_case_round_trips_through_guarded_cli(
                             "representation_discovery_only",
                             False,
                         )
-                        else "close-stage-publish-materialize-live-validate"
+                        else "close-stage-publish-materialize"
                     ),
+                    "prepare-materialized-fixture",
+                    scenario.name,
                 ]
             )
         expected_steps.extend(
@@ -214,9 +216,7 @@ def test_registered_named_case_round_trips_through_guarded_cli(
             "preserved": True,
             "target_cleanup": scenario.worksite_dry_run_action,
         }
-        expected_last_step = (
-            "preflight-cache-required" if consumer_cache_required else "report"
-        )
+        expected_last_step = "report"
         assert payload["ordered_steps"][-1]["step"] == expected_last_step
     assert payload["filesystem_cleanup"]["enabled"] is False
     if case.scenario_name == "copy-page":

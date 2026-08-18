@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -14,6 +15,7 @@ from tests.manual_validation.run_identity import (
     validation_notebook_name,
     validation_notebook_names,
 )
+from tests.manual_validation.path_budget import MAX_WORKING_NAME_UNITS, windows_path_units
 from tests.manual_validation.runner import main
 
 
@@ -75,6 +77,52 @@ def test_canonical_single_and_multi_role_notebook_names() -> None:
     assert "-dest-CACHED-" in names["dest"]
     assert "-source-CACHED-" in names["source"]
     assert names["dest"] != names["source"]
+
+
+def test_fresh_interactive_move_names_fit_working_name_limit() -> None:
+    identity = new_run_identity(
+        datetime(2026, 8, 18, 21, 57, 36, tzinfo=timezone(timedelta(hours=8)))
+    )
+
+    names = validation_notebook_names(
+        "interactive-move-page-content",
+        identity,
+        ("destination", "source"),
+        cached=False,
+        max_units=61,
+    )
+
+    assert all(
+        windows_path_units(name) <= min(MAX_WORKING_NAME_UNITS, 61)
+        for name in names.values()
+    )
+    assert names["destination"] != names["source"]
+    assert names["destination"].endswith("-2026-08-18-21-57-36__")
+
+
+def test_ultracompact_names_preserve_role_and_cache_uniqueness() -> None:
+    identity = new_run_identity(
+        datetime(2026, 8, 18, 22, 6, 2, tzinfo=timezone(timedelta(hours=8)))
+    )
+    fresh = validation_notebook_names(
+        "interactive-move-page-content",
+        identity,
+        ("destination", "source"),
+        cached=False,
+        max_units=12,
+    )
+    cached = validation_notebook_names(
+        "interactive-move-page-content",
+        identity,
+        ("destination", "source"),
+        cached=True,
+        max_units=12,
+    )
+
+    names = {*fresh.values(), *cached.values()}
+    assert len(names) == 4
+    assert all(re.fullmatch(r"[0-9a-f]{12}", name) for name in names)
+    assert all(windows_path_units(name) == 12 for name in names)
 
 
 @pytest.mark.parametrize("label", ("UPPER", "has space", "unsafe/name", "_wrapped_"))

@@ -648,6 +648,9 @@ def test_authored_live_revalidation_checks_full_projection_digest(tmp_path) -> N
             {
                 "template_instance_id": authored_id,
                 "projection_digest": "a" * 64,
+                "state": "ready",
+                "mutation_eligible": True,
+                "move_source_deletion_allowed": True,
             },
         )(),
     )
@@ -660,8 +663,92 @@ def test_authored_live_revalidation_checks_full_projection_digest(tmp_path) -> N
                 {
                     "template_instance_id": authored_id,
                     "projection_digest": ("a" * 24) + ("b" * 40),
+                    "state": "ready",
+                    "mutation_eligible": True,
+                    "move_source_deletion_allowed": True,
                 },
             )(),
+        )
+
+
+def test_authored_ready_instance_metadata_drives_unique_and_ambiguous_selection(
+    tmp_path,
+) -> None:
+    recipe = SCENARIO_REGISTRY.get("interactive-user-authored-fixture").fixture_recipe
+    store = BundleCacheStore(tmp_path / "cache-authored-selection")
+    store.initialize()
+    ready_id = f"authored-{'a' * 24}"
+    ready = store.publish(
+        recipe,
+        ready_id,
+        source_paths={"source": _source(tmp_path / "ready")},
+        source_notebooks={"source": {"id": "ready-id", "name": "Ready"}},
+        closed_roles={"source"},
+        validation={"passed": True},
+        projection_digest="a" * 64,
+        state="ready",
+        mutation_eligible=True,
+        move_source_deletion_allowed=True,
+    )
+    evidence_id = f"authored-{'b' * 24}"
+    evidence = store.publish(
+        recipe,
+        evidence_id,
+        source_paths={"source": _source(tmp_path / "evidence")},
+        source_notebooks={"source": {"id": "evidence-id", "name": "Evidence"}},
+        closed_roles={"source"},
+        validation={"passed": True},
+        projection_digest="b" * 64,
+        state="evidence_only",
+        mutation_eligible=False,
+        move_source_deletion_allowed=False,
+    )
+
+    assert ready.entry["mutation_eligible"] is True
+    assert ready.entry["move_source_deletion_allowed"] is True
+    assert evidence.entry["mutation_eligible"] is False
+    assert evidence.entry["move_source_deletion_allowed"] is False
+    assert store.list_ready_instances(recipe, mutation_eligible_only=True) == [ready_id]
+    assert recipe.select_template_instance_id(
+        argparse.Namespace(template_instance_id=None),
+        cache_store=store,
+    ) == ready_id
+
+    second_ready_id = f"authored-{'c' * 24}"
+    store.publish(
+        recipe,
+        second_ready_id,
+        source_paths={"source": _source(tmp_path / "second-ready")},
+        source_notebooks={"source": {"id": "second-id", "name": "Second"}},
+        closed_roles={"source"},
+        validation={"passed": True},
+        projection_digest="c" * 64,
+        state="ready",
+    )
+    with pytest.raises(RunnerFailure, match="interactive_cache_ambiguous"):
+        recipe.select_template_instance_id(
+            argparse.Namespace(template_instance_id=None),
+            cache_store=store,
+        )
+
+
+def test_authored_publish_rejects_state_eligibility_mismatch(tmp_path) -> None:
+    recipe = SCENARIO_REGISTRY.get("interactive-user-authored-fixture").fixture_recipe
+    store = BundleCacheStore(tmp_path / "cache-authored-mismatch")
+    store.initialize()
+
+    with pytest.raises(RunnerFailure, match="eligibility"):
+        store.publish(
+            recipe,
+            f"authored-{'d' * 24}",
+            source_paths={"source": _source(tmp_path / "mismatch")},
+            source_notebooks={"source": {"id": "mismatch-id", "name": "Mismatch"}},
+            closed_roles={"source"},
+            validation={"passed": True},
+            projection_digest="d" * 64,
+            state="evidence_only",
+            mutation_eligible=True,
+            move_source_deletion_allowed=False,
         )
 
 
@@ -1863,25 +1950,122 @@ def test_fixed_invalidation_scenario_exposes_no_arbitrary_entry_selector() -> No
             parser.parse_args(["cache-invalidation", unsafe, "value", "--dry-run"])
 
 
-def test_inserted_file_copy_shares_bootstrap_identity_and_has_copy_only_policy() -> None:
-    bootstrap = SCENARIO_REGISTRY.get("bootstrap-inserted-file-fixture")
-    consumer = SCENARIO_REGISTRY.get("interactive-copy-inserted-file")
+def test_inserted_file_copy_has_copy_only_policy_and_shared_cache_identity() -> None:
+    scenario = SCENARIO_REGISTRY.get("interactive-copy-inserted-file")
+    recipe = scenario.fixture_recipe
 
-    assert consumer.fixture_recipe.cache_fingerprint == bootstrap.fixture_recipe.cache_fingerprint
-    assert (
-        consumer.fixture_recipe.default_template_instance_id
-        == bootstrap.fixture_recipe.default_template_instance_id
+    assert recipe.default_template_instance_id.startswith("programmatic-")
+    assert len(recipe.default_template_instance_id) == len("programmatic-") + 16
+    assert recipe.cache_fingerprint
+    assert scenario.spec.policy.writes_enabled is True
+    assert scenario.spec.policy.create_enabled is True
+    assert scenario.spec.policy.deletes_enabled is False
+    assert "copy_page" in scenario.spec.tool_allowlist
+    assert "plan_copy" not in scenario.spec.tool_allowlist
+    assert not any(tool.startswith("delete_") for tool in scenario.spec.tool_allowlist)
+    assert scenario.spec.fixture.creation_tools <= scenario.spec.tool_allowlist
+
+
+def test_programmatic_interactive_bootstrap_publishes_null_template_instance(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    scenario = SCENARIO_REGISTRY.get("interactive-copy-inserted-file")
+    recipe = scenario.fixture_recipe
+    run_dir = tmp_path / "run-programmatic-bootstrap"
+    source_path = run_dir / "notebooks" / "source"
+    source_path.mkdir(parents=True)
+    write_json(
+        run_dir / "manifest.json",
+        {"fixture_validation": {"status": "passed"}},
     )
-    assert consumer.spec.policy.writes_enabled is True
-    assert consumer.spec.policy.create_enabled is True
-    assert consumer.spec.policy.deletes_enabled is False
-    assert "copy_page" in consumer.spec.tool_allowlist
-    assert "plan_copy" not in consumer.spec.tool_allowlist
-    assert not any(tool.startswith("delete_") for tool in consumer.spec.tool_allowlist)
-    assert consumer.spec.fixture.creation_tools.isdisjoint(consumer.spec.tool_allowlist)
+    published: dict = {}
+    cache_hit = CacheHit(
+        recipe.cache_fingerprint,
+        recipe.default_template_instance_id,
+        tmp_path / "cache-entry",
+        {},
+    )
+    materialized = MaterializedBundle(
+        recipe.cache_fingerprint,
+        recipe.default_template_instance_id,
+        {"source": tmp_path / "template"},
+        {"source": tmp_path / "working"},
+        tmp_path / "materialized.json",
+    )
+
+    class Lock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    class CacheStore:
+        def lock(self, *_args, **_kwargs):
+            return Lock()
+
+        def publish(self, *_args, **kwargs):
+            published.update(kwargs)
+            return cache_hit
+
+    monkeypatch.setattr(validation, "_close_bundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(validation, "bundle_cache_artifacts", lambda *_args: {})
+    monkeypatch.setattr(
+        validation,
+        "_resolve_exact_cache_entry",
+        lambda *_args, **_kwargs: (None, None, False),
+    )
+    monkeypatch.setattr(
+        validation,
+        "_materialize_with_budget_context",
+        lambda *_args, **_kwargs: materialized,
+    )
+    monkeypatch.setattr(
+        validation,
+        "_open_materialized_bundle",
+        lambda *_args, **_kwargs: (
+            {"source": {"id": "working-id", "name": "Working"}},
+            {"source": {"expected_local_path": str(tmp_path / "working")}},
+        ),
+    )
+    args = argparse.Namespace(notebook_name="Fresh", cached_notebook_names=None)
+    bootstrap_result = {
+        "template_instance_id": recipe.default_template_instance_id,
+        "template_state": "ready",
+        "template_instance": None,
+    }
+
+    result = asyncio.run(
+        validation._publish_interactive_bootstrap_template(
+            scenario=scenario,
+            args=args,
+            options=RuntimeOptions(run_dir, 1_800, False, False),
+            bootstrap_result=bootstrap_result,
+            manifest={},
+            fixture_result={},
+            wrappers={},
+            roles=("source",),
+            notebooks={"source": {"id": "fresh-id", "name": "Fresh"}},
+            leases={"source": {"expected_local_path": str(source_path)}},
+            cache_store=CacheStore(),
+            wrapper=type(
+                "Wrapper",
+                (),
+                {"any_cache_template_open": staticmethod(lambda _entry: False)},
+            )(),
+        )
+    )
+
+    assert result[0] is cache_hit
+    assert published["projection_digest"] is None
+    assert published["mutation_eligible"] is None
+    assert published["move_source_deletion_allowed"] is None
+    assert bootstrap_result["template_published"] is True
+    assert args.notebook_name == "Working"
 
 
-def test_inserted_file_copy_cache_miss_names_bootstrap_before_notebook_open(
+def test_inserted_file_copy_cache_miss_fails_before_notebook_open(
     tmp_path,
 ) -> None:
     run_dir = tmp_path / "run"
@@ -1899,7 +2083,7 @@ def test_inserted_file_copy_cache_miss_names_bootstrap_before_notebook_open(
 
     with pytest.raises(
         RunnerFailure,
-        match="bootstrap-inserted-file-fixture",
+        match="interactive_cache_miss",
     ):
         asyncio.run(
             run_validate(

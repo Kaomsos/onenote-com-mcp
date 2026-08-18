@@ -102,6 +102,7 @@ def _source_snapshot(
                         "complete": not unknown,
                         "sha256": "source-semantic-hash",
                         "persistence_sha256": "source-persistence-semantic-hash",
+                        "materialization_sha256": "source-materialization-semantic-hash",
                     }
                 }
             ),
@@ -215,6 +216,7 @@ def _identity_observation(
     body_hash: str = "representative-body-hash",
     semantic_hash: str = "representative-semantic-hash",
     persistence_semantic_hash: str = "representative-persistence-semantic-hash",
+    materialization_semantic_hash: str = "representative-materialization-semantic-hash",
     semantic_complete: bool = True,
     object_kinds: tuple[str, ...] = ("Outline", "Table"),
 ) -> FixtureBundleObservation:
@@ -263,6 +265,7 @@ def _identity_observation(
                             "complete": semantic_complete,
                             "sha256": semantic_hash,
                             "persistence_sha256": persistence_semantic_hash,
+                            "materialization_sha256": materialization_semantic_hash,
                         }
                     },
                     "page_objects": {
@@ -386,12 +389,15 @@ def _manifest(instance_id: str) -> dict:
         "structure": {**source, **destination},
         "fixture_cache": {
             "template_instance_id": instance_id,
+            "template_state": "ready",
+            "mutation_eligible": True,
+            "move_source_deletion_allowed": True,
             "interactive_live_validation": {"passed": True},
         },
     }
 
 
-def _args(instance_id: str) -> argparse.Namespace:
+def _args(instance_id: str | None) -> argparse.Namespace:
     return argparse.Namespace(
         template_instance_id=instance_id,
         interactive_timeout=60,
@@ -401,33 +407,27 @@ def _args(instance_id: str) -> argparse.Namespace:
     )
 
 
-def test_recipe_pair_shares_exact_two_role_cache_identity_and_freezes_ready() -> None:
-    bootstrap = SCENARIO_REGISTRY.get(
-        "bootstrap-move-page-content-fixture"
-    ).fixture_recipe
-    consumer = SCENARIO_REGISTRY.get("interactive-move-page-content").fixture_recipe
-    assert bootstrap is not consumer
-    assert bootstrap.cache_fingerprint == consumer.cache_fingerprint
-    assert consumer.consumer_scenario is True
-    assert consumer.supports_cache is True
-    assert consumer.requires_instance_selection is True
-    assert tuple(
-        role.role for role in bootstrap.cache_identity.notebook_roles
-    ) == ("destination", "source")
-    report = bootstrap.authored_content_report(_observation())
+def test_move_recipe_freezes_ready_representative_content() -> None:
+    recipe = SCENARIO_REGISTRY.get("interactive-move-page-content").fixture_recipe
+    assert recipe.supports_cache is True
+    assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
+        "destination",
+        "source",
+    )
+    report = recipe.authored_content_report(_observation())
     assert report["passed"] is True
     assert report["representative_capabilities"] == ["RichText", "Table"]
-    frozen = bootstrap.freeze_authored_instance(_observation())
+    frozen = recipe.freeze_authored_instance(_observation())
     assert frozen.state == "ready"
     assert frozen.move_source_deletion_allowed is True
 
-    evidence_only = bootstrap.freeze_authored_instance(_observation(unknown=True))
+    evidence_only = recipe.freeze_authored_instance(_observation(unknown=True))
     assert evidence_only.state == "evidence_only"
     assert evidence_only.move_source_deletion_allowed is False
     assert "UnknownWidget" in evidence_only.unknown_capabilities
 
 
-def test_interactive_move_requires_cache_and_explicit_template_selector() -> None:
+def test_interactive_move_supports_cache_and_explicit_template_selector() -> None:
     from tests.manual_validation.runner import build_parser
 
     parser = build_parser()
@@ -445,13 +445,11 @@ def test_interactive_move_requires_cache_and_explicit_template_selector() -> Non
     assert args.use_cache is True
     assert args.template_instance_id == INSTANCE_ID
     assert scenario.fixture_recipe.supports_cache is True
-    assert scenario.spec.execution_contract["cache_only"] is True
+    assert scenario.spec.execution_contract["interactive"] is True
 
 
 def test_rich_text_only_page_is_representative_but_outline_placeholder_is_not() -> None:
-    recipe = SCENARIO_REGISTRY.get(
-        "bootstrap-move-page-content-fixture"
-    ).fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-move-page-content").fixture_recipe
     rich_text = _observation(authored_capabilities=("Outline", "RichText"))
     placeholder = _observation(authored_capabilities=("Outline",))
 
@@ -468,9 +466,7 @@ def test_rich_text_only_page_is_representative_but_outline_placeholder_is_not() 
 
 
 def test_representative_move_instance_identity_ignores_materialized_ids_and_paths() -> None:
-    recipe = SCENARIO_REGISTRY.get(
-        "bootstrap-move-page-content-fixture"
-    ).fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-move-page-content").fixture_recipe
     authored = recipe.freeze_authored_instance(_identity_observation("template"))
     materialized = recipe.freeze_authored_instance(_identity_observation("working"))
     renamed = recipe.freeze_authored_instance(
@@ -489,6 +485,7 @@ def test_representative_move_instance_identity_ignores_materialized_ids_and_path
             "working",
             semantic_hash="different-semantic-hash",
             persistence_semantic_hash="different-persistence-semantic-hash",
+            materialization_semantic_hash="different-materialization-semantic-hash",
         )
     )
 
@@ -500,9 +497,7 @@ def test_representative_move_instance_identity_ignores_materialized_ids_and_path
 
 
 def test_representative_move_instance_identity_requires_stable_body_hash() -> None:
-    recipe = SCENARIO_REGISTRY.get(
-        "bootstrap-move-page-content-fixture"
-    ).fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-move-page-content").fixture_recipe
     observation = _identity_observation("template")
     observation.roles["source"].snapshot.pop("page_body_hashes")
 
@@ -510,26 +505,22 @@ def test_representative_move_instance_identity_requires_stable_body_hash() -> No
         recipe.freeze_authored_instance(observation)
 
 
-def test_representative_move_instance_identity_requires_persistence_digest() -> None:
-    recipe = SCENARIO_REGISTRY.get(
-        "bootstrap-move-page-content-fixture"
-    ).fixture_recipe
+def test_representative_move_instance_identity_requires_materialization_digest() -> None:
+    recipe = SCENARIO_REGISTRY.get("interactive-move-page-content").fixture_recipe
     observation = _identity_observation("template")
     page_id = next(
         iter(observation.roles["source"].snapshot["page_semantic_content_identities"])
     )
     observation.roles["source"].snapshot["page_semantic_content_identities"][
         page_id
-    ].pop("persistence_sha256")
+    ].pop("materialization_sha256")
 
-    with pytest.raises(InvariantFailure, match="persistence semantic digest"):
+    with pytest.raises(InvariantFailure, match="materialization semantic digest"):
         recipe.freeze_authored_instance(observation)
 
 
 def test_representative_move_instance_identity_falls_back_for_incomplete_semantics() -> None:
-    recipe = SCENARIO_REGISTRY.get(
-        "bootstrap-move-page-content-fixture"
-    ).fixture_recipe
+    recipe = SCENARIO_REGISTRY.get("interactive-move-page-content").fixture_recipe
     authored = recipe.freeze_authored_instance(
         _identity_observation("template", semantic_complete=False)
     )
@@ -666,7 +657,7 @@ def test_interactive_move_accepts_only_after_machine_lossless_and_nonpermanent_d
     monkeypatch.setattr(move_content, "_bounded_input", accepted_input)
     result = asyncio.run(
         scenario.execute(
-            _args(instance_id),
+            _args(None),
             RuntimeOptions(tmp_path, 1_800, False, False),
             _manifest(instance_id),
             client=Client(),
