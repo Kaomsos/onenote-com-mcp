@@ -41,7 +41,7 @@ class MovePageContentRecipe(UserAuthoredRecipe):
 
     bootstrap_scenario_name = BOOTSTRAP_SCENARIO
     capability = "MovePageContent"
-    recipe_version = 2
+    recipe_version = 3
     requested_object_types = frozenset({"Outline"})
     stable_capabilities = frozenset(VALIDATED_COPY_CAPABILITIES)
     representative_capabilities = stable_capabilities - {"Outline", "RichText"}
@@ -252,6 +252,114 @@ class MovePageContentRecipe(UserAuthoredRecipe):
             },
         }
 
+    @staticmethod
+    def _semantic_page_identity(
+        snapshot: Mapping[str, Any],
+        page_id: str,
+    ) -> dict[str, Any]:
+        """Return the authored Page identity without copy-local IDs or paths.
+
+        Cache materialization creates a new OneNote identity graph.  In particular,
+        Page/Object IDs, Notebook IDs, and resolved paths are expected to differ even
+        when the opaque working bundle is byte-for-byte derived from the published
+        template.  ``page_body_hashes`` is deliberately calculated without those
+        identity fields and is the stable content component for this gate.
+        """
+
+        pages = [
+            item
+            for item in snapshot.get("items", ())
+            if isinstance(item, Mapping)
+            and str(item.get("id", "")) == page_id
+            and item.get("resource_type") == "page"
+        ]
+        if len(pages) != 1:
+            raise InvariantFailure(
+                "Representative Move Canvas is not uniquely present in the authored snapshot."
+            )
+        body_hashes = snapshot.get("page_body_hashes")
+        body_hash = (
+            body_hashes.get(page_id) if isinstance(body_hashes, Mapping) else None
+        )
+        if not isinstance(body_hash, str) or not body_hash:
+            raise InvariantFailure(
+                "Representative Move Canvas is missing its stable page body hash."
+            )
+        projections = snapshot.get("page_capability_projections")
+        projection = (
+            projections.get(page_id) if isinstance(projections, Mapping) else None
+        )
+        objects = snapshot.get("page_objects")
+        page_objects = objects.get(page_id, ()) if isinstance(objects, Mapping) else ()
+        page = pages[0]
+        return {
+            "resource_type": page.get("resource_type"),
+            "title": page.get("title"),
+            "page_level": page.get("page_level"),
+            "is_root_page": page.get("parent_page_id") is None,
+            "page_body_hash": body_hash,
+            "capability_projection": {
+                "capabilities": sorted(
+                    str(value)
+                    for value in projection.get("capabilities", ())
+                )
+                if isinstance(projection, Mapping)
+                else [],
+                "unknown_nodes": sorted(
+                    str(value)
+                    for value in projection.get("unknown_nodes", ())
+                )
+                if isinstance(projection, Mapping)
+                else [],
+                "unsupported_page_roots": sorted(
+                    str(value)
+                    for value in projection.get("unsupported_page_roots", ())
+                )
+                if isinstance(projection, Mapping)
+                else [],
+                "complete": (
+                    projection.get("complete") is True
+                    if isinstance(projection, Mapping)
+                    else False
+                ),
+            },
+            "object_kinds": sorted(
+                str(value.get("kind"))
+                for value in page_objects
+                if isinstance(value, Mapping)
+            ),
+        }
+
+    @staticmethod
+    def _semantic_structure_identity(
+        structure: Mapping[str, Mapping[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Describe declared destination topology in manifest-key, not COM-ID, terms."""
+
+        ids_to_keys = {
+            str(value["id"]): key
+            for key, value in structure.items()
+            if isinstance(value, Mapping) and value.get("id")
+        }
+
+        def parent_key(value: Mapping[str, Any]) -> str | None:
+            for field in ("parent_page_id", "section_id", "parent_id"):
+                parent_id = value.get(field)
+                if parent_id is not None:
+                    return ids_to_keys.get(str(parent_id), "notebook_or_external_root")
+            return None
+
+        return {
+            key: {
+                "resource_type": value.get("resource_type"),
+                "name": value.get("title", value.get("name")),
+                "page_level": value.get("page_level"),
+                "parent_key": parent_key(value),
+            }
+            for key, value in sorted(structure.items())
+            if isinstance(value, Mapping)
+        }
+
     def _classification(
         self,
         observation: FixtureBundleObservation,
@@ -335,22 +443,11 @@ class MovePageContentRecipe(UserAuthoredRecipe):
         classification, page_id = self._classification(observation)
         source = observation.roles["source"]
         destination = observation.roles["destination"]
-        exact_source = self._exact_page_snapshot(source.snapshot, page_id)
         projection = {
-            "source_page": exact_source,
-            "destination_structure": {
-                key: {
-                    field: value.get(field)
-                    for field in (
-                        "id",
-                        "resource_type",
-                        "parent_id",
-                        "section_id",
-                        "page_level",
-                    )
-                }
-                for key, value in sorted(destination.build.structure.items())
-            },
+            "source_page": self._semantic_page_identity(source.snapshot, page_id),
+            "destination_structure": self._semantic_structure_identity(
+                destination.build.structure
+            ),
         }
         payload = json.dumps(
             projection,

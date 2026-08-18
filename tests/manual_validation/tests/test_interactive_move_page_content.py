@@ -8,7 +8,7 @@ import asyncio
 import pytest
 
 from tests.manual_validation.mcp_stdio_client import ClientFailure
-from tests.manual_validation.runtime import RuntimeOptions
+from tests.manual_validation.runtime import InvariantFailure, RuntimeOptions
 from tests.manual_validation.scenarios import interactive_move_page_content as move_content
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
@@ -81,6 +81,10 @@ def _source_snapshot(*, moved: bool = False, unknown: bool = False) -> dict:
         "page_hashes": {
             "instructions-page": "instructions-hash",
             **({} if moved else {SOURCE_ID: "source-hash"}),
+        },
+        "page_body_hashes": {
+            "instructions-page": "instructions-body-hash",
+            **({} if moved else {SOURCE_ID: "source-body-hash"}),
         },
         "page_objects": {
             "instructions-page": [{"kind": "Outline"}],
@@ -165,6 +169,80 @@ def _observation(*, unknown: bool = False) -> FixtureBundleObservation:
                 notebook={"id": "destination-notebook"},
                 notebook_path="C:/working/destination",
                 snapshot=_destination_snapshot(),
+                build=FixtureBuildResult(destination, {}),
+            ),
+        }
+    )
+
+
+def _identity_observation(
+    prefix: str,
+    *,
+    title: str = "Frozen representative title",
+    body_hash: str = "representative-body-hash",
+) -> FixtureBundleObservation:
+    """Construct semantically equal bundles with intentionally different live IDs."""
+
+    source, destination = _structures()
+
+    def remap_structure(structure: dict) -> dict:
+        ids = {
+            str(value["id"]): f"{prefix}-{value['id']}"
+            for value in structure.values()
+        }
+        remapped = {}
+        for key, value in structure.items():
+            remapped_value = dict(value)
+            for field in ("id", "parent_id", "section_id", "parent_page_id"):
+                if field in remapped_value and remapped_value[field] is not None:
+                    remapped_value[field] = ids.get(
+                        str(remapped_value[field]),
+                        f"{prefix}-{remapped_value[field]}",
+                    )
+            remapped[key] = remapped_value
+        return remapped
+
+    source = remap_structure(source)
+    destination = remap_structure(destination)
+    source_page = source["source_canvas_page"]
+    source_page["title"] = title
+    source_page["path"] = f"{prefix}/01-Move-Source/{title}"
+    source_page_id = str(source_page["id"])
+    return FixtureBundleObservation(
+        roles={
+            "source": FixtureRoleObservation(
+                role="source",
+                args=argparse.Namespace(),
+                notebook={"id": f"{prefix}-source-notebook"},
+                notebook_path=f"C:/{prefix}/source",
+                snapshot={
+                    "notebook_id": f"{prefix}-source-notebook",
+                    "items": list(source.values()),
+                    "page_hashes": {source_page_id: f"{prefix}-volatile-page-hash"},
+                    "page_body_hashes": {source_page_id: body_hash},
+                    "page_objects": {
+                        source_page_id: [
+                            {"id": f"{prefix}-outline", "kind": "Outline"},
+                            {"id": f"{prefix}-table", "kind": "Table"},
+                        ]
+                    },
+                    "page_capability_projections": {
+                        source_page_id: {
+                            "capabilities": ["Outline", "RichText", "Table"],
+                            "unknown_nodes": [],
+                            "unsupported_page_roots": [],
+                            "complete": True,
+                        }
+                    },
+                },
+                build=FixtureBuildResult(source, {}),
+            ),
+            "destination": FixtureRoleObservation(
+                role="destination",
+                args=argparse.Namespace(),
+                notebook={"id": f"{prefix}-destination-notebook"},
+                notebook_path=f"C:/{prefix}/destination",
+                snapshot={"notebook_id": f"{prefix}-destination-notebook", "items": list(destination.values())},
                 build=FixtureBuildResult(destination, {}),
             ),
         }
@@ -264,6 +342,36 @@ def test_recipe_pair_shares_exact_two_role_cache_identity_and_freezes_ready() ->
     assert evidence_only.state == "evidence_only"
     assert evidence_only.move_source_deletion_allowed is False
     assert "UnknownWidget" in evidence_only.unknown_capabilities
+
+
+def test_representative_move_instance_identity_ignores_materialized_ids_and_paths() -> None:
+    recipe = SCENARIO_REGISTRY.get(
+        "bootstrap-move-page-content-fixture"
+    ).fixture_recipe
+    authored = recipe.freeze_authored_instance(_identity_observation("template"))
+    materialized = recipe.freeze_authored_instance(_identity_observation("working"))
+    renamed = recipe.freeze_authored_instance(
+        _identity_observation("working", title="Different representative title")
+    )
+    changed_content = recipe.freeze_authored_instance(
+        _identity_observation("working", body_hash="different-body-hash")
+    )
+
+    assert authored.template_instance_id == materialized.template_instance_id
+    assert authored.projection_digest == materialized.projection_digest
+    assert authored.template_instance_id != renamed.template_instance_id
+    assert authored.template_instance_id != changed_content.template_instance_id
+
+
+def test_representative_move_instance_identity_requires_stable_body_hash() -> None:
+    recipe = SCENARIO_REGISTRY.get(
+        "bootstrap-move-page-content-fixture"
+    ).fixture_recipe
+    observation = _identity_observation("template")
+    observation.roles["source"].snapshot.pop("page_body_hashes")
+
+    with pytest.raises(InvariantFailure, match="stable page body hash"):
+        recipe.freeze_authored_instance(observation)
 
 
 def test_interactive_move_lossless_failure_is_one_call_and_preserves_source(

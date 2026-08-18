@@ -24,9 +24,9 @@
 - bootstrap 要求至少一种受支持的非平凡 Page capability；unknown/incomplete projection 只能冻结为 `evidence_only`，不能被 Move consumer 使用；
 - consumer 要求显式 `authored-<24 hex>` instance、Create + Writes + Deletes 最小策略，固定一次 `move_page(include_subpages=false)`；lossless failure 保存 source/target after snapshot 与逐 tier/check 的 content-free `lossless-diagnostic.json` 后原样失败，绝不补调 mutation；
 - success 路径只在生产 `verified/lossless/copy_contract_satisfied=true` 且 `source_deleted_nonpermanently=true` 后请求 run-bound UI ACCEPT；
-- 新增纯合同覆盖 recipe identity、ready/evidence-only、双 role bootstrap、单次 Move、lossless 失败 envelope 解包、失败保源、诊断脱敏和成功后人工门；聚焦组合为 `176 passed`，manual-validation 纯测试为 `622 passed`，全量 pytest 为 `1352 passed`；两个新场景和 `all` 的 `--dry-run --json` 均通过，`all` 仍只包含原 18 个稳定场景。
+- 新增纯合同覆盖 recipe identity、ready/evidence-only、双 role bootstrap、单次 Move、lossless 失败 envelope 解包、失败保源、诊断脱敏和成功后人工门；当前相关聚焦测试为 `19 passed`，manual-validation 纯测试为 `624 passed`，全量 pytest 为 `1354 passed`；两个新场景的 `--dry-run --json` 均通过，`all` 仍只包含原 18 个稳定场景。
 
-首次用户前台 bootstrap 已确认 source/destination 创建、代表性内容 projection、模板关闭/发布与双 role working copy 打开均可工作；尚未执行 Move。materialize 的 source hierarchy 重绑随后确定性失败：用户改变了 Canvas title，而 v1 template 仍冻结脚手架初始 relative address，连续 16 次都缺少该 Canvas。该失败不是 timeout，也不涉及 lossless gate；working bundle 已精确关闭、template integrity 未受牵连。实现现将 authored Canvas 的 live title/path 在发布前冻结入 role structure，并将 recipe 升至 v2，避免复用该 v1 entry；需由用户重新 bootstrap。
+两次用户前台 bootstrap 已确认 source/destination 创建、代表性内容 projection、模板关闭/发布与双 role working copy 打开均可工作；尚未执行 Move。第一次 materialize 的 source hierarchy 重绑确定性失败：用户改变了 Canvas title，而 v1 template 仍冻结脚手架初始 relative address，连续 16 次都缺少该 Canvas。实现已在发布前冻结 authored Canvas 的 live title/path 并升至 v2。第二次重绑已完整通过，但在 materialized working bundle 的 full frozen identity 比对前失败：v2 把复制后必然变化的 Notebook/Page/Object ID、path 与 identity-sensitive page digest 放进模板实例摘要，故使同一 opaque copy 被误判不匹配。实际证据显示代表页稳定 `page_body_hash` 一致，只有 identity-sensitive hash 改变。实现现改用冻结标题/层级语义、稳定正文摘要和类型化 capability projection，并升至 v3；该失败不是 timeout 或 lossless gate，未调用 Move，working bundle 已精确关闭、template integrity 未受牵连。需由用户以 v3 重新 bootstrap。
 
 除上述失败但已闭环关闭的 bootstrap 外，尚未执行任何真实 Move。首次用户前台 `copy_only` 证据中若确认生产结果缺少足够的 source→transformed→target 定位字段，具体生产回读校验改动记录到空占位 [TODO 040](040_move_readback_validation_followups.md)，不得在没有真实 mismatch 证据前预设 comparator 放宽方案。
 
@@ -66,7 +66,7 @@ exact-ID confirmation + bounded source plan
 
 - 使用 fresh、disposable、双 Notebook role bundle，预先创建 exact source Canvas、destination Section、reserved marker 和 bounded authoring zone；不得接受用户业务 Notebook、外部 Notebook/Page ID 或任意本地 `.one` 路径。
 - 用户只在 exact Canvas 中制作或粘贴一页经过筛选的、非敏感的代表性真实内容。它可以组合日常 Page 中实际出现的富文本、链接、List/Tag、表格、图片、附件、公式或其他已公开能力，而不是只依赖现有最小 synthetic fixture。
-- bootstrap 在用户 run-bound 确认后至少连续读取两次 exact source Page，冻结 capability projection、对象计数、verification tier 候选、稳定语义 digest、binary digest、层级身份和 immutable template inventory；证据不得保存正文、标题、原始 XML、binary、用户路径或真实 COM ID 到版本库。
+- bootstrap 在用户 run-bound 确认后至少连续读取两次 exact source Page，冻结 capability projection、对象计数、verification tier 候选、稳定的正文 digest、标题/层级语义和 immutable template inventory；模板实例摘要不得纳入复制后必然变化的 Notebook/Page/Object COM ID、working path 或 identity-sensitive page digest。证据不得保存正文、标题、原始 XML、binary、用户路径或真实 COM ID 到版本库。
 - 出现未知节点、投影不完整、越界编辑、reserved marker 变化、额外 Page、身份歧义或不稳定 source 时，模板只能标记为 `evidence_only` 或拒绝发布，不能获得 Move deletion eligibility。
 - ready template 必须关闭后才允许 opaque byte-for-byte cache publication；后续 consumer 只 materialize 物理独立 working copy并重新绑定 live ID，绝不打开或修改 cache master。
 - bootstrap 真实命令只能由用户在交互式前台执行。Agent、pytest、CI、hook、timer、watcher 和后台任务只能运行 `--dry-run`。

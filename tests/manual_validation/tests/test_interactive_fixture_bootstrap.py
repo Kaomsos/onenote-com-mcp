@@ -170,6 +170,10 @@ def test_representative_move_bootstrap_captures_and_freezes_both_roles(
             "instructions-page": "marker-hash",
             "canvas-page": "representative-hash",
         },
+        "page_body_hashes": {
+            "instructions-page": "marker-body-hash",
+            "canvas-page": "representative-body-hash",
+        },
         "page_objects": {
             "instructions-page": [{"kind": "Outline"}],
             "canvas-page": [{"kind": "Outline"}, {"kind": "Table"}],
