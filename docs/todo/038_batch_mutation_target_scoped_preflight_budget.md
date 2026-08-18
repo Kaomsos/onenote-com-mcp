@@ -1,7 +1,7 @@
 # 038：Batch Mutation 目标范围预检预算与大型 Notebook 误拒绝修复
 
 > ID：038
-> 状态：进行中
+> 状态：已完成
 > 优先级：P1
 > 类型：Bug / Batch Mutation / Budget / User Testing
 > 更新日期：2026-08-18
@@ -12,15 +12,17 @@
 
 本文不保存用户提供的真实 Page ID、标题、Section ID 或 Notebook 名称。用户已确认目标数为 10、均为叶子 Page、没有父子范围重叠；所在 Notebook 的 Page 总数超过默认 Copy Page 预算 200。
 
-这是生产 bug，不是把 batch 上限从 20 调小即可解决的问题。当前共享 `_preflight_batch_targets` 在确认 batch 目标属于同一 Notebook 后，计算整本 Notebook 的 active resource/Page 总数，并与 `CopyBudget.current().max_resources/max_pages` 比较。结果是只操作少量精确目标的 Batch Rename、Reparent 或 Delete，会因为同一本 Notebook 中大量无关 Page 而被拒绝；使用的环境变量还是 Copy 专用的 `LOCAL_ONENOTE_MAX_COPY_RESOURCES` / `LOCAL_ONENOTE_MAX_COPY_PAGES`。
+这是生产 bug，不是把 batch 上限从 20 调小即可解决的问题。修复前共享 `_preflight_batch_targets` 在确认 batch 目标属于同一 Notebook 后，计算整本 Notebook 的 active resource/Page 总数，并与 `CopyBudget.current().max_resources/max_pages` 比较。结果是只操作少量精确目标的 Batch Rename、Reparent 或 Delete，会因为同一本 Notebook 中大量无关 Page 而被拒绝；使用的环境变量还是 Copy 专用的 `LOCAL_ONENOTE_MAX_COPY_RESOURCES` / `LOCAL_ONENOTE_MAX_COPY_PAGES`。
 
-`batch_create` 也直接以“整本 Notebook 现有数量 + 新建数量”对比同一 CopyBudget。实施时必须一起审计，不能只删除观察到的 Delete 错误分支而保留同源误拒绝。
+`batch_create` 修复前也直接以“整本 Notebook 现有数量 + 新建数量”对比同一 CopyBudget，因此已与其余 9 个 Rename/Reparent/Delete 路径一起审计，未只删除观察到的 Delete 错误分支而保留同源误拒绝。
+
+2026-08-18，用户在 fresh disposable Notebook 中完成 `run-2026-08-18-11-36-29`：Notebook 总 Page 数高于测试用 effective Page 上限 5 时，两个无重叠叶子 Page 的 Batch Delete 全部成功；含 6 Page 的真实 Section scope 则在 `mutation_attempted=false`、`attempts=0`、`backend_calls=1`、`replayed=false` 且 bridge audit 证明零 mutation call 的条件下拒绝。相同 run 的 mixed `include_subpages=false/true` Page batch 也验证了排除子页提升保护与完整子树删除。实现、自动化、dry-run、UT-010 集成和用户真实证据均已闭合，本 TODO 转为已完成。
 
 ## 根因位置与影响面
 
-- `MutationService._batch_snapshot()` 当前通过一次 `GetHierarchy(root, pages)` 取得全部已打开 Notebook 的 content-free hierarchy；该一次读取解释了失败响应中的 `backend_calls=1`。
-- `_preflight_batch_targets()` 由 Page/Section/SectionGroup 的 Batch Reparent、Delete 和 Rename 共用；它在精确目标、confirmation 和同 Notebook 检查后，把整本 Notebook 规模错误地当作当前 mutation 的有效工作范围。
-- `batch_create()` 使用独立代码，但也把整本 Notebook 的既有资源规模计入 CopyBudget，因此具有相同的预算职责混淆。
+- `MutationService._batch_snapshot()` 通过一次 `GetHierarchy(root, pages)` 取得全部已打开 Notebook 的 content-free hierarchy；该一次读取解释了原失败响应中的 `backend_calls=1`，修复后 catalog 读取与 effective-scope 计费已分离。
+- 修复前 `_preflight_batch_targets()` 由 Page/Section/SectionGroup 的 Batch Reparent、Delete 和 Rename 共用；它在精确目标、confirmation 和同 Notebook 检查后，把整本 Notebook 规模错误地当作当前 mutation 的有效工作范围。
+- 修复前 `batch_create()` 使用独立代码，但也把整本 Notebook 的既有资源规模计入 CopyBudget，因此具有相同的预算职责混淆。
 - 单项 Rename/Reparent/Delete 不经过这条 batch 整本预算检查，所以相同目标可以在单项路径成功。
 - [TODO 037 / UT-010](037_user_testing_experience_feedback_and_optimization.md) 将为 Page Reparent/Delete 引入 `include_subpages` 和 batch-wide 后代提升规划；038 的预算修复必须按 UT-010 计算出的 effective scope 计费，不能简单改成只数 `items`。
 
@@ -97,7 +99,7 @@
 - [x] UT-010 的 `include_subpages`、完整子树和 batch-wide 后代提升都按 effective scope 正确计费；
 - [x] 聚焦自动化覆盖成功、真实 scope 超限、confirmation/overlap、partial envelope、backend-call accounting、零 replay 和内容脱敏；
 - [x] 共享行为变更后的完整 pytest 与所有相关 `--dry-run` 通过；
-- [ ] 用户在 fresh disposable 场景中确认“大 Notebook/小目标成功 + 真实 scope 超限零 mutation”两条真实路径；
+- [x] 用户在 fresh disposable 场景中确认“大 Notebook/小目标成功 + 真实 scope 超限零 mutation”两条真实路径；
 - [x] 生产实现、根 README、公开 Tool contract、Operation Runtime、配置/health 和 manual-validation 文档同步。
 
 ## 完成证据记录
@@ -109,8 +111,8 @@
 | 新预算合同与公开配置/health 投影 | `BatchMutationBudget` 五维 content-free 合同；`health_check.batch_mutation_budget`、README、Tool contract、Operation Runtime 已同步 |
 | 聚焦自动化与完整 pytest | Batch/Policy/Server/Config 与完整 manual-validation 纯合同已覆盖；大型 Notebook 的 12 个公开 batch 工具均直接证明一次预检快照加一次整批最终回读，Page 两种范围/多层树/batch union、容器完整后代、失败 envelope 均有回归；完整 `.venv\\Scripts\\python.exe -m pytest -q`：1340 passed in 67.88s |
 | Manual-validation dry-run | `delete`、`reorder-page`、`copy-page`、`move-page`、`reparent-page-with-level` 五个 `--dry-run --json` 均通过；Delete fixture v5 将两叶子 Page batch 与 mixed `include_subpages=false/true` 树范围 batch 独立执行，并投影 `batch_mutation_budget.max_effective_pages=5`、human-only、server_started=false |
-| UT-010 集成 | 五个 Page Tool 已统一 `include_subpages=false|true`；Page Reparent/Delete batch 冻结整批 scope 并先完成按 Section 的一次性提升；Delete/Reorder 具名场景已扩展，等待用户真实复测 |
-| 用户确认的真实 disposable 证据 | 待填写 |
+| UT-010 集成 | 五个 Page Tool 已统一 `include_subpages=false|true`；Page Reparent/Delete batch 冻结整批 scope 并先完成按 Section 的一次性提升；用户 5 个 fresh disposable run 全部 passed/closed，UT-010 已完成 |
+| 用户确认的真实 disposable 证据 | `run-2026-08-18-11-36-29`：两叶子 Page batch applied；Notebook Page 数超过有效上限；mixed `false/true` batch applied 且受保护子页正文不变；6-Page Section 以 `effective_pages` observed=6/configured=5 在 preflight 拒绝，`mutation_attempted=false`、`attempts=0`、`backend_calls=1`、`replayed=false`、bridge mutation calls=0；顶层/scenario passed，lifecycle=`closed_preserved` |
 
 ## 关联
 
