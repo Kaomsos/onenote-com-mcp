@@ -9,6 +9,9 @@ from local_onenote_mcp.tools.mutations import reorder_section as public_reorder_
 from local_onenote_mcp.tools.responses import caught
 
 
+pytestmark = pytest.mark.usefixtures("virtual_convergence_clock")
+
+
 def _flatten_tool_envelope(envelope):
     """Keep service-semantic assertions independent of the public envelope shape."""
 

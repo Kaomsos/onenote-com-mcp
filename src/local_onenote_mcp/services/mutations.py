@@ -31,8 +31,10 @@ from ..policy import BatchMutationBudget, CopyBudget, MutationPolicy
 from .base import BaseService
 from .convergence import (
     DEFAULT_CONVERGENCE,
+    DEFAULT_CONVERGENCE_RUNTIME,
     ConvergenceConfig,
     ConvergenceResult,
+    ConvergenceRuntime,
     converge,
 )
 from .errors import MutationFailure, MutationPreflightFailure, PartialFailure
@@ -60,11 +62,19 @@ SECTION_GROUP_REPARENT_CONVERGENCE = ConvergenceConfig(
 
 
 class MutationService(BaseService):
-    def __init__(self, bridge: OneNoteBridge, hierarchy: HierarchyService, pages: PageService) -> None:
+    def __init__(
+        self,
+        bridge: OneNoteBridge,
+        hierarchy: HierarchyService,
+        pages: PageService,
+        *,
+        convergence_runtime: ConvergenceRuntime = DEFAULT_CONVERGENCE_RUNTIME,
+    ) -> None:
         super().__init__(bridge)
         self.hierarchy = hierarchy
         self.pages = pages
         self.mutation_attempts = MutationAttemptExecutor()
+        self.convergence_runtime = convergence_runtime
 
     def _converge(
         self,
@@ -83,8 +93,8 @@ class MutationService(BaseService):
             config=DEFAULT_CONVERGENCE,
             identity_remap=identity_remap,
             transient=transient_read_error,
-            clock=time.monotonic,
-            sleeper=time.sleep,
+            clock=self.convergence_runtime.clock,
+            sleeper=self.convergence_runtime.sleeper,
         )
         if not result.converged:
             raise OneNoteConvergenceTimeoutError(
@@ -2153,8 +2163,8 @@ class MutationService(BaseService):
                     self._reparent_hierarchy_signature(value["items"]),
                 ),
                 config=convergence_config,
-                clock=time.monotonic,
-                sleeper=time.sleep,
+                clock=self.convergence_runtime.clock,
+                sleeper=self.convergence_runtime.sleeper,
                 transient=transient_read_error,
             )
         except Exception as exc:
@@ -2185,7 +2195,9 @@ class MutationService(BaseService):
                     isinstance(exc, OneNoteError) and transient_read_error(exc)
                 )
                 if capture_attempts == 1 and retryable_capture:
-                    time.sleep(DEFAULT_CONVERGENCE.interval_seconds)
+                    self.convergence_runtime.sleeper(
+                        DEFAULT_CONVERGENCE.interval_seconds
+                    )
                     continue
                 break
         if after is None:

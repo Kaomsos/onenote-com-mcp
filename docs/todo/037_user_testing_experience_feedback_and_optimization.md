@@ -187,7 +187,7 @@ UT-010 已完成验证：所有公开 Page 范围已统一为 `include_subpages:
 
 - `tests/test_policy.py + tests/test_operation_runtime.py + tests/test_project_mcp_configs.py`：`184 passed`；冻结当前 53 Tool 的精确授权/platform-preflight 矩阵、48 条缺 gate 拒绝、同名 batch 授权复用和旧 Copy 环境变量非 alias。
 - `tests/manual_validation/tests`：`606 passed in 16.50s`；冻结 ScenarioPolicy、fixture/tool policy 闭包、具名 batch/Sort/Copy/Move/Reorder 场景、Delete/Reorder 的 `include_subpages=false|true` 计划、Create 三类 cleanup 闭包、Create/Sort typed preflight 拒绝的 read-only bridge audit 与 unchanged snapshot、Page Rename title-excluded body/restore 证据、SectionGroup source anchors、Reparent 整批最终 hierarchy 摘要、`get_page_text` content-free 投影证据和 dry-run catalog。该结果是纯合同，不是 OneNote 真实后端证据。
-- 完整 `.venv\Scripts\python.exe -m pytest -q`：最新结果为 `1340 passed in 67.88s`。
+- 完整 `.venv\Scripts\python.exe -m pytest -q`：最新结果为 `1340 passed in 25.32s`；测试服务通过可注入的虚拟 convergence clock 保持原 deadline、poll interval 与稳定观察次数合同，同时消除自动化中的真实等待。
 - `.venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run`：18 个 `all` 场景全部通过，`18 passed, 0 failed`；命令包含 `--dry-run`，未启动 MCP、未访问 OneNote、未执行 mutation。
 - Agent 未执行任何真实 `run.py <scenario>`、`run.py all` 或真实 maintenance action。用于闭合 UT-005、UT-007、UT-008、UT-009 的既有 human-gated 证据仍成立。用户于 2026-08-18 01:22–01:25 完成的最新 3 个 durable run 全部 `passed/restored/closed`，已分别闭合前一批 Create 场景清理 allowlist、Rename 恢复快照比较和 SectionGroup Reparent 恢复阶段的 fail-closed 路径；旧 run 及其 durable 现场仍作为历史诊断证据保留。
 - 用户于 2026-08-18 11:36–11:45 完成 UT-010 的五个 fresh disposable run；全部 `passed/closed_preserved`，其 content-free 范围、保护、删除、映射、位置、恢复和失败前 bridge audit 证据见 UT-010 单项记录。真实运行由用户本人前台发起，Agent 仅只读核验已保存 artifact。

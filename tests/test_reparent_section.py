@@ -13,6 +13,9 @@ from local_onenote_mcp.services.errors import MutationFailure, PartialFailure
 from tests.destination_position_assertions import assert_destination_position_contract
 
 
+pytestmark = pytest.mark.usefixtures("virtual_convergence_clock")
+
+
 def _page_xml(page_id: str, title: str) -> str:
     return (
         '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
@@ -281,8 +284,6 @@ def test_reparent_container_production_readback_never_reads_page_xml(monkeypatch
         lambda *args, **_kwargs: page_reads.append(args)
         or (_ for _ in ()).throw(AssertionError("Reparent must not read Page XML")),
     )
-    monkeypatch.setattr("local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None)
-
     result = server.services.mutations.reparent_section(
         "section-id",
         "destination-group-id",
@@ -347,8 +348,6 @@ def test_reparent_page_production_readback_never_reads_page_xml(monkeypatch) -> 
         lambda *args, **_kwargs: page_reads.append(args)
         or (_ for _ in ()).throw(AssertionError("Reparent must not read Page XML")),
     )
-    monkeypatch.setattr("local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None)
-
     result = server.services.mutations.reparent_page(
         "source-after",
         "destination-section",
@@ -905,10 +904,6 @@ def test_reparent_page_partial_reports_observed_root_when_subtree_is_incomplete(
         lambda *_args, **_kwargs: "<typed-page-scope />",
     )
     monkeypatch.setattr(server.services.mutations, "call", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        "local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None
-    )
-
     with pytest.raises(PartialFailure) as caught:
         server.services.mutations.reparent_page(
             "selected",
@@ -976,10 +971,6 @@ def test_reparent_page_readback_unavailable_reports_stable_partial_reason(
         lambda *_args, **_kwargs: "<typed-page-scope />",
     )
     monkeypatch.setattr(server.services.mutations, "call", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(
-        "local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None
-    )
-
     with pytest.raises(PartialFailure) as caught:
         server.services.mutations.reparent_page(
             "source-after",
@@ -1026,8 +1017,6 @@ def test_reparent_fails_closed_when_com_succeeds_without_state_change(monkeypatc
         "call",
         lambda operation, **_kwargs: calls.append(operation) or {"updated": True},
     )
-    monkeypatch.setattr("local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None)
-
     with pytest.raises(MutationFailure, match="did not apply") as caught:
         server.services.mutations.reparent_section(
             "section-id", "destination-group-id", "Section", "source-group-id", "modified"
@@ -1329,6 +1318,7 @@ def test_reparent_page_without_descendants_skips_promotion_and_false_is_equivale
 @pytest.mark.parametrize("resource_type", ["section", "section_group", "page"])
 def test_reparent_hierarchy_capture_may_exceed_convergence_deadline(
     monkeypatch,
+    virtual_convergence_clock,
     resource_type: str,
 ) -> None:
     items = _container_items()
@@ -1398,7 +1388,6 @@ def test_reparent_hierarchy_capture_may_exceed_convergence_deadline(
     after_items.append(moved)
     before = {"items": items, "page_xml": {}}
     after = {"items": after_items, "page_xml": {}}
-    now = [0.0]
     captures = 0
     calls: list[str] = []
 
@@ -1407,11 +1396,11 @@ def test_reparent_hierarchy_capture_may_exceed_convergence_deadline(
         captures += 1
         if captures == 1:
             return before
-        now[0] += 5.0
+        virtual_convergence_clock.advance(5.0)
         return after
 
     def capture_topology(_notebook_id: str) -> list[dict]:
-        now[0] += 0.1
+        virtual_convergence_clock.advance(0.1)
         return after_items
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
@@ -1448,14 +1437,6 @@ def test_reparent_hierarchy_capture_may_exceed_convergence_deadline(
         "call",
         lambda operation, **_kwargs: calls.append(operation) or {},
     )
-    monkeypatch.setattr(
-        "local_onenote_mcp.services.mutations.time.monotonic", lambda: now[0]
-    )
-    monkeypatch.setattr(
-        "local_onenote_mcp.services.mutations.time.sleep",
-        lambda seconds: now.__setitem__(0, now[0] + seconds),
-    )
-
     result = invoke(
         target_id,
         destination_id,
@@ -1468,7 +1449,7 @@ def test_reparent_hierarchy_capture_may_exceed_convergence_deadline(
     assert result["convergence"]["stable_observations"] == (
         4 if resource_type == "section_group" else 2
     )
-    assert now[0] > 4.0
+    assert virtual_convergence_clock.now > 4.0
     assert captures == 2
     assert calls == ["update_hierarchy"]
 
@@ -1518,10 +1499,6 @@ def test_reparent_retries_full_capture_once_without_replaying_mutation(monkeypat
         "call",
         lambda operation, **_kwargs: calls.append(operation) or {},
     )
-    monkeypatch.setattr(
-        "local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None
-    )
-
     result = server.services.mutations.reparent_section(
         "section-id",
         "destination-group-id",
@@ -1552,6 +1529,7 @@ def test_reparent_snapshot_rejects_same_ids_with_changed_sibling_order(monkeypat
 @pytest.mark.write_contract
 def test_reparent_hierarchy_deadline_reports_stable_count_instead_of_none(
     monkeypatch,
+    virtual_convergence_clock,
 ) -> None:
     before_items = _container_items()
     moved = {
@@ -1561,11 +1539,10 @@ def test_reparent_hierarchy_deadline_reports_stable_count_instead_of_none(
     after_items = [
         dict(item) for item in before_items if item["id"] != "section-id"
     ] + [moved]
-    now = [0.0]
     calls: list[str] = []
 
     def slow_topology(_notebook_id: str) -> list[dict]:
-        now[0] += 5.0
+        virtual_convergence_clock.advance(5.0)
         return after_items
 
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
@@ -1591,10 +1568,6 @@ def test_reparent_hierarchy_deadline_reports_stable_count_instead_of_none(
         "call",
         lambda operation, **_kwargs: calls.append(operation) or {},
     )
-    monkeypatch.setattr(
-        "local_onenote_mcp.services.mutations.time.monotonic", lambda: now[0]
-    )
-
     with pytest.raises(PartialFailure, match="safely verified postcondition") as caught:
         server.services.mutations.reparent_section(
             "section-id",
@@ -1705,10 +1678,6 @@ def test_reparent_execute_error_with_exact_prestate_is_typed_not_applied(
         "reparent_xml",
         lambda *_args, **_kwargs: "<typed-service-generated />",
     )
-    monkeypatch.setattr(
-        "local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None
-    )
-
     def execute(operation: str, **_kwargs):
         calls.append(operation)
         raise OneNoteFileUnavailableError(
@@ -1806,10 +1775,6 @@ def test_reparent_page_execution_error_uses_hierarchy_only_live_state(
         "reparent_page_scope_xml",
         lambda *_args, **_kwargs: "<typed-page-scope />",
     )
-    monkeypatch.setattr(
-        "local_onenote_mcp.services.mutations.time.sleep", lambda _seconds: None
-    )
-
     def execute(operation: str, **_kwargs):
         calls.append(operation)
         raise OneNoteNotYetSynchronizedError(

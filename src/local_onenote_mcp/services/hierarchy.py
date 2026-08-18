@@ -23,7 +23,13 @@ from ..hierarchy import (
 )
 from ..onenote_errors import transient_read_error
 from .base import BaseService
-from .convergence import ConvergenceConfig, ConvergenceResult, converge
+from .convergence import (
+    DEFAULT_CONVERGENCE_RUNTIME,
+    ConvergenceConfig,
+    ConvergenceResult,
+    ConvergenceRuntime,
+    converge,
+)
 
 
 IDENTIFIER_RESOLUTION_ORDER = ["id", "exact_path", "unique_name"]
@@ -80,10 +86,16 @@ def _parse_rfc3339(value: str, field: str) -> datetime:
 
 
 class HierarchyService(BaseService):
-    def __init__(self, bridge: OneNoteBridge) -> None:
+    def __init__(
+        self,
+        bridge: OneNoteBridge,
+        *,
+        convergence_runtime: ConvergenceRuntime = DEFAULT_CONVERGENCE_RUNTIME,
+    ) -> None:
         super().__init__(bridge)
         ET.register_namespace("one", ONE_NS)
         self._last_convergence: ConvergenceResult[Any] | None = None
+        self.convergence_runtime = convergence_runtime
 
     def last_convergence_summary(self) -> dict[str, Any]:
         if self._last_convergence is None:
@@ -168,8 +180,8 @@ class HierarchyService(BaseService):
             lambda item: item is not None and (predicate is None or predicate(item)),
             lambda item: self._resource_identity(item),
             config=self._wait_config(retries, delay_seconds),
-            clock=time.monotonic,
-            sleeper=time.sleep,
+            clock=self.convergence_runtime.clock,
+            sleeper=self.convergence_runtime.sleeper,
             transient=transient_read_error,
         )
         self._last_convergence = result
@@ -235,8 +247,8 @@ class HierarchyService(BaseService):
             lambda item: item is not None,
             lambda item: self._resource_identity(item),
             config=self._wait_config(retries, delay_seconds),
-            clock=time.monotonic,
-            sleeper=time.sleep,
+            clock=self.convergence_runtime.clock,
+            sleeper=self.convergence_runtime.sleeper,
             identity_remap={},
             transient=transient_read_error,
         )

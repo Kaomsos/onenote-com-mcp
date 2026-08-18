@@ -31,6 +31,30 @@ class ConvergenceConfig:
 DEFAULT_CONVERGENCE = ConvergenceConfig()
 
 
+def _system_monotonic() -> float:
+    return time.monotonic()
+
+
+def _system_sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+@dataclass(frozen=True)
+class ConvergenceRuntime:
+    """Time dependencies used by convergence polling.
+
+    Production services use the real monotonic clock and sleeper. Tests can
+    inject a virtual clock without changing deadlines, polling intervals, or
+    the number of observations required by the convergence contract.
+    """
+
+    clock: Callable[[], float] = _system_monotonic
+    sleeper: Callable[[float], None] = _system_sleep
+
+
+DEFAULT_CONVERGENCE_RUNTIME = ConvergenceRuntime()
+
+
 @dataclass(frozen=True)
 class ConvergenceResult(Generic[T]):
     converged: bool

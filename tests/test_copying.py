@@ -21,6 +21,9 @@ from local_onenote_mcp.tools.responses import caught
 from tests.destination_position_assertions import assert_destination_position_contract
 
 
+pytestmark = pytest.mark.usefixtures("virtual_convergence_clock")
+
+
 async def plan_copy(
     source_id: str,
     destination_parent_id: str = "",
@@ -3634,7 +3637,6 @@ def test_container_move_reports_remaining_descendant_without_extra_deletes(monke
     source_id, child_id, _copied, delete_calls, _final_items = install_container_move_execution_fakes(
         monkeypatch, "section_group"
     )
-    monkeypatch.setattr("local_onenote_mcp.services.copying.time.sleep", lambda _seconds: None)
     monkeypatch.setattr(
         server.services.hierarchy,
         "resources",

@@ -106,6 +106,38 @@ def mock_ready_onenote_gui_for_operation_contracts(monkeypatch):
     )
 
 
+class VirtualClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.advance(seconds)
+
+    def advance(self, seconds: float) -> None:
+        self.now += max(0.0, float(seconds))
+
+
+@pytest.fixture
+def virtual_convergence_clock(monkeypatch):
+    """Run service convergence polls against deterministic virtual time."""
+
+    from local_onenote_mcp import server
+    from local_onenote_mcp.services.convergence import ConvergenceRuntime
+
+    clock = VirtualClock()
+    runtime = ConvergenceRuntime(clock=clock.monotonic, sleeper=clock.sleep)
+    for service in (
+        server.services.hierarchy,
+        server.services.mutations,
+        server.services.copying,
+    ):
+        monkeypatch.setattr(service, "convergence_runtime", runtime)
+    return clock
+
+
 def pytest_sessionfinish(session, exitstatus) -> None:  # noqa: ARG001
     """Leave no root-level bytecode artifact after a normal pytest session."""
 

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import json
 from pathlib import Path
 import re
+import sys
 
 import pytest
 
@@ -156,6 +157,19 @@ def _execute(
     )
 
 
+def _redirected_stdin(monkeypatch) -> None:
+    """Model piped stdin explicitly instead of relying on pytest's capture mode.
+
+    Default pytest capture happens to supply a non-tty ``sys.stdin``, so these
+    refusals would otherwise pass for an incidental reason and regress under
+    ``-s``.
+    """
+
+    monkeypatch.setattr(
+        sys, "stdin", SimpleNamespace(isatty=lambda: False, readline=lambda: "")
+    )
+
+
 def test_parser_registers_only_clear_group_and_three_maintenance_subactions() -> None:
     parser = build_parser()
     for action in cleanup.CONFIRMATIONS:
@@ -180,9 +194,12 @@ def test_parser_registers_only_clear_group_and_three_maintenance_subactions() ->
             parser.parse_args([removed, "--dry-run"])
 
 
-def test_real_action_requires_interactive_action_bound_confirmation(tmp_path) -> None:
+def test_real_action_requires_interactive_action_bound_confirmation(
+    monkeypatch, tmp_path
+) -> None:
     workspace, validation = _roots(tmp_path)
     target = _run(validation, "run-2026-08-12-10-00-13")
+    _redirected_stdin(monkeypatch)
     with pytest.raises(RunnerFailure, match="interactive terminal"):
         _execute(_args("clear-runs", dry_run=False), workspace, validation)
     assert target.exists()
@@ -807,6 +824,7 @@ def test_main_refuses_noninteractive_confirmation_before_any_delete(
         classmethod(lambda cls, **_kwargs: OpenNotebookPathSnapshot("complete")),
     )
     monkeypatch.setattr(cleanup, "_discover", lambda *_args, **_kwargs: ([], None, None))
+    _redirected_stdin(monkeypatch)
     validation = tmp_path / "workspace" / ".local-validation"
     workspace = validation.parent
     workspace.mkdir()

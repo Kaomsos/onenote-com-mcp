@@ -20,7 +20,12 @@ from ..page import (
 )
 from ..policy import CopyBudget, MutationPolicy
 from .base import BaseService
-from .convergence import DEFAULT_CONVERGENCE, converge
+from .convergence import (
+    DEFAULT_CONVERGENCE,
+    DEFAULT_CONVERGENCE_RUNTIME,
+    ConvergenceRuntime,
+    converge,
+)
 from .errors import PartialFailure
 from .hierarchy import HierarchyService
 from .mutations import MutationService
@@ -87,11 +92,14 @@ class CopyService(BaseService):
         hierarchy: HierarchyService,
         pages: PageService,
         mutations: MutationService,
+        *,
+        convergence_runtime: ConvergenceRuntime = DEFAULT_CONVERGENCE_RUNTIME,
     ) -> None:
         super().__init__(bridge)
         self.hierarchy = hierarchy
         self.pages = pages
         self.mutations = mutations
+        self.convergence_runtime = convergence_runtime
 
     @staticmethod
     def _stable_resource(item: dict[str, Any]) -> dict[str, Any]:
@@ -890,8 +898,8 @@ class CopyService(BaseService):
                     lambda value: value["equivalence"]["equivalent"],
                     lambda value: value["digest"],
                     config=DEFAULT_CONVERGENCE,
-                    clock=time.monotonic,
-                    sleeper=time.sleep,
+                    clock=self.convergence_runtime.clock,
+                    sleeper=self.convergence_runtime.sleeper,
                     transient=transient_read_error,
                 )
                 assert stable_page.value is not None
@@ -1806,8 +1814,8 @@ class CopyService(BaseService):
             lambda values: True,
             lambda values: tuple(values),
             config=DEFAULT_CONVERGENCE,
-            clock=time.monotonic,
-            sleeper=time.sleep,
+            clock=self.convergence_runtime.clock,
+            sleeper=self.convergence_runtime.sleeper,
             transient=transient_read_error,
         )
         remaining_source_ids = (
