@@ -1,20 +1,20 @@
 # 037：用户测试期工具调用与实现体验优化
 
 > ID：037
-> 状态：进行中
+> 状态：已完成
 > 优先级：P0
 > 类型：User Testing / Developer Dogfooding / Tool UX / 反馈驱动优化
 > 更新日期：2026-08-18
 
-## 当前状态
+## 最终状态
 
-[TODO 034](034_pre_user_testing_tool_surface_convergence.md) 已完成用户测试准入。项目现进入开发者模拟真实用户行为的持续使用阶段：开发者通过受支持的 MCP 客户端，从用户任务出发发现、选择并调用工具，再根据实际体验提出和验证优化。UT-004 已交付复用原工具名的 bounded `items` 批处理与唯一新增工具 `sort_children`，production、自动化、manual-validation 静态合同和 canonical 文档已同步。用户首轮 9 个 human-gated run 为 6 个通过、3 个 fail closed；三条失败路径加固后于 2026-08-18 定向复跑，`create`、`rename`、`reparent-section-group` 均 passed、restored 且 lifecycle closed，因此 9 个具名允许路径均有最新真实通过证据。随后更新后的 `create` 与 `reorder-page` mutation 前拒绝探针也由用户前台运行通过；四类 batch partial-failure 由确定性 fault-injection 自动化合同作为最终依据，不在真实 OneNote 中故意制造后端故障。UT-004 因而闭合为 `completed`。UT-006 的 online-backed Notebook 同步观察已沉淀为 [带证据边界的 Lesson](../lesson/onenote_visible_sync_activity_is_not_sync_completion.md)。UT-005、UT-007、UT-008、UT-009 已闭合为 `completed`；UT-006 未改变实现。
+[TODO 034](034_pre_user_testing_tool_surface_convergence.md) 完成用户测试准入后，本台账记录了 UT-001 至 UT-010 的开发者模拟真实用户使用、决策、实施和证据。UT-001 至 UT-005、UT-007、UT-008 与 UT-010 已完成；UT-006 的 online-backed Notebook 同步观察没有触发产品改动，并已沉淀为 [带证据边界的 Lesson](../lesson/onenote_visible_sync_activity_is_not_sync_completion.md)。
 
 UT-010 已完成验证：所有公开 Page 范围已统一为 `include_subpages: bool = false`，`delete_page` 与 `reorder_page` 已补齐单页保护和完整缩进子树语义；Page Reparent/Delete batch 已从同一冻结快照计算整批 scope，并在任何主操作前按 Section 一次性提升全部排除后代。生产实现、自动化、具名 manual-validation 场景和 canonical 文档已同步；用户于 2026-08-18 前台完成 Delete、Reorder、Copy、Move、Reparent 五个 fresh disposable run，全部 passed 且 lifecycle closed。
 
-本 TODO 是用户测试期的**唯一改进台账**。工具选择、调用链、描述、schema、权限提示、响应、错误恢复或实现行为方面的观察与改进，暂时全部记录在本文，不为单项体验问题另建 TODO、Lesson、Overview、专题设计稿或其他独立跟踪文档。
+2026-08-18，用户补充确认 UT-009 的用户体感 bug 在代表性真实 Page content 上仍未解决：阻塞点是 Move 的 `lossless` 回读校验，而不是耗时或 timeout。既有 `semantic_content_v1` 和 human-gated Move 证据只覆盖受控 fixture，不能外推为真实内容的完整闭环。该剩余 P0 责任已完整转交 [TODO 039](039_interactive_real_page_move_lossless_validation.md)，由专用 bootstrap + interactive Move 复现和验收；UT-009 在本台账中转为 `deferred`，不是伪称完成。
 
-若改进改变当前公开合同、运行流程或实现，仍必须同步修改对应代码、自动化测试以及既有 canonical README/design/dev 文档；这些必要同步不是新的反馈台账，变更位置应回链到本文对应记录。可复用 Lesson 或独立长期规划是否拆出，只在本 TODO 收尾时统一决定。
+用户已明确批准结束本轮 037 用户测试优化台账。本文自此作为只读历史台账关闭；后续新问题使用新的不可变 TODO，已完成合同的回归仍回链到相应 canonical 文档。
 
 ## 目标
 
@@ -62,7 +62,7 @@ UT-010 已完成验证：所有公开 Page 范围已统一为 `include_subpages:
 | UT-006 | 2026-08-17 | 用户 / 在 online-backed Notebook 中创建 SectionGroup | Writes | 可见 OneNote 同步在 `create_section_group` 后触发；`reliability` | 仅记录环境观察，不修改同步行为或契约；可复用结论见 [Lesson](../lesson/onenote_visible_sync_activity_is_not_sync_completion.md) | 用户前台观察；尚未记录 bridge audit 或独立复现矩阵 | observed |
 | UT-007 | 2026-08-17 | 用户 / 执行层级变更 | 依目标操作的现有 gate | 生产 Reparent 已移除逐 Page XML 比对，但容器 Reorder 仍在生产 read-back 中读取子树 Page XML；层级变更的验证边界不一致且会随无关正文增长；`reliability` / `performance` | Reparent、Page Reorder、Section Reorder 的 production read-back 均只验证 content-free hierarchy；容器响应声明 Page content=`not_read` | Reparent 既有证据保留；最新 `reorder-section` 的 4 次 mutation 均 `page_content=not_read`，7 Page manual comparator 前后/恢复一致 | completed |
 | UT-008 | 2026-08-17 | 用户 / 读取既有 Page 的富文本内容 | 无 gate | `get_page_text` 只返回可见 plain text；粗体、链接、字体/颜色、列表、表格和 HTML 结构不进入响应；`capability` / `response` | `get_page_text(mode="rich"|"plain")` 已实现；默认 rich=`sanitized_html_v1`，显式 plain 保留兼容响应；完整 OneNote MathML conditional wrapper 现会安全规范化为 canonical `<math>` | `reparent-page`、`copy-section`、`copy-page` 真实 rich/plain/bounded/safety/signature 合同全部通过并精确关闭 | completed |
-| UT-009 | 2026-08-17 | Grok Build / 将已有 Page 重建式 Move 到 disposable 目标 Notebook | 现状已迁移为 Create + Writes + Deletes | 目标区常已建出副本，但 `verify_copy` 的 `page_equivalence` 失败，源删除被挡住，结果为 `partial_failure` / `copy_only`；`reliability` / `response` | 新增 `semantic_content_v1`：分项验证有效标题、富文本/List/Tag、表格、二进制对象与非空 Outline；只忽略三类已知 COM 规范化，不完整投影回退 strict | 4 个 Copy run 的 11 份 report 全部 verified/lossless、零 issue；3 个 Move run 均先通过 Copy gate 再非永久删源 | completed |
+| UT-009 | 2026-08-17 | Grok Build / 将已有 Page 重建式 Move 到 disposable 目标 Notebook | 现状已迁移为 Create + Writes + Deletes | 目标区常已建出副本，但 `verify_copy` 的 `page_equivalence` 失败，源删除被挡住，结果为 `partial_failure` / `copy_only`；`reliability` / `response` | 第一阶段新增 `semantic_content_v1` 并修复三类已知 COM 规范化；用户随后确认代表性真实 Page content 仍被 lossless 回读挡住，转交 P0 [TODO 039](039_interactive_real_page_move_lossless_validation.md) | 受控 fixture 的 Copy/Move 证据仍有效，但不足以证明真实内容；039 将以专用 bootstrap + interactive Move 复现 | deferred |
 | UT-010 | 2026-08-18 | 用户 / 删除或重排带缩进子页的父 Page，并统一 Page scope 参数 | Deletes / Writes；Reparent 另需 Organize | 原 `delete_page` 与 `reorder_page` 缺少一致的单页/子树选择与子页保护；原公开范围使用字符串 `page_scope`；Page Reparent/Delete batch 若逐项判断提升还会受前项拓扑变化影响；`reliability` / `schema` / `capability` | 所有公开 `page_scope` 已改为 `include_subpages: bool = false`；Delete/Reorder 单页路径提升并保护排除后代，完整子树路径按块处理；Page Reparent/Delete batch 从同一快照计算整批有效 scope 与一次性提升计划 | 生产、schema、自动化、manual-validation 场景和文档已同步；纯测试与 dry-run 通过；五个 fresh disposable human-gated run 全部 passed/closed，覆盖两种范围、子页保护、完整子树和 batch-wide mixed scope | completed |
 
 单项状态只使用：`observed`、`accepted`、`implementing`、`validating`、`completed`、`rejected`、`deferred`。`rejected` 必须记录为什么不是产品问题；`deferred` 必须记录风险、依赖或不阻塞理由。
@@ -169,7 +169,8 @@ UT-010 已完成验证：所有公开 Page 范围已统一为 `include_subpages:
 - **实现边界**：只调整 Copy read-back 的 Page 等价投影，不调整删源门限；`copy_only` 仍不得解释或重放为成功 Move。内容丢失负向用例、content-free 验证摘要和具名 manual-validation 静态闭包已补齐，用户前台的 verified-Copy-before-delete 复测证据见下。
 
 - **实现与验证状态**：`page/copying.py` 新增 `semantic_content_v1`，只对 capability 完整且属于 `Outline/RichText/List/Tag/Table/Image` 的含 Table/Image Page 启用；MathML、DisplayEquation、纯 List/Tag、InkDrawing、UIShape 与其他类型保持既有独立 tier。投影把多个 Title `T` 合并为有效标题；忽略只含空结构的 Outline；在 Table Cell 内按有效富文本 run、List/Tag 与嵌套表格语义比较，允许 OE 分段压平；同时精确比较非 Outline 对象类型计数与解码 binary SHA-256。source/target 投影任一不完整时只允许 strict canonical fallback；未知结构、标题变化、样式/链接变化、List/Tag 变化、表格行列/单元格变化、非空 Outline 丢失和 binary 变化均 fail closed。`page_equivalence` 只返回 content-free checks/comparison 摘要。自动化已覆盖三类观察到的 COM 规范化正向样本，以及标题、富文本样式、非空 Outline、binary 丢失负向样本。生产 Move 的 verified-Copy-before-delete、source revalidation、`copy_only`、single-attempt 和 non-permanent delete 门限未放宽。
-- **用户真实复测与完成判定**：用户于 2026-08-17 完成 `copy-page`=`run-2026-08-17-21-03-49`、`copy-section`=`21-06-31`、`copy-section-group`=`21-08-07`、`copy-notebook`=`21-09-57`、`move-page`=`21-11-01`、`move-section`=`21-12-14`、`move-section-group`=`21-12-49`（后六项沿用 `run-2026-08-17-` 前缀）。四个 Copy run 共 11 份 Copy report，全部 `copy_contract_satisfied=true`、`verified=true`、`lossless=true`、issues 为空；真实 verification tier 包含 `semantic_content_v1`、`semantic_list_tag`、`semantic_display_equation` 与 `strict_canonical`，其中 Section、SectionGroup、Notebook Copy 均实际进入 `semantic_content_v1`。`move-page` 的 root-only/subtree 两个 case 均先 `copy_verified=true` 再 `source_deleted_nonpermanently=true`；两个容器 Move 的 `move-result` 也均为 `outcome="moved"`、Copy report verified/lossless、源根非永久删除。7 个 run 均顶层/scenario `passed` 且 lifecycle `closed=true`，没有 `copy_only`、partial 或 issue。正负自动化合同与真实 Copy-before-delete 闭环均已满足，UT-009 转为 `completed`；结果不外推为所有未知 Page capability 或跨版本保证。
+- **用户真实复测与证据边界**：用户于 2026-08-17 完成 `copy-page`=`run-2026-08-17-21-03-49`、`copy-section`=`21-06-31`、`copy-section-group`=`21-08-07`、`copy-notebook`=`21-09-57`、`move-page`=`21-11-01`、`move-section`=`21-12-14`、`move-section-group`=`21-12-49`（后六项沿用 `run-2026-08-17-` 前缀）。四个 Copy run 共 11 份 Copy report，全部 `copy_contract_satisfied=true`、`verified=true`、`lossless=true`、issues 为空；真实 verification tier 包含 `semantic_content_v1`、`semantic_list_tag`、`semantic_display_equation` 与 `strict_canonical`，其中 Section、SectionGroup、Notebook Copy 均实际进入 `semantic_content_v1`。`move-page` 的 root-only/subtree 两个 case 均先 `copy_verified=true` 再 `source_deleted_nonpermanently=true`；两个容器 Move 的 `move-result` 也均为 `outcome="moved"`、Copy report verified/lossless、源根非永久删除。7 个 run 均顶层/scenario `passed` 且 lifecycle `closed=true`，没有 `copy_only`、partial 或 issue。这些结果严格限定于具名受控 fixture。
+- **后续用户确认与转交（2026-08-18）**：用户在代表性真实 Page content 上继续遇到 Move `lossless` 回读失败，说明上述 fixture 没有覆盖实际内容组合或规范化形态。源删除被安全挡住仍是正确行为，但产品可用性问题没有解决。UT-009 在 037 中改为 `deferred`，第一阶段实现和证据保留；剩余根因诊断、专用 bootstrap、interactive Move、comparator/transform 修复与真实复测全部由 P0 [TODO 039](039_interactive_real_page_move_lossless_validation.md) 接管。
 
 ### UT-010：统一 Page 子页范围，并补齐 Delete/Reorder 与 batch 后代保护
 
@@ -190,7 +191,7 @@ UT-010 已完成验证：所有公开 Page 范围已统一为 `include_subpages:
 - `tests/manual_validation/tests`：`606 passed in 16.50s`；冻结 ScenarioPolicy、fixture/tool policy 闭包、具名 batch/Sort/Copy/Move/Reorder 场景、Delete/Reorder 的 `include_subpages=false|true` 计划、Create 三类 cleanup 闭包、Create/Sort typed preflight 拒绝的 read-only bridge audit 与 unchanged snapshot、Page Rename title-excluded body/restore 证据、SectionGroup source anchors、Reparent 整批最终 hierarchy 摘要、`get_page_text` content-free 投影证据和 dry-run catalog。该结果是纯合同，不是 OneNote 真实后端证据。
 - 完整 `.venv\Scripts\python.exe -m pytest -q`：最新结果为 `1340 passed in 25.32s`；测试服务通过可注入的虚拟 convergence clock 保持原 deadline、poll interval 与稳定观察次数合同，同时消除自动化中的真实等待。
 - `.venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run`：18 个 `all` 场景全部通过，`18 passed, 0 failed`；命令包含 `--dry-run`，未启动 MCP、未访问 OneNote、未执行 mutation。
-- Agent 未执行任何真实 `run.py <scenario>`、`run.py all` 或真实 maintenance action。用于闭合 UT-005、UT-007、UT-008、UT-009 的既有 human-gated 证据仍成立。用户于 2026-08-18 01:22–01:25 完成的最新 3 个 durable run 全部 `passed/restored/closed`，已分别闭合前一批 Create 场景清理 allowlist、Rename 恢复快照比较和 SectionGroup Reparent 恢复阶段的 fail-closed 路径；旧 run 及其 durable 现场仍作为历史诊断证据保留。
+- Agent 未执行任何真实 `run.py <scenario>`、`run.py all` 或真实 maintenance action。用于 UT-005、UT-007、UT-008 和 UT-009 受控 fixture 第一阶段的既有 human-gated 证据仍成立；UT-009 的真实内容范围不在其证明边界内，已转交 TODO 039。用户于 2026-08-18 01:22–01:25 完成的最新 3 个 durable run 全部 `passed/restored/closed`，已分别闭合前一批 Create 场景清理 allowlist、Rename 恢复快照比较和 SectionGroup Reparent 恢复阶段的 fail-closed 路径；旧 run 及其 durable 现场仍作为历史诊断证据保留。
 - 用户于 2026-08-18 11:36–11:45 完成 UT-010 的五个 fresh disposable run；全部 `passed/closed_preserved`，其 content-free 范围、保护、删除、映射、位置、恢复和失败前 bridge audit 证据见 UT-010 单项记录。真实运行由用户本人前台发起，Agent 仅只读核验已保存 artifact。
 
 ## 单项记录最低要求
@@ -215,16 +216,17 @@ UT-010 已完成验证：所有公开 Page 范围已统一为 `include_subpages:
 
 ## 完成定义
 
-- [ ] 用户认可的代表性任务矩阵已覆盖主要只读、写入、组织、Copy/Move、本地文件、UI 与 Notebook lifecycle 工作流；
-- [ ] 计划纳入本轮的客户端均完成至少一轮真实用户式使用，或记录无法执行的明确原因；
-- [ ] 所有 `accepted` 项均已实施并验证，所有 `deferred` / `rejected` 项均有用户可审阅理由；
-- [ ] 每项改进都在本文留下完整观察—决策—实现—验证链，没有散落的独立体验台账；
-- [ ] 公开合同变化已同步 canonical 文档和自动化测试，真实 OneNote 结论均有用户确认；
-- [ ] 用户审阅最终台账并明确批准结束用户测试优化阶段。
+- [x] 用户认可本轮代表性任务矩阵已覆盖主要只读、写入、组织、Copy/Move、本地文件、UI 与 Notebook lifecycle 工作流；
+- [x] 本轮实际纳入的客户端和用户任务均已有真实用户式使用记录；未扩展的客户端不再作为 037 的隐含完成条件；
+- [x] 所有 `accepted` 项均已实施并验证；UT-006 的环境观察和 UT-009 的真实内容缺口均有明确边界与后续归属；
+- [x] 每项改进都在本文留下观察—决策—实现—验证或转交链，UT-009 的剩余工作唯一转交 TODO 039；
+- [x] 已实施的公开合同变化均同步 canonical 文档和自动化测试，本文没有把受控 fixture 证据外推为任意真实内容；
+- [x] 用户于 2026-08-18 明确要求关闭 037，本轮用户测试优化阶段结束。
 
 ## 关联
 
 - [TODO 034：用户测试前 MCP 工具发布面收敛](034_pre_user_testing_tool_surface_convergence.md)
+- [TODO 039：真实 Page Content 的 Interactive Move Lossless 校验](039_interactive_real_page_move_lossless_validation.md)
 - [公开 Tool 契约](../design/tool_contracts.md)
 - [Manual Validation Runner](../../tests/manual_validation/README.md)
 - [项目 README](../../README.md)
