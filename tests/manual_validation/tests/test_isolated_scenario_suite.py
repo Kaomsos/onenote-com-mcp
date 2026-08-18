@@ -20,6 +20,7 @@ from tests.manual_validation.scenarios.common.fixture_models import FixtureBuild
 from tests.manual_validation.scenarios.base import Scenario
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.scenarios.common.specs import SCENARIO_SPECS
+from tests.manual_validation.scenarios.common.page_readback import SPECIAL_PAGE_TITLE
 from tests.manual_validation.scenarios.fixture_recipes import delete as delete_fixture
 from tests.manual_validation.scenarios.fixture_recipes.copy_page import DESCRIPTION as COPY_PAGE_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reorder_page import DESCRIPTION as REORDER_PAGE_DESCRIPTION
@@ -313,7 +314,7 @@ def test_copy_page_fixture_description_covers_six_case_bundle_matrix() -> None:
     )
     assert "get_page_text" in spec.tool_allowlist
     assert "00-Copy-Page-Description" in spec.fixture.expected_structure[0]
-    assert "01-Source-Parent" in spec.fixture.expected_structure[1]
+    assert "exact special-character parent" in spec.fixture.expected_structure[1]
     assert "02-Source-Child" in spec.fixture.expected_structure[2]
     assert "原始状态：" in COPY_PAGE_DESCRIPTION
     assert "同 Section、跨 Section、跨 Notebook" in COPY_PAGE_DESCRIPTION
@@ -369,7 +370,7 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
         {
             "id": "parent-page",
             "resource_type": "page",
-            "title": "01-Source-Parent",
+            "title": SPECIAL_PAGE_TITLE,
             "section_id": "source-section",
             "parent_id": "source-section",
             "page_level": 1,

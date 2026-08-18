@@ -195,6 +195,8 @@ def test_page_copy_dry_runs_declare_layered_automatic_fixture(
         assert set(payload["fixture_profile"]["content_capabilities"]) == {
             "Outline",
             "RichText",
+            "Table",
+            "special-character Page title",
         }
         assert set(payload["cache"]["roles"]) == {"destination", "source"}
         assert [

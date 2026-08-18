@@ -21,6 +21,7 @@ SCENARIO_TOOL_POLICY_REQUIREMENTS: dict[str, frozenset[str]] = {
     "expand_section": frozenset(),
     "expand_page": frozenset(),
     "expand_hierarchy": frozenset(),
+    "get_hierarchy_path": frozenset(),
     "get_page_xml": frozenset(),
     "get_page_text": frozenset(),
     "get_page_content_objects": frozenset(),

@@ -20,7 +20,7 @@ async def copy_page(
     destination_title: str | None = None,
     include_subpages: bool = False,
 ) -> dict[str, Any]:
-    """With Create and Writes, copy one exact Page using capability-aware fidelity checks; include_subpages=false selects only the root and true selects its complete indentation subtree; OneNote chooses the reported destination position."""
+    """With Create and Writes, copy one exact Page using capability-aware fidelity checks; the source title is preserved exactly unless destination_title is supplied, and Page titles never use filesystem cleaning; include_subpages=false selects only the root and true selects its complete indentation subtree; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "copy_page",
@@ -104,7 +104,7 @@ async def move_page(
     destination_title: str | None = None,
     include_subpages: bool = False,
 ) -> dict[str, Any]:
-    """With Create, Writes, and Deletes, reconstructively move one Page only after capability-aware Copy verification; include_subpages=false protects excluded descendants and true moves the complete indentation subtree; OneNote chooses the reported destination position."""
+    """With Create, Writes, and Deletes, reconstructively move one Page only after capability-aware Copy verification; the source title is preserved exactly unless destination_title is supplied, and Page titles never use filesystem cleaning; include_subpages=false protects excluded descendants and true moves the complete indentation subtree; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "move_page",

@@ -23,6 +23,10 @@ from .common.config import MOVE_PAGE_TOOLS
 from .common.copy_invariants import expected_copy_source_items
 from .common.copy_runtime import call_with_result_evidence
 from .common.destination_position import assert_destination_position
+from .common.page_readback import (
+    assert_default_page_title_readback,
+    assert_semantic_content_page_readback,
+)
 from .common.registry import SCENARIO_REGISTRY
 from .common.report import render_report
 from .common.specs import get_scenario_spec
@@ -92,8 +96,16 @@ async def _execute_move_page(
                 include_descendants,
             )
             expected_source_ids = [str(item["id"]) for item in selected]
+            title_parameter = str(case.get("destination_title", "explicit"))
+            if title_parameter not in {"explicit", "omitted"}:
+                raise RunnerFailure(
+                    "Move Page destination_title contract must be explicit or omitted."
+                )
             destination_title = (
-                f"{index:02d}-Moved-{'Subtree' if include_descendants else 'Root-Only'}-"
+                display_name(current_source)
+                if title_parameter == "omitted"
+                else f"{index:02d}-Moved-"
+                f"{'Subtree' if include_descendants else 'Root-Only'}-"
                 f"{run_safe_timestamp(args)}"
             )
             before = current_snapshot
@@ -104,8 +116,9 @@ async def _execute_move_page(
                 "expected_title": display_name(current_source),
                 "expected_section_id": current_source["section_id"],
                 "expected_modified": current_source.get("modified"),
-                "destination_title": destination_title,
             }
+            if title_parameter != "omitted":
+                move_arguments["destination_title"] = destination_title
             if include_descendants:
                 move_arguments["include_subpages"] = True
             moved = await call_with_result_evidence(
@@ -121,6 +134,24 @@ async def _execute_move_page(
                 raise InvariantFailure(f"Move did not report non-permanent deletion for '{case_name}'.")
             if moved.get("include_descendants") is not include_descendants:
                 raise InvariantFailure(f"Move result scope differs for case '{case_name}'.")
+            semantic_readback = assert_semantic_content_page_readback(
+                report,
+                source_page_ids=expected_source_ids,
+            )
+            write_json(
+                out / f"semantic-readback-{case_name}.json",
+                semantic_readback,
+            )
+            title_readback = None
+            if title_parameter == "omitted":
+                title_readback = assert_default_page_title_readback(
+                    report,
+                    source_page_id=str(current_source["id"]),
+                )
+                write_json(
+                    out / f"default-title-readback-{case_name}.json",
+                    title_readback,
+                )
             id_map = report.get("id_map")
             if not isinstance(id_map, dict) or list(id_map) != expected_source_ids:
                 raise InvariantFailure(f"Move id_map scope differs for case '{case_name}'.")
@@ -177,6 +208,9 @@ async def _execute_move_page(
                 {
                     "case": case_name,
                     "parameter": "omitted" if not include_descendants else True,
+                    "destination_title_parameter": title_parameter,
+                    "default_title_readback": title_readback,
+                    "semantic_content_readback": semantic_readback,
                     "effective_include_descendants": include_descendants,
                     "source_ids": expected_source_ids,
                     "target_ids": target_ids,

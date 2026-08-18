@@ -8,9 +8,10 @@ from typing import Any
 
 from ..mcp_stdio_client import MCPStdioClient
 from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
-from ..test_utils import scenario_dir, write_json
+from ..test_utils import display_name, scenario_dir, write_json
 from .base import Scenario
 from .common.registry import SCENARIO_REGISTRY
+from .common.page_readback import SPECIAL_PAGE_TITLE
 from .fixture_recipes.hierarchy_navigation import RECIPE
 
 
@@ -20,8 +21,8 @@ class HierarchyNavigationScenario(Scenario):
     fixture_recipe = RECIPE
     included_in_all = False
     help_text = (
-        "HUMAN-GATED: validate the List/Expand hierarchy navigation contract, "
-        "typed boundaries, general expansion, and Page indentation tree."
+        "HUMAN-GATED: validate List/Expand plus exact-ID hierarchy path segments, "
+        "typed boundaries, and the Page indentation tree."
     )
 
     @staticmethod
@@ -310,6 +311,50 @@ class HierarchyNavigationScenario(Scenario):
             )
         write_json(out / "expand-hierarchy-page-depth-boundary.json", bounded_response)
 
+        path_response = await client.call_tool(
+            "get_hierarchy_path",
+            {"object_id": str(parent_page["id"])},
+            retry_read=False,
+        )
+        expected_chain = (
+            notebook,
+            group,
+            inner_group,
+            section,
+            parent_page,
+        )
+        expected_segments = [
+            {
+                "resource_type": str(item["resource_type"]),
+                "id": str(item["id"]),
+                "name": display_name(item),
+            }
+            for item in expected_chain
+        ]
+        if (
+            str(path_response.get("item", {}).get("id", ""))
+            != str(parent_page["id"])
+            or path_response.get("path") != parent_page.get("path")
+            or path_response.get("path_segments") != expected_segments
+            or [str(item.get("id", "")) for item in path_response.get("ancestors", ())]
+            != [str(item["id"]) for item in expected_chain[:-1]]
+            or expected_segments[-1]["name"] != SPECIAL_PAGE_TITLE
+        ):
+            raise InvariantFailure(
+                "get_hierarchy_path did not preserve the exact ID-bound path segments."
+            )
+        write_json(
+            out / "get-hierarchy-path.json",
+            {
+                "object_id": str(parent_page["id"]),
+                "legacy_path_display_only": True,
+                "path_segments": expected_segments,
+                "ancestors_match": True,
+                "special_title_preserved": True,
+                "content_exposed": False,
+            },
+        )
+
         audit_verified = audit_file is None
         operations: list[str] = []
         if audit_file is not None:
@@ -333,6 +378,7 @@ class HierarchyNavigationScenario(Scenario):
             "typed_expand_contract_passed": True,
             "generic_four_root_contract_passed": True,
             "max_depth_boundary_passed": True,
+            "hierarchy_path_segments_passed": True,
             "hierarchy_metadata_only_audit_passed": audit_verified,
             "hierarchy_metadata_operation_count": len(operations),
             "filesystem_deleted": False,

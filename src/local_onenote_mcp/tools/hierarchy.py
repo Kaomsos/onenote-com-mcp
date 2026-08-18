@@ -250,7 +250,7 @@ async def query_page(
 
 
 async def get_hierarchy_path(object_id: str) -> dict[str, Any]:
-    """Get a display path and stable ancestor IDs."""
+    """Get a display-only path plus reversible typed ID/name path segments."""
 
     return invoke("get_hierarchy_path", object_id=object_id)
 

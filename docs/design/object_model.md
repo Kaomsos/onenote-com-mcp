@@ -1,13 +1,13 @@
 # OneNote 对象模型
 
 > 状态：实现契约
-> 更新日期：2026-08-16
+> 更新日期：2026-08-18
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
 ## 1. 边界与标识符
 
-公开对象模型固定为 `Notebook → SectionGroup → Section → Page → PageContentObject`。层级对象以 OneNote COM `ID` 为唯一 mutation 主键；`path` 仅用于展示，不能授权写操作。发现从 List、Query 或 Search 开始，再固定 exact ID。
+公开对象模型固定为 `Notebook → SectionGroup → Section → Page → PageContentObject`。层级对象以 OneNote COM `ID` 为唯一 mutation 主键；`path` 仅用于展示，不能授权写操作或反向拆分。`get_hierarchy_path.path_segments` 是规范的可逆层级表示，每段返回 exact `resource_type/id` 与未经清洗的原始 `name`（Page 为 title 值）。发现从 List、Query 或 Search 开始，再固定 exact ID。
 
 COM XML 中未列入本文的 attribute 不进入公开返回。字段缺失时返回 `null`，不依据动作能力推测状态。所有时间字段保留 COM 返回的 ISO 字符串；服务不改写时区。
 
@@ -18,7 +18,7 @@ COM XML 中未列入本文的 attribute 不进入公开返回。字段缺失时�
 | `resource_type` | enum | `notebook/section_group/section/page`。 |
 | `id` | string | COM 对象 ID；写操作唯一主键。 |
 | `name` | string | 仅 Notebook、SectionGroup、Section 使用。Page 使用 `title`。 |
-| `path` | string | 按当前祖先名称派生的显示路径，不是稳定主键。 |
+| `path` | string | 按当前祖先名称派生的 legacy 显示路径，不是稳定主键且不可按 `/` 反向解析。 |
 | `parent_id` | string/null | COM 层级中的直接父对象；Notebook 为 `null`。 |
 | `depth` | integer | 容器树深度；不表示 Page 缩进。 |
 | `created` | string/null | `dateTime/createdTime` 白名单映射。 |
@@ -95,7 +95,7 @@ Page 不公开 `name`，统一使用 `title`：
 
 OneNote UI Shape 当前没有独立的公开 `kind=Shape`。2026-08-11 的矩形与箭头真实回读都得到 `kind=InkDrawing`，但其 XML 子树共同含 `ShapeInfo`；箭头另含 `AnchorPoint`。因此 `UIShape` 只是 content-free capability projection 的复合分类：它要求公开对象仍为 `InkDrawing` 且结构 marker 完整，用来与普通自由墨迹严格区分，不是新增或伪造的 `PageContentObject.kind`。
 
-`DisplayEquation` 同样是 Page 语义 capability/content type，不是公开 `PageContentObject.kind`。它只在一个完整、有界的 Presentation MathML root 明确带有 `display="block"` 时由 Page XML 投影产生，Copy 用它选择单行公式专属的输出规范化和读回 comparator。无 `display` 属性的行内公式继续属于 RichText；未知、残缺或不合约 MathML 不得通过 `DisplayEquation` 分类绕过 fail-closed 比较。`get_page_text(mode="rich")` 会把 OneNote 完整的 MathML conditional-comment wrapper 验证并规范化为不带 prefix 的 canonical `<math xmlns="http://www.w3.org/1998/Math/MathML">`；普通 comment、错误 namespace、额外属性或未知 MathML 元素不会进入公开投影。COM 初次生成和后续重建都可能增加公式前空白包装，该限制并非 Copy 独有；证据边界见 [`lesson/display_equation_com_leading_whitespace_normalization.md`](../lesson/display_equation_com_leading_whitespace_normalization.md)。
+`DisplayEquation` 同样是 Page 语义 capability/content type，不是公开 `PageContentObject.kind`。它只在一个完整、有界的 Presentation MathML root 明确带有 `display="block"` 时由 Page XML 投影产生，Copy 用它选择单行公式专属的输出规范化和读回 comparator。无 `display` 属性的行内公式继续属于 RichText；未知、残缺或不合约 MathML 不得通过 `DisplayEquation` 分类绕过 fail-closed 比较。`get_page_text(mode="rich")` 会把 OneNote 完整的 MathML conditional-comment wrapper 验证并规范化为不带 prefix 的 canonical `<math xmlns="http://www.w3.org/1998/Math/MathML">`；普通 comment、错误 namespace、额外属性或未知 MathML 元素不会进入公开投影。COM 初次生成和后续重建都可能增加公式前空白包装；重建 Page 还可能重算 Page header 中 Title OE 的 `alignment`、`quickStyleIndex` 与 `style` 值。后者仅在 exact title 文本、Title 节点结构和每个 OE 的 canonical 属性名集合均一致时做 pairwise 值归一化；canonical 集合继续使用既有规则排除 `objectID/callbackID` 及 author/time/selection/path 等生成或易变属性，不新增忽略项。有效属性增删、Title 结构/文本及正文 OE style 变化仍 fail closed，并以 content-free 属性名诊断。该限制并非 Copy 独有；公式空白证据边界见 [`lesson/display_equation_com_leading_whitespace_normalization.md`](../lesson/display_equation_com_leading_whitespace_normalization.md)。
 
 OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实测环境都公开一个 `kind=MediaFile`。Page XML 还会包含 `MediaPlaylist/MediaReference`，以及同一含 MediaFile 的 Outline 中的 `OE/MediaIndex/MediaReference` 和 `OE/MediaFile/MediaReference`；Template materialize 后，媒体时间轴可能规范化为只含 `MediaIndex + T` 的 OE，T 使用单一 `span` 富文本。它们都是媒体支撑而不是额外的公开 PageContentObject kind；projection 和 Copy 转换只在精确媒体关联结构内接受节点/时间轴 span，普通 RichText 仍保持独立能力。录像 v8 bootstrap 与 materialized live validation 均未观察到额外 unknown/unsupported 节点。
 
@@ -107,7 +107,9 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 
 ## 4. 关系与树重建
 
-`path` 是面向显示和兼容只读发现的 friendly 字段，不是唯一键。同一 Section 中多个 Page 可以拥有相同 title/path；mutation 目标必须使用 exact ID。创建回读只在 COM allocated ID 不可见且同路径恰有一个新出现、type/parent 均正确的候选时接受 remap，重复 path 必须 fail closed。
+`path` 是面向显示和兼容只读发现的 friendly 字段，不是唯一键。Page title 可以原样包含 `/`、`\\`、`:`、`~`、`%`、重复空格和 Unicode；实现不得为了让 `path` 看似可拆分而使用 filesystem leaf 规则清洗 title。同一 Section 中多个 Page 可以拥有相同 title/path；mutation 目标必须使用 exact ID。`get_hierarchy_path.path_segments` 由 `ancestors + item` 直接投影，可按逐段 exact ID/name 无损消费，即使 legacy path 重复也能区分对象。
+
+Page 创建/Copy 回读首先要求 COM allocated ID 对应 active Page、exact Section ID 和 exact title。只有 allocated ID 不可见时，才允许在同一 exact Section 中按原始 title 找到本次新出现的唯一 fresh ID；旧对象、错误 parent/title、重复 fresh 候选或任何歧义都 fail closed。容器创建保留既有 exact-path 兼容回读，因为容器名称仍对应 filesystem-safe leaf。
 
 - Notebook、SectionGroup、Section 的直接关系来自 XML 嵌套，`relationship_source=com`。
 - Page 的 `order/page_level/parent_page_id/has_children` 需要同 Section 的完整有序列表，`relationship_source=derived`。

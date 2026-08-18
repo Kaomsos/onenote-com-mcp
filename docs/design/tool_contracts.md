@@ -42,7 +42,7 @@ readiness 失败 envelope 的 `error.details.failed_precondition` 为 `onenote_g
 | Tool | 参数 |
 | --- | --- |
 | `list_notebooks` | 无；列出当前打开 Notebook。 |
-| `get_hierarchy_path` | `object_id` |
+| `get_hierarchy_path` | `object_id`；返回 legacy display-only `path`、`ancestors/item` 与 additive `path_segments[{resource_type,id,name}]`。 |
 | `expand_notebook` | `notebook_id`；递归到 Section 叶节点。 |
 | `expand_section_group` | `section_group_id`；递归到 Section 叶节点。 |
 | `expand_section` | `section_id`；返回完整 Page 缩进树。 |
@@ -147,7 +147,15 @@ Copy 需要 Create + Writes；Move 需要 Create + Writes + Deletes。不存在�
 - `move_section(...)` 与 Section Copy 参数同构
 - `move_section_group(...)` 与 SectionGroup Copy 参数同构
 
-七个操作都是单次调用：Runtime 内部从 live source/destination 建立计划、执行预算检查、复制、验证并返回新 ID 映射；不接受 `plan_digest` 或 planning token。Page fidelity 按内容能力选择验证：既有 MathML、DisplayEquation、List/Tag、Ink/UIShape 档保持独立；包含受支持 Table/Image 的 RichText/List/Tag Page 使用 `semantic_content_v1`，分别验证有效 title、富文本样式/链接、List/Tag、表格行列与单元格语义、非空 Outline、对象类型和 binary hash。该投影比较每段文本的有效 inline 格式，而不是 OneNote 可合并的冗余嵌套 `span` 包装；title 文本节点合并、空 Outline 消除与表格 Cell 内 OE 扁平化仍按既有窄规则处理，任何有效样式、链接、正文、结构或 binary 变化继续 fail closed。`page_results[*].semantic_content_stages` 在适用 tier 下返回 content-free 的 source→transformed 与 transformed→target 完整性、check、摘要 hash 和有界 mismatch path，不返回标题、正文、style 值或 raw XML。Move 只有在 Copy 已验证且源状态重验通过后才执行源对象的非永久删除；partial/indeterminate 不自动重放。Page 默认为单页，容器始终递归。
+七个操作都是单次调用：Runtime 内部从 live source/destination 建立计划、执行预算检查、复制、验证并返回新 ID 映射；不接受 `plan_digest` 或 planning token。Page root 的逻辑 title 与容器 filesystem leaf name 分离：默认值和显式 `destination_title` 都精确保留 `/`、`\\`、`:`、`~`、`%`、重复空格和 Unicode，只做非空/控制字符合法性检查；Notebook、SectionGroup、Section 仍使用 filesystem-safe leaf。Page 创建/Copy 优先验证 allocated exact ID、Page 类型、exact Section ID 与 exact title；只有 allocated ID 消失时，才接受“同 exact Section + exact title + 本次新出现”的唯一 fresh ID remap，绝不解析扁平 display path。
+
+Page fidelity 按内容能力选择验证：既有 MathML、DisplayEquation、List/Tag、Ink/UIShape 档保持独立；完整投影的纯 RichText Page 和含受支持 List/Tag/Table/Image 的 Page 使用 `semantic_content_v1`，分别验证有效 title、富文本样式/链接、List/Tag、表格行列与单元格语义、非空 Outline、对象类型和 binary hash。该投影比较每段文本的有效 inline 格式，而不是 OneNote 可合并的冗余嵌套 `span` 包装；title 文本节点合并、空 Outline 消除与表格 Cell 内 OE 扁平化仍按既有窄规则处理。Table `Column.width` 仅在 transformed→target 回读允许 `abs(target-expected)/abs(expected) <= 0.05`；两端都必须为有限正 Decimal，边界 5% 通过，缺失/零/负数/NaN/Infinity/非数值均 fail closed。source→transformed width、Table 拓扑/其他属性及全部其他语义字段仍精确。
+
+`semantic_display_equation` 的 transformed→target comparator 另有一个 pairwise Title header 规则：只有 exact title 文本相等、Title 结构可识别、Title OE 数量相等且每对 OE 的 canonical 属性名集合相同时，才把 `alignment`、`quickStyleIndex`、`style` 的值视为 COM 派生表示。这里的 canonical 集合复用全局 comparator 已有的 generated/volatile exclusion；例如 transformed payload 不含而回读重新生成的 `objectID` 不会单独阻止该规则，也不会扩大现有忽略集合。有效属性增删、其他属性、Title 文本/结构、正文 OE style、MathML 和其余 Page canonical 仍严格比较。响应中的 `title_oe_com_style_normalization` 只给出 applicable/applied、计数和属性名，不返回 style 值或 Page 内容；Title 结构失败稳定分类为 `PageTitle/page_title_structure_mismatch`。
+
+所有 verification tier 的 `page_results[*].title_readback_stages` 都独立返回 content-free 的 source→transformed 与 transformed→target title check。Plan 显式记录调用者是否请求 `destination_title`，不得用转换后的标题是否不同反推意图；默认模式要求 source XML title 与 source metadata 一致且 transformed title 原样保留，显式模式要求 transformed title 等于请求值，最终 target XML title 必须精确等于 transformed title。任一 stage 失败都会使该 Page `lossless=false`，进而阻止 Copy contract 和 Move 删源。`semantic_content_stages` 继续只属于 `semantic_content_v1` 的完整内容投影，不被扩展到 DisplayEquation 等独立 tier。
+
+`page_results[*].semantic_content_stages` 返回 content-free 的 source→transformed 与 transformed→target 完整性、check、摘要 hash 和有界 mismatch path。每个 equivalence 还 additive 返回排序去重的 `failed_content_object_types`、最多 24 条稳定 `content_object_failures` 及 `{limit,reported,truncated,total}`；Table width 失败包含 ordinal、阈值和相对 delta，但不返回标题、正文、style 值、raw XML 或 binary。无法分类或投影不完整分别以 `semantic_mismatch_unclassified` / `semantic_projection_incomplete` fail closed。Move 只有在 Copy 已验证且源状态重验通过后才执行源对象的非永久删除；typed diagnostics 绝不放宽删源门。partial/indeterminate 不自动重放。Page 默认为单页，容器始终递归。
 
 ### Export（1）、UI Navigation（1）、Notebook Lifecycle（2）
 

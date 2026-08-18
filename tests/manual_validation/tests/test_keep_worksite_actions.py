@@ -968,9 +968,11 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
 
         def __init__(self) -> None:
             self.calls: list[str] = []
+            self.arguments: list[dict] = []
 
         async def call_tool(self, name: str, arguments: dict) -> dict:
             self.calls.append(name)
+            self.arguments.append(dict(arguments))
             assert name == "move_page"
             include_descendants = bool(arguments.get("include_subpages", False))
             if include_descendants:
@@ -990,7 +992,11 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                     {
                         **original,
                         "id": target_id,
-                        "title": arguments["destination_title"] if index == 0 else original["title"],
+                        "title": (
+                            arguments.get("destination_title", original["title"])
+                            if index == 0
+                            else original["title"]
+                        ),
                         "section_id": "destination-section",
                         "parent_id": "destination-section",
                         "parent_page_id": target_ids[0] if index else None,
@@ -1005,7 +1011,57 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                 "copy_report": {
                     "verified": True,
                     "lossless": True,
+                    "copy_contract_satisfied": True,
                     "id_map": dict(zip(source_ids, target_ids)),
+                    "page_results": [
+                        {
+                            "source_page_id": source_id,
+                            "lossless": True,
+                            "equivalence": {
+                                "verification_tier": "semantic_content_v1",
+                                "equivalent": True,
+                                "failed_content_object_types": [],
+                                "semantic_content_comparison": {
+                                    "source_complete": True,
+                                    "target_complete": True,
+                                    "passed": True,
+                                },
+                            },
+                            "semantic_content_stages": {
+                                "title_override_requested": (
+                                    source_id == source_ids[0]
+                                    and "destination_title" in arguments
+                                    and arguments["destination_title"]
+                                    != original["title"]
+                                ),
+                                "source_to_transformed": {
+                                    "passed": True,
+                                    "checks": {"title": True},
+                                },
+                                "transformed_to_target": {
+                                    "passed": True,
+                                    "checks": {"title": True},
+                                },
+                            },
+                            "title_readback_stages": {
+                                "title_override_requested": (
+                                    source_id == source_ids[0]
+                                    and "destination_title" in arguments
+                                    and arguments["destination_title"]
+                                    != original["title"]
+                                ),
+                                "source_to_transformed": {
+                                    "passed": True,
+                                    "checks": {"title": True},
+                                },
+                                "transformed_to_target": {
+                                    "passed": True,
+                                    "checks": {"title": True},
+                                },
+                            },
+                        }
+                        for source_id in source_ids
+                    ],
                 },
                 "include_descendants": include_descendants,
                 "source_deleted_nonpermanently": True,
@@ -1057,6 +1113,9 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
     )
 
     assert client.calls == ["move_page", "move_page"]
+    assert "destination_title" not in client.arguments[0]
+    assert client.arguments[0]["expected_title"] == root_only["title"]
+    assert client.arguments[1]["destination_title"].startswith("02-Moved-Subtree-")
     assert result["status"] == "passed"
     assert result["source_deleted_nonpermanently"] is True
     assert [case["effective_include_descendants"] for case in result["case_results"]] == [

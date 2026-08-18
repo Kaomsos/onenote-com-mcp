@@ -69,6 +69,8 @@ SEMANTIC_CONTENT_VERIFICATION = "semantic_content_v1"
 SEMANTIC_CONTENT_PAGE_TYPES = frozenset(
     {"Outline", "RichText", "List", "Tag", "Table", "Image"}
 )
+TABLE_COLUMN_WIDTH_RELATIVE_TOLERANCE = Decimal("0.05")
+CONTENT_OBJECT_FAILURE_LIMIT = 24
 SEMANTIC_INK_DRAWING_VERIFICATION = "semantic_ink_drawing"
 SEMANTIC_UI_SHAPE_VERIFICATION = "semantic_ui_shape"
 SEMANTIC_INK_DRAWING_PAGE_TYPES = frozenset({"Outline", "InkDrawing"})
@@ -103,6 +105,10 @@ MATHML_START_PATTERN = re.compile(
 )
 MATHML_PLACEHOLDER = "[[local-onenote-mcp:mathml]]"
 DISPLAY_EQUATION_DERIVED_SIZE_PLACEHOLDER = "[[local-onenote-mcp:derived-size]]"
+TITLE_OE_COM_STYLE_PLACEHOLDER = "[[local-onenote-mcp:title-oe-com-style]]"
+TITLE_OE_COM_STYLE_ATTRIBUTES = frozenset(
+    {"alignment", "quickStyleIndex", "style"}
+)
 DISPLAY_MATHML_LOOKAHEAD = (
     r"(?=\s*(?:<!--\s*\[if\s+mathML\]\s*>)?\s*"
     r"<(?:[A-Za-z_][A-Za-z0-9_.-]*:)?math\b"
@@ -981,15 +987,105 @@ def _display_equation_empty_markup_projection(xml: str) -> dict[str, int]:
     }
 
 
-def _canonical_display_equation_page_projection(xml: str) -> list[Any]:
-    """Build the internal canonical tree used by DisplayEquation comparison."""
+def _normalized_display_equation_page_root(xml: str) -> ET.Element:
+    """Build one Page tree with only the proven DisplayEquation normalizations."""
 
     root = parse_xml(xml)
     for node in root.iter():
         if local_name(node.tag) == "T" and node.text:
             node.text, _, _ = _normalize_display_equation_outbound_markup(node.text)
     _normalize_standalone_display_equation_outline_sizes(root)
+    return root
+
+
+def _canonical_display_equation_page_projection(xml: str) -> list[Any]:
+    """Build the internal canonical tree used by DisplayEquation comparison."""
+
+    root = _normalized_display_equation_page_root(xml)
     return _canonical_node(root, is_root=True, normalize_mathml=True)
+
+
+def _title_text_for_com_style_normalization(root: ET.Element) -> str | None:
+    titles = [child for child in list(root) if local_name(child.tag) == "Title"]
+    if len(titles) != 1:
+        return None
+    title = titles[0]
+    if any(local_name(node.tag) not in {"Title", "OE", "T"} for node in title.iter()):
+        return None
+    fragments = [
+        node.text or ""
+        for node in title.iter()
+        if local_name(node.tag) == "T" and not is_empty_selection_text_node(node)
+    ]
+    return html_fragment_to_text("".join(fragments))
+
+
+def _normalize_matching_title_oe_com_styles(
+    expected_root: ET.Element,
+    actual_root: ET.Element,
+) -> dict[str, Any]:
+    """Normalize only matching-shape, equal-text Title OE COM style values."""
+
+    expected_title = _title_text_for_com_style_normalization(expected_root)
+    actual_title = _title_text_for_com_style_normalization(actual_root)
+    expected_oes = [
+        node
+        for title in list(expected_root)
+        if local_name(title.tag) == "Title"
+        for node in title.iter()
+        if local_name(node.tag) == "OE"
+    ]
+    actual_oes = [
+        node
+        for title in list(actual_root)
+        if local_name(title.tag) == "Title"
+        for node in title.iter()
+        if local_name(node.tag) == "OE"
+    ]
+    evidence: dict[str, Any] = {
+        "applicable": False,
+        "applied": False,
+        "title_text_equal": expected_title is not None and expected_title == actual_title,
+        "expected_title_oe_count": len(expected_oes),
+        "actual_title_oe_count": len(actual_oes),
+        "attribute_sets_equal": False,
+        "normalized_attribute_names": [],
+        "differing_attribute_names": [],
+        "content_exposed": False,
+    }
+    if (
+        expected_title is None
+        or actual_title is None
+        or expected_title != actual_title
+        or not expected_oes
+        or len(expected_oes) != len(actual_oes)
+    ):
+        return evidence
+    if any(
+        {name for name in expected.attrib if name not in IGNORED_ATTRIBUTES}
+        != {name for name in actual.attrib if name not in IGNORED_ATTRIBUTES}
+        for expected, actual in zip(expected_oes, actual_oes, strict=True)
+    ):
+        return evidence
+
+    evidence["attribute_sets_equal"] = True
+    evidence["applicable"] = True
+    normalized_names: set[str] = set()
+    differing_names: set[str] = set()
+    for expected, actual in zip(expected_oes, actual_oes, strict=True):
+        comparable_names = {
+            name for name in expected.attrib if name not in IGNORED_ATTRIBUTES
+        }
+        for name in sorted(comparable_names & TITLE_OE_COM_STYLE_ATTRIBUTES):
+            normalized_names.add(name)
+            if expected.attrib[name] != actual.attrib[name]:
+                differing_names.add(name)
+            expected.attrib[name] = TITLE_OE_COM_STYLE_PLACEHOLDER
+            actual.attrib[name] = TITLE_OE_COM_STYLE_PLACEHOLDER
+    evidence["normalized_attribute_names"] = sorted(normalized_names)
+    evidence["differing_attribute_names"] = sorted(differing_names)
+    evidence["applied"] = bool(differing_names)
+    return evidence
 
 
 def _standalone_display_equation_outline(outline: ET.Element) -> bool:
@@ -1091,11 +1187,18 @@ def _canonical_mismatch_projection(
         actual_payload = json.dumps(
             actual_attributes, ensure_ascii=False, separators=(",", ":")
         )
+        expected_by_name = dict(expected_attributes)
+        actual_by_name = dict(actual_attributes)
         return {
             "path": path,
             "field": "attributes",
             "expected_attribute_names": [name for name, _ in expected_attributes],
             "actual_attribute_names": [name for name, _ in actual_attributes],
+            "differing_attribute_names": sorted(
+                name
+                for name in set(expected_by_name) & set(actual_by_name)
+                if expected_by_name[name] != actual_by_name[name]
+            ),
             "expected_sha256": sha256(expected_payload.encode("utf-8")).hexdigest(),
             "actual_sha256": sha256(actual_payload.encode("utf-8")).hexdigest(),
         }
@@ -1157,8 +1260,22 @@ def semantic_display_equation_comparison(
         == actual_markup["span_break_count"]
         and actual_markup["span_count"] <= actual_display_count
     )
-    expected_canonical = _canonical_display_equation_page_projection(expected_xml)
-    actual_canonical = _canonical_display_equation_page_projection(actual_xml)
+    expected_root = _normalized_display_equation_page_root(expected_xml)
+    actual_root = _normalized_display_equation_page_root(actual_xml)
+    title_oe_com_style_normalization = _normalize_matching_title_oe_com_styles(
+        expected_root,
+        actual_root,
+    )
+    expected_canonical = _canonical_node(
+        expected_root,
+        is_root=True,
+        normalize_mathml=True,
+    )
+    actual_canonical = _canonical_node(
+        actual_root,
+        is_root=True,
+        normalize_mathml=True,
+    )
     outside_mathml_canonical_after_normalization = (
         expected_canonical == actual_canonical
     )
@@ -1197,6 +1314,7 @@ def semantic_display_equation_comparison(
         "actual_empty_markup": actual_markup,
         "expected_outbound_clean": expected_outbound_clean,
         "actual_known_com_shape": actual_known_com_shape,
+        "title_oe_com_style_normalization": title_oe_com_style_normalization,
         "outside_mathml_canonical_after_display_equation_normalization": (
             outside_mathml_canonical_after_normalization
         ),
@@ -1396,7 +1514,7 @@ def _semantic_tag_definition_projection(root: ET.Element) -> dict[str, tuple[str
 
 
 def semantic_content_projection(xml: str) -> dict[str, Any]:
-    """Project the reviewed COM-stable meaning of rich/list/table/image Pages."""
+    """Project reviewed COM-stable meaning into typed, content-free structure."""
 
     root = parse_xml(xml)
     capability_projection = page_content_capability_projection(xml)
@@ -1405,19 +1523,20 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
         SEMANTIC_CONTENT_PAGE_TYPES
     )
     tag_definitions = _semantic_tag_definition_projection(root)
+    next_table_ordinal = 0
 
-    def tag_projection(node: ET.Element) -> tuple[Any, ...] | None:
+    def tag_projection(node: ET.Element) -> dict[str, Any] | None:
         if local_name(node.tag) != "Tag":
             return None
         semantic_type, symbol = tag_definitions.get(
             node.attrib.get("index", ""), ("", "")
         )
-        return (
-            semantic_type,
-            symbol,
-            node.attrib.get("completed", "false").casefold() == "true",
-            node.attrib.get("disabled", "false").casefold() == "true",
-        )
+        return {
+            "type": semantic_type,
+            "symbol": symbol,
+            "completed": node.attrib.get("completed", "false").casefold() == "true",
+            "disabled": node.attrib.get("disabled", "false").casefold() == "true",
+        }
 
     def list_projection(node: ET.Element) -> str | None:
         if local_name(node.tag) != "List":
@@ -1425,8 +1544,8 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
         marker = next(iter(node), None)
         return local_name(marker.tag).casefold() if marker is not None else "list"
 
-    def stable_attributes(node: ET.Element) -> tuple[tuple[str, str], ...]:
-        return tuple(
+    def stable_attributes(node: ET.Element) -> dict[str, str]:
+        return dict(
             sorted(
                 (local_name(name), value)
                 for name, value in node.attrib.items()
@@ -1434,18 +1553,24 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
             )
         )
 
-    def table_projection(table: ET.Element) -> tuple[Any, ...]:
-        nonlocal complete
+    def table_projection(table: ET.Element) -> dict[str, Any]:
+        nonlocal complete, next_table_ordinal
+        table_ordinal = next_table_ordinal
+        next_table_ordinal += 1
         columns = tuple(
-            stable_attributes(column)
+            {
+                "column_ordinal": column_ordinal,
+                "attributes": stable_attributes(column),
+            }
             for container in list(table)
             if local_name(container.tag) == "Columns"
-            for column in list(container)
-            if local_name(column.tag) == "Column"
+            for column_ordinal, column in enumerate(
+                child for child in list(container) if local_name(child.tag) == "Column"
+            )
         )
-        rows: list[tuple[Any, ...]] = []
+        rows: list[dict[str, Any]] = []
         for row in (child for child in list(table) if local_name(child.tag) == "Row"):
-            cells: list[tuple[Any, ...]] = []
+            cells: list[dict[str, Any]] = []
             for cell in (child for child in list(row) if local_name(child.tag) == "Cell"):
                 fragments = [
                     node.text or ""
@@ -1470,12 +1595,23 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
                     if node is not table and local_name(node.tag) == "Table"
                 )
                 cells.append(
-                    (stable_attributes(cell), rich, lists, tags, nested_tables)
+                    {
+                        "attributes": stable_attributes(cell),
+                        "rich_text": rich,
+                        "lists": lists,
+                        "tags": tags,
+                        "tables": nested_tables,
+                    }
                 )
-            rows.append((stable_attributes(row), tuple(cells)))
-        return stable_attributes(table), columns, tuple(rows)
+            rows.append({"attributes": stable_attributes(row), "cells": tuple(cells)})
+        return {
+            "table_ordinal": table_ordinal,
+            "attributes": stable_attributes(table),
+            "columns": columns,
+            "rows": tuple(rows),
+        }
 
-    def oe_projection(oe: ET.Element) -> tuple[Any, ...]:
+    def oe_projection(oe: ET.Element) -> dict[str, Any]:
         nonlocal complete
         fragments = [
             child.text or ""
@@ -1514,7 +1650,14 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
             for child in list(container)
             if local_name(child.tag) == "OE"
         )
-        return rich, list_value, tags, tables, binary_kinds, nested
+        return {
+            "rich_text": rich,
+            "list": list_value,
+            "tags": tags,
+            "tables": tables,
+            "binary_objects": binary_kinds,
+            "children": nested,
+        }
 
     title_fragments = [
         node.text or ""
@@ -1525,7 +1668,7 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
     ]
     title = html_fragment_to_text("".join(title_fragments))
 
-    outlines: list[tuple[Any, ...]] = []
+    outlines: list[dict[str, Any]] = []
     for outline in (node for node in root.iter() if local_name(node.tag) == "Outline"):
         values = tuple(
             oe_projection(child)
@@ -1535,11 +1678,16 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
             if local_name(child.tag) == "OE"
         )
         meaningful = any(
-            rich or list_value is not None or tags or tables or binary_kinds or nested
-            for rich, list_value, tags, tables, binary_kinds, nested in values
+            value["rich_text"]
+            or value["list"] is not None
+            or value["tags"]
+            or value["tables"]
+            or value["binary_objects"]
+            or value["children"]
+            for value in values
         )
         if meaningful:
-            outlines.append(values)
+            outlines.append({"outline_ordinal": len(outlines), "children": values})
 
     object_counts = page_content_type_counts(xml)
     object_counts.pop("Outline", None)
@@ -1547,7 +1695,7 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
         "complete": complete,
         "title": title,
         "outlines": tuple(outlines),
-        "object_counts": tuple(sorted(object_counts.items())),
+        "object_counts": object_counts,
         "binary_sha256": tuple(page_binary_hashes(xml)),
     }
 
@@ -1647,12 +1795,376 @@ def _semantic_projection_mismatches(
     }
 
 
-def semantic_content_comparison(expected_xml: str, actual_xml: str) -> dict[str, Any]:
+def _positive_finite_decimal(value: Any) -> Decimal | None:
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    return parsed if parsed.is_finite() and parsed > 0 else None
+
+
+def _semantic_content_typed_comparison(
+    source: Mapping[str, Any],
+    target: Mapping[str, Any],
+    *,
+    table_column_width_relative_tolerance: Decimal | None,
+) -> dict[str, Any]:
+    failures: list[dict[str, Any]] = []
+    failed_types: set[str] = set()
+    total_failures = 0
+    width_comparisons: list[dict[str, Any]] = []
+
+    def add_failure(
+        code: str,
+        content_object_type: str,
+        path: str,
+        **details: Any,
+    ) -> None:
+        nonlocal total_failures
+        total_failures += 1
+        failed_types.add(content_object_type)
+        if len(failures) < CONTENT_OBJECT_FAILURE_LIMIT:
+            failures.append(
+                {
+                    "code": code,
+                    "content_object_type": content_object_type,
+                    "path": path,
+                    **details,
+                    "content_exposed": False,
+                }
+            )
+
+    def classification(
+        path: str,
+        context: str,
+        *,
+        in_table_cell: bool,
+    ) -> tuple[str, str]:
+        if path == "$.title":
+            return "PageTitle", "page_title_mismatch"
+        if path.startswith("$.binary_sha256"):
+            return "Image", "image_binary_mismatch"
+        if path.startswith("$.object_counts"):
+            object_type = path.rsplit(".", 1)[-1]
+            return object_type, f"{object_type.casefold()}_object_count_mismatch"
+        if context == "Column":
+            return "Table", "table_column_attribute_mismatch"
+        if context in {"Table", "Row", "Cell"} or in_table_cell:
+            return "Table", (
+                "table_cell_content_mismatch"
+                if in_table_cell
+                else "table_topology_mismatch"
+            )
+        if context == "RichText":
+            return "RichText", "rich_text_effective_style_mismatch"
+        if context == "List":
+            return "List", "list_marker_mismatch"
+        if context == "Tag":
+            return "Tag", "tag_state_mismatch"
+        if context == "Outline":
+            return "Outline", "outline_structure_mismatch"
+        return "Unknown", "semantic_mismatch_unclassified"
+
+    def compare(
+        left: Any,
+        right: Any,
+        path: str,
+        *,
+        context: str = "Unknown",
+        table_ordinal: int | None = None,
+        column_ordinal: int | None = None,
+        in_table_cell: bool = False,
+    ) -> None:
+        if isinstance(left, Mapping) and isinstance(right, Mapping):
+            next_table = table_ordinal
+            next_column = column_ordinal
+            if "table_ordinal" in left:
+                next_table = int(left["table_ordinal"])
+                context = "Table"
+                if not left.get("columns") or not right.get("columns"):
+                    add_failure(
+                        "table_column_mapping_unavailable",
+                        "Table",
+                        f"{path}.columns",
+                        component_type="Column",
+                        table_ordinal=next_table,
+                    )
+            if "column_ordinal" in left:
+                next_column = int(left["column_ordinal"])
+                context = "Column"
+            if (
+                context == "Column"
+                and path.endswith(".attributes")
+                and "width" not in left
+                and "width" not in right
+            ):
+                add_failure(
+                    "table_column_width_invalid",
+                    "Table",
+                    f"{path}.width",
+                    component_type="Column",
+                    field="width",
+                    table_ordinal=next_table,
+                    column_ordinal=next_column,
+                    comparison="relative_tolerance"
+                    if table_column_width_relative_tolerance is not None
+                    else "exact",
+                    **(
+                        {
+                            "allowed_relative_delta": float(
+                                table_column_width_relative_tolerance
+                            )
+                        }
+                        if table_column_width_relative_tolerance is not None
+                        else {}
+                    ),
+                )
+            left_keys = set(left) - {"table_ordinal", "column_ordinal", "outline_ordinal"}
+            right_keys = set(right) - {"table_ordinal", "column_ordinal", "outline_ordinal"}
+            for key in sorted(left_keys | right_keys, key=str):
+                child_path = f"{path}.{key}"
+                child_context = context
+                child_in_cell = in_table_cell
+                if key == "outlines":
+                    child_context = "Outline"
+                elif key in {"rich_text"}:
+                    child_context = "RichText"
+                elif key in {"list", "lists"}:
+                    child_context = "List"
+                elif key == "tags":
+                    child_context = "Tag"
+                elif key == "tables":
+                    child_context = "Table"
+                elif key == "rows":
+                    child_context = "Row"
+                elif key == "cells":
+                    child_context = "Cell"
+                    child_in_cell = True
+                elif key == "columns":
+                    child_context = "Column"
+                if key not in left or key not in right:
+                    if context == "Column" and key == "width":
+                        add_failure(
+                            "table_column_width_invalid",
+                            "Table",
+                            child_path,
+                            component_type="Column",
+                            field="width",
+                            table_ordinal=next_table,
+                            column_ordinal=next_column,
+                            comparison="relative_tolerance"
+                            if table_column_width_relative_tolerance is not None
+                            else "exact",
+                        )
+                    else:
+                        object_type, code = classification(
+                            child_path, child_context, in_table_cell=child_in_cell
+                        )
+                        add_failure(code, object_type, child_path)
+                    continue
+                if context == "Column" and key == "width":
+                    expected_width = _positive_finite_decimal(left[key])
+                    actual_width = _positive_finite_decimal(right[key])
+                    if expected_width is None or actual_width is None:
+                        add_failure(
+                            "table_column_width_invalid",
+                            "Table",
+                            child_path,
+                            component_type="Column",
+                            field="width",
+                            table_ordinal=next_table,
+                            column_ordinal=next_column,
+                            comparison="relative_tolerance"
+                            if table_column_width_relative_tolerance is not None
+                            else "exact",
+                            **(
+                                {
+                                    "allowed_relative_delta": float(
+                                        table_column_width_relative_tolerance
+                                    )
+                                }
+                                if table_column_width_relative_tolerance is not None
+                                else {}
+                            ),
+                        )
+                        continue
+                    if table_column_width_relative_tolerance is None:
+                        if left[key] == right[key]:
+                            continue
+                        add_failure(
+                            "table_column_width_mismatch",
+                            "Table",
+                            child_path,
+                            component_type="Column",
+                            field="width",
+                            table_ordinal=next_table,
+                            column_ordinal=next_column,
+                            comparison="exact",
+                        )
+                        continue
+                    if left[key] == right[key]:
+                        continue
+                    relative_delta = abs(actual_width - expected_width) / abs(
+                        expected_width
+                    )
+                    width_evidence = {
+                        "content_object_type": "Table",
+                        "component_type": "Column",
+                        "field": "width",
+                        "table_ordinal": next_table,
+                        "column_ordinal": next_column,
+                        "comparison": "relative_tolerance",
+                        "allowed_relative_delta": float(
+                            table_column_width_relative_tolerance
+                        ),
+                        "observed_relative_delta": float(relative_delta),
+                        "passed": relative_delta
+                        <= table_column_width_relative_tolerance,
+                        "content_exposed": False,
+                    }
+                    width_comparisons.append(width_evidence)
+                    if not width_evidence["passed"]:
+                        add_failure(
+                            "table_column_width_out_of_tolerance",
+                            "Table",
+                            child_path,
+                            **{
+                                key: value
+                                for key, value in width_evidence.items()
+                                if key not in {"content_object_type", "passed", "content_exposed"}
+                            },
+                        )
+                    continue
+                compare(
+                    left[key],
+                    right[key],
+                    child_path,
+                    context=child_context,
+                    table_ordinal=next_table,
+                    column_ordinal=next_column,
+                    in_table_cell=child_in_cell,
+                )
+            return
+        if isinstance(left, (tuple, list)) and isinstance(right, (tuple, list)):
+            if len(left) != len(right):
+                object_type, code = classification(
+                    path, context, in_table_cell=in_table_cell
+                )
+                add_failure(
+                    code,
+                    object_type,
+                    path,
+                    source_count=len(left),
+                    target_count=len(right),
+                    **(
+                        {"table_ordinal": table_ordinal}
+                        if table_ordinal is not None
+                        else {}
+                    ),
+                )
+            for index, (left_item, right_item) in enumerate(
+                zip(left, right, strict=False)
+            ):
+                compare(
+                    left_item,
+                    right_item,
+                    f"{path}[{index}]",
+                    context=context,
+                    table_ordinal=table_ordinal,
+                    column_ordinal=index if context == "Column" else column_ordinal,
+                    in_table_cell=in_table_cell,
+                )
+            return
+        if type(left) is not type(right) or left != right:
+            object_type, code = classification(
+                path, context, in_table_cell=in_table_cell
+            )
+            add_failure(
+                code,
+                object_type,
+                path,
+                **(
+                    {"table_ordinal": table_ordinal}
+                    if table_ordinal is not None
+                    else {}
+                ),
+                **(
+                    {"column_ordinal": column_ordinal}
+                    if column_ordinal is not None
+                    else {}
+                ),
+            )
+
+    if not source.get("complete") or not target.get("complete"):
+        add_failure(
+            "semantic_projection_incomplete",
+            "Unknown",
+            "$.complete",
+            source_complete=bool(source.get("complete")),
+            target_complete=bool(target.get("complete")),
+        )
+    compare(source.get("title"), target.get("title"), "$.title")
+    compare(
+        source.get("outlines", ()),
+        target.get("outlines", ()),
+        "$.outlines",
+        context="Outline",
+    )
+    compare(
+        source.get("object_counts", {}),
+        target.get("object_counts", {}),
+        "$.object_counts",
+    )
+    compare(
+        source.get("binary_sha256", ()),
+        target.get("binary_sha256", ()),
+        "$.binary_sha256",
+    )
+    failures.sort(
+        key=lambda failure: (
+            str(failure.get("path", "")),
+            str(failure.get("content_object_type", "")),
+            str(failure.get("code", "")),
+        )
+    )
+    return {
+        "failed_content_object_types": sorted(failed_types),
+        "content_object_failures": failures,
+        "content_object_failure_summary": {
+            "limit": CONTENT_OBJECT_FAILURE_LIMIT,
+            "reported": len(failures),
+            "truncated": total_failures > len(failures),
+            "total": total_failures,
+        },
+        "table_column_width_comparisons": width_comparisons[
+            :CONTENT_OBJECT_FAILURE_LIMIT
+        ],
+    }
+
+
+def semantic_content_comparison(
+    expected_xml: str,
+    actual_xml: str,
+    *,
+    table_column_width_relative_tolerance: Decimal | None = None,
+) -> dict[str, Any]:
     source = semantic_content_projection(expected_xml)
     target = semantic_content_projection(actual_xml)
+    typed = _semantic_content_typed_comparison(
+        source,
+        target,
+        table_column_width_relative_tolerance=table_column_width_relative_tolerance,
+    )
+    outline_failure_types = {"RichText", "List", "Tag", "Table", "Outline", "Unknown"}
     checks = {
         "title": source["title"] == target["title"],
-        "rich_list_tag_table_outline": source["outlines"] == target["outlines"],
+        "rich_list_tag_table_outline": not any(
+            failure["content_object_type"] in outline_failure_types
+            and not failure["path"].startswith("$.object_counts")
+            and not failure["path"].startswith("$.binary_sha256")
+            for failure in typed["content_object_failures"]
+        )
+        and not typed["content_object_failure_summary"]["truncated"],
         "binary_objects": (
             source["object_counts"] == target["object_counts"]
             and source["binary_sha256"] == target["binary_sha256"]
@@ -1672,6 +2184,7 @@ def semantic_content_comparison(expected_xml: str, actual_xml: str) -> dict[str,
             "mismatches": _semantic_projection_mismatches(source, target),
             "content_exposed": False,
         },
+        **typed,
     }
 
 
@@ -1698,8 +2211,12 @@ def copy_verification_tier(
         SEMANTIC_INK_DRAWING_PAGE_TYPES
     ):
         return SEMANTIC_INK_DRAWING_VERIFICATION
+    if {"List", "Tag"}.intersection(observed) and observed.issubset(
+        SEMANTIC_LIST_TAG_PAGE_TYPES
+    ):
+        return SEMANTIC_LIST_TAG_VERIFICATION
     if (
-        {"Table", "Image"}.intersection(observed)
+        observed.intersection({"RichText", "List", "Tag", "Table", "Image"})
         and observed.issubset(SEMANTIC_CONTENT_PAGE_TYPES)
         and page_xml is not None
         and semantic_content_projection(page_xml)["complete"] is True
@@ -1916,6 +2433,161 @@ def semantic_ink_drawing_comparison(
     )
 
 
+def _generic_page_equivalence_failures(
+    expected_xml: str,
+    actual_xml: str,
+    *,
+    verification_tier: str,
+    checks: Mapping[str, bool],
+    display_equation_comparison: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    failures: list[dict[str, Any]] = []
+    failed_types: set[str] = set()
+    total = 0
+
+    def add(code: str, content_object_type: str, path: str, **details: Any) -> None:
+        nonlocal total
+        total += 1
+        failed_types.add(content_object_type)
+        if len(failures) < CONTENT_OBJECT_FAILURE_LIMIT:
+            failures.append(
+                {
+                    "code": code,
+                    "content_object_type": content_object_type,
+                    "path": path,
+                    **details,
+                    "content_exposed": False,
+                }
+            )
+
+    source_title = semantic_content_projection(expected_xml)["title"]
+    target_title = semantic_content_projection(actual_xml)["title"]
+    if source_title != target_title:
+        add("page_title_mismatch", "PageTitle", "$.title")
+
+    expected_counts = page_content_type_counts(expected_xml)
+    actual_counts = page_content_type_counts(actual_xml)
+    for object_type in sorted(set(expected_counts) | set(actual_counts)):
+        if expected_counts.get(object_type, 0) != actual_counts.get(object_type, 0):
+            add(
+                f"{object_type.casefold()}_object_count_mismatch",
+                object_type,
+                f"$.content_objects.{object_type}",
+                source_count=expected_counts.get(object_type, 0),
+                target_count=actual_counts.get(object_type, 0),
+            )
+
+    if checks.get("binary_sha256") is False:
+        binary_types = sorted(
+            (set(expected_counts) | set(actual_counts))
+            & {"Image", "FileAttachment", "InsertedFile", "MediaFile"}
+        ) or ["Unknown"]
+        for object_type in binary_types:
+            add(
+                "image_binary_mismatch"
+                if object_type == "Image"
+                else "binary_object_mismatch",
+                object_type,
+                "$.binary_sha256",
+            )
+
+    if verification_tier == SEMANTIC_LIST_TAG_VERIFICATION and checks.get(
+        "semantic_list_tag"
+    ) is False:
+        expected = semantic_list_tag_projection(expected_xml)
+        actual = semantic_list_tag_projection(actual_xml)
+        if len(expected) != len(actual):
+            if any(item.get("list_kind") is not None for item in [*expected, *actual]):
+                add("list_marker_mismatch", "List", "$.semantic_list_tag")
+            if any(item.get("tag") is not None for item in [*expected, *actual]):
+                add("tag_state_mismatch", "Tag", "$.semantic_list_tag")
+        for index, (left, right) in enumerate(zip(expected, actual, strict=False)):
+            if left.get("list_kind") != right.get("list_kind"):
+                add("list_marker_mismatch", "List", f"$.semantic_list_tag[{index}].list")
+            if left.get("tag") != right.get("tag"):
+                add("tag_state_mismatch", "Tag", f"$.semantic_list_tag[{index}].tag")
+            if left.get("text") != right.get("text"):
+                add(
+                    "rich_text_visible_text_mismatch",
+                    "RichText",
+                    f"$.semantic_list_tag[{index}].text",
+                )
+    elif verification_tier in {
+        SEMANTIC_MATHML_VERIFICATION,
+        SEMANTIC_DISPLAY_EQUATION_VERIFICATION,
+    } and any(
+        checks.get(name) is False
+        for name in (
+            "semantic_mathml",
+            "display_equation_com_normalization",
+            "outside_mathml_canonical",
+        )
+    ):
+        outside_mismatch = (
+            display_equation_comparison.get("outside_mathml_mismatch")
+            if display_equation_comparison is not None
+            else None
+        )
+        outside_path = (
+            str(outside_mismatch.get("path", ""))
+            if isinstance(outside_mismatch, Mapping)
+            else ""
+        )
+        if "/Title[" in outside_path:
+            details = {
+                key: outside_mismatch[key]
+                for key in (
+                    "field",
+                    "expected_attribute_names",
+                    "actual_attribute_names",
+                    "differing_attribute_names",
+                )
+                if key in outside_mismatch
+            }
+            add(
+                "page_title_structure_mismatch",
+                "PageTitle",
+                "$.title.structure",
+                **details,
+            )
+        else:
+            add("display_equation_semantic_mismatch", "DisplayEquation", "$.mathml")
+    elif verification_tier == SEMANTIC_INK_DRAWING_VERIFICATION and checks.get(
+        verification_tier
+    ) is False:
+        add("ink_drawing_semantic_mismatch", "InkDrawing", "$.ink")
+    elif verification_tier == SEMANTIC_UI_SHAPE_VERIFICATION and checks.get(
+        verification_tier
+    ) is False:
+        add("ui_shape_semantic_mismatch", "UIShape", "$.ink")
+
+    if checks.get("visible_text") is False and not any(
+        failure["content_object_type"] in {"PageTitle", "RichText"}
+        for failure in failures
+    ):
+        add("rich_text_visible_text_mismatch", "RichText", "$.visible_text")
+    if checks.get("canonical_xml") is False and not failures:
+        add("semantic_mismatch_unclassified", "Unknown", "$.canonical_xml")
+
+    failures.sort(
+        key=lambda failure: (
+            str(failure.get("path", "")),
+            str(failure.get("content_object_type", "")),
+            str(failure.get("code", "")),
+        )
+    )
+    return {
+        "failed_content_object_types": sorted(failed_types),
+        "content_object_failures": failures,
+        "content_object_failure_summary": {
+            "limit": CONTENT_OBJECT_FAILURE_LIMIT,
+            "reported": len(failures),
+            "truncated": total > len(failures),
+            "total": total,
+        },
+    }
+
+
 def page_equivalence(
     expected_xml: str,
     actual_xml: str,
@@ -1924,6 +2596,7 @@ def page_equivalence(
 ) -> dict[str, Any]:
     """Return the stable content checks used by Copy and Page Move."""
 
+    display_equation_comparison: dict[str, Any] | None = None
     checks = {
         "canonical_xml": canonical_page_digest(expected_xml) == canonical_page_digest(actual_xml),
         "visible_text": text_from_page_xml(expected_xml) == text_from_page_xml(actual_xml),
@@ -1982,7 +2655,13 @@ def page_equivalence(
         )
         acceptance_checks = ["visible_text", "binary_sha256", "semantic_list_tag"]
     elif verification_tier == SEMANTIC_CONTENT_VERIFICATION:
-        semantic_content = semantic_content_comparison(expected_xml, actual_xml)
+        semantic_content = semantic_content_comparison(
+            expected_xml,
+            actual_xml,
+            table_column_width_relative_tolerance=(
+                TABLE_COLUMN_WIDTH_RELATIVE_TOLERANCE
+            ),
+        )
         checks["semantic_content"] = semantic_content["passed"]
         checks["semantic_projection_complete"] = (
             semantic_content["source_complete"]
@@ -2034,6 +2713,35 @@ def page_equivalence(
         "acceptance_checks": acceptance_checks,
         "checks": checks,
     }
+    if result["equivalent"]:
+        typed_failures = {
+            "failed_content_object_types": [],
+            "content_object_failures": [],
+            "content_object_failure_summary": {
+                "limit": CONTENT_OBJECT_FAILURE_LIMIT,
+                "reported": 0,
+                "truncated": False,
+                "total": 0,
+            },
+        }
+    elif verification_tier == SEMANTIC_CONTENT_VERIFICATION:
+        typed_failures = {
+            key: semantic_content[key]
+            for key in (
+                "failed_content_object_types",
+                "content_object_failures",
+                "content_object_failure_summary",
+            )
+        }
+    else:
+        typed_failures = _generic_page_equivalence_failures(
+            expected_xml,
+            actual_xml,
+            verification_tier=verification_tier,
+            checks=checks,
+            display_equation_comparison=display_equation_comparison,
+        )
+    result.update(typed_failures)
     if verification_tier in {
         SEMANTIC_INK_DRAWING_VERIFICATION,
         SEMANTIC_UI_SHAPE_VERIFICATION,

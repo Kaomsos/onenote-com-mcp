@@ -213,6 +213,67 @@ def page_semantic_content_identity(xml: str) -> dict[str, Any]:
 
     projection = semantic_content_projection(xml)
 
+    # Preserve the schema-v2 authored-template digest across the production
+    # projection's additive typed-diagnostic representation. Immutable ready
+    # templates must not acquire a new identity when their Page semantics did
+    # not change.
+    def attributes(value: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+        return tuple(sorted((str(key), str(item)) for key, item in value.items()))
+
+    def tag(value: Mapping[str, Any]) -> tuple[Any, ...]:
+        return (
+            value.get("type", ""),
+            value.get("symbol", ""),
+            bool(value.get("completed")),
+            bool(value.get("disabled")),
+        )
+
+    def table(value: Mapping[str, Any]) -> tuple[Any, ...]:
+        columns = tuple(
+            attributes(column.get("attributes", {}))
+            for column in value.get("columns", ())
+        )
+        rows = tuple(
+            (
+                attributes(row.get("attributes", {})),
+                tuple(
+                    (
+                        attributes(cell.get("attributes", {})),
+                        tuple(cell.get("rich_text", ())),
+                        tuple(cell.get("lists", ())),
+                        tuple(tag(item) for item in cell.get("tags", ())),
+                        tuple(table(item) for item in cell.get("tables", ())),
+                    )
+                    for cell in row.get("cells", ())
+                ),
+            )
+            for row in value.get("rows", ())
+        )
+        return attributes(value.get("attributes", {})), columns, rows
+
+    def oe(value: Mapping[str, Any]) -> tuple[Any, ...]:
+        return (
+            tuple(value.get("rich_text", ())),
+            value.get("list"),
+            tuple(tag(item) for item in value.get("tags", ())),
+            tuple(table(item) for item in value.get("tables", ())),
+            tuple(value.get("binary_objects", ())),
+            tuple(oe(item) for item in value.get("children", ())),
+        )
+
+    compatibility_projection = {
+        "complete": projection.get("complete"),
+        "title": projection.get("title"),
+        "outlines": tuple(
+            tuple(oe(item) for item in outline.get("children", ()))
+            for outline in projection.get("outlines", ())
+        ),
+        "object_counts": tuple(
+            sorted(dict(projection.get("object_counts", {})).items())
+        ),
+        "binary_sha256": tuple(projection.get("binary_sha256", ())),
+    }
+
     def digest(value: Mapping[str, Any]) -> str:
         payload = json.dumps(
             value,
@@ -222,16 +283,16 @@ def page_semantic_content_identity(xml: str) -> dict[str, Any]:
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
-    persistence_projection = dict(projection)
+    persistence_projection = dict(compatibility_projection)
     persistence_projection["outlines"] = tuple(
         oe
-        for outline in projection.get("outlines", ())
+        for outline in compatibility_projection.get("outlines", ())
         for oe in outline
     )
     return {
         "schema_version": 2,
         "complete": projection.get("complete") is True,
-        "sha256": digest(projection),
+        "sha256": digest(compatibility_projection),
         "persistence_sha256": digest(persistence_projection),
     }
 

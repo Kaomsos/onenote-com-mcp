@@ -1,7 +1,7 @@
 # 040：Move 回读校验待解决问题
 
 > ID：040
-> 状态：进行中
+> 状态：已完成
 > 优先级：P0
 > 类型：Bug / Page Copy / Hierarchy Path / Page Equivalence / Fidelity
 > 更新日期：2026-08-18
@@ -17,13 +17,15 @@
 
 2026-08-18 的后续真实 run 又证明默认标题 fidelity 还牵涉独立的 hierarchy path 模型问题，不能只作为富文本 comparator 的附属项处理。040 因而重新启用；同日用户进一步决定关闭 039，将真实内容写后差异和最终 Move 闭环也转结到本 TODO，避免两个 P0 台账并行维护同一 Copy-before-delete gate。
 
+同日用户明确要求本 TODO 的验收不得放入 `interactive-move-page-content`。该场景必须继续作为 `bootstrap-move-page-content-fixture` 发布的 immutable authored template consumer，保留显式 `--use-cache --template-instance-id` 与 run-bound UI gate 的开发约定。040 本质上是 `get_hierarchy_path`、`copy_page` 与 `move_page` 的自动 fixture 回归，因此分别扩展既有 `hierarchy-navigation`、`copy-page`、`move-page` 场景；三者自行创建 disposable fixture，不要求用户手工制作夹具。
+
 ## 从 TODO 039 接管的剩余范围
 
-- 保留 039 已交付的 representative-content bootstrap/interactive Move、immutable template 和 content-free diagnostic 作为验收基础，不重建第二套 Move-only comparator；
+- 保留 039 已交付的 bootstrap/interactive authored-template 配对与 content-free diagnostic，不改变其开发职责；040 的自动验收只扩展既有 path/Copy/Move 场景；
 - 修复默认及显式 Page title 被 filesystem leaf 规则清洗的问题，并以结构化 `path_segments` 提供可逆 hierarchy 表示；
 - 让完整 typed projection 的纯 `Outline + RichText` Page 获得适用的语义 verification tier 和 source→transformed→target 分段诊断，不因缺少 Table/Image 而只能退回无类型的 strict failure；
 - 实施 Table 列宽最大 `5%` 的窄 transformed→target 容差，并为 Page equivalence 输出按 content object 类型分类的稳定错误；
-- 使用同一类 representative ready template 完成最终用户前台 Move：只有 `verified/lossless/copy_contract_satisfied=true` 后才非永久删除 disposable source，并通过 run-bound UI 验收。
+- 使用自动创建的特殊标题 fixture 分别完成 path、Copy 与 Move 真实回归；Move 的 RichText/三列表格源只有在 `verified/lossless/copy_contract_satisfied=true` 后才非永久删除 disposable source。
 
 ## 事项：Page Copy 标题保真与 `get_hierarchy_path` 可逆表示
 
@@ -68,12 +70,12 @@ Notebook/Section/Topic / Subtopic
 
 ### 完成定义
 
-- [ ] Page title 与 filesystem leaf name 已在实现和公开契约中分离；
-- [ ] 默认及显式改名的 Page Copy/Move 均绕过文件名清洗，并精确保留包含 `/`、`\\`、`:` 等字符的 Page title；
-- [ ] `get_hierarchy_path` 返回 additive、可逆的 `path_segments`，旧 `path` 明确为 display-only；
-- [ ] Page 创建/Copy 回读不再依赖可歧义的扁平 path，并保持 ID remap fail-closed；
-- [ ] 聚焦测试、完整 pytest、README、设计文档和 manual-validation 合同已同步；
-- [ ] 用户使用同一 immutable representative template 前台复测，证明目标标题与 source 完全一致，且本事项没有削弱 Copy-before-delete lossless gate。
+- [x] Page title 与 filesystem leaf name 已在实现和公开契约中分离；
+- [x] 默认及显式改名的 Page Copy/Move 均绕过文件名清洗，并精确保留包含 `/`、`\\`、`:` 等字符的 Page title；
+- [x] `get_hierarchy_path` 返回 additive、可逆的 `path_segments`，旧 `path` 明确为 display-only；
+- [x] Page 创建/Copy 回读不再依赖可歧义的扁平 path，并保持 ID remap fail-closed；
+- [x] 聚焦测试、完整 pytest、README、设计文档和 manual-validation 合同已同步；
+- [x] 用户前台运行自动 `hierarchy-navigation`、`copy-page` 与 `move-page` 场景，证明 `path_segments`、默认 Copy 标题和默认 Move 标题均保真，且没有削弱 Copy-before-delete lossless gate。
 
 ## 事项：Table 列宽规范化与 typed Page equivalence 失败
 
@@ -142,17 +144,35 @@ Notebook/Section/Topic / Subtopic
 
 ### 完成定义
 
-- [ ] transformed→target Table `Column.width` 已实现最大 `5%` 的 Decimal 相对容差，source→transformed 仍保持精确；
-- [ ] 超出容差及所有非 width Table 变化继续 fail closed，并阻止 Move 删除源 Page；
-- [ ] Page equivalence 按失败 content object 类型返回稳定、有界、content-free 的 typed errors；
-- [ ] 生产 Copy/Move response、manual-validation diagnostic、公开契约和设计文档已同步；
-- [ ] 聚焦测试、完整 pytest 与相关 dry-run 通过；
-- [ ] 用户以代表性 Table fixture 前台复测，确认容差内列宽规范化不再误阻塞 Move，且明显列宽/内容变化仍被拒绝。
+- [x] transformed→target Table `Column.width` 已实现最大 `5%` 的 Decimal 相对容差，source→transformed 仍保持精确；
+- [x] 超出容差及所有非 width Table 变化继续 fail closed，并阻止 Move 删除源 Page；
+- [x] Page equivalence 按失败 content object 类型返回稳定、有界、content-free 的 typed errors；
+- [x] 生产 Copy/Move response、manual-validation diagnostic、公开契约和设计文档已同步；
+- [x] 聚焦测试、完整 pytest 与相关 dry-run 通过；
+- [x] 用户以前台 `move-page` 自动创建的三列 Table fixture 复测，确认容差内列宽规范化不再误阻塞 Move，且明显列宽/内容变化仍由纯负合同拒绝。
 
 ## TODO 040 总体完成定义
 
-- [ ] Page title 完全绕过 filesystem leaf 清洗，`get_hierarchy_path.path_segments` 提供保留原始标题的可逆结构表示；
-- [ ] 完整投影的纯 RichText Page 获得适用的 typed semantic verification 与分段诊断，未知/不完整内容仍 fail closed；
-- [ ] Table 列宽容差和按 content object 类型返回的 equivalence errors 满足本文全部正负合同；
-- [ ] 最终用户前台 representative-content Move 达到 `verified/lossless/copy_contract_satisfied=true`，随后才非永久删除 disposable source，并通过 run-bound UI 验收；
-- [ ] 用户确认从 039 接管的剩余范围全部闭环并批准关闭本 P0。
+- [x] Page title 完全绕过 filesystem leaf 清洗，`get_hierarchy_path.path_segments` 提供保留原始标题的可逆结构表示；
+- [x] 完整投影的纯 RichText Page 获得适用的 typed semantic verification 与分段诊断，未知/不完整内容仍 fail closed；
+- [x] Table 列宽容差和按 content object 类型返回的 equivalence errors 满足本文全部正负合同；
+- [x] 最终自动 path/Copy/Move 三场景真实回归通过；Move 达到 `verified/lossless/copy_contract_satisfied=true` 后才非永久删除 disposable source；
+- [x] 用户确认从 039 接管的剩余范围全部闭环并批准关闭本 P0。
+
+## 2026-08-18 实现与纯验证进度
+
+代码和公开合同已交付：Page title 使用独立的逻辑标题校验，不再经过 filesystem leaf 清洗；Page 创建与 Copy 以 allocated exact ID、exact Section ID 和 exact title 回读，仅在 allocated ID 消失时接受同父级、同原始标题、本次唯一 fresh ID remap。`get_hierarchy_path` 已 additive 返回逐段保留 exact ID 和原始名称/title 的 `path_segments`，legacy `path` 明确为 display-only。
+
+`semantic_content_v1` 已覆盖完整投影的纯 RichText Page；source→transformed Table width 保持精确，transformed→target 仅对同 ordinal `Column.width` 应用最大 5% 的有限正 Decimal 相对容差。缺失/非法 width、列映射失败、其他 Table 属性/拓扑/单元格差异和未知投影继续 fail closed。Page equivalence additive 返回稳定、最多 24 条、带显式截断统计且 `content_exposed=false` 的 typed failures；自动 `copy-page` / `move-page` 场景消费脱敏类型、ordinal、阈值和 relative delta，并独立验证 exact target title。`interactive-move-page-content` 不承担这些验收。
+
+自动回归由三个既有 scenario 承担。`hierarchy-navigation` recipe v4 自动创建标题 `01-Readback / Page\\:  %~界`，并以 exact Page ID 验证 `path_segments` 中 Notebook→SectionGroup→Section→Page 的原始名称和 ID；legacy `path` 只作 display。`copy-page` recipe v14 对同一特殊标题富内容父页保留既有六 case 矩阵，其中 cross-Notebook root-only 省略 `destination_title` 并强制三段标题回读。`move-page` recipe v7 的 root-only 源通过公开 `create_page(content_format=html)` 自动创建 RichText 与 3 列 × 2 行 Table；fixture snapshot 在 Move 前证明精确 Table/Column/Row/Cell 形状、有限正列宽和完整 projection，随后省略 `destination_title` 并执行严格 Copy-before-delete。其 subtree 父子页自动创建为无 Table/binary 的 RichText，fixture 与执行结果分别要求完整 projection 和逐页 `semantic_content_v1`。`interactive-move-page-content` 仍为 v7 cache-only authored-template consumer，与 bootstrap 共用 fingerprint 和显式 instance，不承担本 TODO 的程序化验收。
+
+用户前台 `run-2026-08-18-19-33-05` 已真实通过 `hierarchy-navigation`：顶层和 scenario 均为 `passed`，`hierarchy_path_segments_passed=true`，特殊字符 title 的 raw segment、exact ID 链和 metadata-only audit 全部通过，两个 disposable Notebook role 均精确关闭并保留。`move-page` 的 `run-2026-08-18-19-39-02` 也已真实通过：默认 root-only case 的自动三列表格 fixture 以完整 `semantic_content_v1` 返回 `all_equivalent=true` 并精确保留特殊标题，subtree 两页逐一通过纯 RichText 语义回读；本次 backend 列宽为精确相等，因此 content-free width-delta 列表为空，非零正负/5% 边界及超限/内容变化仍由纯正负合同覆盖，不能扩大解释为真实观察到非零规范化。两个 case 都先取得 `copy_verified=true`，再以 `source_deleted_nonpermanently=true` 删除 exact disposable source，顶层 lifecycle 精确关闭。`run-2026-08-18-19-49-05` 随后独立复跑也再次通过相同门限。
+
+`copy-page` 的 `run-2026-08-18-19-34-01` 与 `run-2026-08-18-19-36-50` 都在首个 Copy 的 transformed→target 回读 fail closed；两次均未删源。第二次 content-free 诊断证明可见文本、对象、binary 与两条 MathML 投影相等，唯一首差异是 `Page/Title/OE` 在 canonical 属性名集合相同的前提下，其 `alignment/quickStyleIndex/style` 整体属性元组 canonical hash 不同；现有证据不声称三个值都分别变化。第一次修复新增 pairwise Title OE COM-style 规则及正确 `PageTitle/page_title_structure_mismatch` typed 诊断；`run-2026-08-18-19-47-32` 随后证明 eligibility 仍错误纳入了 canonical comparator 本就排除的 generated/volatile identity 属性，导致 title text 相等、OE 数量 `1/1`、canonical 首差异仅 `style` 时却报告 `attribute_sets_equal=false`。当前实现只改为复用既有 canonical 有效属性集合，不新增忽略项；仅当 exact title 文本、可识别 Title 结构、OE 数量和该集合均一致时归一化三个值。有效属性增删、其他属性、正文 OE style、标题文本、MathML 和其余内容仍 fail closed。
+
+`run-2026-08-18-19-54-39` 已证明 comparator 修正有效：前四个 same/cross Section case 全部完成，cross-Notebook root-only 默认标题 case 本身也为 `verified/lossless/copy_contract_satisfied=true`，目标 item 精确保留特殊标题，DisplayEquation comparator 通过；场景只因该 tier 没有 `semantic_content_stages` 而在通用标题证据断言处 fail closed，两个 lease 均精确关闭。生产 Page result 现 additive 返回所有 tier 共用的 `title_readback_stages`：plan 独立记录显式改名意图，source→transformed 与 transformed→target title check 都参与 lossless gate；`semantic_content_stages` 继续只表达 `semantic_content_v1`。场景改为消费通用 title stages，不把 DisplayEquation 错当 semantic-content Page，也不降低 Copy fidelity。
+
+修复后的用户前台 `run-2026-08-18-20-03-25` 已完整通过 `copy-page`：顶层与 scenario 均为 `passed`，同 Section、跨 Section、跨 Notebook 的 root-only/subtree 六个自动 case 全部 `verified/lossless/copy_contract_satisfied=true`，零 issue、零 skipped content，共映射 9 个 fresh target。每个 Page 的通用 `title_readback_stages` 两段均通过且 `content_exposed=false`；cross-Notebook root-only 明确省略 `destination_title`，回显 `title_override_requested=false`，source→transformed 与 transformed→target 默认标题检查均为 true。富内容父页继续以 `semantic_display_equation` 验证可见文本、对象、Image binary、MathML 与受限 Title OE COM-style 规范化，子页以 `semantic_list_tag` 验证；所有 collision anchor 均保持不变。场景反向非永久清理全部 9 个目标，`restored=true`，source/destination 两个 disposable Notebook 均精确关闭，working 文件与证据保留，未删除 filesystem 内容。结合已通过的 `hierarchy-navigation` 与两次 `move-page`，最终自动 path/Copy/Move 真实回归已闭合。
+
+本轮纯验证已通过：完整 pytest `1421 passed`、manual-validation 纯合同 `636 passed`、三个专用 scenario `--keep-worksite --dry-run --json` 全部通过，`all --dry-run` 18/18；另有专门 dry-run 证明 `interactive-move-page-content` 仍是 `--use-cache --template-instance-id` consumer。纯合同覆盖默认 Page Copy/Move 的完整共享 Copy→语义回读链、特殊标题三段一致、三列表格形状、纯 RichText 的逐页 `semantic_content_v1`、Title OE pairwise 正负边界、path segment 原样名称与 fail-closed 负向条件。用户前台真实 `hierarchy-navigation`、`copy-page` 与 `move-page` 现已全部通过；三个场景均自行创建并机器验收 disposable fixture，没有使用 bootstrap、template instance 或任何手工夹具。`interactive-move-page-content` 继续只承担与 bootstrap 配对的 authored-template consumer 职责。用户已确认从 039 接管的剩余范围全部闭环并批准关闭本 P0。

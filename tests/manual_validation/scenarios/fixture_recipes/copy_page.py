@@ -17,6 +17,7 @@ from ..common.fixture_models import (
     FixtureValidationContext,
     resolve_active_structure,
 )
+from ..common.page_readback import SPECIAL_PAGE_TITLE
 from ..common.specs import get_scenario_spec
 from .layered_copy import LayeredCopyFixtureRecipe, LayeredFixtureConfig, LayeredFixtureKind
 from .recipe_base import (
@@ -27,13 +28,13 @@ from .recipe_base import (
 
 
 DESCRIPTION_TITLE = "00-Copy-Page-Description"
-DESCRIPTION = """Copy Page 人工验收说明
+DESCRIPTION = f"""Copy Page 人工验收说明
 
-本场景从同一个 Source/01-Source-Parent 依次执行六次 Copy：
+本场景从同一个 Source/{SPECIAL_PAGE_TITLE} 依次执行六次 Copy：
 同 Section、跨 Section、跨 Notebook，各自覆盖不带子树与带子树。
 
 原始状态：
-Source/01-Source-Parent：page_level=1，包含 Rich Text、行内公式、单行公式、Table 和 Image
+Source/{SPECIAL_PAGE_TITLE}：page_level=1，包含 Rich Text、行内公式、单行公式、Table 和 Image
   Source/02-Source-Child：page_level=2，缩进在 Parent 下，包含 List 和 Tag
 Source-Destination/02-Source-Child：同标题、不同正文的跨 Section anchor
 Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、不同正文的跨 Notebook anchor
@@ -41,8 +42,9 @@ Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、�
 每个目标范围的“不带子树” case 使用 include_subpages=false，只复制 Parent。
 每个目标范围的“带子树” case 使用 include_subpages=true，复制 Parent 与 Child。
 
-六个目标名称分别使用 01/02-Same-Section、03/04-Cross-Section、
-05/06-Cross-Notebook 前缀；
+前四个目标与第六个目标使用 01/02-Same-Section、03/04-Cross-Section、
+06-Cross-Notebook 前缀；第 5 个 cross-Notebook root-only case 省略 destination_title，
+目标标题必须精确保留 source 的特殊字符标题；
 带子树目标中的 Child 必须是 fresh ID 并保持相对层级，不能复用源 Child 或同名 anchor；
 全部 case 后 Source 与两个 anchors 的 ID、顺序、层级和内容不变。
 
@@ -51,7 +53,7 @@ Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、�
 """
 
 class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
-    recipe_version = 13
+    recipe_version = 14
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "the cross-Notebook destination Section belongs only to destination",
@@ -100,7 +102,7 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             "copy-page",
             LayeredFixtureConfig(
                 LayeredFixtureKind.PAGE,
-                parent_title="01-Source-Parent",
+                parent_title=SPECIAL_PAGE_TITLE,
                 semantic_title="02-Source-Child",
                 include_equations=True,
             ),
@@ -177,6 +179,7 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             "行内公式、单行公式",
             "不带子树",
             "带子树",
+            "省略 destination_title",
             "默认运行会在自动 read-back 验证后清理六个目标",
         )
         if not all(marker in description_text for marker in markers):
@@ -283,7 +286,7 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
         expected = {
             "description_section": "00-Description",
             "description_page": DESCRIPTION_TITLE,
-            "parent_page": "01-Source-Parent",
+            "parent_page": SPECIAL_PAGE_TITLE,
             "semantic_page": "02-Source-Child",
         }
         state.require(

@@ -136,6 +136,91 @@ def test_equation_copy_normalizes_only_complete_onenote_mathml_comments() -> Non
     assert comparison["passed"] is True
 
 
+def test_display_equation_copy_normalizes_only_matching_title_oe_com_style_values() -> None:
+    source = equation_page_xml("source").replace(
+        "<one:Title><one:OE>",
+        '<one:Title><one:OE objectID="source-title" alignment="left" quickStyleIndex="0" '
+        'style="font-family:Calibri;font-size:17.0pt">',
+        1,
+    )
+    target = equation_page_xml("target").replace(
+        "<one:Title><one:OE>",
+        '<one:Title><one:OE objectID="target-title" lastModifiedTime="clock" '
+        'alignment="left" quickStyleIndex="0" '
+        'style="font-family:Calibri Light;font-size:17.0pt">',
+        1,
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+    normalization = comparison["title_oe_com_style_normalization"]
+
+    assert normalization == {
+        "applicable": True,
+        "applied": True,
+        "title_text_equal": True,
+        "expected_title_oe_count": 1,
+        "actual_title_oe_count": 1,
+        "attribute_sets_equal": True,
+        "normalized_attribute_names": ["alignment", "quickStyleIndex", "style"],
+        "differing_attribute_names": ["style"],
+        "content_exposed": False,
+    }
+    assert comparison["outside_mathml_mismatch"] is None
+    assert comparison["passed"] is True
+
+
+def test_display_equation_copy_rejects_title_oe_com_style_attribute_set_change() -> None:
+    source = equation_page_xml("source").replace(
+        "<one:Title><one:OE>",
+        '<one:Title><one:OE alignment="left" quickStyleIndex="0" '
+        'style="font-size:17.0pt">',
+        1,
+    )
+    target = equation_page_xml("target").replace(
+        "<one:Title><one:OE>",
+        '<one:Title><one:OE alignment="left" quickStyleIndex="0">',
+        1,
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+    normalization = comparison["title_oe_com_style_normalization"]
+    equivalence = page_equivalence(
+        source,
+        target,
+        verification_tier="semantic_display_equation",
+    )
+
+    assert normalization["applicable"] is False
+    assert normalization["attribute_sets_equal"] is False
+    assert comparison["outside_mathml_mismatch"]["path"].endswith("/Title[0]/OE[0]")
+    assert comparison["passed"] is False
+    assert equivalence["failed_content_object_types"] == ["PageTitle"]
+    assert equivalence["content_object_failures"][0]["code"] == (
+        "page_title_structure_mismatch"
+    )
+    assert equivalence["content_object_failures"][0]["content_exposed"] is False
+
+
+def test_display_equation_copy_keeps_body_oe_style_values_strict() -> None:
+    source = equation_page_xml("source").replace(
+        "<one:OE><one:T><![CDATA[",
+        '<one:OE style="font-family:Calibri"><one:T><![CDATA[',
+        1,
+    )
+    target = equation_page_xml("target").replace(
+        "<one:OE><one:T><![CDATA[",
+        '<one:OE style="font-family:Arial"><one:T><![CDATA[',
+        1,
+    )
+
+    comparison = semantic_display_equation_comparison(source, target)
+    mismatch = comparison["outside_mathml_mismatch"]
+
+    assert mismatch["differing_attribute_names"] == ["style"]
+    assert "/Title[" not in mismatch["path"]
+    assert comparison["passed"] is False
+
+
 def test_equation_copy_keeps_unrelated_comments_strict_and_reports_no_content() -> None:
     source = equation_page_xml("source")
     target = equation_page_xml("target").replace(

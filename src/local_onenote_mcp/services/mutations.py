@@ -225,6 +225,16 @@ class MutationService(BaseService):
         return cleaned
 
     @staticmethod
+    def page_title(title: str) -> str:
+        """Validate a logical Page title without applying filesystem rules."""
+
+        if not title or not title.strip():
+            raise ValueError("Page title cannot be empty.")
+        if any(ord(character) < 0x20 for character in title):
+            raise ValueError("Page title cannot contain control characters.")
+        return title
+
+    @staticmethod
     def create_resource_type(create_type: str) -> str | None:
         key = create_type.casefold()
         if key == "section":
@@ -568,6 +578,7 @@ class MutationService(BaseService):
         policy = MutationPolicy.current()
         policy.require_create()
         policy.require_write()
+        title = self.page_title(title)
         section = self.hierarchy.resource(section_id, "section")
         before_ids = {
             str(item["id"])
@@ -599,6 +610,7 @@ class MutationService(BaseService):
                 expected_parent_id=section["id"],
                 validate_parent=True,
                 before_ids=before_ids,
+                expected_name=title,
             )
             if page is None:
                 raise RuntimeError("Page creation returned success, but the new page could not be verified.")
@@ -645,6 +657,7 @@ class MutationService(BaseService):
         expected_modified: str | None = None,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_write()
+        title = self.page_title(title)
         self.pages.confirm(
             page_id,
             expected_title=expected_title,
@@ -3185,8 +3198,11 @@ class MutationService(BaseService):
                     if resource_type == "page"
                     else actual.get("parent_id")
                 )
-                expected_name = self.safe_leaf_name(
-                    supplied["title" if resource_type == "page" else "name"]
+                raw_name = supplied["title" if resource_type == "page" else "name"]
+                expected_name = (
+                    self.page_title(raw_name)
+                    if resource_type == "page"
+                    else self.safe_leaf_name(raw_name)
                 )
                 if resource_type == "section" and expected_name.casefold().endswith(
                     ".one"
@@ -3238,8 +3254,13 @@ class MutationService(BaseService):
             for index, supplied in enumerate(items):
                 object_id = self._batch_item_id(supplied)
                 actual = by_id.get(str(object_id))
-                expected_name = self.safe_leaf_name(
-                    supplied["new_title" if resource_type == "page" else "new_name"]
+                raw_name = supplied[
+                    "new_title" if resource_type == "page" else "new_name"
+                ]
+                expected_name = (
+                    self.page_title(raw_name)
+                    if resource_type == "page"
+                    else self.safe_leaf_name(raw_name)
                 )
                 expected_parent = supplied[
                     "expected_section_id"
@@ -3773,7 +3794,11 @@ class MutationService(BaseService):
         planned: list[tuple[str, str, str]] = []
         for supplied, target in zip(items, targets):
             raw_name = supplied["new_title"] if resource_type == "page" else supplied["new_name"]
-            normalized = self.safe_leaf_name(raw_name)
+            normalized = (
+                self.page_title(raw_name)
+                if resource_type == "page"
+                else self.safe_leaf_name(raw_name)
+            )
             planned.append((str(target["id"]), str(target.get("parent_id")), normalized))
             if normalized == display_name(target):
                 raise MutationPreflightFailure(
@@ -3879,7 +3904,11 @@ class MutationService(BaseService):
         name_key = "title" if resource_type == "page" else "name"
         normalized_names = []
         for item in items:
-            name = self.safe_leaf_name(item[name_key])
+            name = (
+                self.page_title(item[name_key])
+                if resource_type == "page"
+                else self.safe_leaf_name(item[name_key])
+            )
             if resource_type == "section" and name.casefold().endswith(".one"):
                 name = name[:-4]
             normalized_names.append(name.casefold())

@@ -196,15 +196,16 @@ class HierarchyService(BaseService):
         expected_parent_id: str | None = None,
         validate_parent: bool = False,
         before_ids: set[str] | None = None,
+        expected_name: str | None = None,
         retries: int = 8,
         delay_seconds: float = 0.5,
     ) -> dict[str, Any] | None:
-        """Verify a created target by allocated ID, or by one fresh path remap.
+        """Verify a created target by allocated ID, or by one fresh identity remap.
 
         The COM-returned ID is authoritative when it resolves to the expected active
-        type/path/parent.  A path fallback is accepted only when the allocated ID is
-        absent and exactly one eligible candidate exists; public Create callers pass
-        ``before_ids`` so that fallback also proves the candidate is newly observed.
+        type/name-or-path/parent. A fallback is accepted only when the allocated ID
+        is absent and exactly one eligible fresh candidate exists. Page callers pass
+        ``expected_name`` so logical titles never depend on parsing a display path.
         """
 
         def observe() -> dict[str, Any] | None:
@@ -214,11 +215,21 @@ class HierarchyService(BaseService):
             def eligible(candidate: dict[str, Any]) -> bool:
                 return (
                     (resource_type is None or candidate.get("resource_type") == resource_type)
-                    and candidate.get("path", "").casefold() == expected_path.casefold()
+                    and (
+                        display_name(candidate) == expected_name
+                        if expected_name is not None
+                        else candidate.get("path", "").casefold()
+                        == expected_path.casefold()
+                    )
                     and candidate.get("is_in_recycle_bin") is not True
                     and (
                         not validate_parent
-                        or candidate.get("parent_id") == expected_parent_id
+                        or (
+                            candidate.get("section_id")
+                            if resource_type == "page"
+                            else candidate.get("parent_id")
+                        )
+                        == expected_parent_id
                     )
                 )
 
@@ -227,19 +238,17 @@ class HierarchyService(BaseService):
                     before_ids is None or allocated_id not in before_ids
                 ):
                     return allocated
-                # A visible allocated ID with the wrong type/path/parent/state is
-                # not evidence for remapping another same-path object.
+                # A visible allocated ID with the wrong type/name-or-path/parent/state
+                # is not evidence for remapping another candidate.
             else:
-                path_matches = [
+                identity_matches = [
                     candidate
-                    for candidate in find_resources_by_path(
-                        resources, expected_path, resource_type
-                    )
+                    for candidate in resources
                     if eligible(candidate)
                     and (before_ids is None or candidate.get("id") not in before_ids)
                 ]
-                if len(path_matches) == 1:
-                    return path_matches[0]
+                if len(identity_matches) == 1:
+                    return identity_matches[0]
             return None
 
         result = converge(
@@ -873,15 +882,32 @@ class HierarchyService(BaseService):
         if item is None:
             raise ValueError(f"No object found for ID '{object_id}'.")
         ancestors = []
+        seen = {object_id}
         parent_id = item.get("parent_id")
         while parent_id:
+            if parent_id in seen:
+                raise ValueError("Hierarchy path contains an ancestor cycle.")
+            seen.add(parent_id)
             parent = by_id.get(parent_id)
             if parent is None:
-                break
+                raise ValueError("Hierarchy path is incomplete for the requested object.")
             ancestors.append(parent)
             parent_id = parent.get("parent_id")
         ancestors.reverse()
-        return {"item": item, "path": item["path"], "ancestors": ancestors}
+        path_segments = [
+            {
+                "resource_type": str(segment["resource_type"]),
+                "id": str(segment["id"]),
+                "name": display_name(segment),
+            }
+            for segment in [*ancestors, item]
+        ]
+        return {
+            "item": item,
+            "path": item["path"],
+            "path_segments": path_segments,
+            "ancestors": ancestors,
+        }
 
     def update_xml(
         self,

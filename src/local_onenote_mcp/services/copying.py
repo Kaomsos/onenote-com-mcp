@@ -18,6 +18,7 @@ from ..page import (
     copy_verification_tier,
     page_equivalence,
     semantic_content_comparison,
+    title_from_page_xml,
     transform_page_for_copy,
 )
 from ..policy import CopyBudget, MutationPolicy
@@ -331,7 +332,12 @@ class CopyService(BaseService):
         destination_base_folder: str,
     ) -> dict[str, Any]:
         resource_type = source["resource_type"]
-        name = self.mutations.safe_leaf_name(destination_name or display_name(source))
+        requested_name = destination_name or display_name(source)
+        name = (
+            self.mutations.page_title(requested_name)
+            if resource_type == "page"
+            else self.mutations.safe_leaf_name(requested_name)
+        )
         if resource_type == "section" and name.casefold().endswith(".one"):
             name = self.mutations.safe_leaf_name(name[:-4])
         if resource_type == "notebook":
@@ -482,10 +488,16 @@ class CopyService(BaseService):
             }
         if time.monotonic() - started > budget.max_plan_seconds:
             raise ValueError(f"Copy planning exceeded {budget.max_plan_seconds} seconds.")
+        page_title_override_requested = (
+            bundle["source"]["resource_type"] == "page" and bool(destination_name)
+        )
         digest_payload = {
-            "schema_version": 4,
+            "schema_version": 5,
             "operation": operation,
-            "options": {"include_descendants": effective_include_descendants},
+            "options": {
+                "include_descendants": effective_include_descendants,
+                "page_title_override_requested": page_title_override_requested,
+            },
             "source_snapshot": {
                 "resources": [
                     self._protected_resource(item) for item in bundle["resources"]
@@ -545,6 +557,7 @@ class CopyService(BaseService):
             "destination": destination,
             "move_source_bundle": move_source_bundle,
             "move_notebooks": move_notebooks,
+            "page_title_override_requested": page_title_override_requested,
             "plan_digest": plan_digest,
             "steps": steps,
             "lossless_candidate": not bundle["preview_issues"],
@@ -715,6 +728,7 @@ class CopyService(BaseService):
         *,
         resource_type: str,
         expected_parent_id: str | None,
+        expected_name: str,
         source_ids: set[str],
         resolved_target_ids: set[str],
     ) -> str:
@@ -726,6 +740,7 @@ class CopyService(BaseService):
             or not target_id
             or target.get("resource_type") != resource_type
             or target.get("is_in_recycle_bin") is True
+            or display_name(target) != expected_name
         ):
             raise RuntimeError(
                 "Create operation returned an untyped, recycled, or mismatched target resource."
@@ -818,6 +833,7 @@ class CopyService(BaseService):
                     target,
                     resource_type=kind,
                     expected_parent_id=expected_parent_id,
+                    expected_name=target_name,
                     source_ids=source_ids,
                     resolved_target_ids=set(resolved_target_ids),
                 )
@@ -853,6 +869,10 @@ class CopyService(BaseService):
                 check_deadline()
                 target = page_targets[item["id"]]
                 target_title = destination["name"] if item["id"] == source["id"] else item["title"]
+                title_override_requested = (
+                    item["id"] == source["id"]
+                    and plan["page_title_override_requested"] is True
+                )
                 source_xml = plan["page_xml"][item["id"]]
                 transformed = transform_page_for_copy(
                     source_xml,
@@ -866,14 +886,46 @@ class CopyService(BaseService):
                 ]
                 issues.extend(page_issues)
                 verification_tier = copy_verification_tier(
-                        transformed["content_types"],
-                        page_xml=transformed["xml"],
-                    )
+                    transformed["content_types"],
+                    page_xml=transformed["xml"],
+                )
+                source_page_title = title_from_page_xml(source_xml)
+                transformed_page_title = title_from_page_xml(transformed["xml"])
+                source_title_checks = {
+                    "title": (
+                        source_page_title is not None
+                        and transformed_page_title is not None
+                        and source_page_title == item["title"]
+                        and transformed_page_title == target_title
+                        and (
+                            title_override_requested
+                            or source_page_title == transformed_page_title
+                        )
+                    ),
+                    "source_matches_metadata": source_page_title == item["title"],
+                    "transformed_matches_expected": (
+                        transformed_page_title == target_title
+                    ),
+                    "default_title_preserved": (
+                        title_override_requested
+                        or source_page_title == transformed_page_title
+                    ),
+                }
+                title_readback_stages = {
+                    "schema_version": 1,
+                    "title_override_requested": title_override_requested,
+                    "source_to_transformed": {
+                        "checks": source_title_checks,
+                        "passed": all(source_title_checks.values()),
+                        "content_exposed": False,
+                    },
+                    "content_exposed": False,
+                }
                 semantic_content_stages = None
                 if verification_tier == SEMANTIC_CONTENT_VERIFICATION:
                     semantic_content_stages = {
                         "schema_version": 1,
-                        "title_override_requested": target_title != item["title"],
+                        "title_override_requested": title_override_requested,
                         "source_to_transformed": semantic_content_comparison(
                             source_xml,
                             transformed["xml"],
@@ -886,6 +938,22 @@ class CopyService(BaseService):
 
                 def observe_page():
                     actual_xml = self.pages.xml(target["id"], "all")
+                    actual_page_title = title_from_page_xml(actual_xml)
+                    target_title_checks = {
+                        "title": (
+                            actual_page_title is not None
+                            and transformed_page_title is not None
+                            and transformed_page_title == target_title
+                            and actual_page_title == transformed_page_title
+                        ),
+                        "target_title_available": actual_page_title is not None,
+                        "transformed_matches_expected": (
+                            transformed_page_title == target_title
+                        ),
+                        "target_matches_transformed": (
+                            actual_page_title == transformed_page_title
+                        ),
+                    }
                     return {
                         "digest": self.pages.digest(actual_xml),
                         "equivalence": page_equivalence(
@@ -893,6 +961,11 @@ class CopyService(BaseService):
                             actual_xml,
                             verification_tier=verification_tier,
                         ),
+                        "title_readback": {
+                            "checks": target_title_checks,
+                            "passed": all(target_title_checks.values()),
+                            "content_exposed": False,
+                        },
                     }
 
                 reconciliation = self.mutations._reconciled_idempotent_execute(
@@ -918,6 +991,9 @@ class CopyService(BaseService):
                 )
                 assert stable_page.value is not None
                 equivalence = stable_page.value["equivalence"]
+                title_readback_stages["transformed_to_target"] = stable_page.value[
+                    "title_readback"
+                ]
                 if semantic_content_stages is not None:
                     semantic_content_stages["transformed_to_target"] = equivalence.get(
                         "semantic_content_comparison"
@@ -926,10 +1002,16 @@ class CopyService(BaseService):
                     {
                         "source_page_id": item["id"],
                         "target_page_id": target["id"],
-                        "lossless": transformed["lossless_candidate"] and equivalence["equivalent"],
+                        "lossless": (
+                            transformed["lossless_candidate"]
+                            and equivalence["equivalent"]
+                            and title_readback_stages["source_to_transformed"]["passed"]
+                            and title_readback_stages["transformed_to_target"]["passed"]
+                        ),
                         "content_types": transformed["content_types"],
                         "normalizations": transformed["normalizations"],
                         "equivalence": equivalence,
+                        "title_readback_stages": title_readback_stages,
                         **(
                             {"semantic_content_stages": semantic_content_stages}
                             if semantic_content_stages is not None

@@ -31,11 +31,13 @@ hierarchy.parse_hierarchy
 | `find_resource_by_id(...)` | typed snapshot、ID、可选类型 | 单项或 `None`。 |
 | `find_resource_by_path(...)` | typed snapshot、路径、可选类型 | 兼容只读便利接口；返回首项或 `None`，不得用于 mutation target。 |
 | `find_resources_by_path(...)` | typed snapshot、路径、可选类型 | 返回全部 exact path matches，不选择 occurrence。 |
-| `find_unique_resource_by_path(...)` | typed snapshot、路径、可选类型 | 零项返回 `None`、一项返回对象、多项报歧义；创建兼容回读和 advanced existing-path 使用此接口。 |
+| `find_unique_resource_by_path(...)` | typed snapshot、路径、可选类型 | 零项返回 `None`、一项返回对象、多项报歧义；只供容器创建兼容回读和 advanced existing-path 使用，Page 创建不依赖 display path。 |
 | `filter_resources(...)` | typed snapshot、对象类型 | 同类型对象列表。 |
 | `display_name(item)` | 任意 typed resource | 容器 `name` 或 Page `title`。 |
 
 这些 API 是 Python 内部边界，不直接注册为 MCP 工具。
+
+公开 `get_hierarchy_path` 仍按 exact object ID 定位。响应中的 `path` 是兼容性的 display-only 字段；`path_segments` 从 `ancestors + item` 构造，每段固定含 `resource_type/id/name`，其中 `name` 对 Page 取原始 title。段值不做分隔符或 filesystem 清洗，缺失祖先或循环必须 fail closed。
 
 ## 3. 完整树解析
 

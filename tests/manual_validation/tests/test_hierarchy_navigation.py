@@ -14,6 +14,7 @@ from tests.manual_validation.scenarios.common.fixture_models import (
     FixtureValidationContext,
 )
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
+from tests.manual_validation.scenarios.common.page_readback import SPECIAL_PAGE_TITLE
 
 
 def _manifest() -> dict:
@@ -26,7 +27,7 @@ def _manifest() -> dict:
     }
 
     def item(key, object_id, resource_type, path, parent_id, **extra):
-        name = path.rsplit("/", 1)[-1]
+        name = str(extra.pop("display_name", path.rsplit("/", 1)[-1]))
         return key, {
             "id": object_id,
             "resource_type": resource_type,
@@ -79,8 +80,10 @@ def _manifest() -> dict:
                 "navigation_parent_page",
                 "parent",
                 "page",
-                "Notebook/Navigation-Group/Navigation-Inner-Group/Navigation-Target-Section/Navigation-Parent",
+                "Notebook/Navigation-Group/Navigation-Inner-Group/Navigation-Target-Section/"
+                + SPECIAL_PAGE_TITLE,
                 "section",
+                display_name=SPECIAL_PAGE_TITLE,
                 section_id="section",
                 page_level=1,
                 parent_page_id=None,
@@ -241,6 +244,28 @@ class _NavigationClient:
             found = _find(complete, s["navigation_parent_page"]["id"])
             assert found is not None
             return {"tree": found}
+        if name == "get_hierarchy_path":
+            target = s["navigation_parent_page"]
+            chain = [
+                self.manifest["notebook"],
+                s["navigation_group"],
+                s["navigation_inner_group"],
+                s["navigation_section"],
+                target,
+            ]
+            return {
+                "item": target,
+                "path": target["path"],
+                "path_segments": [
+                    {
+                        "resource_type": item["resource_type"],
+                        "id": item["id"],
+                        "name": item.get("title") or item.get("name"),
+                    }
+                    for item in chain
+                ],
+                "ancestors": chain[:-1],
+            }
         raise AssertionError((name, arguments))
 
 
@@ -251,7 +276,7 @@ def test_hierarchy_navigation_recipe_and_policy_are_cacheable_and_least_privileg
     recipe = scenario.fixture_recipe
     assert scenario.included_in_all is False
     assert recipe.supports_cache is True
-    assert recipe.recipe_version == 3
+    assert recipe.recipe_version == 4
     assert [role.role for role in recipe.cache_identity.notebook_roles] == [
         "browse-b",
         "source",
@@ -263,10 +288,10 @@ def test_hierarchy_navigation_recipe_and_policy_are_cacheable_and_least_privileg
         "expand_section",
         "expand_page",
         "expand_hierarchy",
+        "get_hierarchy_path",
     } <= scenario.spec.tool_allowlist
     assert not any(tool.startswith("query_") for tool in scenario.spec.tool_allowlist)
     assert "get_parent" not in scenario.spec.tool_allowlist
-    assert "get_hierarchy_path" not in scenario.spec.tool_allowlist
     assert {
         tool for tool in scenario.spec.tool_allowlist if tool.startswith("list_")
     } == {"list_notebooks"}
@@ -316,7 +341,7 @@ def test_hierarchy_navigation_recipe_snapshot_uses_expand_only() -> None:
     assert len(snapshot["items"]) == len(manifest["structure"]) + 1
 
 
-def test_hierarchy_navigation_runtime_uses_only_list_and_expand(tmp_path) -> None:
+def test_hierarchy_navigation_runtime_covers_list_expand_and_exact_path(tmp_path) -> None:
     run_dir = tmp_path / "run"
     (run_dir / "scenarios" / "hierarchy-navigation").mkdir(parents=True)
     manifest = _manifest()
@@ -335,6 +360,7 @@ def test_hierarchy_navigation_runtime_uses_only_list_and_expand(tmp_path) -> Non
     assert result["list_notebooks_contract_passed"] is True
     assert result["typed_expand_contract_passed"] is True
     assert result["generic_four_root_contract_passed"] is True
+    assert result["hierarchy_path_segments_passed"] is True
     assert set(client.calls) == {
         "list_notebooks",
         "expand_notebook",
@@ -342,11 +368,13 @@ def test_hierarchy_navigation_runtime_uses_only_list_and_expand(tmp_path) -> Non
         "expand_section",
         "expand_page",
         "expand_hierarchy",
+        "get_hierarchy_path",
     }
     evidence = run_dir / "scenarios" / "hierarchy-navigation"
     assert (evidence / "list-notebooks.json").exists()
     assert (evidence / "expand-hierarchy-notebook.json").exists()
     assert (evidence / "expand-hierarchy-page-depth-boundary.json").exists()
+    assert (evidence / "get-hierarchy-path.json").exists()
 
     tree_evidence = json.loads(
         (evidence / "expand-hierarchy-notebook.json").read_text(encoding="utf-8")
@@ -362,6 +390,12 @@ def test_hierarchy_navigation_runtime_uses_only_list_and_expand(tmp_path) -> Non
         "grandchild"
     )
     assert parent_node["children"][0]["children"][0]["item"]["page_level"] == 3
+    path_evidence = json.loads(
+        (evidence / "get-hierarchy-path.json").read_text(encoding="utf-8")
+    )
+    assert path_evidence["legacy_path_display_only"] is True
+    assert path_evidence["path_segments"][-1]["name"] == SPECIAL_PAGE_TITLE
+    assert path_evidence["special_title_preserved"] is True
 
 
 def test_hierarchy_navigation_rejects_wrong_page_child_order(tmp_path) -> None:

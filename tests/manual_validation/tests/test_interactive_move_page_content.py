@@ -21,6 +21,7 @@ from tests.manual_validation.test_utils import read_json
 
 SOURCE_ID = "source-page"
 TARGET_ID = "target-page"
+INSTANCE_ID = "authored-" + "a" * 24
 
 
 def _structures() -> tuple[dict, dict]:
@@ -407,6 +408,9 @@ def test_recipe_pair_shares_exact_two_role_cache_identity_and_freezes_ready() ->
     consumer = SCENARIO_REGISTRY.get("interactive-move-page-content").fixture_recipe
     assert bootstrap is not consumer
     assert bootstrap.cache_fingerprint == consumer.cache_fingerprint
+    assert consumer.consumer_scenario is True
+    assert consumer.supports_cache is True
+    assert consumer.requires_instance_selection is True
     assert tuple(
         role.role for role in bootstrap.cache_identity.notebook_roles
     ) == ("destination", "source")
@@ -421,6 +425,27 @@ def test_recipe_pair_shares_exact_two_role_cache_identity_and_freezes_ready() ->
     assert evidence_only.state == "evidence_only"
     assert evidence_only.move_source_deletion_allowed is False
     assert "UnknownWidget" in evidence_only.unknown_capabilities
+
+
+def test_interactive_move_requires_cache_and_explicit_template_selector() -> None:
+    from tests.manual_validation.runner import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "interactive-move-page-content",
+            "--use-cache",
+            "--template-instance-id",
+            INSTANCE_ID,
+            "--dry-run",
+        ]
+    )
+    scenario = SCENARIO_REGISTRY.get("interactive-move-page-content")
+
+    assert args.use_cache is True
+    assert args.template_instance_id == INSTANCE_ID
+    assert scenario.fixture_recipe.supports_cache is True
+    assert scenario.spec.execution_contract["cache_only"] is True
 
 
 def test_rich_text_only_page_is_representative_but_outline_placeholder_is_not() -> None:

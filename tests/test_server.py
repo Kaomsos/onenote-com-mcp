@@ -964,12 +964,236 @@ def test_created_page_readback_prefers_allocated_id_over_duplicate_title_path(
     assert result == allocated
 
 
+@pytest.mark.parametrize(
+    "title",
+    ["Topic / Subtopic", "Back\\slash: colon", "Tilde~ percent%  双空格 界"],
+)
+def test_created_page_readback_uses_exact_parent_and_title_not_display_path(
+    monkeypatch,
+    title,
+):
+    allocated = {
+        "resource_type": "page",
+        "id": "allocated-page-id",
+        "title": title,
+        "path": "ambiguous/display/path",
+        "parent_id": "section-id",
+        "section_id": "section-id",
+        "is_in_recycle_bin": False,
+    }
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [allocated],
+    )
+
+    result = server.services.hierarchy.wait_for_created(
+        "must/not/be/parsed",
+        "page",
+        allocated["id"],
+        expected_parent_id="section-id",
+        validate_parent=True,
+        before_ids=set(),
+        expected_name=title,
+        retries=1,
+        delay_seconds=0,
+    )
+
+    assert result == allocated
+
+
+def test_created_page_readback_remap_requires_one_fresh_exact_parent_title(
+    monkeypatch,
+):
+    title = "Topic / same:path"
+    candidates = [
+        {
+            "resource_type": "page",
+            "id": "old-same-title",
+            "title": title,
+            "path": "duplicate/display/path",
+            "parent_id": "section-id",
+            "section_id": "section-id",
+            "is_in_recycle_bin": False,
+        },
+        {
+            "resource_type": "page",
+            "id": "fresh-wrong-parent",
+            "title": title,
+            "path": "duplicate/display/path",
+            "parent_id": "other-section",
+            "section_id": "other-section",
+            "is_in_recycle_bin": False,
+        },
+        {
+            "resource_type": "page",
+            "id": "fresh-exact",
+            "title": title,
+            "path": "another/ambiguous/path",
+            "parent_id": "section-id",
+            "section_id": "section-id",
+            "is_in_recycle_bin": False,
+        },
+    ]
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: candidates,
+    )
+
+    result = server.services.hierarchy.wait_for_created(
+        "ignored/display/path",
+        "page",
+        "missing-allocated-id",
+        expected_parent_id="section-id",
+        validate_parent=True,
+        before_ids={"old-same-title"},
+        expected_name=title,
+        retries=2,
+        delay_seconds=0,
+    )
+
+    assert result["id"] == "fresh-exact"
+    assert server.services.hierarchy.last_convergence_summary()["identity_remap"] == {
+        "missing-allocated-id": "fresh-exact"
+    }
+
+
+def test_created_page_readback_rejects_wrong_title_even_for_allocated_id(monkeypatch):
+    allocated = {
+        "resource_type": "page",
+        "id": "allocated-page-id",
+        "title": "Sanitized title",
+        "path": "Notebook/Section/Topic / title",
+        "parent_id": "section-id",
+        "section_id": "section-id",
+        "is_in_recycle_bin": False,
+    }
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [allocated],
+    )
+
+    result = server.services.hierarchy.wait_for_created(
+        allocated["path"],
+        "page",
+        allocated["id"],
+        expected_parent_id="section-id",
+        validate_parent=True,
+        before_ids=set(),
+        expected_name="Topic / title",
+        retries=1,
+        delay_seconds=0,
+    )
+
+    assert result is None
+
+
+def test_hierarchy_path_segments_preserve_names_and_ids_without_parsing_display_path(
+    monkeypatch,
+):
+    items = [
+        {
+            "resource_type": "notebook",
+            "id": "notebook-id",
+            "name": "Notebook / Root",
+            "path": "Notebook / Root",
+            "parent_id": None,
+        },
+        {
+            "resource_type": "section",
+            "id": "section-id",
+            "name": "Section\\:  %~界",
+            "path": "Notebook / Root/Section/:  %~界",
+            "parent_id": "notebook-id",
+        },
+        {
+            "resource_type": "page",
+            "id": "page-id",
+            "title": "Topic / Subtopic\\:  %~界",
+            "path": "Notebook / Root/Section/:  %~界/Topic / Subtopic/:  %~界",
+            "parent_id": "section-id",
+            "section_id": "section-id",
+        },
+    ]
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: items,
+    )
+
+    result = server.services.hierarchy.path("page-id")
+
+    assert result["path"] == items[-1]["path"]
+    assert result["path_segments"] == [
+        {
+            "resource_type": item["resource_type"],
+            "id": item["id"],
+            "name": item.get("title", item.get("name")),
+        }
+        for item in items
+    ]
+    assert [item["id"] for item in result["ancestors"]] == [
+        "notebook-id",
+        "section-id",
+    ]
+
+
+def test_hierarchy_path_segments_distinguish_duplicate_display_paths_by_id(monkeypatch):
+    common = {
+        "resource_type": "page",
+        "title": "Same / title",
+        "path": "Notebook/Section/Same / title",
+        "parent_id": "section-id",
+        "section_id": "section-id",
+    }
+    items = [
+        {"resource_type": "notebook", "id": "notebook-id", "name": "Notebook", "path": "Notebook", "parent_id": None},
+        {"resource_type": "section", "id": "section-id", "name": "Section", "path": "Notebook/Section", "parent_id": "notebook-id"},
+        {**common, "id": "page-a"},
+        {**common, "id": "page-b"},
+    ]
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: items,
+    )
+
+    first = server.services.hierarchy.path("page-a")
+    second = server.services.hierarchy.path("page-b")
+
+    assert first["path"] == second["path"]
+    assert first["path_segments"][-1]["id"] == "page-a"
+    assert second["path_segments"][-1]["id"] == "page-b"
+
+
+def test_hierarchy_path_fails_closed_for_missing_parent(monkeypatch):
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [
+            {
+                "resource_type": "page",
+                "id": "page-id",
+                "title": "Page",
+                "path": "Notebook/Section/Page",
+                "parent_id": "missing-section",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="incomplete"):
+        server.services.hierarchy.path("page-id")
+
+
 def test_created_page_readback_waits_for_allocated_id_to_stabilize(monkeypatch):
     allocated = {
         "resource_type": "page",
         "id": "allocated-page-id",
         "path": "Notebook/Section/New",
         "parent_id": "section-id",
+        "section_id": "section-id",
         "is_in_recycle_bin": False,
     }
     snapshots = iter([[], [allocated], [allocated]])
@@ -1028,6 +1252,7 @@ def test_created_target_readback_accepts_only_one_fresh_path_remap(monkeypatch):
         "id": "remapped",
         "path": path,
         "parent_id": "section-id",
+        "section_id": "section-id",
         "is_in_recycle_bin": False,
     }
     monkeypatch.setattr(
@@ -1068,12 +1293,14 @@ def test_created_target_readback_accepts_only_one_fresh_path_remap(monkeypatch):
             "id": "allocated",
             "path": "Notebook/Section/New",
             "parent_id": "wrong-section",
+            "section_id": "wrong-section",
         },
         {
             "resource_type": "page",
             "id": "allocated",
             "path": "Notebook/Section/New",
             "parent_id": "section-id",
+            "section_id": "section-id",
             "is_in_recycle_bin": True,
         },
     ],
@@ -1103,6 +1330,7 @@ def test_created_target_readback_rejects_wrong_type_parent_or_recycle_state(
 
 @pytest.mark.write_contract
 def test_create_page_twice_with_duplicate_title_returns_distinct_allocated_ids(monkeypatch):
+    title = "Duplicate /\\:  %~界"
     section = {
         "resource_type": "section",
         "id": "section-id",
@@ -1132,8 +1360,8 @@ def test_create_page_twice_with_duplicate_title_returns_distinct_allocated_ids(m
                 {
                     "resource_type": "page",
                     "id": page_id,
-                    "title": "Duplicate",
-                    "path": "Notebook/Section/Duplicate",
+                    "title": title,
+                    "path": f"Notebook/Section/{title}",
                     "parent_id": "section-id",
                     "section_id": "section-id",
                     "is_in_recycle_bin": False,
@@ -1144,8 +1372,8 @@ def test_create_page_twice_with_duplicate_title_returns_distinct_allocated_ids(m
 
     monkeypatch.setattr(server.services.mutations, "call", fake_call)
 
-    first = success_data(asyncio.run(create_page("section-id", "Duplicate", content="first")))
-    second = success_data(asyncio.run(create_page("section-id", "Duplicate", content="second")))
+    first = success_data(asyncio.run(create_page("section-id", title, content="first")))
+    second = success_data(asyncio.run(create_page("section-id", title, content="second")))
 
     assert first["page_id"] == "allocated-1"
     assert second["page_id"] == "allocated-2"

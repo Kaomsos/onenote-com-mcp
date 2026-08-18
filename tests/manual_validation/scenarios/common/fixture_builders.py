@@ -261,6 +261,8 @@ async def ensure_page(
     section_id: str,
     title: str,
     content: str,
+    *,
+    content_format: str = "plain",
 ) -> dict[str, Any]:
     expanded = await client.call_tool("expand_section", {"section_id": section_id})
     existing = exactly_one(_tree_items(expanded, "page"), title, "page")
@@ -273,7 +275,7 @@ async def ensure_page(
                 "section_id": section_id,
                 "title": title,
                 "content": content,
-                "content_format": "plain",
+                "content_format": content_format,
                 "new_page_style": "blank_with_title",
             },
         )

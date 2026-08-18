@@ -51,6 +51,7 @@ from .page_text_evidence import (
     capture_full_page_text_evidence,
     capture_page_text_pair,
 )
+from .page_readback import assert_default_page_title_readback
 from .report import render_report
 from .specs import get_scenario_spec
 
@@ -68,6 +69,7 @@ def copy_spec(
     copy_tools = COPY_PRESERVE_TOOLS if keep_worksite else COPY_TOOLS
     if scenario == "copy-page":
         execution_contract = get_scenario_spec(scenario).execution_contract
+        source = resolve_manifest_item(manifest, "parent_page")
         page_tools = (
             COPY_PAGE_PRESERVE_TOOLS if keep_worksite else COPY_PAGE_TOOLS
         ) | {"get_page_text"}
@@ -79,6 +81,11 @@ def copy_spec(
         cases = []
         for index, case in enumerate(execution_contract.get("cases", []), start=1):
             declared_scope = case.get("include_descendants")
+            title_parameter = str(case.get("destination_title", "explicit"))
+            if title_parameter not in {"explicit", "omitted"}:
+                raise RunnerFailure(
+                    "Copy Page destination_title contract must be explicit or omitted."
+                )
             destination_scope = str(case["destination_scope"])
             scope_label = {
                 "same-section": "Same-Section",
@@ -98,9 +105,14 @@ def copy_spec(
                     "collision_anchor": resolve_manifest_item(
                         manifest, anchor_keys[destination_scope]
                     ),
-                    "destination_name": f"{index:02d}-{scope_label}-"
-                    + ("Root-Only" if declared_scope == "omitted" else "Subtree")
-                    + f"-Copy-{suffix}",
+                    "destination_name": (
+                        display_name(source)
+                        if title_parameter == "omitted"
+                        else f"{index:02d}-{scope_label}-"
+                        + ("Root-Only" if declared_scope == "omitted" else "Subtree")
+                        + f"-Copy-{suffix}"
+                    ),
+                    "destination_title_parameter": title_parameter,
                     "include_descendants": (
                         None if declared_scope == "omitted" else bool(declared_scope)
                     ),
@@ -110,7 +122,7 @@ def copy_spec(
         if len(cases) != 6:
             raise RunnerFailure("Copy Page execution contract must declare exactly six cases.")
         return {
-            "source": resolve_manifest_item(manifest, "parent_page"),
+            "source": source,
             "protected_page_ids": [
                 str(resolve_manifest_item(manifest, key)["id"])
                 for key in (
@@ -215,8 +227,9 @@ def copy_execute_arguments(
             "destination_section_id": spec["destination"]["id"],
             "expected_title": display_name(source),
             "expected_section_id": source["section_id"],
-            "destination_title": spec["destination_name"],
         }
+        if spec.get("destination_title_parameter") != "omitted":
+            arguments["destination_title"] = spec["destination_name"]
         if spec.get("include_descendants") is not None:
             arguments["include_subpages"] = bool(spec["include_descendants"])
         return arguments
@@ -666,6 +679,9 @@ async def execute_copy_page(
                 **spec,
                 "destination": dict(case["destination"]),
                 "destination_name": str(case["destination_name"]),
+                "destination_title_parameter": str(
+                    case.get("destination_title_parameter", "explicit")
+                ),
                 "collision_anchor": dict(case["collision_anchor"]),
                 "include_descendants": include_descendants,
             }
@@ -709,6 +725,16 @@ async def execute_copy_page(
             if report.get("verified") is not True:
                 raise InvariantFailure(
                     f"Copy case '{case_name}' did not report verified read-back."
+                )
+            title_readback = None
+            if case_spec["destination_title_parameter"] == "omitted":
+                title_readback = assert_default_page_title_readback(
+                    report,
+                    source_page_id=str(current_source["id"]),
+                )
+                write_json(
+                    out / f"default-title-readback-{case_name}.json",
+                    title_readback,
                 )
             id_map = report.get("id_map", {})
             target = copied.get("item")
@@ -785,6 +811,10 @@ async def execute_copy_page(
                 ),
                 "effective_include_descendants": effective_scope,
                 "destination_name": case_spec["destination_name"],
+                "destination_title_parameter": case_spec[
+                    "destination_title_parameter"
+                ],
+                "default_title_readback": title_readback,
                 "destination_role": case["destination_role"],
                 "destination_scope": case["destination_scope"],
                 "destination_section_id": case_spec["destination"]["id"],

@@ -165,7 +165,7 @@ async def create_page(
     expected_section_name: str | None = None,
     expected_section_modified: str | None = None,
 ) -> dict[str, Any]:
-    """With Create and Writes, create one Page with title/content, or up to 20 Pages with items below one confirmed exact Section; the two modes are mutually exclusive."""
+    """With Create and Writes, create one Page with an exact logical title/content, or up to 20 Pages with items below one confirmed exact Section; Page titles preserve separators, repeated spaces, and Unicode instead of using filesystem cleaning; the two modes are mutually exclusive."""
 
     return invoke(
         "create_page",
@@ -187,7 +187,7 @@ async def rename_page(
     expected_modified: str | None = None,
     items: PageRenameItems | None = None,
 ) -> dict[str, Any]:
-    """With Writes, rename one exact confirmed Page, or up to 20 same-Notebook Pages through explicit items; modes are mutually exclusive."""
+    """With Writes, rename one exact confirmed Page with an exact logical title, or up to 20 same-Notebook Pages through explicit items; Page titles do not use filesystem cleaning and modes are mutually exclusive."""
 
     return invoke(
         "rename_page",

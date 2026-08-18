@@ -19,11 +19,12 @@ from ..common.fixture_models import (
     FixtureValidationContext,
     resolve_active_structure,
 )
+from ..common.page_readback import SPECIAL_PAGE_TITLE
 from .recipe_base import NotebookRoleSpec, RecipeBase
 
 
 class HierarchyNavigationFixtureRecipe(RecipeBase):
-    recipe_version = 3
+    recipe_version = 4
 
     def __init__(self) -> None:
         profile = self._profile("hierarchy-navigation")
@@ -147,7 +148,7 @@ class HierarchyNavigationFixtureRecipe(RecipeBase):
             await ensure_page(
                 context.client,
                 str(section["id"]),
-                "Navigation-Parent",
+                SPECIAL_PAGE_TITLE,
                 "navigation parent page",
             ),
         )
@@ -303,6 +304,11 @@ class HierarchyNavigationFixtureRecipe(RecipeBase):
             ),
             "Hierarchy navigation fixture lacks complete Page metadata evidence.",
             "every navigation Page was observed through Expand metadata",
+        )
+        checks.require(
+            str(parent.get("title", "")) == SPECIAL_PAGE_TITLE,
+            "Hierarchy navigation Page title lost special characters during fixture creation.",
+            "path target preserves the exact special-character Page title",
         )
         return tuple(checks.checks)
 

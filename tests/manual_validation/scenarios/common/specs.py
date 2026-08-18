@@ -545,8 +545,8 @@ SCENARIO_SPECS = {
             "rich-page-copy",
             (
                 "source:00-Description/00-Copy-Page-Description[3 scopes x 2 subtree modes]",
-                "Source/01-Source-Parent[strict rich text+inline/display equations+table+image]",
-                "Source/01-Source-Parent/02-Source-Child[semantic list+tag]",
+                "Source/[exact special-character parent][strict rich text+inline/display equations+table+image]",
+                "Source/[exact special-character parent]/02-Source-Child[semantic list+tag]",
                 "source:Destination/02-Source-Child[duplicate-title anchor]",
                 "destination:Cross-Notebook-Destination/02-Source-Child[duplicate-title anchor]",
             ),
@@ -586,6 +586,8 @@ SCENARIO_SPECS = {
                 "source parent and child remain unchanged after all six copies",
                 "same-title destination anchors remain unchanged after all six copies",
                 "cross-Notebook targets appear only in the destination role",
+                "one cross-Notebook root-only Copy omits destination_title and preserves the exact source title",
+                "default-title Copy passes source-to-transformed-to-target title readback",
                 "the rich source Image binary is read by exact PageContentObject ID without persisting Base64",
             ),
         ),
@@ -640,6 +642,7 @@ SCENARIO_SPECS = {
                     "destination_key": "cross_notebook_section",
                     "destination_scope": "cross-notebook",
                     "include_descendants": "omitted",
+                    "destination_title": "omitted",
                     "expected_page_count": 1,
                 },
                 {
@@ -803,8 +806,8 @@ SCENARIO_SPECS = {
         _profile(
             "disposable-page-move",
             (
-                "source:Source/01-Root-Only/02-Root-Only-Child",
-                "source:Source/03-Subtree/04-Subtree-Child",
+                "source:Source/[exact special-character RichText/Table root]/02-Root-Only-Child",
+                "source:Source/03-Subtree/04-Subtree-Child[pure RichText]",
                 "destination:Destination/{00-Destination-Anchor-A,99-Destination-Anchor-B}",
             ),
             (
@@ -818,10 +821,14 @@ SCENARIO_SPECS = {
                 "destination_anchor_b",
             ),
             {"create_section", "create_page", "reorder_page"},
-            content=("Outline", "RichText"),
+            content=("Outline", "RichText", "Table", "special-character Page title"),
             checks=(
                 "root-only Move copies one Page and preserves/promotes its excluded child",
+                "root-only Move omits destination_title and preserves the exact source title",
+                "default-title Move passes source-to-transformed-to-target title readback",
+                "root-only source contains one three-column RichText/Table fixture",
                 "subtree Move copies and removes exactly the two selected Pages",
+                "subtree source and child both use complete semantic_content_v1 pure RichText readback",
                 "both cases use cross-Notebook destination and non-permanent source deletion",
             ),
         ),
@@ -837,6 +844,7 @@ SCENARIO_SPECS = {
                     "source_key": "root_only_page",
                     "child_key": "root_only_child",
                     "include_descendants": "omitted",
+                    "destination_title": "omitted",
                     "expected_page_count": 1,
                 },
                 {
@@ -1038,7 +1046,7 @@ SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
             "Navigation-Root-Section",
             "Navigation-Group/{Navigation-Group-Section,Navigation-Inner-Group/Navigation-Target-Section}",
             (
-                "Navigation-Target-Section/Navigation-Parent/"
+                "Navigation-Target-Section/[exact special-character Page]/"
                 "{Navigation-Child/Navigation-Grandchild,Navigation-Child-Sibling}"
             ),
             "Navigation-Target-Section/Navigation-Root-Sibling",
@@ -1057,13 +1065,19 @@ SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
             "navigation_root_page_sibling",
         ),
         _HIERARCHY_NAVIGATION_FIXTURE_TOOLS,
-        content=("nested container ancestry", "Page indentation levels 1/2/3"),
+        content=(
+            "nested container ancestry",
+            "Page indentation levels 1/2/3",
+            "special-character Page title",
+        ),
         checks=(
             "list_notebooks returns both open fixture Notebook roles with unique IDs",
             "typed Expand tools preserve boundaries, order, uniqueness, and one shared tree schema",
             "expand_hierarchy projects parent_page_id/page_level as a branched Page tree",
             "expand_hierarchy accepts all four hierarchy root types",
             "expand_hierarchy max_depth truncates below direct Page children",
+            "get_hierarchy_path preserves exact IDs and raw names in path_segments",
+            "legacy path remains display-only for a Page title containing separators",
             "scenario browsing audit contains hierarchy metadata reads only",
         ),
     ),
@@ -1078,6 +1092,7 @@ SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
             "expand_section",
             "expand_page",
             "expand_hierarchy",
+            "get_hierarchy_path",
         }
     ),
     {
@@ -1085,6 +1100,11 @@ SCENARIO_SPECS["hierarchy-navigation"] = ScenarioSpec(
         "included_in_all": False,
         "notebook_roles": ["source", "browse-b"],
         "page_parent_semantics": {"expand_hierarchy": "derived_indentation"},
+        "path_contract": {
+            "selector": "exact_id",
+            "canonical_machine_field": "path_segments",
+            "legacy_path": "display_only",
+        },
     },
 )
 

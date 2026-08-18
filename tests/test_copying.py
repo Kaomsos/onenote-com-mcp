@@ -601,7 +601,14 @@ def install_plan_fakes(monkeypatch, *, body: str = "Body"):
     return state
 
 
-def install_recursive_execute_fakes(monkeypatch, *, duplicate_page_titles: bool = False):
+def install_recursive_execute_fakes(
+    monkeypatch,
+    *,
+    duplicate_page_titles: bool = False,
+    source_page_title: str = "Page",
+    source_page_body: str = "first body",
+    include_destination_section: bool = False,
+):
     state = [
         {
             "resource_type": "notebook",
@@ -637,8 +644,11 @@ def install_recursive_execute_fakes(monkeypatch, *, duplicate_page_titles: bool 
         {
             "resource_type": "page",
             "id": "source-page",
-            "title": "Page",
-            "path": "Source Notebook/Source Group/Inner Group/Notes/Page",
+            "title": source_page_title,
+            "path": (
+                "Source Notebook/Source Group/Inner Group/Notes/"
+                f"{source_page_title}"
+            ),
             "parent_id": "source-section",
             "notebook_id": "source-notebook",
             "section_id": "source-section",
@@ -654,13 +664,33 @@ def install_recursive_execute_fakes(monkeypatch, *, duplicate_page_titles: bool 
             "parent_id": None,
         },
     ]
-    xml_store = {"source-page": page_xml("source-page", "Page", "first body")}
+    if include_destination_section:
+        state.append(
+            {
+                "resource_type": "section",
+                "id": "destination-section",
+                "name": "Destination",
+                "path": "Destination Notebook/Destination",
+                "parent_id": "destination-notebook",
+                "notebook_id": "destination-notebook",
+            }
+        )
+    xml_store = {
+        "source-page": page_xml(
+            "source-page",
+            source_page_title,
+            source_page_body,
+        )
+    }
     if duplicate_page_titles:
         duplicate = {
             "resource_type": "page",
             "id": "source-page-2",
-            "title": "Page",
-            "path": "Source Notebook/Source Group/Inner Group/Notes/Page",
+            "title": source_page_title,
+            "path": (
+                "Source Notebook/Source Group/Inner Group/Notes/"
+                f"{source_page_title}"
+            ),
             "parent_id": "source-section",
             "notebook_id": "source-notebook",
             "section_id": "source-section",
@@ -670,7 +700,7 @@ def install_recursive_execute_fakes(monkeypatch, *, duplicate_page_titles: bool 
         }
         state.insert(-1, duplicate)
         xml_store["source-page-2"] = page_xml(
-            "source-page-2", "Page", "second body"
+            "source-page-2", source_page_title, "second body"
         )
     counters = {"notebook": 0, "section_group": 0, "section": 0, "page": 0}
 
@@ -1117,7 +1147,7 @@ def test_semantic_content_accepts_empty_outline_elimination_on_list_table_page()
     <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
     <one:Outline><one:Position x="1" y="2"/><one:OEChildren><one:OE/></one:OEChildren></one:Outline>
     <one:Outline><one:OEChildren><one:OE><one:List><one:Bullet/></one:List><one:T>Item</one:T>
-      <one:Table><one:Row><one:Cell><one:OEChildren><one:OE><one:T>Cell</one:T></one:OE>
+      <one:Table><one:Columns><one:Column index="0" width="100"/></one:Columns><one:Row><one:Cell><one:OEChildren><one:OE><one:T>Cell</one:T></one:OE>
       </one:OEChildren></one:Cell></one:Row></one:Table>
     </one:OE></one:OEChildren></one:Outline></one:Page>"""
     target = source.replace('ID="source"', 'ID="target"').replace(
@@ -1140,7 +1170,7 @@ def test_semantic_content_accepts_empty_outline_elimination_on_list_table_page()
 def test_semantic_content_accepts_table_cell_oe_flattening():
     source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
     <one:Outline><one:OEChildren><one:OE><one:List><one:Number/></one:List><one:T>Item</one:T>
-      <one:Table><one:Row><one:Cell><one:OEChildren>
+      <one:Table><one:Columns><one:Column index="0" width="100"/></one:Columns><one:Row><one:Cell><one:OEChildren>
         <one:OE><one:T><![CDATA[<strong>A</strong>]]></one:T></one:OE>
         <one:OE><one:T><![CDATA[<strong>B</strong>]]></one:T></one:OE>
       </one:OEChildren></one:Cell></one:Row></one:Table>
@@ -1164,7 +1194,7 @@ def test_semantic_content_accepts_table_cell_oe_flattening():
 
 def test_semantic_content_accepts_redundant_nested_span_collapse():
     source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
-    <one:Outline><one:OEChildren><one:OE><one:Table><one:Row><one:Cell>
+    <one:Outline><one:OEChildren><one:OE><one:Table><one:Columns><one:Column index="0" width="100"/></one:Columns><one:Row><one:Cell>
       <one:OEChildren><one:OE><one:T><![CDATA[
         <span style="font-family:Calibri;color:#ff0000"><span style="color:#ff0000">Cell</span></span>
       ]]></one:T></one:OE></one:OEChildren>
@@ -1189,7 +1219,7 @@ def test_semantic_content_accepts_redundant_nested_span_collapse():
 
 def test_semantic_content_effective_span_projection_still_rejects_style_loss():
     source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
-    <one:Outline><one:OEChildren><one:OE><one:Table><one:Row><one:Cell>
+    <one:Outline><one:OEChildren><one:OE><one:Table><one:Columns><one:Column index="0" width="100"/></one:Columns><one:Row><one:Cell>
       <one:OEChildren><one:OE><one:T><![CDATA[
         <span style="font-family:Calibri"><span style="color:#ff0000">Cell</span></span>
       ]]></one:T></one:OE></one:OEChildren>
@@ -1218,7 +1248,7 @@ def test_semantic_content_mismatch_evidence_is_bounded_and_content_free():
         '<span style="color:#ff0000"><a href="https://secret.invalid/a">Sensitive body</a></span>',
     ).replace(
         "</one:OE></one:OEChildren></one:Outline>",
-        "<one:Table><one:Row><one:Cell><one:OEChildren><one:OE>"
+        "<one:Table><one:Columns><one:Column index=\"0\" width=\"100\"/></one:Columns><one:Row><one:Cell><one:OEChildren><one:OE>"
         "<one:T>Private cell</one:T></one:OE></one:OEChildren></one:Cell>"
         "</one:Row></one:Table></one:OE></one:OEChildren></one:Outline>",
     )
@@ -1259,7 +1289,7 @@ def test_semantic_content_rejects_meaningful_title_rich_outline_or_binary_loss(c
     source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
     <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
     <one:Outline><one:OEChildren><one:OE><one:List><one:Bullet/></one:List>
-      <one:Table><one:Row><one:Cell><one:OEChildren><one:OE>
+      <one:Table><one:Columns><one:Column index="0" width="100"/></one:Columns><one:Row><one:Cell><one:OEChildren><one:OE>
         <one:T><![CDATA[<strong><a href="https://example.com/a">Cell</a></strong>]]></one:T>
       </one:OE></one:OEChildren></one:Cell></one:Row></one:Table>
     </one:OE></one:OEChildren></one:Outline>
@@ -1279,7 +1309,7 @@ def test_semantic_content_rejects_meaningful_title_rich_outline_or_binary_loss(c
 
 def test_semantic_content_incomplete_inline_projection_falls_back_to_strict():
     source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
-    <one:Outline><one:OEChildren><one:OE><one:Table><one:Row><one:Cell>
+    <one:Outline><one:OEChildren><one:OE><one:Table><one:Columns><one:Column index="0" width="100"/></one:Columns><one:Row><one:Cell>
       <one:OEChildren><one:OE><one:T><![CDATA[<mark>Cell</mark>]]></one:T></one:OE></one:OEChildren>
     </one:Cell></one:Row></one:Table></one:OE></one:OEChildren></one:Outline></one:Page>"""
     same = source.replace('ID="source"', 'ID="target"')
@@ -1301,6 +1331,13 @@ def test_semantic_content_incomplete_inline_projection_falls_back_to_strict():
     assert accepted["equivalent"] is True
     assert rejected["checks"]["semantic_fallback_strict"] is False
     assert rejected["equivalent"] is False
+    assert "Unknown" in rejected["failed_content_object_types"]
+    assert any(
+        failure["code"] == "semantic_projection_incomplete"
+        and failure["content_object_type"] == "Unknown"
+        and failure["content_exposed"] is False
+        for failure in rejected["content_object_failures"]
+    )
 
 
 def test_semantic_content_tier_selection_rejects_unknown_page_structure():
@@ -1312,6 +1349,302 @@ def test_semantic_content_tier_selection_rejects_unknown_page_structure():
         copy_verification_tier(["Outline", "Table"], page_xml=source)
         == "strict_canonical"
     )
+
+
+def _table_width_page(width: str | None, *, cell: str = "Cell") -> str:
+    width_attribute = "" if width is None else f' width="{width}"'
+    return f'''<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="page">
+    <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:Outline><one:OEChildren><one:OE><one:Table><one:Columns>
+      <one:Column index="0"{width_attribute}/></one:Columns><one:Row><one:Cell>
+      <one:OEChildren><one:OE><one:T>{cell}</one:T></one:OE></one:OEChildren>
+    </one:Cell></one:Row></one:Table></one:OE></one:OEChildren></one:Outline></one:Page>'''
+
+
+@pytest.mark.parametrize("target_width", ["95", "105", "100.0", "1.05E+2"])
+def test_semantic_table_width_accepts_numeric_delta_at_or_below_five_percent(
+    target_width,
+):
+    expected = _table_width_page("100")
+    actual = _table_width_page(target_width).replace('ID="page"', 'ID="target"')
+
+    result = page_equivalence(
+        expected,
+        actual,
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["equivalent"] is True
+    assert result["failed_content_object_types"] == []
+    if target_width != "100":
+        evidence = result["semantic_content_comparison"][
+            "table_column_width_comparisons"
+        ][0]
+        assert evidence["allowed_relative_delta"] == 0.05
+        assert evidence["passed"] is True
+        assert evidence["content_exposed"] is False
+
+
+@pytest.mark.parametrize("target_width", ["94.999", "105.001"])
+def test_semantic_table_width_rejects_delta_above_five_percent(target_width):
+    result = page_equivalence(
+        _table_width_page("100"),
+        _table_width_page(target_width).replace('ID="page"', 'ID="target"'),
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["equivalent"] is False
+    assert result["failed_content_object_types"] == ["Table"]
+    failure = result["content_object_failures"][0]
+    assert failure["code"] == "table_column_width_out_of_tolerance"
+    assert failure["content_object_type"] == "Table"
+    assert failure["component_type"] == "Column"
+    assert failure["field"] == "width"
+    assert failure["table_ordinal"] == 0
+    assert failure["column_ordinal"] == 0
+    assert failure["observed_relative_delta"] > 0.05
+
+
+@pytest.mark.parametrize("target_width", [None, "0", "-1", "NaN", "Infinity", "not-a-number"])
+def test_semantic_table_width_invalid_values_fail_closed(target_width):
+    result = page_equivalence(
+        _table_width_page("100"),
+        _table_width_page(target_width).replace('ID="page"', 'ID="target"'),
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["equivalent"] is False
+    assert result["content_object_failures"][0]["code"] == "table_column_width_invalid"
+
+
+@pytest.mark.parametrize("width", [None, "0", "NaN", "Infinity"])
+def test_semantic_table_width_invalid_equal_values_still_fail_closed(width):
+    result = page_equivalence(
+        _table_width_page(width),
+        _table_width_page(width).replace('ID="page"', 'ID="target"'),
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["equivalent"] is False
+    assert result["content_object_failures"][0]["code"] == "table_column_width_invalid"
+
+
+def test_semantic_table_width_rejects_missing_column_mapping():
+    no_columns = _table_width_page("100").replace(
+        '<one:Columns>\n      <one:Column index="0" width="100"/></one:Columns>',
+        "",
+    )
+    result = page_equivalence(
+        _table_width_page("100"),
+        no_columns.replace('ID="page"', 'ID="target"'),
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["equivalent"] is False
+    assert any(
+        failure["code"] == "table_column_mapping_unavailable"
+        for failure in result["content_object_failures"]
+    )
+
+
+def test_source_to_transformed_table_width_remains_exact():
+    comparison = semantic_content_comparison(
+        _table_width_page("100"),
+        _table_width_page("100.0").replace('ID="page"', 'ID="target"'),
+    )
+
+    assert comparison["passed"] is False
+    assert comparison["content_object_failures"][0]["code"] == "table_column_width_mismatch"
+    assert comparison["content_object_failures"][0]["comparison"] == "exact"
+
+
+def test_table_width_tolerance_does_not_hide_cell_or_topology_changes():
+    expected = _table_width_page("100")
+    cell_changed = page_equivalence(
+        expected,
+        _table_width_page("104", cell="Changed").replace('ID="page"', 'ID="target"'),
+        verification_tier="semantic_content_v1",
+    )
+    topology_changed = page_equivalence(
+        expected,
+        _table_width_page("104")
+        .replace("</one:Columns>", '<one:Column index="1" width="50"/></one:Columns>')
+        .replace('ID="page"', 'ID="target"'),
+        verification_tier="semantic_content_v1",
+    )
+
+    assert cell_changed["equivalent"] is False
+    assert any(
+        failure["code"] == "table_cell_content_mismatch"
+        for failure in cell_changed["content_object_failures"]
+    )
+    assert topology_changed["equivalent"] is False
+    assert any(
+        failure["code"] == "table_column_attribute_mismatch"
+        for failure in topology_changed["content_object_failures"]
+    )
+
+
+def test_pure_rich_text_page_uses_complete_semantic_tier():
+    source = page_xml("source", "Title", "<strong>Body</strong>")
+
+    tier = copy_verification_tier(
+        ["Outline", "RichText"],
+        page_xml=source,
+    )
+
+    assert tier == "semantic_content_v1"
+    assert page_equivalence(
+        source,
+        source.replace('ID="source"', 'ID="target"'),
+        verification_tier=tier,
+    )["equivalent"] is True
+    assert (
+        copy_verification_tier(
+            ["Outline"],
+            page_xml=page_xml("source", "Title", "Plain body"),
+        )
+        == "strict_canonical"
+    )
+
+
+@pytest.mark.parametrize(
+    ("change", "object_type", "code"),
+    [
+        (lambda xml: xml.replace("<one:T>Title</one:T>", "<one:T>Other</one:T>"), "PageTitle", "page_title_mismatch"),
+        (lambda xml: xml.replace("<strong>Body</strong>", "Body"), "RichText", "rich_text_effective_style_mismatch"),
+        (lambda xml: xml.replace("<one:Bullet/>", "<one:Number/>"), "List", "list_marker_mismatch"),
+        (lambda xml: xml.replace('completed="false"', 'completed="true"'), "Tag", "tag_state_mismatch"),
+        (lambda xml: xml.replace("</one:Page>", "<one:Outline><one:OEChildren><one:OE><one:T>Extra</one:T></one:OE></one:OEChildren></one:Outline></one:Page>"), "Outline", "outline_structure_mismatch"),
+        (lambda xml: xml.replace("YWJj", "ZGVm"), "Image", "image_binary_mismatch"),
+    ],
+)
+def test_semantic_failures_are_typed_and_content_free(change, object_type, code):
+    source = '''<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:TagDef index="0" type="0" symbol="3"/><one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:Outline><one:OEChildren><one:OE><one:List><one:Bullet/></one:List>
+      <one:Tag index="0" completed="false" disabled="false"/><one:T><![CDATA[<strong>Body</strong>]]></one:T>
+    </one:OE></one:OEChildren></one:Outline><one:Image><one:Data>YWJj</one:Data></one:Image></one:Page>'''
+    actual = change(source.replace('ID="source"', 'ID="target"'))
+
+    result = page_equivalence(source, actual, verification_tier="semantic_content_v1")
+
+    assert result["equivalent"] is False
+    assert object_type in result["failed_content_object_types"]
+    matching = [
+        failure
+        for failure in result["content_object_failures"]
+        if failure["content_object_type"] == object_type
+    ]
+    assert any(failure["code"] == code for failure in matching)
+    assert all(failure["content_exposed"] is False for failure in matching)
+
+
+def test_semantic_failures_report_multiple_types_in_stable_content_free_order():
+    source = '''<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:TagDef index="0" type="0" symbol="3"/><one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:Outline><one:OEChildren><one:OE><one:List><one:Bullet/></one:List>
+      <one:Tag index="0" completed="false" disabled="false"/><one:T><![CDATA[<strong>Body</strong>]]></one:T>
+    </one:OE></one:OEChildren></one:Outline><one:Image><one:Data>YWJj</one:Data></one:Image></one:Page>'''
+    actual = (
+        source.replace('ID="source"', 'ID="target"')
+        .replace("<one:T>Title</one:T>", "<one:T>Other</one:T>")
+        .replace("<strong>Body</strong>", "Body")
+        .replace("<one:Bullet/>", "<one:Number/>")
+        .replace('completed="false"', 'completed="true"')
+        .replace("YWJj", "ZGVm")
+    )
+
+    result = page_equivalence(source, actual, verification_tier="semantic_content_v1")
+    failures = result["content_object_failures"]
+
+    assert result["equivalent"] is False
+    assert result["failed_content_object_types"] == [
+        "Image",
+        "List",
+        "PageTitle",
+        "RichText",
+        "Tag",
+    ]
+    assert failures == sorted(
+        failures,
+        key=lambda failure: (
+            failure["path"],
+            failure["content_object_type"],
+            failure["code"],
+        ),
+    )
+    assert len(
+        {
+            (failure["path"], failure["content_object_type"], failure["code"])
+            for failure in failures
+        }
+    ) == len(failures)
+    assert all(failure["content_exposed"] is False for failure in failures)
+
+
+def test_strict_binary_failure_identifies_verified_non_image_object_type():
+    source = '''<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:MediaFile><one:Data>YWJj</one:Data></one:MediaFile></one:Page>'''
+    actual = source.replace('ID="source"', 'ID="target"').replace("YWJj", "ZGVm")
+
+    result = page_equivalence(source, actual)
+
+    assert result["equivalent"] is False
+    assert "MediaFile" in result["failed_content_object_types"]
+    assert any(
+        failure["content_object_type"] == "MediaFile"
+        and failure["code"] == "binary_object_mismatch"
+        for failure in result["content_object_failures"]
+    )
+
+
+def test_strict_typed_failures_are_stably_sorted_across_object_types():
+    source = '''<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>
+    <one:MediaFile><one:Data>YWJj</one:Data></one:MediaFile></one:Page>'''
+    actual = source.replace('ID="source"', 'ID="target"').replace(
+        "<one:T>Title</one:T>",
+        "<one:T>Other</one:T>",
+    ).replace("<one:MediaFile><one:Data>YWJj</one:Data></one:MediaFile>", "")
+
+    result = page_equivalence(source, actual)
+    failures = result["content_object_failures"]
+
+    assert result["failed_content_object_types"] == ["MediaFile", "PageTitle"]
+    assert failures == sorted(
+        failures,
+        key=lambda failure: (
+            failure["path"],
+            failure["content_object_type"],
+            failure["code"],
+        ),
+    )
+    assert all(failure["content_exposed"] is False for failure in failures)
+
+
+def test_semantic_failure_list_is_stably_sorted_deduplicated_and_bounded():
+    outlines = "".join(
+        f"<one:Outline><one:OEChildren><one:OE><one:T>Item {index}</one:T></one:OE></one:OEChildren></one:Outline>"
+        for index in range(30)
+    )
+    source = (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">'
+        + outlines
+        + "</one:Page>"
+    )
+    actual = source.replace('ID="source"', 'ID="target"')
+    for index in range(30):
+        actual = actual.replace(f"Item {index}", f"Changed {index}")
+
+    result = page_equivalence(source, actual, verification_tier="semantic_content_v1")
+    summary = result["content_object_failure_summary"]
+
+    assert result["failed_content_object_types"] == sorted(
+        set(result["failed_content_object_types"])
+    )
+    assert summary == {"limit": 24, "reported": 24, "truncated": True, "total": 30}
+    assert len(result["content_object_failures"]) == 24
 
 
 @pytest.mark.parametrize(
@@ -1538,6 +1871,39 @@ def test_plan_copy_rejects_case_insensitive_direct_name_conflict(monkeypatch):
 
     assert result["ok"] is False
     assert "never overwrites" in result["error"]
+
+
+@pytest.mark.parametrize("planner", ["_inspect_copy_plan", "_inspect_move_page_plan"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_page_copy_and_move_titles_bypass_filesystem_leaf_cleaning(
+    monkeypatch,
+    planner,
+    explicit,
+):
+    state = install_plan_fakes(monkeypatch)
+    title = "Topic / Subtopic\\:  %~界"
+    source = next(item for item in state["items"] if item["id"] == "parent")
+    source["title"] = title
+    source["path"] = f"Notebook/Source/{title}"
+
+    args = ["parent", "destination-section"]
+    if explicit:
+        args.append(title)
+    plan = getattr(server.services.copying, planner)(*args)
+
+    assert plan["destination"]["name"] == title
+
+
+def test_container_copy_destination_names_remain_filesystem_safe(monkeypatch):
+    install_recursive_execute_fakes(monkeypatch)
+
+    plan = server.services.copying._build_plan(
+        "source-section",
+        "destination-notebook",
+        "A/B\\C: D",
+    )
+
+    assert plan["destination"]["name"] == "A B C D"
 
 
 def test_non_notebook_plan_rejects_destination_base_folder(monkeypatch, tmp_path):
@@ -2017,6 +2383,16 @@ def test_copy_rejects_create_readback_that_aliases_a_source_page(monkeypatch):
             {
                 "resource_type": "page",
                 "id": "new-target",
+                "title": "Filesystem cleaned title",
+                "section_id": "destination-section",
+                "parent_id": "destination-section",
+            },
+            "mismatched target resource",
+        ),
+        (
+            {
+                "resource_type": "page",
+                "id": "new-target",
                 "title": "Copied Parent",
                 "section_id": "wrong-section",
                 "parent_id": "wrong-section",
@@ -2146,6 +2522,7 @@ def test_copy_report_exposes_content_free_semantic_stage_diagnostics(monkeypatch
 
     page_result = result["copy_report"]["page_results"][0]
     stages = page_result["semantic_content_stages"]
+    title_stages = page_result["title_readback_stages"]
     assert stages["schema_version"] == 1
     assert stages["title_override_requested"] is False
     assert stages["source_to_transformed"]["passed"] is True
@@ -2154,6 +2531,120 @@ def test_copy_report_exposes_content_free_semantic_stage_diagnostics(monkeypatch
     assert stages["source_to_transformed"]["projection_evidence"][
         "content_exposed"
     ] is False
+    assert title_stages["schema_version"] == 1
+    assert title_stages["title_override_requested"] is False
+    assert title_stages["source_to_transformed"]["checks"]["title"] is True
+    assert title_stages["transformed_to_target"]["checks"]["title"] is True
+    assert title_stages["content_exposed"] is False
+
+
+@pytest.mark.write_contract
+def test_title_readback_stages_apply_to_non_semantic_content_tier(monkeypatch):
+    source_title = "Topic / Subtopic\\:  %~界"
+    install_recursive_execute_fakes(
+        monkeypatch,
+        source_page_title=source_title,
+        include_destination_section=True,
+    )
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.copying.copy_verification_tier",
+        lambda *_args, **_kwargs: "semantic_display_equation",
+    )
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.copying.page_equivalence",
+        lambda *_args, verification_tier, **_kwargs: {
+            "equivalent": True,
+            "verification_tier": verification_tier,
+            "checks": {},
+            "failed_content_object_types": [],
+            "content_object_failures": [],
+            "content_object_failure_summary": {
+                "limit": 24,
+                "reported": 0,
+                "truncated": False,
+                "total": 0,
+            },
+        },
+    )
+    plan = server.services.copying._build_plan(
+        "source-page",
+        "destination-section",
+    )
+
+    result = server.services.copying._execute_copy(plan)
+
+    page_result = result["copy_report"]["page_results"][0]
+    stages = page_result["title_readback_stages"]
+    assert page_result["equivalence"]["verification_tier"] == (
+        "semantic_display_equation"
+    )
+    assert "semantic_content_stages" not in page_result
+    assert stages["title_override_requested"] is False
+    assert stages["source_to_transformed"]["checks"] == {
+        "title": True,
+        "source_matches_metadata": True,
+        "transformed_matches_expected": True,
+        "default_title_preserved": True,
+    }
+    assert stages["source_to_transformed"]["passed"] is True
+    assert stages["transformed_to_target"]["checks"]["title"] is True
+    assert stages["transformed_to_target"]["passed"] is True
+    assert stages["content_exposed"] is False
+    assert page_result["lossless"] is True
+    assert result["copy_report"]["copy_contract_satisfied"] is True
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize(
+    ("destination_title", "override_requested"),
+    [
+        ("", False),
+        ("Renamed / Page\\:  %~文", True),
+    ],
+)
+def test_page_copy_executes_exact_special_title_through_semantic_readback(
+    monkeypatch,
+    destination_title,
+    override_requested,
+):
+    source_title = "Topic / Subtopic\\:  %~界"
+    state = install_recursive_execute_fakes(
+        monkeypatch,
+        source_page_title=source_title,
+        source_page_body="<strong>Body</strong>",
+        include_destination_section=True,
+    )
+    plan = server.services.copying._build_plan(
+        "source-page",
+        "destination-section",
+        destination_title,
+    )
+
+    result = server.services.copying._execute_copy(plan)
+
+    expected_title = destination_title or source_title
+    target = next(item for item in state if item["id"] == result["item"]["id"])
+    stages = result["copy_report"]["page_results"][0][
+        "semantic_content_stages"
+    ]
+    title_stages = result["copy_report"]["page_results"][0][
+        "title_readback_stages"
+    ]
+    assert plan["destination"]["name"] == expected_title
+    assert result["item"]["title"] == expected_title
+    assert target["title"] == expected_title
+    assert stages["title_override_requested"] is override_requested
+    assert stages["source_to_transformed"]["checks"]["title"] is (
+        not override_requested
+    )
+    assert stages["transformed_to_target"]["checks"]["title"] is True
+    assert stages["transformed_to_target"]["passed"] is True
+    assert title_stages["title_override_requested"] is override_requested
+    assert title_stages["source_to_transformed"]["checks"]["title"] is True
+    assert title_stages["transformed_to_target"]["checks"]["title"] is True
+    assert title_stages["source_to_transformed"]["passed"] is True
+    assert title_stages["transformed_to_target"]["passed"] is True
+    assert result["copy_report"]["copy_contract_satisfied"] is True
 
 
 @pytest.mark.write_contract
@@ -2561,6 +3052,54 @@ def test_move_page_binds_requested_scope_in_internal_plan(
 
     assert raised.value.details["outcome"] == "copy_only"
     assert observed["include_descendants"] is include_descendants
+
+
+@pytest.mark.write_contract
+def test_default_page_move_preserves_exact_special_title_through_shared_copy(
+    monkeypatch,
+):
+    source_title = "Topic / Subtopic\\:  %~界"
+    state = install_recursive_execute_fakes(
+        monkeypatch,
+        source_page_title=source_title,
+        source_page_body="<strong>Body</strong>",
+        include_destination_section=True,
+    )
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
+    monkeypatch.setattr(
+        server.services.copying,
+        "_confirm_source",
+        lambda *args, **kwargs: None,
+    )
+
+    def delete_page(page_id, *args, **kwargs):
+        state[:] = [item for item in state if item["id"] != page_id]
+        return {
+            "deleted": True,
+            "final_state": {"id": page_id, "is_in_recycle_bin": True},
+        }
+
+    monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
+
+    result = server.services.copying.move_page(
+        "source-page",
+        "destination-section",
+        source_title,
+        "source-section",
+    )
+
+    stages = result["copy_report"]["page_results"][0][
+        "semantic_content_stages"
+    ]
+    assert result["outcome"] == "moved"
+    assert result["item"]["title"] == source_title
+    assert stages["title_override_requested"] is False
+    assert stages["source_to_transformed"]["checks"]["title"] is True
+    assert stages["transformed_to_target"]["checks"]["title"] is True
+    assert result["copy_report"]["copy_contract_satisfied"] is True
+    assert result["deleted_source_ids"] == ["source-page"]
 
 
 @pytest.mark.write_contract

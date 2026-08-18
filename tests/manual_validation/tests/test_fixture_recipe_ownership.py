@@ -207,7 +207,7 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
         calls.append("create_section")
         return item("section", parent_id, name)
 
-    async def ensure_page(_client, section_id, title, _content):
+    async def ensure_page(_client, section_id, title, _content, **_kwargs):
         calls.append("create_page")
         return item("page", section_id, title)
 

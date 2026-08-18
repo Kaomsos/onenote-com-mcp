@@ -254,7 +254,7 @@ def test_batch_rename_supports_explicit_typed_mappings_for_each_type(
             for i in range(2)
         ]
         supplied = [
-            page_confirmation(value, new_title=f"New {i}")
+            page_confirmation(value, new_title=f"New /\\:  %~界 {i}")
             for i, value in enumerate(targets)
         ]
     else:
@@ -299,7 +299,10 @@ def test_batch_rename_supports_explicit_typed_mappings_for_each_type(
 
     assert result["applied_count"] == 2
     if resource_type == "page":
-        assert calls == [("p0", "New 0"), ("p1", "New 1")]
+        assert calls == [
+            ("p0", "New /\\:  %~界 0"),
+            ("p1", "New /\\:  %~界 1"),
+        ]
     else:
         assert calls == [
             ("x0", resource_type, "New 0"),
@@ -1610,11 +1613,17 @@ def test_batch_create_page_preserves_duplicate_title_semantics(monkeypatch):
         "s",
         "Section",
         section["modified"],
-        [{"title": "Same"}, {"title": "Same"}],
+        [
+            {"title": "Same /\\:  %~界"},
+            {"title": "Same /\\:  %~界"},
+        ],
     )
 
     assert result["applied_count"] == 2
-    assert calls == [("s", "Same"), ("s", "Same")]
+    assert calls == [
+        ("s", "Same /\\:  %~界"),
+        ("s", "Same /\\:  %~界"),
+    ]
     assert [entry["result"]["allocated_id"] for entry in result["items"]] == [
         "p1", "p2"
     ]
