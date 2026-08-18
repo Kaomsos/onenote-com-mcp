@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Pure-local Microsoft OneNote MCP server backed by the Windows OneNote COM API."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
+license = "GPL-3.0-or-later"
 dependencies = [
     "mcp>=1.26.0,<2.0.0",
     "pydantic>=2.0,<3.0",
@@ -14,7 +14,7 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Win32 (MS Windows)",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",

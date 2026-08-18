@@ -1,7 +1,7 @@
 # 023：公开仓库发布准备与来源合规
 
 > ID：023
-> 状态：待办
+> 状态：进行中
 > 优先级：P0
 > 类型：公开发布 / 品牌与文档 / 社区治理 / 来源与许可证合规
 > 更新日期：2026-08-19
@@ -22,6 +22,13 @@
 4. **目标许可证为 GPL 强传染许可。** 本项目以 GPL（建议 `GPL-3.0-or-later`；`only`/`or-later` 的最终选择在实施前由用户确认）公开发布，同时按原版仓库许可要求完整保留其许可文本、版权声明与来源署名。原 TODO 中“目标许可证待定/当前 MIT”的表述全部按本决策解释。
 
 尚待用户补充的事实输入：当前 Git 历史首个提交为 `Initial public release`，仓库内未记录上游 fork 来源。实施 D/E/F 前必须由用户确认精确的上游仓库地址、fork 时上游 commit 及当时许可证文本。
+
+## 实施进度（2026-08-19）
+
+- 已交付 `docs-public/` 双语公开文档树第一版：双语入口 README，`en/`、`zh-CN/` 各含 user-guide 5 篇（getting-started、configuration、tools、safety-model、faq）与 dev-guide 5 篇（project-structure、engineering-rules、testing、manual-validation、contributing）；手动验证框架专章已包含。
+- 根 `README.md` 已替换为对外英文入口，新增 `README.zh-CN.md` 中文镜像，页首互链。
+- 许可证已切换：根 `LICENSE` 替换为 GPL-3.0 官方全文（按 `GPL-3.0-or-later` 表达），`pyproject.toml` 的 `license` 字段与 classifier、`package.json` 的 `license` 字段已同步。`only`/`or-later` 最终确认与上游 MIT notice 的 `NOTICE` 文件仍待上游 fork 事实补充后完成。
+- 仍未完成：品牌与 Demo（A）、NOTICE/Credit 审计（D）、Git 历史整理（E）、原作者通知（F）、Issue/PR 模板与 `SECURITY.md` 等社区文件（C 部分）、发布安全检查（G）。
 
 ## 工作范围
 

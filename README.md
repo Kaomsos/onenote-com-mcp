@@ -1,25 +1,27 @@
 # Local OneNote MCP
 
-A local-first MCP server for Microsoft OneNote Desktop on Windows. It uses the local OneNote COM API through a fixed PowerShell bridge—no Microsoft Graph, Azure, API keys, online OAuth, telemetry, remote content processing, or direct `.one` file editing.
+**English** | [简体中文](README.zh-CN.md)
 
-## Design and safety
+A local-first [MCP](https://modelcontextprotocol.io/) server for **Microsoft OneNote Desktop on Windows**. It talks to OneNote exclusively through the native COM API via a fixed PowerShell bridge — no Microsoft Graph, no Azure, no API keys, no online OAuth, no telemetry, no remote content processing, and no direct editing of `.one` files.
 
-- Typed Notebook, SectionGroup, Section, Page, and PageContentObject contracts; mutations use exact IDs and optimistic confirmation fields.
-- A canonical 53-operation Registry owns exposure, category, authorization, independent platform-preflight policy, execution strategy, handler, audit, and retry semantics.
-- Reads share a process-local lease; mutation and lifecycle effects use exclusive coordination through preflight, execution, reconciliation, and stable read-back.
-- Create, Writes, Deletes, Organize, Local File IO, UI Control, and Notebook Lifecycle are seven independent, default-off authorization categories.
-- Raw XML, generic hierarchy mutation, public planning tokens, and an advanced MCP profile are not exposed.
-- OneNote Desktop readiness means both `ONENOTE.EXE` and a visible top-level window. Every authorized effect checks this prerequisite after authorization and before coordination or backend work; pure reads do not. `health_check` is always check-only and `launch_onenote_gui` is the explicit recovery effect.
+Your notes never leave your machine.
 
-Current architecture and contracts: [documentation map](docs/README.md), [tool contracts](docs/design/tool_contracts.md), [object model](docs/design/object_model.md), [Operation Runtime](docs/design/operation_runtime.md), and [tool-surface convergence record](docs/todo/034_pre_user_testing_tool_surface_convergence.md).
+## Highlights
+
+- **53 typed tools** covering hierarchy browsing, metadata queries, full-text search, page content reading, creation, rename, reorder, reparent, page content mutation, recoverable delete, copy, reconstructive move, PDF export, UI navigation, and notebook lifecycle.
+- **Fail-closed by default.** All seven mutation authorization gates ship disabled; a read-only configuration cannot create, modify, or delete anything.
+- **Exact-ID mutations.** Write operations target exact OneNote object IDs with optimistic confirmation fields — never fuzzy name matching.
+- **Non-permanent deletes only.** Public delete tools move objects to the OneNote recycle bin; permanent-delete tools are not published.
+- **Bounded work.** Search, copy, and batch mutations run against explicit budgets; exhaustion is an explicit failure, not silent unbounded work.
+- **Content-free audit.** Logs record operation names and timing, never notebook content, payloads, or raw tool arguments.
 
 ## Requirements
 
 - Windows 10 or 11
-- Microsoft OneNote Desktop, not the legacy Windows 10 UWP app
+- Microsoft OneNote Desktop (not the legacy Windows 10 UWP app)
 - Python 3.11+
-- Node.js/npm for the standard global launcher
-- OneMore Desktop Add-in only when rich Markdown compilation is wanted
+- Node.js 18+ (only for the npm global launcher)
+- Optional: OneMore Desktop Add-in, for rich Markdown compilation
 
 ## Installation
 
@@ -38,11 +40,9 @@ uv sync --all-groups
 uv run pytest
 ```
 
-The repository includes project-scoped MCP configuration for Claude Code (`.mcp.json`), Codex (`.codex/config.toml`), Cursor (`.cursor/mcp.json`), and Grok Build (`.grok/config.toml`). Each uses `uv run --locked local-onenote-mcp`. The reusable Claude Code, Codex, and Cursor profiles keep all seven effect gates off; the developer-owned Grok user-testing profile explicitly enables only Writes and UI Control for disposable testing. Codex remains disabled until the user trusts and enables it; Claude Code and Cursor apply their own project-server approval flow.
+## Quick start
 
-## Client configuration
-
-Claude Desktop or Cursor (`mcpServers` JSON):
+Add the server to your MCP client. Claude Desktop or Cursor (`mcpServers` JSON):
 
 ```json
 {
@@ -51,159 +51,48 @@ Claude Desktop or Cursor (`mcpServers` JSON):
       "command": "local-onenote-mcp",
       "env": {
         "LOCAL_ONENOTE_MCP_TIMEOUT": "90",
-        "LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS": "60000",
-        "LOCAL_ONENOTE_ENABLE_CREATE": "false",
-        "LOCAL_ONENOTE_ENABLE_WRITES": "false",
-        "LOCAL_ONENOTE_ENABLE_DELETES": "false",
-        "LOCAL_ONENOTE_ENABLE_ORGANIZE": "false",
-        "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO": "false",
-        "LOCAL_ONENOTE_ENABLE_UI_CONTROL": "false",
-        "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE": "false"
+        "LOCAL_ONENOTE_ENABLE_WRITES": "false"
       }
     }
   }
 }
 ```
 
-Codex or Grok Build TOML:
+All seven authorization gates (`Create`, `Writes`, `Deletes`, `Organize`, `Local File IO`, `UI Control`, `Notebook Lifecycle`) default to `false`; enable only what you need and restart the MCP client after changing configuration. Start each session with `health_check`, which never launches OneNote.
 
-```toml
-[mcp_servers.local-onenote]
-command = "local-onenote-mcp"
-startup_timeout_sec = 120
-tool_timeout_sec = 120
+Full setup, TOML client examples, every environment variable, and the complete tool catalog live in the user guide:
 
-[mcp_servers.local-onenote.env]
-LOCAL_ONENOTE_MCP_TIMEOUT = "90"
-LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS = "60000"
-LOCAL_ONENOTE_ENABLE_CREATE = "false"
-LOCAL_ONENOTE_ENABLE_WRITES = "false"
-LOCAL_ONENOTE_ENABLE_DELETES = "false"
-LOCAL_ONENOTE_ENABLE_ORGANIZE = "false"
-LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO = "false"
-LOCAL_ONENOTE_ENABLE_UI_CONTROL = "false"
-LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
-```
+- [Getting started](docs-public/en/user-guide/getting-started.md)
+- [Configuration and authorization gates](docs-public/en/user-guide/configuration.md)
+- [Tool overview](docs-public/en/user-guide/tools.md)
+- [Safety model and limits](docs-public/en/user-guide/safety-model.md)
+- [FAQ and troubleshooting](docs-public/en/user-guide/faq.md)
 
-Restart the MCP client after changing configuration.
+## What this project deliberately does not do
 
-## Current user tool surface: 53 tools
+- No Microsoft Graph, Azure, or online OAuth — the server works entirely against the local OneNote Desktop process.
+- No uploading, syncing, or remote processing of notebook content.
+- No direct reading or writing of binary `.one` files.
+- No "absolutely safe" or "works on every OneNote version" claims: verified behavior is documented with its evidence scope, and unsupported objects fail closed.
 
-The only production profile is organized by user task:
+## Documentation
 
-| Category | Tools |
+| Audience | Entry point |
 | --- | --- |
-| Session | `health_check`, `launch_onenote_gui` |
-| Hierarchy Browse | `list_notebooks`, `get_hierarchy_path`, `expand_notebook`, `expand_section_group`, `expand_section`, `expand_page`, `expand_hierarchy` |
-| Metadata Get | `get_notebook_metadata`, `get_section_group_metadata`, `get_section_metadata`, `get_page_metadata` |
-| Query & Search | `query_notebook`, `query_section_group`, `query_section`, `query_page`, `search_pages` |
-| Page Content Read | `get_page_text`, `get_page_content_objects`, `get_page_content_object_binary` |
-| Hyperlink | `get_hyperlink` |
-| Create | `create_notebook`, `create_section_group`, `create_section`, `create_page` |
-| Rename | `rename_page`, `rename_section_group`, `rename_section` |
-| Reorder | `reorder_page`, `reorder_section`, `sort_children` |
-| Organize | `reparent_page`, `reparent_section`, `reparent_section_group` |
-| Page Content Mutation | `append_page_content`, `add_page_image_from_file`, `replace_page_body`, `delete_page_content_object` |
-| Recoverable Delete | `delete_page`, `delete_section`, `delete_section_group` |
-| Copy | `copy_page`, `copy_section`, `copy_section_group`, `copy_notebook` |
-| Reconstructive Move | `move_page`, `move_section`, `move_section_group` |
-| Export | `export_object_to_pdf` |
-| UI Navigation | `navigate_to` |
-| Notebook Lifecycle | `request_notebook_sync`, `close_notebook` |
+| Users | [User guide](docs-public/en/user-guide/getting-started.md) ([中文](docs-public/zh-CN/user-guide/getting-started.md)) |
+| Contributors | [Developer guide](docs-public/en/dev-guide/project-structure.md) ([中文](docs-public/zh-CN/dev-guide/project-structure.md)) |
+| Contract-level detail | [Internal design docs](docs/README.md) — authoritative architecture and tool contracts |
 
-`resolve_identifier`, `get_page_xml`, `navigate_to_url`, `get_special_locations`, and `get_parent` are non-registered internal/incubating capabilities. There are no compatibility aliases for renamed tools and no environment switch can expose them.
+## Contributing
 
-Every public call returns one of these exact envelope shapes:
+See the [contributing guide](docs-public/en/dev-guide/contributing.md). One rule stands above all others: automated agents, pytest, CI, hooks, timers, and background tasks must never run real OneNote mutation scenarios — real-backend validation is always started explicitly by a human. The [manual validation framework](docs-public/en/dev-guide/manual-validation.md) explains how that works.
 
-```json
-{"ok":true,"result":{},"warnings":[],"execution":{}}
-```
+Until a dedicated security policy is published, please report suspected vulnerabilities through GitHub issues without including notebook content or personal data.
 
-```json
-{"ok":false,"error":{"code":"...","message":"...","details":{}},"execution":{}}
-```
+## License
 
-The full parameter, scope, response, effect, budget, and authorization contract is in [tool contracts](docs/design/tool_contracts.md).
+This project is licensed under the GNU General Public License v3.0 or later (GPL-3.0-or-later). See [LICENSE](LICENSE).
 
-## Authorization
+## Credits
 
-All seven gates default to false:
-
-| Gate | Environment variable | Important combinations |
-| --- | --- | --- |
-| Create | `LOCAL_ONENOTE_ENABLE_CREATE` | Notebook/SectionGroup/Section creation; Page creation also needs Writes |
-| Writes | `LOCAL_ONENOTE_ENABLE_WRITES` | Rename, Reorder/Sort, Append; Copy also needs Create |
-| Deletes | `LOCAL_ONENOTE_ENABLE_DELETES` | Recoverable Delete; Replace also needs Writes |
-| Organize | `LOCAL_ONENOTE_ENABLE_ORGANIZE` | Reparent also needs Writes |
-| Local File IO | `LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO` | Export; file image addition also needs Writes |
-| UI Control | `LOCAL_ONENOTE_ENABLE_UI_CONTROL` | `launch_onenote_gui`, `navigate_to` |
-| Notebook Lifecycle | `LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE` | sync request and close |
-
-The normal delete tools are always non-permanent and have no `permanently` parameter. Permanent-delete tools are not published.
-
-Batch Mutation has an independent content-free budget and never borrows Copy limits. `health_check.batch_mutation_budget` projects these defaults: catalog resources `100000`, effective resources `1000`, effective Pages `200`, direct siblings `1000`, and Page request content `500000` characters. Override them with `LOCAL_ONENOTE_MAX_BATCH_CATALOG_RESOURCES`, `LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_RESOURCES`, `LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES`, `LOCAL_ONENOTE_MAX_BATCH_DIRECT_SIBLINGS`, and `LOCAL_ONENOTE_MAX_BATCH_PAGE_CONTENT_CHARS`. Unrelated objects found in the catalog do not consume the effective target budget.
-
-## Important behavior
-
-- Call `health_check` at the start of an MCP session. It never launches OneNote. Before every authorized effect, the Runtime independently requires an existing visible OneNote GUI; authorization rejection happens first, and a readiness rejection produces zero backend calls. Pure reads remain usable without this effect prerequisite.
-- If health reports not ready, call `launch_onenote_gui()` with UI Control enabled, call `health_check` again, then retry the original authorized effect. If UI Control is disabled, set `LOCAL_ONENOTE_ENABLE_UI_CONTROL=true` and restart the MCP server, or start OneNote Desktop manually. Launch is a separate no-parameter UI effect with at most one trusted process-launch request and bounded readiness observation; its real acceptance check uses the standalone, human-gated [`launch_onenote_gui_check.py`](tests/manual_validation/launch_onenote_gui_check.py), outside the Scenario registry and `all`.
-- Query reads hierarchy metadata; `search_pages` uses OneNote's live index for Page body discovery. Both return candidates; mutations still require an exact ID.
-- `get_hierarchy_path` keeps legacy `path` as display-only compatibility data and adds `path_segments`, whose typed `{resource_type, id, name}` entries preserve every original hierarchy name/title without parsing `/`.
-- Typed Expand parameters name their object type (`notebook_id`, `section_group_id`, `section_id`, `page_id`).
-- `get_page_text` defaults to bounded `sanitized_html_v1`, which preserves reviewed formatting, links, lists, tags, tables, and canonical Presentation MathML without exposing raw Page XML or binary payloads. Set `mode="plain"` when the legacy `{text, chars}` projection is preferred.
-- Page scope is the boolean `include_subpages` (default `false`): false selects only the target Page and protects/promotes excluded descendants where needed; true selects the complete indentation subtree. The old `page_scope` field is rejected. Optional values use `null`, not empty-string sentinels.
-- Existing `create_*`, `rename_*`, `reparent_*`, and recoverable `delete_*` tools support either their original single-item fields or a bounded `items` batch (1–20); there are no separate `batch_*` tools. A batch is preflighted as a whole against its target-scoped Batch Mutation budget, executes in input order, stops on the first failed or uncertain item, and never performs a broad rollback or mutation replay. Partial responses preserve `applied/failed/not_attempted` item states and require live-state inspection before recovery. Every successful batch performs one final live, content-free hierarchy read-back for the complete batch and returns `final_hierarchy`.
-- `sort_children` stably sorts only a confirmed parent's complete direct-child sequence by `name`, `created`, or `modified`, ascending or descending. Child type is inferred: Notebook/SectionGroup sorts Sections; Section/Page sorts Pages. Leveled Pages move as complete indentation blocks; SectionGroups are never sorted and recursive mode is unsupported.
-- Copy/Move are single calls. Copy requires Create + Writes; Move additionally requires Deletes. Planning stays inside the operation; clients never carry `plan_digest` or replay state.
-- Page Copy/Move preserves the exact logical Page title—including `/`, `\\`, `:`, repeated spaces, `%`, `~`, and Unicode—unless `destination_title` is explicitly supplied; Page titles never use filesystem leaf-name cleaning. Complete RichText/List/Tag/Table/Image projections use `semantic_content_v1`. Only transformed-to-target Table `Column.width` permits a finite positive Decimal relative delta up to and including 5%; source-to-transform widths and every other semantic field remain exact. The separate `semantic_display_equation` tier admits only its documented COM normalizations, including Title OE style values when exact title text, Title structure, and the complete canonical OE attribute-name set all match after the comparator's existing generated/volatile exclusions; any effective attribute addition/removal and body style changes remain failures. Every Page result includes content-free `title_readback_stages` for source→transformed and transformed→target regardless of verification tier, and both stages participate in the lossless gate. Semantic-content Pages additionally retain their full projection stages. Responses also include bounded typed failures (`PageTitle`, `RichText`, `List`, `Tag`, `Table`, `Outline`, `Image`, binary types, or `Unknown`).
-- Move is reconstructive: verified Copy followed by a non-permanent source delete. It creates new IDs and can return partial or indeterminate results that must not be blindly retried.
-- `export_object_to_pdf` only writes a new PDF and never overwrites an existing path.
-- `request_notebook_sync` proves request acceptance, not synchronization completion.
-- SectionGroup reorder is unsupported because the observed backend exposes a fixed name order rather than a stable mutable sibling order.
-
-## OneMore and Markdown
-
-OneMore is optional. When its Markdig assembly is installed, Markdown page creation and append can compile common Markdown into OneNote HTML. A custom assembly location can be configured with:
-
-```toml
-[mcp_servers.local-onenote.env]
-LOCAL_ONENOTE_MARKDIG_DLL = "C:\\path\\to\\Markdig.Signed.dll"
-```
-
-Without OneMore, plain text and validated HTML paths remain available.
-
-## Verification
-
-Pure automated tests:
-
-```powershell
-.venv\Scripts\python.exe -m pytest -q
-```
-
-Read-only transport smoke test; optionally pass one exact open Notebook COM ID:
-
-```powershell
-uv run python scripts\smoke_mcp.py --tools-only
-uv run python scripts\smoke_mcp.py
-uv run python scripts\smoke_mcp.py --notebook "{EXACT-NOTEBOOK-ID}"
-```
-
-`--tools-only` validates the exact 53-item MCP `tools/list` order, descriptions and schemas without probing or connecting to OneNote. Add `--include-tool-snapshot` when the complete transport projection is needed in the JSON output. The other forms require an already-running visible OneNote Desktop GUI and remain read-only.
-
-Manual-validation plans are safe to inspect with `--dry-run`. Only the user may remove `--dry-run` and run a real OneNote scenario:
-
-```powershell
-.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run --verbosity normal
-.venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run --verbosity normal
-```
-
-Real validation uses new disposable data, exact IDs, minimal static permissions, before/after evidence, and preserved failure artifacts. See [isolated mutation validation](docs/dev/isolated_mutation_validation.md).
-
-## Limits
-
-- Windows desktop and single-user local sessions only; no cloud or cross-process transaction boundary.
-- Reparent stays within one Notebook. Cross-Notebook Section/SectionGroup transfer uses reconstructive Move.
-- Page-body replacement and recursive Copy/Move are multi-step and non-atomic.
-- External inbound links cannot retain identity across reconstructive Copy/Move.
-- Rich-object Copy fidelity is allowlisted and evidence-bound. Unsupported or unverified objects fail closed; see [copy content exclusions](docs/lesson/copy_content_type_exclusions.md).
-- OneNote may normalize standalone display-equation whitespace during COM writes; see the [observed limitation](docs/lesson/display_equation_com_leading_whitespace_normalization.md).
+This project originated as a fork of an earlier MIT-licensed OneNote COM project. Upstream attribution details (repository, fork commit, and preserved license notices) are being finalized before the first public release and will be recorded in a NOTICE file.
