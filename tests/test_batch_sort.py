@@ -813,7 +813,13 @@ def test_batch_create_each_public_type_ignores_large_unrelated_notebook(
         for index in range(225)
     ]
     state = {"items": [notebook, parent_section, unrelated_section, *unrelated]}
-    install_snapshot(monkeypatch, state)
+    snapshots = []
+
+    def resources(include_recycle_bin=False):
+        snapshots.append(include_recycle_bin)
+        return copy.deepcopy(state["items"])
+
+    monkeypatch.setattr(server.services.hierarchy, "resources", resources)
     monkeypatch.setattr(
         "local_onenote_mcp.services.mutations.CopyBudget.current",
         lambda: (_ for _ in ()).throw(
@@ -863,6 +869,7 @@ def test_batch_create_each_public_type_ignores_large_unrelated_notebook(
     assert result["applied_count"] == 1
     assert result["final_hierarchy"]["item_count"] == 1
     assert result["final_hierarchy"]["items"][0]["current_id"] == "created"
+    assert snapshots == [True, True]
 
 
 @pytest.mark.parametrize("family", ["rename", "reparent", "delete"])
@@ -908,7 +915,13 @@ def test_each_batch_target_type_ignores_large_unrelated_notebook(
             unrelated_section, target, *unrelated,
         ]
     }
-    install_snapshot(monkeypatch, state)
+    snapshots = []
+
+    def resources(include_recycle_bin=False):
+        snapshots.append(include_recycle_bin)
+        return copy.deepcopy(state["items"])
+
+    monkeypatch.setattr(server.services.hierarchy, "resources", resources)
     monkeypatch.setattr(
         "local_onenote_mcp.services.mutations.CopyBudget.current",
         lambda: (_ for _ in ()).throw(
@@ -983,6 +996,7 @@ def test_each_batch_target_type_ignores_large_unrelated_notebook(
 
     assert result["applied_count"] == 1
     assert result["final_hierarchy"]["item_count"] == 1
+    assert snapshots == [True, True]
 
 
 @pytest.mark.parametrize("include_subpages", [False, True])
