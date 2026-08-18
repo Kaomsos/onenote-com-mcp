@@ -991,15 +991,20 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                             or (options.run_dir.parent / "fixture-cache")
                         )
                         cache_store.initialize()
-                    closed = wrapper.close_exact_notebook()
-                    if closed.get("closed") is not True:
-                        raise RestoreFailure(
-                            "Interactive source did not close; template publication is blocked."
-                        )
+                    _close_bundle(wrappers, roles, sync_to_disk=True)
                     recipe = scenario.fixture_recipe
                     instance_id = str(scenario_result["template_instance_id"])
                     final_manifest = read_json(options.run_dir / "manifest.json")
-                    final_snapshot = read_json(options.run_dir / "fixture-snapshot.json")
+                    artifacts = bundle_cache_artifacts(
+                        options.run_dir,
+                        roles,
+                        final_manifest,
+                        fixture_result,
+                    )
+                    source_paths = {
+                        role: Path(str(leases[role]["expected_local_path"]))
+                        for role in roles
+                    }
                     with cache_store.lock(recipe.cache_fingerprint, run_id=options.run_dir.name):
                         existing, _resolution, _resolved_invalidation = (
                             _resolve_exact_cache_entry(
@@ -1021,17 +1026,11 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                         cache_hit = cache_store.publish(
                             recipe,
                             instance_id,
-                            source_paths={"source": Path(str(lease["expected_local_path"]))},
-                            source_notebooks={"source": notebook},
-                            closed_roles={"source"},
+                            source_paths=source_paths,
+                            source_notebooks=notebooks,
+                            closed_roles=set(roles),
                             validation=final_manifest["fixture_validation"],
-                            artifacts={
-                                "source": {
-                                    "manifest": final_manifest,
-                                    "fixture_result": fixture_result,
-                                    "snapshot": final_snapshot,
-                                }
-                            },
+                            artifacts=artifacts,
                             projection_digest=str(
                                 scenario_result.get("template_instance", {}).get(
                                     "projection_digest", ""
@@ -1522,6 +1521,7 @@ def record_failure(
                 "before.json",
                 "plan.json",
                 "copy-result.json",
+                "move-result.json",
                 "after.json",
                 "section-after.json",
                 "section_group-after.json",
@@ -1531,11 +1531,28 @@ def record_failure(
             )
             if (out / name).exists()
         ]
-        mutation_result = (
-            read_json(out / "copy-result.json")
-            if "copy-result.json" in completed_artifacts
-            else {}
+        mutation_envelope = (
+            read_json(out / "move-result.json")
+            if "move-result.json" in completed_artifacts
+            else (
+                read_json(out / "copy-result.json")
+                if "copy-result.json" in completed_artifacts
+                else {}
+            )
         )
+        mutation_result = mutation_envelope
+        if mutation_envelope.get("ok") is False:
+            error_payload = mutation_envelope.get("error")
+            error_details = (
+                error_payload.get("details")
+                if isinstance(error_payload, Mapping)
+                else None
+            )
+            if isinstance(error_details, Mapping):
+                mutation_result = {
+                    "code": error_payload.get("code"),
+                    **dict(error_details),
+                }
         created_ids = mutation_result.get("created_ids", [])
         needs_manual_cleanup = bool(created_ids) or mutation_result.get("outcome") in {
             "copy_only",
@@ -1558,6 +1575,7 @@ def record_failure(
             "copy-section-group": "group_a",
             "copy-notebook": None,
             "move-page": "disposable_page",
+            "interactive-move-page-content": "source_canvas_page",
         }
         target_ids: list[str] = []
         if args.scenario == "rename":
@@ -1584,7 +1602,7 @@ def record_failure(
         last_step = "preflight"
         if "before.json" in completed_artifacts:
             last_step = "capture_before"
-        if "copy-result.json" in completed_artifacts:
+        if "copy-result.json" in completed_artifacts or "move-result.json" in completed_artifacts:
             last_step = "execute_mutation"
         if any(
             name in completed_artifacts

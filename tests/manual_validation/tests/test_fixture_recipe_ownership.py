@@ -176,6 +176,12 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
             for base in type(recipe).__mro__
             if hasattr(base, "build") and inspect.getmodule(base.build) is not None
         ),
+        *(
+            importlib.import_module(inspect.getmodule(base.build_scaffold).__name__)
+            for base in type(recipe).__mro__
+            if hasattr(base, "build_scaffold")
+            and inspect.getmodule(base.build_scaffold) is not None
+        ),
     }
     calls: list[str] = []
     page_position_requests: list[tuple[str, int]] = []

@@ -61,6 +61,7 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "copy-display-equation",
         "bootstrap-inline-equation-fixture",
         "bootstrap-user-authored-fixture",
+        "bootstrap-move-page-content-fixture",
         "cache-invalidation",
         "user-authored-fixture-consumer",
         "interactive-copy-inserted-file",
@@ -68,6 +69,7 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "interactive-copy-media-file",
         "interactive-copy-ui-shape",
         "interactive-copy-inline-equation",
+        "interactive-move-page-content",
         "onenote-convergence",
         "hierarchy-navigation",
     }

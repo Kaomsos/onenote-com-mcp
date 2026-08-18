@@ -35,6 +35,8 @@ PINNED_RECIPE_VERSIONS = {
     "bootstrap-media-file-fixture": 8,
     "bootstrap-shape-fixture": 5,
     "bootstrap-user-authored-fixture": 3,
+    "bootstrap-move-page-content-fixture": 1,
+    "interactive-move-page-content": 1,
     "copy-notebook": 3,
     "copy-page": 13,
     "copy-section": 4,

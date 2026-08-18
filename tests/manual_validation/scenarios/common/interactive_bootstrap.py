@@ -58,6 +58,19 @@ class InteractiveBootstrapScenario(Scenario):
         run_id = options.run_dir.name
         confirmation = f"CONFIRM {run_id} {recipe.capability}"
         verdict = f"ACCEPT {run_id} {recipe.capability}"
+        synthetic_content_only = bool(
+            getattr(recipe, "synthetic_content_only", True)
+        )
+        source_structure = (
+            manifest.get("role_structures", {}).get("source")
+            if isinstance(manifest.get("role_structures"), dict)
+            else None
+        )
+        if not isinstance(source_structure, dict):
+            source_structure = manifest["structure"]
+        canvas = source_structure.get("canvas_page") or source_structure.get(
+            "source_canvas_page"
+        )
         checkpoint = {
             "schema_version": 1,
             "scenario": self.name,
@@ -65,11 +78,11 @@ class InteractiveBootstrapScenario(Scenario):
             "capability": recipe.capability,
             "run_id": run_id,
             "role": "source",
-            "canvas_page_id": manifest["structure"].get("canvas_page", {}).get("id"),
+            "canvas_page_id": canvas.get("id") if isinstance(canvas, dict) else None,
             "authoring_zones": [
                 asdict(zone) for zone in getattr(recipe, "authoring_zones", ())
             ],
-            "synthetic_content_only": True,
+            "synthetic_content_only": synthetic_content_only,
             "authoring_instruction": recipe.authoring_instruction,
             "confirmation_phrase": confirmation,
             "timeout_seconds": args.interactive_timeout,
@@ -79,28 +92,67 @@ class InteractiveBootstrapScenario(Scenario):
         response = (await _bounded_input(f"Type {confirmation!r} after editing the exact Canvas: ", args.interactive_timeout)).strip()
         if response != confirmation:
             raise InvariantFailure("Interactive checkpoint confirmation phrase did not match this run.")
-        snapshot = await capture_snapshot(client, str(manifest["notebook"]["id"]))
-        write_json(options.run_dir / "interactive-authored-snapshot.json", snapshot)
-        build = FixtureBuildResult(
-            manifest["structure"],
-            {
-                key: manifest[key]
-                for key in ("copy_fixture", "reparent_page_fixture")
-                if isinstance(manifest.get(key), dict)
-            },
+        declared_roles = tuple(
+            role.role for role in recipe.cache_identity.notebook_roles
         )
-        observation = FixtureBundleObservation(
-            roles={
-                "source": FixtureRoleObservation(
-                    role="source",
-                    args=args,
-                    notebook=manifest["notebook"],
-                    notebook_path=manifest["disposable_targets"]["source_notebook_path"],
-                    snapshot=snapshot,
-                    build=build,
-                )
+        notebooks = manifest.get("notebooks")
+        if not isinstance(notebooks, dict):
+            notebooks = {"source": manifest["notebook"]}
+        role_structures = manifest.get("role_structures")
+        if not isinstance(role_structures, dict):
+            role_structures = {"source": manifest["structure"]}
+        notebook_paths = manifest.get("notebook_paths")
+        if not isinstance(notebook_paths, dict):
+            notebook_paths = {
+                "source": manifest["disposable_targets"]["source_notebook_path"]
             }
-        )
+        if not (
+            set(notebooks) == set(declared_roles)
+            and set(role_structures) == set(declared_roles)
+            and set(notebook_paths) == set(declared_roles)
+        ):
+            raise InvariantFailure(
+                "Interactive bootstrap manifest does not cover every Recipe role."
+            )
+        observations: dict[str, FixtureRoleObservation] = {}
+        snapshots: dict[str, dict[str, Any]] = {}
+        for role in declared_roles:
+            snapshot = await capture_snapshot(
+                client,
+                str(notebooks[role]["id"]),
+            )
+            snapshots[role] = snapshot
+            write_json(
+                options.run_dir / f"interactive-authored-snapshot-{role}.json",
+                snapshot,
+            )
+            write_json(
+                options.run_dir / f"fixture-snapshot-{role}.json",
+                snapshot,
+            )
+            build = FixtureBuildResult(
+                role_structures[role],
+                (
+                    {
+                        key: manifest[key]
+                        for key in ("copy_fixture", "reparent_page_fixture")
+                        if isinstance(manifest.get(key), dict)
+                    }
+                    if role == "source"
+                    else {}
+                ),
+            )
+            observations[role] = FixtureRoleObservation(
+                role=role,
+                args=args,
+                notebook=notebooks[role],
+                notebook_path=notebook_paths[role],
+                snapshot=snapshot,
+                build=build,
+            )
+        snapshot = snapshots["source"]
+        write_json(options.run_dir / "interactive-authored-snapshot.json", snapshot)
+        observation = FixtureBundleObservation(roles=observations)
         detection = recipe.authored_content_report(observation)
         write_json(options.run_dir / "interactive-detection.json", detection)
         authored = recipe.validate_authored_content(observation, detection)
@@ -119,18 +171,23 @@ class InteractiveBootstrapScenario(Scenario):
             "human_verdict": "accepted",
             "confirmation_bound_to_run": True,
             "template_instance": asdict(instance) if instance is not None else None,
-            "synthetic_content_only": True,
+            "synthetic_content_only": synthetic_content_only,
             "passed": True,
         }
         write_json(options.run_dir / "interactive-validation.json", evidence)
         write_json(options.run_dir / "fixture-snapshot.json", snapshot)
         manifest["interactive_fixture"] = evidence
-        manifest["fixture_validation"] = {
-            "status": "passed",
-            "checks": list(fixture_result["validation"].get("checks", [])),
-            "authored_content_validated": True,
-            "human_verdict": "accepted",
-        }
+        fixture_validation = dict(manifest.get("fixture_validation", {}))
+        fixture_validation.update(
+            status="passed",
+            authored_content_validated=True,
+            human_verdict="accepted",
+        )
+        if len(declared_roles) == 1:
+            fixture_validation["checks"] = list(
+                fixture_result["validation"].get("checks", [])
+            )
+        manifest["fixture_validation"] = fixture_validation
         write_json(options.run_dir / "manifest.json", manifest)
         return {
             "scenario": self.name,
@@ -142,6 +199,7 @@ class InteractiveBootstrapScenario(Scenario):
                 else recipe.default_template_instance_id
             ),
             "template_state": instance.state if instance is not None else "ready",
+            "template_instance": asdict(instance) if instance is not None else None,
             "human_verdict": "accepted",
         }
 

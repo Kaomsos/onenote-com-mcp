@@ -48,6 +48,7 @@ from .bootstrap_media_file_fixture import BootstrapMediaFileFixtureScenario
 from .bootstrap_shape_fixture import BootstrapShapeFixtureScenario
 from .bootstrap_inline_equation_fixture import BootstrapInlineEquationFixtureScenario
 from .bootstrap_user_authored_fixture import BootstrapUserAuthoredFixtureScenario
+from .bootstrap_move_page_content_fixture import BootstrapMovePageContentFixtureScenario
 from .cache_invalidation import CacheInvalidationScenario
 from .user_authored_fixture_consumer import UserAuthoredFixtureConsumerScenario
 from .interactive_copy_inserted_file import InteractiveCopyInsertedFileScenario
@@ -55,6 +56,7 @@ from .interactive_copy_ink_drawing import InteractiveCopyInkDrawingScenario
 from .interactive_copy_media_file import InteractiveCopyMediaFileScenario
 from .interactive_copy_ui_shape import InteractiveCopyUIShapeScenario
 from .interactive_copy_inline_equation import InteractiveCopyInlineEquationScenario
+from .interactive_move_page_content import InteractiveMovePageContentScenario
 
 from .common.registry import SCENARIO_REGISTRY
 from .common.orchestrator import PUBLIC_SCENARIOS, run_validate
@@ -213,6 +215,7 @@ __all__ = [
     "BootstrapShapeFixtureScenario",
     "BootstrapInlineEquationFixtureScenario",
     "BootstrapUserAuthoredFixtureScenario",
+    "BootstrapMovePageContentFixtureScenario",
     "CacheInvalidationScenario",
     "UserAuthoredFixtureConsumerScenario",
     "InteractiveCopyInsertedFileScenario",
@@ -220,5 +223,6 @@ __all__ = [
     "InteractiveCopyMediaFileScenario",
     "InteractiveCopyUIShapeScenario",
     "InteractiveCopyInlineEquationScenario",
+    "InteractiveMovePageContentScenario",
     "dispatch_command",
 ]

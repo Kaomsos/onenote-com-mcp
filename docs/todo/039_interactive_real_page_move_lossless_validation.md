@@ -1,7 +1,7 @@
 # 039：真实 Page Content 的 Interactive Move Lossless 校验
 
 > ID：039
-> 状态：待办
+> 状态：进行中
 > 优先级：P0
 > 类型：Bug / Page Move / Lossless Validation / Interactive Manual Validation
 > 更新日期：2026-08-18
@@ -13,6 +13,20 @@
 这是未解决的 P0 用户体感 bug。当前证据只说明 lossless gate 阻塞了 Move，尚不能证明具体失败来自 verification tier 选择、能力投影不完整、已知但未建模的 COM 规范化、正文/表格/对象/二进制差异，还是 Copy 转换确实丢失了内容。不得把它描述为耗时或 timeout 问题，也不得通过提高 timeout、跳过回读、把 `copy_only` 当成功或先删源来掩盖。
 
 本 TODO 接管 UT-009 尚未覆盖的“代表性真实 Page content”范围；037 按用户明确决定关闭。UT-009 已取得的受控 fixture 证据继续有效，但不再被表述为真实内容 Move 的完整闭环。
+
+## 当前实施进度
+
+2026-08-18 已完成第一阶段 scaffold：
+
+- 新增 `bootstrap-move-page-content-fixture` 与 `interactive-move-page-content` 两个显式注册、`included_in_all=false` 的场景；
+- 新增共享同一 cache fingerprint 的双 Notebook `MovePageContentRecipe`，source 只允许一个 exact root leaf Canvas，destination 具有独立 Section/anchor；
+- shared interactive bootstrap 已从单 source 发布路径泛化为完整 role bundle：逐 role 重读 authored snapshot、精确关闭全部 role、opaque 发布 immutable template、materialize 第二份双 role working bundle并 live validate；
+- bootstrap 要求至少一种受支持的非平凡 Page capability；unknown/incomplete projection 只能冻结为 `evidence_only`，不能被 Move consumer 使用；
+- consumer 要求显式 `authored-<24 hex>` instance、Create + Writes + Deletes 最小策略，固定一次 `move_page(include_subpages=false)`；lossless failure 保存 source/target after snapshot 与逐 tier/check 的 content-free `lossless-diagnostic.json` 后原样失败，绝不补调 mutation；
+- success 路径只在生产 `verified/lossless/copy_contract_satisfied=true` 且 `source_deleted_nonpermanently=true` 后请求 run-bound UI ACCEPT；
+- 新增纯合同覆盖 recipe identity、ready/evidence-only、双 role bootstrap、单次 Move、lossless 失败 envelope 解包、失败保源、诊断脱敏和成功后人工门；聚焦组合为 `176 passed`，manual-validation 纯测试为 `622 passed`，全量 pytest 为 `1352 passed`；两个新场景和 `all` 的 `--dry-run --json` 均通过，`all` 仍只包含原 18 个稳定场景。
+
+尚未执行任何真实 bootstrap 或 Move。首次用户前台 `copy_only` 证据中若确认生产结果缺少足够的 source→transformed→target 定位字段，具体生产回读校验改动记录到空占位 [TODO 040](040_move_readback_validation_followups.md)，不得在没有真实 mismatch 证据前预设 comparator 放宽方案。
 
 ## 目标
 
@@ -129,5 +143,6 @@ exact-ID confirmation + bounded source plan
 - [TODO 004](004_interactive_copy_move_content_fidelity_validation.md)：逐内容类型 bootstrap/interactive Copy、静态 allowlist 与 human-gated 证据边界。
 - [TODO 020](020_user_authored_fixture_development_scaffold.md)：可复用但不构成本 P0 前置依赖的自由创作 fixture 基础。
 - [TODO 035](035_copy_move_internal_planning_and_agent_role.md)：一次公开调用、内部 planning 与 Copy-before-delete 产品边界。
+- [TODO 040](040_move_readback_validation_followups.md)：等待本场景真实 mismatch 后记录具体生产回读校验问题。
 - [公开 Tool 契约](../design/tool_contracts.md)
 - [Manual Validation Runner](../../tests/manual_validation/README.md)

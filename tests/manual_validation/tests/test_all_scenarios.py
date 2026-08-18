@@ -63,6 +63,7 @@ SCENARIO_MODULES = {
     "bootstrap_shape_fixture": "BootstrapShapeFixtureScenario",
     "bootstrap_inline_equation_fixture": "BootstrapInlineEquationFixtureScenario",
     "bootstrap_user_authored_fixture": "BootstrapUserAuthoredFixtureScenario",
+    "bootstrap_move_page_content_fixture": "BootstrapMovePageContentFixtureScenario",
     "cache_invalidation": "CacheInvalidationScenario",
     "user_authored_fixture_consumer": "UserAuthoredFixtureConsumerScenario",
     "interactive_copy_inserted_file": "InteractiveCopyInsertedFileScenario",
@@ -70,6 +71,7 @@ SCENARIO_MODULES = {
     "interactive_copy_media_file": "InteractiveCopyMediaFileScenario",
     "interactive_copy_ui_shape": "InteractiveCopyUIShapeScenario",
     "interactive_copy_inline_equation": "InteractiveCopyInlineEquationScenario",
+    "interactive_move_page_content": "InteractiveMovePageContentScenario",
 }
 SCENARIO_INFRASTRUCTURE_MODULES = {
     "__init__",

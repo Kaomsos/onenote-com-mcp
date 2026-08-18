@@ -258,6 +258,17 @@ UI Shape 使用一个小矩形作为固定 fixture；不要在 bootstrap 中改�
 
 `user-authored-fixture-consumer --use-cache --template-instance-id authored-<24 hex>` 与 bootstrap 共享同一 contract fingerprint，但拥有独立 Scenario/Recipe instance。Consumer 不枚举或猜测实例；缺失、格式错误、未知实例以及 `evidence_only` 都在 working Notebook 打开前 fail closed。省略 `--use-cache` 的 dry-run 只报告 `preflight-cache-required`，真实执行也会在 lifecycle/MCP/cache 访问之前拒绝；只有显式选择的 `ready` 实例会 materialize，并再次通过 reserved marker、authoring-zone 和 live content validation。该能力当前定位为足够开发取证使用的临时脚手架；完整 authoring-zone、多实例和状态真实矩阵已作为低优先级 [TODO 020](../../docs/todo/020_user_authored_fixture_development_scaffold.md) 单独维护，不再阻塞 TODO 014 或生产 Copy/Move。
 
+`bootstrap-move-page-content-fixture` 与 `interactive-move-page-content` 是 [TODO 039](../../docs/todo/039_interactive_real_page_move_lossless_validation.md) 专用、均不进入 `all` 的双 Notebook human-gated 场景。Bootstrap 创建 source instructions、一个 exact leaf Canvas，以及独立 destination Section/anchor；用户只能在 Canvas 中制作或粘贴非敏感的代表性内容，并至少加入一种受支持的非平凡能力。完整 typed projection 才发布 `ready`；unknown/incomplete 内容只能成为 `evidence_only`，不能进入 Move。发布会先精确关闭 source/destination 两个 role，再把完整 bundle 作为 immutable template 发布并 materialize 第二份 working bundle做 live validation。
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-move-page-content-fixture --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-move-page-content-fixture
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --use-cache --template-instance-id authored-<24 hex> --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --use-cache --template-instance-id authored-<24 hex> --keep-worksite
+```
+
+Consumer 只允许一次公开 `move_page(include_subpages=false)`，静态权限为 Create + Writes + Deletes，既不启用 Organize、Local File IO、Permanent Delete，也不增加 Move-only 内容 allowlist。`copy_only` / `copy_unverified` 时必须证明 source 仍 active，保留未验证 target 和 `lossless-diagnostic.json`，不询问人工 ACCEPT、不补调 mutation；当前报告明确把尚未公开的 source→transformed 投影交给 [TODO 040](../../docs/todo/040_move_readback_validation_followups.md) 后续记录。只有生产报告同时满足 `verified=true`、`lossless=true`、`copy_contract_satisfied=true` 且已非永久删源后，才要求用户检查 exact target 并输入 run-bound `ACCEPT ... MovePageContent`。Agent、pytest、CI 或后台任务不得执行上述两条真实命令。
+
 `interactive-copy-inserted-file` 是 cache-only、HUMAN-GATED 的 Copy 验证 Scenario，与 `bootstrap-inserted-file-fixture` 共用同一个 fingerprint 和固定 instance。它不重新创建 fixture，也不进入 `all`；命中后 materialize 全新的 working copy，显式加载层级、重绑定 live ID、重跑 `InsertedFile` detector/projection，然后执行一次同 Section root-only `copy_page`。机器门要求 source/target 都精确观察到一个公开 `kind=InsertedFile`、稳定对象签名一致、可见文本/内容对象/strict canonical read-back 通过且没有 omitted content；当前公开 XML 没有内联 `Data`，因此普通 binary SHA-256 项只记录其 absence，用户还必须实际打开目标附件并确认其合成文件内容一致，再输入 run-bound `ACCEPT ... InsertedFile COPY`。Copy plan 优先使用仍存在的 `pathSource`，否则回退到可读 `pathCache/path`；全部不可读时在创建目标前 fail closed，普通 evidence 不保存实际路径。场景没有 Delete 权限，不会删除源。缺少可命中的 `ready` entry 时会在 Notebook/MCP 启动前返回 `interactive_bootstrap_required` 并提示运行已有 bootstrap，而不是隐式重建：
 
 ```powershell
@@ -489,6 +500,11 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 .venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-user-authored-fixture --dry-run --json
 ```
 
+<!-- dry-run-case: bootstrap-move-page-content-fixture.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py bootstrap-move-page-content-fixture --dry-run --json
+```
+
 <!-- dry-run-case: cache-invalidation.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py cache-invalidation --dry-run --json
@@ -522,6 +538,11 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 <!-- dry-run-case: interactive-copy-inline-equation.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-copy-inline-equation --dry-run --json
+```
+
+<!-- dry-run-case: interactive-move-page-content.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --dry-run --json
 ```
 
 <!-- dry-run-case: all.default -->

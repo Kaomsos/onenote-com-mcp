@@ -163,6 +163,10 @@ def test_fixture_profiles_are_scenario_specific() -> None:
             "bootstrap-inline-equation-fixture",
             "interactive-copy-inline-equation",
         },
+        "interactive-move-page-content": {
+            "bootstrap-move-page-content-fixture",
+            "interactive-move-page-content",
+        },
     }
     assert "create_notebook" not in SCENARIO_SPECS["create"].tool_allowlist
     assert {
@@ -186,6 +190,19 @@ def test_every_fixture_creation_tool_is_in_its_scenario_allowlist() -> None:
                 assert spec.policy.deletes_enabled is False
                 assert "copy_page" in spec.tool_allowlist
                 assert "plan_copy" not in spec.tool_allowlist
+            elif spec.execution_contract.get("interactive_move_evidence"):
+                assert spec.policy.create_enabled is True
+                assert spec.policy.writes_enabled is True
+                assert spec.policy.deletes_enabled is True
+                assert spec.policy.organize_enabled is False
+                assert spec.policy.local_file_io_enabled is False
+                assert "move_page" in spec.tool_allowlist
+                assert not {
+                    "copy_page",
+                    "delete_page",
+                    "reparent_page",
+                    "reorder_page",
+                }.intersection(spec.tool_allowlist)
             else:
                 assert spec.policy.writes_enabled is False
                 assert spec.policy.create_enabled is False
@@ -1457,24 +1474,39 @@ def test_copy_only_records_cleanup_and_closes_by_default(monkeypatch, tmp_path) 
         fixture_result=None,
     ):
         assert client is FakeMCP.active
-        partial = {
-            "outcome": "copy_only",
+        details = {
+            "outcome": "copy_unverified",
             "created_ids": ["copied-page"],
-            "id_map": {"disposable-page": "copied-page"},
+            "copy_report": {
+                "id_map": {"disposable-page": "copied-page"},
+                "verified": False,
+                "lossless": False,
+            },
+        }
+        envelope = {
+            "ok": False,
+            "error": {
+                "code": "partial_failure",
+                "message": "lossless verification failed",
+                "details": details,
+            },
+            "execution": {"attempts": 1, "replayed": False},
         }
         test_utils.write_json(
             test_utils.scenario_dir(options.run_dir, args.scenario) / "copy-result.json",
-            partial,
+            envelope,
         )
-        raise ClientFailure("copy_only", envelope=partial)
+        raise ClientFailure("lossless verification failed", envelope=envelope)
 
     monkeypatch.setattr(
         SCENARIO_REGISTRY.get("move-page"), "execute", copy_only
     )
     args = _args(tmp_path / "run", "move-page")
-    with pytest.raises(ClientFailure, match="copy_only"):
+    with pytest.raises(ClientFailure, match="lossless verification failed"):
         asyncio.run(validation.run_validate(args, RuntimeOptions(args.run_dir, 1_800, False, False)))
-    finalization = validation.record_failure(args, "copy_only", runtime.EXIT_MCP)
+    finalization = validation.record_failure(
+        args, "lossless verification failed", runtime.EXIT_MCP
+    )
 
     assert finalization["status"] == "closed"
     assert finalization["isolation_passed"] is True
@@ -1485,7 +1517,9 @@ def test_copy_only_records_cleanup_and_closes_by_default(monkeypatch, tmp_path) 
         args.run_dir / "scenarios" / args.scenario / "failure.json"
     )
     assert failure["status"] == "needs_manual_cleanup"
+    assert failure["outcome"] == "copy_unverified"
     assert failure["created_ids"] == ["copied-page"]
+    assert failure["id_map"] == {"disposable-page": "copied-page"}
     state = test_utils.read_json(args.run_dir / "run-state.json")
     assert state["status"] == "failed_closed"
     assert state["failed_step"] == "move-page"

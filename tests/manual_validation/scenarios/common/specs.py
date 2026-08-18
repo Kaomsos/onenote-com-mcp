@@ -1251,6 +1251,62 @@ SCENARIO_SPECS["user-authored-fixture-consumer"] = ScenarioSpec(
     {"interactive_consumer": True, "requires_explicit_instance": True, "included_in_all": False},
 )
 
+_MOVE_PAGE_CONTENT_PROFILE = _profile(
+    "interactive-move-page-content",
+    (
+        "source: 00-System-Instructions/00-Reserved-Marker-Do-Not-Edit",
+        "source: 01-Move-Source/01-Representative-Page",
+        "destination: 01-Move-Destination/99-Destination-Anchor",
+    ),
+    (
+        "source_instructions_section",
+        "source_instructions_page",
+        "source_canvas_section",
+        "source_canvas_page",
+        "destination_section",
+        "destination_anchor",
+    ),
+    {"create_section", "create_page"},
+    content=("representative_real_page_content",),
+    checks=(
+        "the reserved marker remains unchanged",
+        "the representative source is one exact root leaf Page",
+        "the destination Section belongs to a different disposable Notebook role",
+        "unknown or incomplete content remains evidence_only and cannot enter Move",
+    ),
+)
+
+SCENARIO_SPECS["bootstrap-move-page-content-fixture"] = ScenarioSpec(
+    "bootstrap-move-page-content-fixture",
+    _MOVE_PAGE_CONTENT_PROFILE,
+    WRITE_POLICY,
+    frozenset(_INTERACTIVE_TOOLS),
+    {
+        "interactive_bootstrap": True,
+        "representative_move_content": True,
+        "notebook_roles": ["destination", "source"],
+        "included_in_all": False,
+    },
+)
+
+SCENARIO_SPECS["interactive-move-page-content"] = ScenarioSpec(
+    "interactive-move-page-content",
+    _MOVE_PAGE_CONTENT_PROFILE,
+    MOVE_PAGE_POLICY,
+    frozenset(MOVE_PAGE_TOOLS),
+    {
+        "interactive_move_evidence": True,
+        "cache_only": True,
+        "requires_explicit_instance": True,
+        "bootstrap_on_miss": "bootstrap-move-page-content-fixture",
+        "include_subpages": False,
+        "single_public_move_call": True,
+        "verified_copy_before_delete": True,
+        "notebook_roles": ["destination", "source"],
+        "included_in_all": False,
+    },
+)
+
 SCENARIO_SPECS["cache-invalidation"] = ScenarioSpec(
     "cache-invalidation",
     _profile(
