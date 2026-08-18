@@ -4,13 +4,24 @@
 > 状态：待办
 > 优先级：P0
 > 类型：公开发布 / 品牌与文档 / 社区治理 / 来源与许可证合规
-> 更新日期：2026-08-15
+> 更新日期：2026-08-19
 
 ## 决策摘要
 
 本 TODO 是仓库切换为公开可见之前的硬发布门。品牌与 Demo、双语入口、开发文档的编写与公开发布、社区协作规范、来源署名与 relicense、Git 历史整理、原作者通知以及发布安全检查必须全部有可复核证据；只准备草稿、只在私有仓库中保存开发文档、只存在 `LICENSE` 文件或只完成代码测试均不足以标记为完成。
 
 公开发布前继续保持仓库私有。本 TODO 只记录和组织发布工作，不授权在实施时未经用户确认就重写共享 Git 历史、force-push、修改远端可见性、发布包、创建 Release，或代表用户向原作者发送 Issue。
+
+## 已确认方向决策（2026-08-19）
+
+以下四项由用户确认，作为本 TODO 后续实施的固定输入：
+
+1. **独立的双语对外文档目录。** 面向 GitHub 用户与外部开发者的公开文档放入新的独立目录 `docs-public/`（中英平行树），与面向维护者本人的内部文档 `docs/` 分离。`docs/` 继续作为当前架构、契约与流程的内部权威来源；`docs-public/` 是对外稳定入口，摘要之外链接到 canonical 内容，不复制会独立漂移的完整契约。首个公开版本采用仓库内文档形态，不建独立文档站。
+2. **公开文档同时覆盖使用文档与开发文档。** 使用文档面向 MCP 用户（安装、客户端配置、权限门限、工具能力、限制与故障排查）；开发文档面向外部贡献者（项目组织结构、工程规则公开摘要、测试分层），并必须包含独立一章“手动验证框架”说明。
+3. **PyPI/uvx 发布准备独立跟踪。** 打包元数据、`uvx local-onenote-mcp` 调用入口和发布演练由 [TODO 042](042_pypi_release_uvx_entrypoint.md) 承载；其正式发布仍以本 TODO 的公开发布硬门为前置。
+4. **目标许可证为 GPL 强传染许可。** 本项目以 GPL（建议 `GPL-3.0-or-later`；`only`/`or-later` 的最终选择在实施前由用户确认）公开发布，同时按原版仓库许可要求完整保留其许可文本、版权声明与来源署名。原 TODO 中“目标许可证待定/当前 MIT”的表述全部按本决策解释。
+
+尚待用户补充的事实输入：当前 Git 历史首个提交为 `Initial public release`，仓库内未记录上游 fork 来源。实施 D/E/F 前必须由用户确认精确的上游仓库地址、fork 时上游 commit 及当时许可证文本。
 
 ## 工作范围
 
@@ -31,23 +42,49 @@
 - 根 README 只提供面向用户的稳定入口，详细契约链接到 `docs/design/`，开发与验证步骤链接到 `docs/dev/`，避免中英文副本成为相互竞争的权威来源；
 - 校验包元数据、安装命令、仓库 URL、Issue URL、截图链接、目录链接及语言切换链接在公开地址下有效。
 
-### C. 中英文开发文档的编写与发布、Issue 与 PR 规范
+### C. 独立双语公开文档目录 `docs-public/`、Issue 与 PR 规范
 
-- 提供中英文开发指南，覆盖环境搭建、架构入口、测试分层、文档治理、版本与发布流程，以及 Windows/OneNote 的已知限制；
-- 将开发文档作为首个公开版本的正式发布物；明确采用仓库内文档、文档站或两者结合的发布形态，并记录对应的公开入口、版本归属和维护责任；
-- 从根目录中英文 README、贡献指南和 Release Notes 提供稳定的开发文档入口；发布后以未登录访问验证链接、目录导航、语言切换和站内相对链接有效，不能以私有仓库内可见或本地预览代替公开可访问证据；
+- 新建独立目录 `docs-public/` 作为对外文档的唯一入口，与内部 `docs/` 分离并在 [`docs/README.md`](../README.md) 的目录职责表中登记边界；目标结构（实施时可微调，双语树必须同构）：
+
+  ```text
+  docs-public/
+    README.md               # 公开文档总入口（英文），页首语言互链
+    README.zh-CN.md         # 中文总入口
+    en/
+      user-guide/
+        getting-started.md  # 前置条件、安装、首次连接与 health_check
+        configuration.md    # 客户端配置样例与七个权限环境变量
+        tools.md            # 53 工具概览、响应 envelope、预算
+        safety-model.md     # local-only、fail-closed、非永久删除、限制
+        faq.md              # 常见问题与故障排查
+      dev-guide/
+        project-structure.md    # 仓库组织结构与各目录职责
+        engineering-rules.md    # 各层 AGENTS 治理规则的公开摘要
+        testing.md              # 纯自动化测试分层与运行方式
+        manual-validation.md    # 手动验证框架专章（见下）
+        contributing.md         # 贡献流程，与根 CONTRIBUTING.md 互链
+    zh-CN/                  # 与 en/ 平行同构的中文树
+  ```
+
+- 英文树是对外权威版本，中文树为同步镜像并在页首标注互链；双语树必须在同一变更中同步更新，避免成为相互竞争的权威来源；
+- 开发文档必须包含独立一章“手动验证框架”（`manual-validation.md`）：说明 HUMAN-GATED 边界（Agent、pytest、CI、hook、timer、watcher 和后台任务不得运行真实 scenario）、扁平 scenario CLI 与 registry 架构、run-scoped disposable fixture 与最小权限隔离、before/after 证据与失败现场保留、`--dry-run` 与 `--use-cache` 的用户操作入口，以及 `clear runs|cache|all` 的交互确认要求；面向外部贡献者解释“为什么真实验收只能由人执行”；
+- 公开文档只做摘要与导航，详细契约链接到 `docs/design/`，内部操作流程链接到 `docs/dev/` 与 `tests/manual_validation/README.md`，不复制其全文；
+- 首个公开版本采用仓库内文档形态（不建文档站），公开入口为根目录中英文 README、贡献指南和 Release Notes；发布后以未登录访问验证链接、目录导航、语言切换和站内相对链接有效，不能以私有仓库内可见或本地预览代替公开可访问证据；
 - 提供中英文贡献指南，并与各层 `AGENTS.md` 的安全约束一致；尤其说明 Agent、pytest、CI、hook、timer、watcher 和后台任务不得运行真实 OneNote mutation scenario；
 - 建立至少包含 Bug、Feature/Proposal 的 Issue 模板，以及 PR 模板；要求复现信息、影响范围、测试/文档更新、兼容性、权限门限和敏感信息脱敏；
 - 建立 `SECURITY.md`、行为准则和维护者/响应边界，给出私下报告安全问题的渠道，避免要求用户在公开 Issue 粘贴 Notebook 内容或本机证据；
 - 明确破坏性契约变化、公开 tool 变化和真实 mutation 能力的评审与验收门，确保模板不会诱导自动化执行人工场景。
 
-### D. Credit、来源审计与 Relicense
+### D. Credit、来源审计与切换到 GPL 的 Relicense
 
-- 以 fork 边界和完整历史为依据，清点原仓库代码、后续贡献者、复制或改写的代码、文档、图形、字体、Demo 素材及依赖许可证；
-- 确认 fork 时原项目的许可证文本、版权声明和署名要求，保留所有必须保留的 notice，并在根 README/Credits 中清晰说明项目来源与后续演进；
-- 分别验证“当前仓库写有 MIT”与“所有纳入内容都可按目标许可证公开”两个命题；对许可证不兼容、来源不明或需单独同意的内容，取得书面授权、替换、移除或在发布前寻求专业法律意见；
-- 核对所有实际贡献者对目标许可证的授权基础；若 relicense 需要原作者或其他权利人的明确同意，保存可引用的同意证据；
-- 统一 `LICENSE`、包元数据、源码头、README、Credit/NOTICE 和第三方声明中的项目名、年份、权利人及 SPDX/许可证表达，避免互相冲突；
+目标许可证已确定为 GPL 强传染许可（建议 `GPL-3.0-or-later`，`only`/`or-later` 由用户在实施前最终确认）。
+
+- 以 fork 边界和完整历史为依据，清点原仓库代码、后续贡献者、复制或改写的代码、文档、图形、字体、Demo 素材及依赖许可证；由用户确认精确的上游仓库地址、fork 时 commit 与当时许可证文本（当前仓库历史未记录该信息）；
+- 确认 fork 时原项目的许可证文本、版权声明和署名要求；在 `NOTICE`（或 `CREDITS.md`/`THIRD_PARTY_LICENSES`）中完整保留原版仓库的许可文本、版权行与来源 URL/commit，并在根 README/Credits 中清晰说明项目来源与后续演进；
+- 分别验证“上游许可证（预期为 MIT 类宽松许可）允许在保留原始声明的前提下并入 GPL 发行版”与“所有纳入内容都可按 GPL 公开”两个命题；对许可证与 GPL 不兼容、来源不明或需单独同意的内容，取得书面授权、替换、移除或在发布前寻求专业法律意见；
+- 核对所有实际贡献者对 GPL 目标许可证的授权基础；若 relicense 需要原作者或其他权利人的明确同意，保存可引用的同意证据；
+- 执行 MIT→GPL 的一致性切换：替换根 `LICENSE` 为完整 GPL 文本，更新 `pyproject.toml` 的 `license` 字段与 `License ::` classifier、README 许可章节、`package.json`（如保留 npm launcher）及任何 SPDX 表达；统一 `LICENSE`、包元数据、源码头、README、Credit/NOTICE 和第三方声明中的项目名、年份、权利人，避免互相冲突；
+- 审查运行时与开发依赖的许可证与 GPL 分发的兼容性；
 - 许可证和 Credit 审计结果以具体 commit、上游 URL、许可证版本及证据位置记录，不以口头判断代替。
 
 ### E. Git 时间线与公开历史
@@ -72,7 +109,7 @@
 - 清理公开仓库内容：忽略本地环境、缓存、真实运行证据和编辑器状态；检查示例配置没有密钥、用户名、绝对路径或默认开启危险权限；
 - 审查运行时与开发依赖、锁文件、供应链来源和第三方许可证，生成需要的归属/NOTICE，并验证发布包只包含预期文件；
 - 在全新 Windows 环境或等价的干净 clone 中验证 Python 与 npm 安装入口、launcher、只读 smoke test、完整纯测试、构建产物和卸载/升级说明；真实 OneNote mutation 验证仍只能由用户显式运行；
-- 准备版本号、Changelog/Release Notes、已知限制、兼容性范围、升级说明和回滚方案；确认 PyPI/npm/GitHub Release 是否属于首发范围，不默认执行发布；
+- 准备版本号、Changelog/Release Notes、已知限制、兼容性范围、升级说明和回滚方案；确认 PyPI/npm/GitHub Release 是否属于首发范围，不默认执行发布；PyPI 打包与 `uvx` 调用入口的准备工作由 [TODO 042](042_pypi_release_uvx_entrypoint.md) 承载；
 - 配置公开仓库描述、topics、主页、社交预览、默认分支、Issue/Discussion 选项和最小分支保护；CI 只能运行纯测试，不得接触真实 OneNote 数据或触发 mutation scenario；
 - 明确维护者、Issue/PR 响应预期、漏洞处理、发布负责人和后续双语文档同步责任。
 
@@ -97,9 +134,9 @@
 ## 完成定义
 
 - [ ] 品牌资产及其源文件/许可证清单完成，双语 Demo 在干净环境复演通过且不含私人数据；
-- [ ] 根目录中英文 README、双语开发/贡献文档、Issue/PR 模板、`SECURITY.md`、行为准则和维护边界完成并互链；
+- [ ] 根目录中英文 README、`docs-public/` 双语使用/开发文档（含手动验证框架专章）、贡献指南、Issue/PR 模板、`SECURITY.md`、行为准则和维护边界完成并互链；
 - [ ] 开发文档已随首个公开版本正式发布，具有稳定公开入口和明确版本归属，并已通过未登录访问、导航、双语入口及链接检查；
-- [ ] Credit、上游来源、贡献者授权、第三方素材/依赖及目标许可证审计完成；任何需要的 relicense 同意都有可复核证据，仓库内许可证表达一致；
+- [ ] Credit、上游来源、贡献者授权、第三方素材/依赖及目标 GPL 许可证审计完成；任何需要的 relicense 同意都有可复核证据；根 `LICENSE`、包元数据、README 均为一致的 GPL 表达，且上游许可文本与版权声明已在 NOTICE/Credits 中完整保留；
 - [ ] fork 边界和 old→new 映射已记录；经用户批准的公开历史为直线，fork 前内容合并为单次 `init` 提交，作者 Credit 与审计证据未丢失；
 - [ ] 全历史秘密/隐私/大文件/专有素材扫描、发布包内容检查和文档链接检查通过，无 `.local-validation/`、真实 Notebook 数据或本机标识进入公开内容；
 - [ ] 全新 clone 的安装、构建、纯测试、只读 smoke test 和 Demo 复演通过；所有真实 mutation 结果只引用用户确认的隔离证据；
@@ -133,4 +170,5 @@
 - [公开 Tool 契约](../design/tool_contracts.md)：README、Demo 和能力矩阵不得超出当前契约。
 - [Manual Validation Runner](../../tests/manual_validation/README.md)：真实 mutation 验收只能由用户显式启动。
 - [TODO 007](007_cross_version_compatibility_evidence.md)：跨版本证据仍是独立的非阻塞长期工作；首发只声明已有证据覆盖的环境范围。
+- [TODO 042](042_pypi_release_uvx_entrypoint.md)：PyPI 发布准备与 `uvx` 调用入口；其正式发布以本 TODO 的公开发布硬门为前置。
 - [TODO 013](013_reparent_default_placement_contract.md)：发布范围审查时必须完成其真实验收，或从稳定能力宣传中明确排除未闭合部分。

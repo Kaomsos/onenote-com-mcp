@@ -28,7 +28,7 @@
 | 020 | [UserAuthored Fixture 开发脚手架完整化](020_user_authored_fixture_development_scaffold.md)                              | 待办   | P3     | 当前骨架已够开发取证使用；完整 authoring-zone、多实例、ready/evidence-only 和失效真实矩阵延期，且不阻塞 TODO 014 或生产 Copy/Move。                                           |
 | 021 | [Windows Fixture Cache 路径长度预算](021_windows_fixture_cache_path_budget.md)                                          | 已完成 | P3     | 240-unit 受管路径与 147-unit Notebook root COM 安全预算、短 typed schema、结构化错误及一次性空壳切换已交付；working name 按 run root 动态压缩。                         |
 | 022 | [四层 Typed Metadata Query 与原生 Scope](022_typed_metadata_query_tools_and_native_scopes.md)                           | 已完成 | P1     | 四个 fixed-type Query、严格 root/start-node scope、live pagination、关系过滤和 fresh/cache 真实场景均已交付；层级浏览工具重组转由 TODO 033。                                  |
-| 023 | [公开仓库发布准备与来源合规](023_public_repository_release_readiness.md)                                                | 待办   | P0     | 公开前完成品牌与 Demo、双语开发文档编写及公开发布、社区规范、Credit/relicense、线性历史、原作者通知及隐私/供应链/发布验证。                                                    |
+| 023 | [公开仓库发布准备与来源合规](023_public_repository_release_readiness.md)                                                | 待办   | P0     | 公开前完成品牌与 Demo、独立 `docs-public/` 双语使用/开发文档（含手动验证框架专章）、社区规范、原仓库署名与 GPL relicense、线性历史、原作者通知及隐私/供应链/发布验证。         |
 | 024 | [Search 与 Typed Query 短时只读快照缓存](024_search_and_query_read_snapshot_cache.md)                                   | 待办   | P3     | 规划进程内可配置 TTL（默认 15 秒）的`GetHierarchy`/`FindPages` 缓存、mutation 前失效与 Agent 可见一致性合同；完成状态要求用户确认 `read-cache-coherence` 真实场景证据。 |
 | 025 | [OneNote COM 收敛、Mutation 对账与调用协调](025_onenote_com_convergence_and_mutation_coordination.md)                   | 已完成 | P1     | typed HRESULT、公共收敛/对账、进程内协调与关键路径迁移已落地；918 个纯测试、dry-run 及用户前台 convergence/create/reorder/delete/copy/move 回归均通过。                       |
 | 026 | [Manual Validation 实时进度与 Verbosity](026_manual_validation_progress_verbosity.md)                                   | 已完成 | P2     | 三级 content-free 实时进度与紧凑非 JSON summary 已落地；纯测试、完整基线和用户前台长/短场景展示均已确认。                                                                     |
@@ -47,6 +47,7 @@
 | 039 | [真实 Page Content 的 Interactive Move Lossless 校验](039_interactive_real_page_move_lossless_validation.md)           | 已完成 | P0     | 已交付代表性内容 bootstrap/interactive Move、真实失败复现和诊断基础；用户决定关闭，剩余回读修复与最终验收统一转交 TODO 040。 |
 | 040 | [Move 回读校验待解决问题](040_move_readback_validation_followups.md)                                                    | 已完成 | P0     | Page title/path segments、typed equivalence 与 Table 容差已交付；自动 path/Copy/Move fixture 真实回归通过，interactive Move 保持 bootstrap/cache consumer 约定，用户已批准关闭。 |
 | 041 | [统一 Interactive Bootstrap 与 Scenario 验证流程](041_unified_interactive_bootstrap_scenario_flow.md)                  | 已完成 | P1     | 七个 `interactive-<operation>` 单入口及 fresh/cache 编排已交付；用户确认 Interactive Copy 配对和代表性 Move 的 bootstrap/fixture、cache lossless Move 真实验收通过。 |
+| 042 | [PyPI 发布准备与 uvx 调用入口](042_pypi_release_uvx_entrypoint.md)                                                      | 待办   | P1     | 准备包元数据（随 023 切换 GPL）、构建产物审计、TestPyPI 演练与 `uvx local-onenote-mcp` 双语安装文档；正式上传由用户执行并以 TODO 023 公开硬门为前置。                        |
 
 ## 文件命名
 
