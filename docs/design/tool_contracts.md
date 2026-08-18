@@ -100,19 +100,19 @@ Rename 与 Reorder 需要 Writes：
 - `rename_page(page_id, title, expected_title, expected_section_id, expected_modified=null)`
 - `rename_section_group(section_group_id, new_name, expected_name, expected_parent_id, expected_modified=null)`
 - `rename_section(section_id, new_name, expected_name, expected_parent_id, expected_modified=null)`
-- `reorder_page(page_id, expected_title, expected_section_id, after_page_id=null, page_level=0, expected_modified=null)`
+- `reorder_page(page_id, expected_title, expected_section_id, after_page_id=null, page_level=0, expected_modified=null, include_subpages=false)`
 - `reorder_section(section_id, expected_name, expected_parent_id, after_section_id=null, expected_modified=null)`
 - `sort_children(parent_id, expected_parent_name, expected_child_ids, child_type=null, key="name", direction="ascending", expected_parent_modified=null)`
 
 Organize 同时需要 Writes + Organize：
 
-- `reparent_page(page_id, destination_section_id, expected_title, expected_section_id, expected_modified=null, page_scope="page_only")`
+- `reparent_page(page_id, destination_section_id, expected_title, expected_section_id, expected_modified=null, include_subpages=false)`
 - `reparent_section(section_id, destination_parent_id, expected_name, expected_parent_id, expected_modified=null)`
 - `reparent_section_group(section_group_id, destination_parent_id, expected_name, expected_parent_id, expected_modified=null)`
 
-`page_scope` 只能是 `page_only | indentation_subtree`。Reparent 只在同一 Notebook 内改变父级；Section 与 SectionGroup 保持对象 ID，Page 在 OneNote 重映射时返回经验证的一对一 **Page ID** `id_map` 和最终对象。生产 Reparent、Page/Section Reorder 与 `sort_children` 的 read-back 只验证有界、稳定的 hierarchy（typed ID、父级、完整直接子序列、子树/缩进和 sibling order），不读取 Page 正文或推导内容对象 ID 映射；Page/Section Reparent 要求连续两次稳定 hierarchy 观测，SectionGroup Reparent 要求连续四次，二者使用相同的有界 deadline。容器 Reorder 与 Sort 响应以 `verification_scope.page_content="not_read"` 明示该边界。逐 Page 内容和内容对象保真比较仅由 human-gated manual-validation scenario 承担，不能解读为单次生产调用的正文验证。Reparent 不是 Copy 或跨 Notebook Move。SectionGroup reorder 没有稳定后端语义，因此不公开。
+所有公开 Page 范围统一为 `include_subpages: bool = false`，不接受旧 `page_scope` alias。`false` 只选择目标 Page；Delete/Reparent/Move/Reorder 会在主操作前将排除后代整体提升一级并验证保护拓扑。`true` 选择完整缩进子树；Reparent/Move/Reorder 保持块内顺序和相对层级，Delete 冻结完整 ID 范围并按叶到根非永久删除。Reparent 只在同一 Notebook 内改变父级；Section 与 SectionGroup 保持对象 ID，Page 在 OneNote 重映射时返回经验证的一对一 **Page ID** `id_map` 和最终对象。生产 Reparent、Page/Section Reorder 与 `sort_children` 的 read-back 只验证有界、稳定的 hierarchy（typed ID、父级、完整直接子序列、子树/缩进和 sibling order），不读取 Page 正文或推导内容对象 ID 映射；Page/Section Reparent 要求连续两次稳定 hierarchy 观测，SectionGroup Reparent 要求连续四次，二者使用相同的有界 deadline。容器 Reorder 与 Sort 响应以 `verification_scope.page_content="not_read"` 明示该边界。逐 Page 内容和内容对象保真比较仅由 human-gated manual-validation scenario 承担，不能解读为单次生产调用的正文验证。Reparent 不是 Copy 或跨 Notebook Move。SectionGroup reorder 没有稳定后端语义，因此不公开。
 
-上述三个 Rename 和三个 Reparent 工具同时支持 `items[1..20]` 批量模式，工具名不变，也没有 `batch_*` 别名。批量项保持各单项工具的 exact ID、现有名称/标题、父级和可选 modified confirmation；Rename 每项再给出显式 `new_name`/`new_title`，Reparent 的所有项共用一个 destination，Page 项可各自选择 `page_scope`。顶层单项 identity 字段与 `items` 互斥；所有批量目标必须同类型、位于同一 Notebook，且先整体通过重复、范围重叠、目标循环、名称碰撞与预算检查。Create、Rename、Reparent、Delete 全部在 item 调用完成后再次 live 读取整批最终 hierarchy，以输入 identity 返回 `final_hierarchy`；Page 正文始终为 `not_read`。最终整批对账失败时，即使各 item 已分别返回，也必须以 partial failure 和人工恢复指引结束。
+上述三个 Rename 和三个 Reparent 工具同时支持 `items[1..20]` 批量模式，工具名不变，也没有 `batch_*` 别名。批量项保持各单项工具的 exact ID、现有名称/标题、父级和可选 modified confirmation；Rename 每项再给出显式 `new_name`/`new_title`，Reparent 的所有项共用一个 destination，Page Reparent 项可各自选择 `include_subpages`。Page Reparent/Delete 从同一 mutation 前快照冻结整批 scope，并按受影响 Section 一次性完成所有必要提升；全部提升收敛前不会开始任何主操作。顶层单项 identity 字段与 `items` 互斥；所有批量目标必须同类型、位于同一 Notebook，且先整体通过重复、范围重叠、目标循环、名称碰撞与预算检查。Create、Rename、Reparent、Delete 全部在 item 调用完成后再次 live 读取整批最终 hierarchy，以输入 identity 返回 `final_hierarchy`；Page 正文始终为 `not_read`。最终整批对账失败时，即使各 item 已分别返回，也必须以 partial failure 和人工恢复指引结束。
 
 Batch Mutation 的预算与 Copy 完全独立。`health_check.batch_mutation_budget` 投影五个正整数上限：`max_catalog_resources=100000`、`max_effective_resources=1000`、`max_effective_pages=200`、`max_direct_siblings=1000`、`max_page_content_chars=500000`，分别对应 `LOCAL_ONENOTE_MAX_BATCH_CATALOG_RESOURCES`、`LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_RESOURCES`、`LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES`、`LOCAL_ONENOTE_MAX_BATCH_DIRECT_SIBLINGS`、`LOCAL_ONENOTE_MAX_BATCH_PAGE_CONTENT_CHARS`。Catalog 上限约束一次 content-free exact-ID 定位读取；effective 上限只计算目标、选中/受保护后代、destination、confirmed parent 和请求新建项，Rename/Create 的直接兄弟冲突证据另行计数。Notebook 中其余 Page 不消耗 effective Page 预算。超限在 principal mutation 前以 `budget_dimension/observed_count/configured_limit/content_exposed=false` fail closed。
 
@@ -133,13 +133,13 @@ Batch Mutation 的预算与 Copy 完全独立。`health_check.batch_mutation_bud
 
 ### Recoverable Delete（3）
 
-`delete_page`、`delete_section`、`delete_section_group` 均需要 Deletes 和 exact-ID confirmation，并固定执行非永久、可恢复删除。每个原工具也支持与其类型一致的 `items[1..20]` 批量模式；顶层单项字段与 `items` 互斥，请求整体预检并拒绝重复、回收站对象以及祖先/后代范围重叠。公开 schema 没有 `permanently`；永久删除工具当前不存在。
+`delete_page(include_subpages=false)`、`delete_section`、`delete_section_group` 均需要 Deletes 和 exact-ID confirmation，并固定执行非永久、可恢复删除。Page Delete 可选择仅删除根并保护后代，或删除完整子树。每个原工具也支持与其类型一致的 `items[1..20]` 批量模式；Page batch item 可独立给出 `include_subpages`。顶层单项字段与 `items` 互斥，请求整体预检并拒绝重复、回收站对象以及祖先/后代范围重叠。公开 schema 没有 `permanently`；永久删除工具当前不存在。
 
 ### Copy（4）与 Reconstructive Move（3）
 
 Copy 需要 Create + Writes；Move 需要 Create + Writes + Deletes。不存在独立 Copy gate。
 
-- `copy_page(page_id, destination_section_id, expected_title, expected_section_id, expected_modified=null, destination_title=null, page_scope="page_only")`
+- `copy_page(page_id, destination_section_id, expected_title, expected_section_id, expected_modified=null, destination_title=null, include_subpages=false)`
 - `copy_section(section_id, destination_parent_id, expected_name, expected_parent_id, expected_modified=null, destination_name=null)`
 - `copy_section_group(section_group_id, destination_parent_id, expected_name, expected_parent_id, expected_modified=null, destination_name=null)`
 - `copy_notebook(notebook_id, expected_name, expected_modified=null, destination_name=null, destination_base_folder=null)`

@@ -283,7 +283,7 @@ COM 返回成功但父级未变化、Page ID 转换不是精确一对一、富�
 3. 默认具名 scenario suite 在成功或失败时都只对本次 run 的 exact lease 执行 typed `close_notebook` 并回读确认，不删除本地 Notebook 目录。显式 `--keep-notebook` 或 `--keep-worksite` 时源 Notebook 保持打开；`--keep-worksite` 还会在该 action 的 after/read-back 通过后跳过适用的 restore/cleanup，并在 `worksite.json` 中记录精确 ID 和人工清理步骤；特殊入口 `all` 不接受也不透传这两个选项；
 4. 若任一步发生 ID 变化、内容摘要变化、重复 Section/Page 或恢复失败，保留隔离 Notebook，不继续后续 mutation，并保留操作前后快照。
 
-Page Move 只对本次 `page_scope` 选定范围执行源侧非永久删除。默认 `page_only` 只移动根 Page：生产服务先把被排除的完整后代子树整体提升一级，回读其精确 ID、Section、相对层级与内容，再删除根 Page；`indentation_subtree` 才按叶到根处理完整子树。生产删除服务会有界回读每个精确选定 Page ID，并拒绝仍留在活动 hierarchy 的对象；manual scenario 的双 Notebook `after.json` 再确认选定源已消失、root-only 排除后代仍活动且内容未变。回收站 metadata 若能取得只作为额外诊断证据。背景与适用边界见 [`lesson/onenote_com_recycle_bin_visibility.md`](../lesson/onenote_com_recycle_bin_visibility.md)。
+Page Move 只对本次 `include_subpages` 选定范围执行源侧非永久删除。默认 `false` 只移动根 Page：生产服务先把被排除的完整后代子树整体提升一级，回读其精确 ID、Section 与相对层级，再删除根 Page；`true` 才按叶到根处理完整子树。生产删除服务会有界回读每个精确选定 Page ID，并拒绝仍留在活动 hierarchy 的对象；manual scenario 的双 Notebook `after.json` 再确认选定源已消失、root-only 排除后代仍活动且内容未变。回收站 metadata 若能取得只作为额外诊断证据。背景与适用边界见 [`lesson/onenote_com_recycle_bin_visibility.md`](../lesson/onenote_com_recycle_bin_visibility.md)。
 
 Section/SectionGroup Move 使用不同的删除策略：只允许跨 Notebook，完整容器子树 Copy 与生产验证通过后，只对源容器根调用一次 `DeleteHierarchy(permanently=false)`，不得逐个删除后代“补齐”。`move-section` / `move-section-group` 的双 Notebook after snapshot 必须证明计划中的全部源 ID 都不再活动、完整目标映射只位于 destination role；同 Notebook 请求必须在 mutation 前拒绝并改用对应 `reparent-*`。两个新场景均不进入 `all`，真实执行只能由用户本人分别启动。
 

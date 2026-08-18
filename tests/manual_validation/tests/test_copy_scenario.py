@@ -865,7 +865,7 @@ def _legacy_copy_page_two_case_fixture(
                 self.copy_arguments.append(dict(arguments))
                 return (
                     subtree_copied
-                    if arguments.get("page_scope") == "indentation_subtree"
+                    if arguments.get("include_subpages", False)
                     else root_copied
                 )
             raise AssertionError(name)
@@ -900,9 +900,9 @@ def _legacy_copy_page_two_case_fixture(
     assert result["restored"] is expected_restored
     assert result["worksite_preserved"] is keep_worksite
     assert len(cleanup_calls) == expected_cleanup_calls
-    assert "page_scope" not in client.copy_arguments[0]
+    assert client.copy_arguments[0]["include_subpages"] is False
     assert client.copy_arguments[0]["expected_modified"] == source["modified"]
-    assert client.copy_arguments[1]["page_scope"] == "indentation_subtree"
+    assert client.copy_arguments[1]["include_subpages"] is True
     assert client.copy_arguments[1]["expected_modified"] == source["modified"]
     root_before = test_utils.read_json(
         run_dir / "scenarios" / "copy-page" / "before-root-only-default.json"
@@ -1092,7 +1092,7 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                 "order": 100 + index * 2,
             }
             created_pages.append(target)
-            if arguments.get("page_scope") == "indentation_subtree":
+            if arguments.get("include_subpages", False):
                 id_map["source-child"] = f"target-child-{index}"
                 created_pages.append(
                     {
@@ -1127,7 +1127,7 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                 "copy_report": {
                         "planning": {
                             "include_descendants": (
-                                arguments.get("page_scope") == "indentation_subtree"
+                                arguments.get("include_subpages", False)
                             ),
                         "content_capabilities": [],
                     },
@@ -1178,13 +1178,13 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
     )
 
     assert [arguments["destination_section_id"] for arguments in copy_arguments] == expected_destinations
-    assert [arguments.get("page_scope") for arguments in copy_arguments] == [
+    assert [arguments.get("include_subpages") for arguments in copy_arguments] == [
         None,
-        "indentation_subtree",
+        True,
         None,
-        "indentation_subtree",
+        True,
         None,
-        "indentation_subtree",
+        True,
     ]
     projection_evidence = test_utils.read_json(
         run_dir / "scenarios" / "copy-page" / "page-text-projection.json"

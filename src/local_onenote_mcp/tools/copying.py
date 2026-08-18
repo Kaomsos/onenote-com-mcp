@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from .responses import invoke
 
@@ -18,9 +18,9 @@ async def copy_page(
     expected_section_id: str,
     expected_modified: str | None = None,
     destination_title: str | None = None,
-    page_scope: Literal["page_only", "indentation_subtree"] = "page_only",
+    include_subpages: bool = False,
 ) -> dict[str, Any]:
-    """With Create and Writes, copy one exact Page scope using capability-aware fidelity checks; OneNote chooses the reported destination position."""
+    """With Create and Writes, copy one exact Page using capability-aware fidelity checks; include_subpages=false selects only the root and true selects its complete indentation subtree; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "copy_page",
@@ -30,7 +30,7 @@ async def copy_page(
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
         destination_title=destination_title,
-        page_scope=page_scope,
+        include_subpages=include_subpages,
     )
 
 
@@ -102,9 +102,9 @@ async def move_page(
     expected_section_id: str,
     expected_modified: str | None = None,
     destination_title: str | None = None,
-    page_scope: Literal["page_only", "indentation_subtree"] = "page_only",
+    include_subpages: bool = False,
 ) -> dict[str, Any]:
-    """With Create, Writes, and Deletes, reconstructively move one Page scope only after capability-aware Copy verification; OneNote chooses the reported destination position."""
+    """With Create, Writes, and Deletes, reconstructively move one Page only after capability-aware Copy verification; include_subpages=false protects excluded descendants and true moves the complete indentation subtree; OneNote chooses the reported destination position."""
 
     return invoke_mutation(
         "move_page",
@@ -114,7 +114,7 @@ async def move_page(
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
         destination_title=destination_title,
-        page_scope=page_scope,
+        include_subpages=include_subpages,
     )
 
 

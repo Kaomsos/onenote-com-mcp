@@ -94,11 +94,11 @@
 - [x] 当前 12 个 `items[1..20]` 工具全部完成 Registry/schema/handler 预算审计；新增 batch-capable 工具具有 fail-closed 的自动纳管合同；
 - [x] 大型 Notebook 中少量精确 Batch Rename/Reparent/Delete 不再因无关 Page 数量误拒绝；
 - [x] Batch Create 的同源整本 CopyBudget 耦合已修复或以明确证据证明具有不同且合理的容量合同；
-- [ ] UT-010 的 `include_subpages`、完整子树和 batch-wide 后代提升都按 effective scope 正确计费；
+- [x] UT-010 的 `include_subpages`、完整子树和 batch-wide 后代提升都按 effective scope 正确计费；
 - [x] 聚焦自动化覆盖成功、真实 scope 超限、confirmation/overlap、partial envelope、backend-call accounting、零 replay 和内容脱敏；
 - [x] 共享行为变更后的完整 pytest 与所有相关 `--dry-run` 通过；
 - [ ] 用户在 fresh disposable 场景中确认“大 Notebook/小目标成功 + 真实 scope 超限零 mutation”两条真实路径；
-- [ ] 生产实现、根 README、公开 Tool contract、Operation Runtime、配置/health 和 manual-validation 文档同步。
+- [x] 生产实现、根 README、公开 Tool contract、Operation Runtime、配置/health 和 manual-validation 文档同步。
 
 ## 完成证据记录
 
@@ -107,8 +107,9 @@
 | 用户原始复现的 content-free 摘要 | 2026-08-18：10 个无重叠叶子 Page；validation_error；mutation_attempted=false；attempts=0；backend_calls=1；单项目标随后成功 |
 | 根因与受影响 batch inventory | `_preflight_batch_targets`、`batch_create` 及 Reparent 内层 `_capture_reparent_hierarchy` 均已解除 CopyBudget 耦合；Registry/schema 自动枚举固定当前 12 项 |
 | 新预算合同与公开配置/health 投影 | `BatchMutationBudget` 五维 content-free 合同；`health_check.batch_mutation_budget`、README、Tool contract、Operation Runtime 已同步 |
-| 聚焦自动化与完整 pytest | Batch/Policy/Server/Config 与完整 manual-validation 纯合同：756 passed；完整 `.venv\\Scripts\\python.exe -m pytest -q`：1309 passed |
-| Manual-validation dry-run | `.venv\\Scripts\\python.exe tests\\manual_validation\\run.py delete --dry-run --json`：通过；静态计划投影 `batch_mutation_budget.max_effective_pages=3`、human-only、server_started=false |
+| 聚焦自动化与完整 pytest | Batch/Policy/Server/Config 与完整 manual-validation 纯合同已覆盖；完整 `.venv\\Scripts\\python.exe -m pytest -q`：1320 passed |
+| Manual-validation dry-run | `delete`、`reorder-page`、`copy-page`、`move-page`、`reparent-page-with-level` 五个 `--dry-run --json` 均通过；Delete 静态计划投影 `batch_mutation_budget.max_effective_pages=5`、human-only、server_started=false |
+| UT-010 集成 | 五个 Page Tool 已统一 `include_subpages=false|true`；Page Reparent/Delete batch 冻结整批 scope 并先完成按 Section 的一次性提升；Delete/Reorder 具名场景已扩展，等待用户真实复测 |
 | 用户确认的真实 disposable 证据 | 待填写 |
 
 ## 关联

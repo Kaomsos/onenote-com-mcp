@@ -858,12 +858,16 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
             {"id": "section-target", "name": "Disposable-Section-Target"},
                 {"id": "page-section", "name": "Disposable-Page-Section"},
                 {"id": "page-target", "name": "Disposable-Page-Target"},
+                {"id": "page-protected-child", "name": "Disposable-Page-Protected-Child"},
                 {"id": "page-target-second", "name": "Disposable-Page-Target-Second"},
+                {"id": "page-subtree-child", "name": "Disposable-Page-Subtree-Child"},
                 {"id": "budget-section", "name": "Budget-Overlimit-Section"},
                 {"id": "budget-page-1", "name": "Budget-Page-1"},
                 {"id": "budget-page-2", "name": "Budget-Page-2"},
                 {"id": "budget-page-3", "name": "Budget-Page-3"},
                 {"id": "budget-page-4", "name": "Budget-Page-4"},
+                {"id": "budget-page-5", "name": "Budget-Page-5"},
+                {"id": "budget-page-6", "name": "Budget-Page-6"},
         ]
     )
 
@@ -875,6 +879,9 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
 
     async def fake_page(*_args, **_kwargs):
         return next(created)
+
+    async def fake_position(_client, _section_id, page_id, *_args):
+        return {"id": page_id}
 
     async def fake_snapshot(*_args, **_kwargs):
         return {
@@ -906,9 +913,23 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
                         "section_id": "page-section",
                     },
                     {
+                        "id": "page-protected-child",
+                        "resource_type": "page",
+                        "section_id": "page-section",
+                        "page_level": 2,
+                        "parent_page_id": "page-target",
+                    },
+                    {
                         "id": "page-target-second",
                         "resource_type": "page",
                         "section_id": "page-section",
+                    },
+                    {
+                        "id": "page-subtree-child",
+                        "resource_type": "page",
+                        "section_id": "page-section",
+                        "page_level": 2,
+                        "parent_page_id": "page-target-second",
                     },
                     {
                         "id": "budget-section",
@@ -921,7 +942,7 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
                             "resource_type": "page",
                             "section_id": "budget-section",
                         }
-                        for index in range(1, 5)
+                            for index in range(1, 7)
                     ],
             ],
             "page_hashes": {},
@@ -930,6 +951,7 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
     monkeypatch.setattr(delete_fixture, "ensure_group", fake_group)
     monkeypatch.setattr(delete_fixture, "ensure_section", fake_section)
     monkeypatch.setattr(delete_fixture, "ensure_page", fake_page)
+    monkeypatch.setattr(delete_fixture, "enforce_page_position", fake_position)
     monkeypatch.setattr(fixture_runtime, "capture_snapshot", fake_snapshot)
     args = argparse.Namespace(scenario="delete")
     options = RuntimeOptions(tmp_path, 180, False, False)

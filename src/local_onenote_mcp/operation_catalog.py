@@ -245,7 +245,7 @@ def _uses_batch_mode(
     nondefault_single = [
         field
         for field, default in batch_default_only_fields
-        if arguments.get(field) != default
+        if arguments.get(field, default) != default
     ]
     if nondefault_single:
         raise ValueError(
@@ -591,7 +591,7 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
         ),
         "reorder_page": (
             lambda a: services.mutations.reorder_page(
-                a["page_id"], a["expected_title"], a["expected_section_id"], a["after_page_id"] or "", a["page_level"], a["expected_modified"]
+                a["page_id"], a["expected_title"], a["expected_section_id"], a["after_page_id"] or "", a["page_level"], a["expected_modified"], a["include_subpages"]
             ),
             "mutations.reorder_page",
             "reorder_page",
@@ -621,10 +621,10 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
                 single_fields=("page_id", "expected_title", "expected_section_id"),
                 optional_single_fields=("expected_modified",),
                 required_common_fields=("destination_section_id",),
-                batch_default_only_fields=(("page_scope", "page_only"),),
+                batch_default_only_fields=(("include_subpages", False),),
             )
             else services.mutations.reparent_page(
-                a["page_id"], a["destination_section_id"], a["expected_title"], a["expected_section_id"], a["expected_modified"], a["page_scope"] == "indentation_subtree"
+                a["page_id"], a["destination_section_id"], a["expected_title"], a["expected_section_id"], a["expected_modified"], a["include_subpages"]
             ),
             "mutations.reparent_page",
             "reparent_page",
@@ -714,9 +714,9 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
         "delete_page",
         **mutation,
         handler=lambda a: services.mutations.batch_delete("page", a["items"])
-        if _uses_batch_mode(a, single_fields=("page_id", "expected_title", "expected_section_id"), optional_single_fields=("expected_modified",))
+        if _uses_batch_mode(a, single_fields=("page_id", "expected_title", "expected_section_id"), optional_single_fields=("expected_modified",), batch_default_only_fields=(("include_subpages", False),))
         else services.mutations.delete_page(
-            a["page_id"], a["expected_title"], a["expected_section_id"], a["expected_modified"], False
+            a["page_id"], a["expected_title"], a["expected_section_id"], a["expected_modified"], False, a["include_subpages"]
         ),
         handler_id="mutations.delete_page",
         mutation=_mutation_policy("delete_page", attempt_policy_id="delete_hierarchy", saga=True),
@@ -725,7 +725,7 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
     # Copy/Move are operation-wide sagas.  Internal planning is rebuilt live in
     # the same exclusive Runtime call and is never supplied by the MCP client.
     copy_specs = {
-        "copy_page": ("page_id", "page", "destination_section_id", "destination_title", "", "expected_title", "expected_section_id", "expected_modified", "page_scope"),
+        "copy_page": ("page_id", "page", "destination_section_id", "destination_title", "", "expected_title", "expected_section_id", "expected_modified", "include_subpages"),
         "copy_section": ("section_id", "section", "destination_parent_id", "destination_name", "", "expected_name", "expected_parent_id", "expected_modified", None),
         "copy_section_group": ("section_group_id", "section_group", "destination_parent_id", "destination_name", "", "expected_name", "expected_parent_id", "expected_modified", None),
         "copy_notebook": ("notebook_id", "notebook", None, "destination_name", "destination_base_folder", "expected_name", None, "expected_modified", None),
@@ -755,7 +755,7 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
                 a[expected_key],
                 a[expected_parent_key] if expected_parent_key else None,
                 a[modified_key],
-                a[scope_key] == "indentation_subtree" if scope_key else False,
+                a[scope_key] if scope_key else False,
             )
 
         add(
@@ -770,7 +770,7 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
         (
             "move_page",
             lambda a: services.copying.move_page(
-                a["page_id"], a["destination_section_id"], a["expected_title"], a["expected_section_id"], a["expected_modified"], a["destination_title"] or "", a["page_scope"] == "indentation_subtree"
+                a["page_id"], a["destination_section_id"], a["expected_title"], a["expected_section_id"], a["expected_modified"], a["destination_title"] or "", a["include_subpages"]
             ),
             "copying.move_page",
         ),

@@ -66,8 +66,8 @@ PageContentObject 是 Page 内可寻址的内容对象，例如 outline、image 
 
 因此：
 
-- `page_only` 表示只选择目标 Page；
-- `indentation_subtree` 表示选择该 Page 以及连续缩进在其下的 Page；
+- `include_subpages=false` 表示只选择目标 Page；
+- `include_subpages=true` 表示选择该 Page 以及连续缩进在其下的 Page；
 - Page Reorder 可以改变 order 和 indentation，从而改变派生的 `parent_page_id`；
 - Page Reparent 改变所属 Section，和只改变缩进的 Reorder 不是同一操作。
 

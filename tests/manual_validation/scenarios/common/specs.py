@@ -433,7 +433,7 @@ SCENARIO_SPECS = {
                 "append_page_content",
                 "add_page_image_from_file",
             },
-            content=("page_scope", "rich_text", "table", "image", "numbered_pages"),
+            content=("include_subpages", "rich_text", "table", "image", "numbered_pages"),
             checks=(
                 "root-only selected Page starts at level 2 with one level-3 descendant",
                 "full-subtree selected Page starts at level 2 with two branched level-3 descendants",
@@ -509,27 +509,33 @@ SCENARIO_SPECS = {
             (
                 "Delete-Sandbox/Disposable-Group/Disposable-Section",
                 "Delete-Sandbox/Disposable-Section-Target",
-                "Delete-Sandbox/Disposable-Page-Section/two leaf Page targets",
-                "Delete-Sandbox/Budget-Overlimit-Section/four direct Pages",
+                "Delete-Sandbox/Disposable-Page-Section/root-only and subtree Page targets",
+                "Delete-Sandbox/Budget-Overlimit-Section/six direct Pages",
             ),
             (
                 "delete_sandbox", "disposable_group", "disposable_section",
                 "disposable_section_target", "disposable_page_section", "disposable_page_target",
-                "disposable_page_target_second", "budget_section",
-                "budget_page_1", "budget_page_2", "budget_page_3", "budget_page_4",
+                "disposable_page_protected_child", "disposable_page_target_second",
+                "disposable_page_subtree_child", "budget_section", "budget_page_1",
+                "budget_page_2", "budget_page_3", "budget_page_4", "budget_page_5",
+                "budget_page_6",
             ),
-            {"create_section_group", "create_section", "create_page"},
+            {"create_section_group", "create_section", "create_page", "reorder_page"},
             checks=(
                 "disposable_group is a descendant of delete_sandbox",
                 "disposable_group contains a persisted sentinel Section",
                 "Page, Section, and SectionGroup batch Delete target IDs are manifest-allowlisted",
                 "Notebook total Page count exceeds the test Batch effective Page limit",
-                "four-Page Section scope is rejected before mutation",
+                "mixed include_subpages Page batch protects one child and deletes one subtree",
+                "six-Page Section scope is rejected before mutation",
             ),
         ),
         DELETE_SCENARIO_POLICY,
-        frozenset(DELETE_TOOLS | {"create_section_group", "create_section", "create_page"}),
-        batch_mutation_budget={"max_effective_pages": 3},
+        frozenset(
+            DELETE_TOOLS
+            | {"create_section_group", "create_section", "create_page", "reorder_page"}
+        ),
+        batch_mutation_budget={"max_effective_pages": 5},
     ),
     "copy-page": ScenarioSpec(
         "copy-page",

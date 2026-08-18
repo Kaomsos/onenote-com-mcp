@@ -340,7 +340,7 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
         "id": "parent-page",
         "name": "Parent",
         "section_id": section["id"],
-        "order": 1,
+        "order": 0,
         "page_level": 1,
         "parent_page_id": None,
     }
@@ -349,9 +349,17 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
         "id": "sibling-page",
         "name": "Sibling",
         "section_id": section["id"],
-        "order": 0,
+        "order": 2,
         "page_level": 1,
         "parent_page_id": None,
+    }
+    child = {
+        **parent,
+        "id": "child-page",
+        "name": "Child",
+        "order": 1,
+        "page_level": 2,
+        "parent_page_id": parent["id"],
     }
     changed = {
         **target,
@@ -360,24 +368,56 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
         "parent_page_id": parent["id"],
     }
     changed_parent = {**parent, "order": 0}
+    changed_child = {**child, "order": 2}
     manifest = {
         "schema_version": 1,
         "notebook": {"id": "notebook-id", "name": "Notebook"},
         "structure": {
             "reorder_section": section,
             "parent_page": parent,
+            "child_page": child,
             "sibling_page": target,
         },
     }
     before = {
-        "items": [section, target, parent],
-        "page_hashes": {"parent-page": "a", "sibling-page": "b"},
+        "items": [section, parent, child, target],
+        "page_hashes": {"parent-page": "a", "child-page": "c", "sibling-page": "b"},
     }
-    after = {
-        "items": [section, changed_parent, changed],
+    root_only_after = {
+        "items": [
+            section,
+            {**child, "order": 0, "page_level": 1, "parent_page_id": None},
+            {**target, "order": 1},
+            {**parent, "order": 2},
+        ],
         "page_hashes": before["page_hashes"],
     }
-    snapshots = iter([before, after])
+    root_before_child_restore = {
+        "items": [
+            section,
+            parent,
+            {**child, "page_level": 1, "parent_page_id": None},
+            target,
+        ],
+        "page_hashes": before["page_hashes"],
+    }
+    subtree_after = {
+        "items": [section, {**target, "order": 0}, {**parent, "order": 1}, {**child, "order": 2}],
+        "page_hashes": before["page_hashes"],
+    }
+    after = {
+        "items": [section, changed_parent, changed, changed_child],
+        "page_hashes": before["page_hashes"],
+    }
+    snapshots = iter([
+        before,
+        root_only_after,
+        root_before_child_restore,
+        before,
+        subtree_after,
+        before,
+        after,
+    ])
 
     async def fake_snapshot(_client, _notebook_id):
         return next(snapshots)
@@ -402,7 +442,7 @@ def test_reorder_keep_worksite_skips_restore(monkeypatch, tmp_path) -> None:
         )
     )
 
-    assert [name for name, _ in FakeClient.calls] == ["reorder_page"]
+    assert [name for name, _ in FakeClient.calls] == ["reorder_page"] * 6
     assert result["worksite_preserved"] is True
     worksite = test_utils.read_json(
         tmp_path / "scenarios" / "reorder-page" / "worksite.json"
@@ -425,7 +465,7 @@ def test_reorder_default_records_safe_sort_rejection_and_restores(
         "title": "01-Parent",
         "section_id": section["id"],
         "parent_id": section["id"],
-        "order": 1,
+        "order": 0,
         "page_level": 1,
         "parent_page_id": None,
         "modified": "parent-before",
@@ -436,10 +476,19 @@ def test_reorder_default_records_safe_sort_rejection_and_restores(
         "title": "03-Sibling",
         "section_id": section["id"],
         "parent_id": section["id"],
-        "order": 0,
+        "order": 2,
         "page_level": 1,
         "parent_page_id": None,
         "modified": "target-before",
+    }
+    child = {
+        **parent,
+        "id": "child-page",
+        "title": "02-Child",
+        "order": 1,
+        "page_level": 2,
+        "parent_page_id": parent["id"],
+        "modified": "child-before",
     }
     changed_parent = {**parent, "order": 0, "modified": "parent-after"}
     changed = {
@@ -449,15 +498,58 @@ def test_reorder_default_records_safe_sort_rejection_and_restores(
         "parent_page_id": parent["id"],
         "modified": "target-after",
     }
+    changed_child = {**child, "order": 2}
     before = {
-        "items": [section, target, parent],
-        "page_hashes": {"parent-page": "a", "sibling-page": "b"},
+        "items": [section, parent, child, target],
+        "page_hashes": {"parent-page": "a", "child-page": "c", "sibling-page": "b"},
     }
-    after = {
-        "items": [section, changed_parent, changed],
+    root_only_after = {
+        "items": [
+            section,
+            {**child, "order": 0, "page_level": 1, "parent_page_id": None},
+            {**target, "order": 1},
+            {**parent, "order": 2},
+        ],
         "page_hashes": before["page_hashes"],
     }
-    snapshots = iter([before, after, after, after, before])
+    root_before_child_restore = {
+        "items": [
+            section,
+            parent,
+            {**child, "page_level": 1, "parent_page_id": None},
+            target,
+        ],
+        "page_hashes": before["page_hashes"],
+    }
+    subtree_after = {
+        "items": [section, {**target, "order": 0}, {**parent, "order": 1}, {**child, "order": 2}],
+        "page_hashes": before["page_hashes"],
+    }
+    after = {
+        "items": [section, changed_parent, changed, changed_child],
+        "page_hashes": before["page_hashes"],
+    }
+    sorted_after = {
+        "items": [
+            section,
+            changed_parent,
+            {**changed_child, "order": 1},
+            {**changed, "order": 2},
+        ],
+        "page_hashes": before["page_hashes"],
+    }
+    snapshots = iter([
+        before,
+        root_only_after,
+        root_before_child_restore,
+        before,
+        subtree_after,
+        before,
+        after,
+        sorted_after,
+        sorted_after,
+        before,
+    ])
 
     async def fake_snapshot(_client, _notebook_id):
         return next(snapshots)
@@ -499,6 +591,7 @@ def test_reorder_default_records_safe_sort_rejection_and_restores(
                 "structure": {
                     "reorder_section": section,
                     "parent_page": parent,
+                    "child_page": child,
                     "sibling_page": target,
                 },
             },
@@ -508,6 +601,11 @@ def test_reorder_default_records_safe_sort_rejection_and_restores(
     )
 
     assert [name for name, _ in FakeClient.calls] == [
+        "reorder_page",
+        "reorder_page",
+        "reorder_page",
+        "reorder_page",
+        "reorder_page",
         "reorder_page",
         "sort_children",
         "reorder_page",
@@ -874,7 +972,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         async def call_tool(self, name: str, arguments: dict) -> dict:
             self.calls.append(name)
             assert name == "move_page"
-            include_descendants = arguments.get("page_scope") == "indentation_subtree"
+            include_descendants = bool(arguments.get("include_subpages", False))
             if include_descendants:
                 source_ids = ["subtree", "subtree-child"]
                 target_ids = ["target-subtree", "target-subtree-child"]

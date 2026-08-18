@@ -503,7 +503,7 @@ class InteractiveCopyEvidenceScenario(Scenario):
                         "expected_section_id": current_source.get("section_id"),
                         "expected_modified": current_source.get("modified"),
                         "destination_title": destination_title,
-                        "page_scope": "page_only",
+                        "include_subpages": False,
                     },
                     self._case_evidence_path(out, "copy-result", case_name),
                 )
@@ -771,7 +771,7 @@ class InteractiveCopyEvidenceScenario(Scenario):
                             "expected_section_id": chain_source.get("section_id"),
                             "expected_modified": chain_source.get("modified"),
                             "destination_title": chain_title,
-                            "page_scope": "page_only",
+                            "include_subpages": False,
                         },
                         self._case_evidence_path(
                             out, "copy-result", case_name, hop_index

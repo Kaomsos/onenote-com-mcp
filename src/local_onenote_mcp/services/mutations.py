@@ -735,6 +735,7 @@ class MutationService(BaseService):
         after_page_id: str = "",
         page_level: int = 0,
         expected_modified: str | None = None,
+        include_subpages: bool = False,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_write()
         page = self.pages.confirm(
@@ -744,9 +745,10 @@ class MutationService(BaseService):
             expected_modified=expected_modified,
         )
         section = self.hierarchy.resource(expected_section_id, "section")
+        all_items = self.hierarchy.resources(include_recycle_bin=False)
         pages = [
             item
-            for item in self.hierarchy.resources(include_recycle_bin=False)
+            for item in all_items
             if item["resource_type"] == "page" and item["section_id"] == expected_section_id
         ]
         pages.sort(key=lambda item: item["order"])
@@ -754,11 +756,33 @@ class MutationService(BaseService):
             (item["id"], int(item.get("order", 0)), int(item.get("page_level", 1)))
             for item in pages
         )
-        pages = [item for item in pages if item["id"] != page_id]
+        complete_scope = self._page_scope(pages, page_id)
+        selected = complete_scope if include_subpages else complete_scope[:1]
+        selected_ids = {str(item["id"]) for item in selected}
+        excluded_descendants = complete_scope[1:] if not include_subpages else []
+        if after_page_id in selected_ids:
+            raise ValueError("after_page_id cannot identify the selected Page scope.")
+
+        planned_remaining = [
+            {
+                **item,
+                "page_level": (
+                    int(item.get("page_level") or 1) - 1
+                    if not include_subpages
+                    and str(item["id"])
+                    in {str(value["id"]) for value in excluded_descendants}
+                    else int(item.get("page_level") or 1)
+                ),
+            }
+            for item in pages
+            if str(item["id"]) not in selected_ids
+        ]
         if after_page_id:
-            if after_page_id == page_id:
-                raise ValueError("after_page_id cannot equal page_id.")
-            indexes = [index for index, item in enumerate(pages) if item["id"] == after_page_id]
+            indexes = [
+                index
+                for index, item in enumerate(planned_remaining)
+                if item["id"] == after_page_id
+            ]
             if not indexes:
                 raise ValueError("after_page_id must identify another page in the same section.")
             insertion_index = indexes[0] + 1
@@ -769,12 +793,37 @@ class MutationService(BaseService):
             raise ValueError("page_level must be zero (preserve) or at least 1.")
         if insertion_index == 0 and target_level != 1:
             raise ValueError("The first page in a section must have page_level=1.")
-        if insertion_index > 0 and target_level > pages[insertion_index - 1]["page_level"] + 1:
+        if (
+            insertion_index > 0
+            and target_level
+            > int(planned_remaining[insertion_index - 1]["page_level"]) + 1
+        ):
             raise ValueError("page_level cannot jump by more than one level from the preceding page.")
-        pages.insert(insertion_index, {**page, "page_level": target_level})
+        root_level = int(page.get("page_level") or 1)
+        moved_block = [
+            {
+                **item,
+                "page_level": target_level
+                + int(item.get("page_level") or 1)
+                - root_level,
+            }
+            for item in selected
+        ]
+        if any(not 1 <= int(item["page_level"]) <= 3 for item in moved_block):
+            raise ValueError("The selected Page scope would exceed the supported page_level range 1..3.")
+        planned_pages = [*planned_remaining]
+        planned_pages[insertion_index:insertion_index] = moved_block
+        if any(
+            index == 0 and int(item["page_level"]) != 1
+            or index > 0
+            and int(item["page_level"])
+            > int(planned_pages[index - 1]["page_level"]) + 1
+            for index, item in enumerate(planned_pages)
+        ):
+            raise ValueError("Reorder would produce an invalid Page indentation sequence.")
         expected_signature = tuple(
             (item["id"], order, int(item.get("page_level", 1)))
-            for order, item in enumerate(pages)
+            for order, item in enumerate(planned_pages)
         )
 
         def observe():
@@ -793,19 +842,70 @@ class MutationService(BaseService):
                 for item in values
             )
 
-        reconciliation = self._execute_mutation_attempt(
-            operation="reorder_page",
-            execute=lambda: self.call(
-                "update_hierarchy",
-                xml=self.hierarchy.page_order_xml(section, pages),
-                schema=XML_SCHEMA_2013,
-            ),
-            observe=observe,
-            is_pre_state=lambda values: signature(values) == before_signature,
-            is_post_state=lambda values: signature(values) == expected_signature,
-            is_partial_state=lambda values: {item["id"] for item in values}
-            != {item[0] for item in before_signature},
-        )
+        promotion = {"promoted": False, "preserved_descendant_ids": []}
+        mutation_pre_signature = before_signature
+        if excluded_descendants:
+            notebook_id = self._resource_notebook_id(page)
+            if notebook_id is None:
+                raise ValueError("The Page Notebook identity is unavailable.")
+            try:
+                promoted_snapshot, promotion = self._promote_reparent_descendants(
+                    {"items": self._notebook_items(all_items, str(notebook_id))},
+                    page,
+                    excluded_descendants,
+                )
+            except Exception as exc:
+                raise PartialFailure(
+                    "Excluded Page descendants could not be promoted and verified; Reorder was not attempted.",
+                    partial=True,
+                    operation="reorder_page",
+                    principal_mutation_attempted=False,
+                    preserved_descendant_ids=[
+                        str(item["id"]) for item in excluded_descendants
+                    ],
+                    manual_recovery_required=True,
+                    retryability="inspect_live_state_before_new_call",
+                    rollback_attempted=False,
+                    mutation_replayed=False,
+                ) from exc
+            promoted_pages = sorted(
+                (
+                    item
+                    for item in promoted_snapshot["items"]
+                    if item.get("resource_type") == "page"
+                    and item.get("section_id") == expected_section_id
+                ),
+                key=lambda item: int(item.get("order", 0)),
+            )
+            mutation_pre_signature = signature(promoted_pages)
+        try:
+            reconciliation = self._execute_mutation_attempt(
+                operation="reorder_page",
+                execute=lambda: self.call(
+                    "update_hierarchy",
+                    xml=self.hierarchy.page_order_xml(section, planned_pages),
+                    schema=XML_SCHEMA_2013,
+                ),
+                observe=observe,
+                is_pre_state=lambda values: signature(values)
+                == mutation_pre_signature,
+                is_post_state=lambda values: signature(values) == expected_signature,
+                is_partial_state=lambda values: {item["id"] for item in values}
+                != {item[0] for item in before_signature},
+            )
+        except Exception as exc:
+            if promotion.get("promoted"):
+                raise PartialFailure(
+                    "Excluded Page descendants were promoted, but Reorder did not complete; inspect live state before any new call.",
+                    partial=True,
+                    operation="reorder_page",
+                    completed_steps=[{"operation": "promote_page_descendants"}],
+                    preserved_descendants=promotion,
+                    rollback_attempted=False,
+                    mutation_replayed=False,
+                    manual_recovery_required=True,
+                ) from exc
+            raise
         stable = self._converge(
             operation="reorder_page",
             observe=observe,
@@ -818,6 +918,10 @@ class MutationService(BaseService):
         return {
             "item": refreshed,
             "pages": refreshed_pages,
+            "include_subpages": bool(include_subpages),
+            "selected_page_ids": [str(item["id"]) for item in selected],
+            "preserved_descendants": promotion,
+            "verification_scope": {"page_content": "not_read"},
             "convergence": stable.summary(),
             "reconciliation": reconciliation.summary(),
         }
@@ -1439,6 +1543,150 @@ class MutationService(BaseService):
             "preserved_descendant_ids": [str(item["id"]) for item in descendants],
         }
 
+    def _promote_batch_page_descendants(
+        self,
+        snapshot: list[dict[str, Any]],
+        targets: list[dict[str, Any]],
+        supplied_items: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Promote every excluded Page descendant from one frozen batch snapshot."""
+
+        scopes = {
+            str(target["id"]): self._page_scope(snapshot, str(target["id"]))
+            for target in targets
+        }
+        protected_ids = {
+            str(descendant["id"])
+            for target, supplied in zip(targets, supplied_items)
+            if not bool(supplied.get("include_subpages", False))
+            for descendant in scopes[str(target["id"])][1:]
+        }
+        if not protected_ids:
+            return snapshot, {
+                "promoted": False,
+                "preserved_descendant_ids": [],
+                "affected_section_ids": [],
+                "verification_scope": {"page_content": "not_read"},
+            }
+        notebook_id = self._resource_notebook_id(targets[0])
+        if notebook_id is None:
+            raise MutationPreflightFailure(
+                "Batch Page descendant protection cannot prove Notebook ownership.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+            )
+        by_id = {str(item["id"]): item for item in snapshot if item.get("id")}
+        section_ids = sorted(
+            {str(by_id[object_id]["section_id"]) for object_id in protected_ids}
+        )
+        plans: dict[str, list[dict[str, Any]]] = {}
+        for section_id in section_ids:
+            pages = sorted(
+                (
+                    dict(item)
+                    for item in snapshot
+                    if item.get("resource_type") == "page"
+                    and str(item.get("section_id")) == section_id
+                ),
+                key=lambda item: int(item.get("order", 0)),
+            )
+            adjusted = [
+                {
+                    **page,
+                    "page_level": int(page.get("page_level") or 1)
+                    - (1 if str(page["id"]) in protected_ids else 0),
+                }
+                for page in pages
+            ]
+            if any(not 1 <= int(page["page_level"]) <= 3 for page in adjusted):
+                raise MutationPreflightFailure(
+                    "Batch Page descendant protection would produce an invalid page_level.",
+                    mutation_stage="preflight",
+                    mutation_attempted=False,
+                )
+            expected_parents = self._page_parent_map(adjusted)
+            if any(
+                index == 0 and int(page["page_level"]) != 1
+                or index > 0
+                and int(page["page_level"])
+                > int(adjusted[index - 1]["page_level"]) + 1
+                or expected_parents[str(page["id"])]
+                != page.get("parent_page_id")
+                and str(page["id"]) not in protected_ids
+                for index, page in enumerate(adjusted)
+            ):
+                raise MutationPreflightFailure(
+                    "Batch Page descendant protection cannot preserve unrelated Page topology.",
+                    mutation_stage="preflight",
+                    mutation_attempted=False,
+                )
+            plans[section_id] = adjusted
+
+        completed_sections: list[str] = []
+        try:
+            for section_id, adjusted in plans.items():
+                section = by_id.get(section_id)
+                if section is None or section.get("resource_type") != "section":
+                    raise RuntimeError("A protected Page Section is missing.")
+                self.call(
+                    "update_hierarchy",
+                    xml=self.hierarchy.page_order_xml(section, adjusted),
+                    schema=XML_SCHEMA_2013,
+                )
+                completed_sections.append(section_id)
+            after = self._capture_reparent_snapshot(str(notebook_id))["items"]
+            after_by_id = {
+                str(item["id"]): item for item in after if item.get("id")
+            }
+            for section_id, adjusted in plans.items():
+                current = sorted(
+                    (
+                        item
+                        for item in after
+                        if item.get("resource_type") == "page"
+                        and str(item.get("section_id")) == section_id
+                    ),
+                    key=lambda item: int(item.get("order", 0)),
+                )
+                expected_parents = self._page_parent_map(adjusted)
+                if [str(item["id"]) for item in current] != [
+                    str(item["id"]) for item in adjusted
+                ]:
+                    raise RuntimeError(
+                        "Batch descendant promotion changed Page identity or order."
+                    )
+                for expected in adjusted:
+                    actual = after_by_id.get(str(expected["id"]))
+                    if (
+                        actual is None
+                        or int(actual.get("page_level") or 0)
+                        != int(expected["page_level"])
+                        or actual.get("parent_page_id")
+                        != expected_parents[str(expected["id"])]
+                    ):
+                        raise RuntimeError(
+                            "Batch descendant promotion did not converge to the planned topology."
+                        )
+        except Exception as exc:
+            raise PartialFailure(
+                "Batch Page descendant protection was incomplete; no principal batch item was started.",
+                partial=True,
+                operation="promote_page_descendants",
+                principal_mutation_attempted=False,
+                affected_section_count=len(plans),
+                completed_section_count=len(completed_sections),
+                protected_descendant_count=len(protected_ids),
+                manual_recovery_required=bool(completed_sections),
+                rollback_attempted=False,
+                mutation_replayed=False,
+            ) from exc
+        return after, {
+            "promoted": True,
+            "preserved_descendant_ids": sorted(protected_ids),
+            "affected_section_ids": section_ids,
+            "verification_scope": {"page_content": "not_read"},
+        }
+
     def _validate_reparent_page_scope(
         self,
         before: dict[str, Any],
@@ -1828,6 +2076,7 @@ class MutationService(BaseService):
                         partial=True,
                         outcome="descendant_promotion_unverified",
                         reparent_attempted=False,
+                        principal_mutation_attempted=False,
                         destination_position=unavailable_destination_position(
                             "page", "destination_target_not_created"
                         ),
@@ -1835,6 +2084,10 @@ class MutationService(BaseService):
                             str(item["id"]) for item in complete_scope[1:]
                         ],
                         promotion_error=str(exc),
+                        manual_recovery_required=True,
+                        retryability="inspect_live_state_before_new_call",
+                        rollback_attempted=False,
+                        mutation_replayed=False,
                     ) from exc
                 mutation_catalog = promoted["items"]
                 mutation_by_id = {item["id"]: item for item in mutation_catalog}
@@ -2806,14 +3059,15 @@ class MutationService(BaseService):
             try:
                 result = execute(supplied)
             except Exception as exc:
-                outcomes.append(
-                    {
-                        "input_index": index,
-                        "object_id": reference,
-                        "status": "failed",
-                        "error_type": type(exc).__name__,
-                    }
-                )
+                failed_outcome = {
+                    "input_index": index,
+                    "object_id": reference,
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                }
+                if isinstance(exc, PartialFailure):
+                    failed_outcome["failure"] = exc.details
+                outcomes.append(failed_outcome)
                 outcomes.extend(
                     {
                         "input_index": pending,
@@ -2838,6 +3092,9 @@ class MutationService(BaseService):
                     retryability="inspect_live_state_before_new_call",
                     rollback_attempted=False,
                     mutation_replayed=False,
+                    failed_item_details=(
+                        exc.details if isinstance(exc, PartialFailure) else None
+                    ),
                 ) from exc
             outcomes.append(
                 {
@@ -3016,6 +3273,7 @@ class MutationService(BaseService):
         resource_type: str,
         deleted_scope_ids: list[str],
         batch_result: dict[str, Any],
+        protected_items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         operation = f"delete_{resource_type}"
         try:
@@ -3036,11 +3294,33 @@ class MutationService(BaseService):
                         "status": "absent" if actual is None else "recycle_bin",
                     }
                 )
+            protected_final: list[dict[str, Any]] = []
+            for expected in protected_items or []:
+                object_id = str(expected["id"])
+                actual = by_id.get(object_id)
+                if (
+                    actual is None
+                    or actual.get("resource_type") != "page"
+                    or actual.get("is_in_recycle_bin") is True
+                    or actual.get("section_id") != expected.get("section_id")
+                    or int(actual.get("page_level") or 0)
+                    != int(expected.get("page_level") or 0)
+                    or actual.get("parent_page_id")
+                    != expected.get("parent_page_id")
+                ):
+                    raise ValueError(
+                        "A protected Page descendant is missing, recycled, or outside its planned topology."
+                    )
+                protected_final.append(
+                    {"current_id": object_id, "status": "active_protected"}
+                )
         except Exception as exc:
             self._batch_final_failure(operation, batch_result, exc)
         return {
             "item_count": len(final_items),
             "items": final_items,
+            "protected_count": len(protected_final),
+            "protected_items": protected_final,
             "verification_scope": {"page_content": "not_read"},
         }
 
@@ -3050,6 +3330,8 @@ class MutationService(BaseService):
         destination_parent_id: str,
         items: list[dict[str, Any]],
         batch_result: dict[str, Any],
+        frozen_page_scopes: dict[str, list[dict[str, Any]]] | None = None,
+        protected_items: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Re-read every applied target after the complete batch, in input order."""
 
@@ -3059,7 +3341,9 @@ class MutationService(BaseService):
                 str(value["id"]): value for value in snapshot if value.get("id")
             }
             final_items: list[dict[str, Any]] = []
+            final_scope_items: list[dict[str, Any]] = []
             current_ids: set[str] = set()
+            scope_current_ids: set[str] = set()
             for index, (supplied, outcome) in enumerate(
                 zip(items, batch_result["items"])
             ):
@@ -3100,7 +3384,111 @@ class MutationService(BaseService):
                         page_level=actual.get("page_level"),
                         parent_page_id=actual.get("parent_page_id"),
                     )
+                    frozen_scope = (frozen_page_scopes or {}).get(
+                        str(original_id), []
+                    )
+                    selected_scope = (
+                        frozen_scope
+                        if bool(supplied.get("include_subpages", False))
+                        else frozen_scope[:1]
+                    )
+                    root_level = (
+                        int(selected_scope[0].get("page_level") or 1)
+                        if selected_scope
+                        else 1
+                    )
+                    expected_source_parents = self._page_parent_map(selected_scope)
+                    mapped_scope_ids = [
+                        str(id_map.get(str(source["id"]), str(source["id"])))
+                        for source in selected_scope
+                    ]
+                    destination_pages = sorted(
+                        (
+                            value
+                            for value in snapshot
+                            if value.get("resource_type") == "page"
+                            and value.get("section_id") == destination_parent_id
+                        ),
+                        key=lambda value: int(value.get("order", 0)),
+                    )
+                    destination_ids = [str(value["id"]) for value in destination_pages]
+                    mapped_positions = [
+                        destination_ids.index(mapped_id)
+                        for mapped_id in mapped_scope_ids
+                        if mapped_id in destination_ids
+                    ]
+                    if (
+                        len(mapped_positions) != len(mapped_scope_ids)
+                        or mapped_positions
+                        != list(
+                            range(
+                                mapped_positions[0],
+                                mapped_positions[0] + len(mapped_positions),
+                            )
+                        )
+                    ):
+                        raise ValueError(
+                            "A final Reparent Page scope is not one contiguous destination block."
+                        )
+                    for source in selected_scope:
+                        source_id = str(source["id"])
+                        mapped_id = str(id_map.get(source_id, source_id))
+                        scoped_actual = by_id.get(mapped_id)
+                        source_parent_id = expected_source_parents[source_id]
+                        expected_parent_id = (
+                            None
+                            if source_parent_id is None
+                            else str(id_map.get(source_parent_id, source_parent_id))
+                        )
+                        expected_level = (
+                            int(source.get("page_level") or 1) - root_level + 1
+                        )
+                        if (
+                            scoped_actual is None
+                            or scoped_actual.get("resource_type") != "page"
+                            or scoped_actual.get("is_in_recycle_bin") is True
+                            or scoped_actual.get("section_id")
+                            != destination_parent_id
+                            or int(scoped_actual.get("page_level") or 0)
+                            != expected_level
+                            or scoped_actual.get("parent_page_id")
+                            != expected_parent_id
+                            or mapped_id in scope_current_ids
+                        ):
+                            raise ValueError(
+                                "A final Reparent Page scope is incomplete or has the wrong destination topology."
+                            )
+                        final_scope_items.append(
+                            {
+                                "input_index": index,
+                                "original_id": source_id,
+                                "current_id": mapped_id,
+                                "page_level": expected_level,
+                                "parent_page_id": expected_parent_id,
+                            }
+                        )
+                        scope_current_ids.add(mapped_id)
                 final_items.append(projected)
+            protected_final: list[dict[str, Any]] = []
+            for expected in protected_items or []:
+                object_id = str(expected["id"])
+                actual = by_id.get(object_id)
+                if (
+                    actual is None
+                    or actual.get("resource_type") != "page"
+                    or actual.get("is_in_recycle_bin") is True
+                    or actual.get("section_id") != expected.get("section_id")
+                    or int(actual.get("page_level") or 0)
+                    != int(expected.get("page_level") or 0)
+                    or actual.get("parent_page_id")
+                    != expected.get("parent_page_id")
+                ):
+                    raise ValueError(
+                        "A protected Reparent Page descendant is outside its planned source topology."
+                    )
+                protected_final.append(
+                    {"current_id": object_id, "status": "active_protected"}
+                )
         except Exception as exc:
             self._batch_final_failure(
                 f"reparent_{resource_type}", batch_result, exc
@@ -3109,6 +3497,10 @@ class MutationService(BaseService):
             "destination_parent_id": destination_parent_id,
             "item_count": len(final_items),
             "items": final_items,
+            "scope_item_count": len(final_scope_items),
+            "scope_items": final_scope_items,
+            "protected_count": len(protected_final),
+            "protected_items": protected_final,
             "verification_scope": {"page_content": "not_read"},
         }
 
@@ -3164,6 +3556,35 @@ class MutationService(BaseService):
             )
         )
 
+        promotion = {
+            "promoted": False,
+            "preserved_descendant_ids": [],
+            "affected_section_ids": [],
+            "verification_scope": {"page_content": "not_read"},
+        }
+        frozen_page_scopes: dict[str, list[dict[str, Any]]] = {}
+        protected_items: list[dict[str, Any]] = []
+        if resource_type == "page":
+            active_snapshot = self.hierarchy.without_recycle_bin(snapshot)
+            frozen_page_scopes = {
+                str(target["id"]): self._page_scope(
+                    active_snapshot, str(target["id"])
+                )
+                for target in targets
+            }
+            promoted_snapshot, promotion = self._promote_batch_page_descendants(
+                active_snapshot, targets, items
+            )
+            promoted_by_id = {
+                str(value["id"]): value
+                for value in promoted_snapshot
+                if value.get("id")
+            }
+            protected_items = [
+                promoted_by_id[object_id]
+                for object_id in promotion["preserved_descendant_ids"]
+            ]
+
         if resource_type == "page":
             result = self._execute_batch(
                 "reparent_page",
@@ -3171,7 +3592,7 @@ class MutationService(BaseService):
                 lambda item: self.reparent_page(
                     item["page_id"], destination_parent_id, item["expected_title"],
                     item["expected_section_id"], item.get("expected_modified"),
-                    item.get("page_scope") == "indentation_subtree",
+                    bool(item.get("include_subpages", False)),
                 ),
             )
         else:
@@ -3185,8 +3606,15 @@ class MutationService(BaseService):
                 ),
             )
         result["final_hierarchy"] = self._final_reparent_hierarchy(
-            resource_type, destination_parent_id, items, result
+            resource_type,
+            destination_parent_id,
+            items,
+            result,
+            frozen_page_scopes,
+            protected_items,
         )
+        if resource_type == "page":
+            result["preserved_descendants"] = promotion
         return result
 
     def batch_delete(
@@ -3206,15 +3634,106 @@ class MutationService(BaseService):
         )
         self._enforce_batch_effective_budget(effective_scope)
         if resource_type == "page":
+            active_snapshot = self.hierarchy.without_recycle_bin(snapshot)
+            frozen_scopes = {
+                str(target["id"]): self._page_scope(
+                    active_snapshot, str(target["id"])
+                )
+                for target in targets
+            }
+            promoted_snapshot, promotion = self._promote_batch_page_descendants(
+                active_snapshot, targets, items
+            )
+            promoted_by_id = {
+                str(value["id"]): value
+                for value in promoted_snapshot
+                if value.get("id")
+            }
+            protected_ids = set(promotion["preserved_descendant_ids"])
+            protected_items = [promoted_by_id[object_id] for object_id in protected_ids]
+            selected_scope_ids: list[str] = []
+
+            def delete_frozen_page_scope(item: dict[str, Any]) -> dict[str, Any]:
+                root_id = str(item["page_id"])
+                frozen_scope = frozen_scopes[root_id]
+                selected = (
+                    frozen_scope
+                    if bool(item.get("include_subpages", False))
+                    else frozen_scope[:1]
+                )
+                selected_scope_ids.extend(str(value["id"]) for value in selected)
+                scope_outcomes: list[dict[str, Any]] = []
+                deletion_order = list(reversed(selected))
+                for index, target in enumerate(deletion_order):
+                    target_id = str(target["id"])
+                    try:
+                        deleted = self.delete_resource(
+                            target_id,
+                            "page",
+                            display_name(target),
+                            str(target["section_id"]),
+                            target.get("modified"),
+                            False,
+                        )
+                    except Exception as exc:
+                        scope_outcomes.append(
+                            {
+                                "object_id": target_id,
+                                "status": "failed",
+                                "error_type": type(exc).__name__,
+                            }
+                        )
+                        scope_outcomes.extend(
+                            {
+                                "object_id": str(pending["id"]),
+                                "status": "not_attempted",
+                            }
+                            for pending in deletion_order[index + 1 :]
+                        )
+                        raise PartialFailure(
+                            "Batch Page subtree Delete stopped inside one frozen item scope.",
+                            partial=True,
+                            operation="delete_page_scope",
+                            include_subpages=bool(
+                                item.get("include_subpages", False)
+                            ),
+                            applied_count=index,
+                            items=scope_outcomes,
+                            manual_recovery_required=True,
+                            retryability="inspect_live_state_before_new_call",
+                            rollback_attempted=False,
+                            mutation_replayed=False,
+                        ) from exc
+                    scope_outcomes.append(
+                        {
+                            "object_id": target_id,
+                            "status": "applied",
+                            "result": deleted,
+                        }
+                    )
+                root_result = next(
+                    outcome["result"]
+                    for outcome in scope_outcomes
+                    if outcome["object_id"] == root_id
+                )
+                return {
+                    **root_result,
+                    "include_subpages": bool(
+                        item.get("include_subpages", False)
+                    ),
+                    "selected_page_ids": [str(value["id"]) for value in selected],
+                    "scope_items": scope_outcomes,
+                }
+
             result = self._execute_batch(
                 "delete_page",
                 items,
-                lambda item: self.delete_page(
-                    item["page_id"], item["expected_title"], item["expected_section_id"],
-                    item.get("expected_modified"), False,
-                ),
+                delete_frozen_page_scope,
             )
         else:
+            promotion = None
+            protected_items = []
+            selected_scope_ids = [str(item["id"]) for item in effective_scope]
             result = self._execute_batch(
                 f"delete_{resource_type}",
                 items,
@@ -3225,9 +3744,12 @@ class MutationService(BaseService):
             )
         result["final_hierarchy"] = self._final_delete_hierarchy(
             resource_type,
-            [str(item["id"]) for item in effective_scope],
+            selected_scope_ids,
             result,
+            protected_items,
         )
+        if resource_type == "page":
+            result["preserved_descendants"] = promotion
         return result
 
     def batch_rename(
@@ -3841,16 +4363,172 @@ class MutationService(BaseService):
         expected_section_id: str,
         expected_modified: str | None = None,
         permanently: bool = False,
+        include_subpages: bool = False,
     ) -> dict[str, Any]:
-        page = self.pages.confirm(
-            page_id,
-            expected_title=expected_title,
-            expected_section_id=expected_section_id,
-            expected_modified=expected_modified,
+        MutationPolicy.current().require_delete(permanently=permanently)
+        snapshot = self.hierarchy.resources(include_recycle_bin=True)
+        by_id = {str(item["id"]): item for item in snapshot if item.get("id")}
+        page = self._active_item(by_id, page_id, "page")
+        self._confirm_batch_item(
+            page,
+            {
+                "expected_title": expected_title,
+                "expected_section_id": expected_section_id,
+                "expected_modified": expected_modified,
+            },
+            "page",
         )
-        return self.delete_resource(
-            page_id, "page", page["title"], page["parent_id"], expected_modified, permanently
+        active = self.hierarchy.without_recycle_bin(snapshot)
+        complete_scope = self._page_scope(active, page_id)
+        self._enforce_batch_effective_budget(complete_scope)
+        selected = complete_scope if include_subpages else complete_scope[:1]
+        protected = complete_scope[1:] if not include_subpages else []
+        promotion = {"promoted": False, "preserved_descendant_ids": []}
+        protected_expected: dict[str, dict[str, Any]] = {}
+        if protected:
+            notebook_id = self._resource_notebook_id(page)
+            if notebook_id is None:
+                raise MutationPreflightFailure(
+                    "The Page Notebook identity is unavailable.",
+                    mutation_stage="preflight",
+                    mutation_attempted=False,
+                )
+            try:
+                promoted_snapshot, promotion = self._promote_reparent_descendants(
+                    {"items": self._notebook_items(active, str(notebook_id))},
+                    page,
+                    protected,
+                )
+            except Exception as exc:
+                raise PartialFailure(
+                    "Excluded Page descendants could not be promoted and verified; Delete was not attempted.",
+                    partial=True,
+                    operation="delete_page",
+                    principal_mutation_attempted=False,
+                    preserved_descendant_ids=[str(item["id"]) for item in protected],
+                    manual_recovery_required=True,
+                    retryability="inspect_live_state_before_new_call",
+                    rollback_attempted=False,
+                    mutation_replayed=False,
+                ) from exc
+            protected_expected = {
+                str(item["id"]): item
+                for item in promoted_snapshot["items"]
+                if str(item.get("id"))
+                in {str(value["id"]) for value in protected}
+            }
+
+        outcomes: list[dict[str, Any]] = []
+        deletion_order = list(reversed(selected))
+        for index, target in enumerate(deletion_order):
+            target_id = str(target["id"])
+            try:
+                result = self.delete_resource(
+                    target_id,
+                    "page",
+                    display_name(target),
+                    str(target["section_id"]),
+                    target.get("modified"),
+                    permanently,
+                )
+            except Exception as exc:
+                outcomes.append(
+                    {
+                        "object_id": target_id,
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                    }
+                )
+                outcomes.extend(
+                    {
+                        "object_id": str(pending["id"]),
+                        "status": "not_attempted",
+                    }
+                    for pending in deletion_order[index + 1 :]
+                )
+                raise PartialFailure(
+                    "Page scope Delete stopped at the first failed or uncertain item; no rollback was attempted.",
+                    partial=True,
+                    operation="delete_page",
+                    include_subpages=bool(include_subpages),
+                    applied_count=index,
+                    items=outcomes,
+                    completed_steps=[
+                        {"operation": "delete_page", "status": "applied"}
+                        for _ in range(index)
+                    ]
+                    + (
+                        [{"operation": "promote_page_descendants", "status": "applied"}]
+                        if promotion.get("promoted")
+                        else []
+                    ),
+                    preserved_descendants=promotion,
+                    manual_recovery_required=True,
+                    rollback_attempted=False,
+                    mutation_replayed=False,
+                ) from exc
+            outcomes.append(
+                {"object_id": target_id, "status": "applied", "result": result}
+            )
+
+        final_snapshot = self.hierarchy.resources(include_recycle_bin=True)
+        final_by_id = {
+            str(item["id"]): item for item in final_snapshot if item.get("id")
+        }
+        selected_ids = [str(item["id"]) for item in selected]
+        active_selected = [
+            object_id
+            for object_id in selected_ids
+            if object_id in final_by_id
+            and final_by_id[object_id].get("is_in_recycle_bin") is not True
+        ]
+        protected_ids = [str(item["id"]) for item in protected]
+        invalid_protected = [
+            object_id
+            for object_id in protected_ids
+            if object_id not in final_by_id
+            or final_by_id[object_id].get("is_in_recycle_bin") is True
+            or final_by_id[object_id].get("section_id") != expected_section_id
+            or int(final_by_id[object_id].get("page_level") or 0)
+            != int(protected_expected[object_id].get("page_level") or 0)
+            or final_by_id[object_id].get("parent_page_id")
+            != protected_expected[object_id].get("parent_page_id")
+        ]
+        if active_selected or invalid_protected:
+            raise PartialFailure(
+                "Page scope Delete item calls returned, but final selected/protected hierarchy could not be verified.",
+                partial=True,
+                operation="delete_page",
+                include_subpages=bool(include_subpages),
+                applied_count=len(outcomes),
+                failed_step="page_scope_final_hierarchy",
+                items=outcomes,
+                active_selected_count=len(active_selected),
+                invalid_protected_count=len(invalid_protected),
+                preserved_descendants=promotion,
+                manual_recovery_required=True,
+                rollback_attempted=False,
+                mutation_replayed=False,
+            )
+        root_result = next(
+            outcome["result"]
+            for outcome in outcomes
+            if outcome["object_id"] == page_id
         )
+        return {
+            **root_result,
+            "include_subpages": bool(include_subpages),
+            "selected_page_ids": selected_ids,
+            "scope_items": outcomes,
+            "preserved_descendants": promotion,
+            "final_hierarchy": {
+                "selected_count": len(selected_ids),
+                "protected_count": len(protected_ids),
+                "selected_inactive": True,
+                "protected_active": True,
+                "verification_scope": {"page_content": "not_read"},
+            },
+        }
 
     def update_page_xml(self, xml: str) -> dict[str, Any]:
         policy = MutationPolicy.current()

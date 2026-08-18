@@ -1829,9 +1829,7 @@ def test_copy_binds_requested_scope_in_internal_plan(monkeypatch, include_descen
             "Parent",
             "source-section",
             destination_title="Copied Parent",
-            page_scope=(
-                "indentation_subtree" if include_descendants else "page_only"
-            ),
+            include_subpages=include_descendants,
         )
     )
 

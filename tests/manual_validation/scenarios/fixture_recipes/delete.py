@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from ..common.fixture_builders import ensure_group, ensure_page, ensure_section
+from ..common.fixture_builders import (
+    enforce_page_position,
+    ensure_group,
+    ensure_page,
+    ensure_section,
+)
 from ..common.fixture_models import FixtureBuildResult, FixtureContext, FixtureValidationContext, resolve_active_structure
 from .recipe_base import RecipeBase
 
 
 class DeleteFixtureRecipe(RecipeBase):
-    recipe_version = 3
+    recipe_version = 4
 
     def __init__(self) -> None:
         super().__init__("delete")
@@ -31,11 +36,20 @@ class DeleteFixtureRecipe(RecipeBase):
             "disposable_page_section",
             await ensure_section(context.client, sandbox["id"], "Disposable-Page-Section"),
         )
-        context.recorder.record_structure(
+        root_only = context.recorder.record_structure(
             "disposable_page_target",
             await ensure_page(context.client, page_section["id"], "Disposable-Page-Target", "Disposable Page"),
         )
-        context.recorder.record_structure(
+        root_only_child = context.recorder.record_structure(
+            "disposable_page_protected_child",
+            await ensure_page(
+                context.client,
+                page_section["id"],
+                "Disposable-Page-Protected-Child",
+                "Protected child must remain unchanged",
+            ),
+        )
+        subtree = context.recorder.record_structure(
             "disposable_page_target_second",
             await ensure_page(
                 context.client,
@@ -44,13 +58,58 @@ class DeleteFixtureRecipe(RecipeBase):
                 "Disposable Page Second",
             ),
         )
+        subtree_child = context.recorder.record_structure(
+            "disposable_page_subtree_child",
+            await ensure_page(
+                context.client,
+                page_section["id"],
+                "Disposable-Page-Subtree-Child",
+                "Selected subtree child",
+            ),
+        )
+        context.recorder.refresh_structure(
+            "disposable_page_target",
+            await enforce_page_position(
+                context.client, page_section["id"], root_only["id"], "", 1
+            ),
+        )
+        context.recorder.refresh_structure(
+            "disposable_page_protected_child",
+            await enforce_page_position(
+                context.client,
+                page_section["id"],
+                root_only_child["id"],
+                root_only["id"],
+                2,
+            ),
+        )
+        context.recorder.refresh_structure(
+            "disposable_page_target_second",
+            await enforce_page_position(
+                context.client,
+                page_section["id"],
+                subtree["id"],
+                root_only_child["id"],
+                1,
+            ),
+        )
+        context.recorder.refresh_structure(
+            "disposable_page_subtree_child",
+            await enforce_page_position(
+                context.client,
+                page_section["id"],
+                subtree_child["id"],
+                subtree["id"],
+                2,
+            ),
+        )
         budget_section = context.recorder.record_structure(
             "budget_section",
             await ensure_section(
                 context.client, sandbox["id"], "Budget-Overlimit-Section"
             ),
         )
-        for index in range(4):
+        for index in range(6):
             context.recorder.record_structure(
                 f"budget_page_{index + 1}",
                 await ensure_page(
@@ -81,17 +140,31 @@ class DeleteFixtureRecipe(RecipeBase):
         checks.require(
             resolved["disposable_page_target_second"].get("section_id")
             == resolved["disposable_page_section"]["id"],
-            "Second leaf Page batch target escaped the disposable Page Section.",
-            "two independent leaf Page targets share the disposable Page Section",
+            "Second Page batch target escaped the disposable Page Section.",
+            "two independent Page roots share the disposable Page Section",
+        )
+        checks.require(
+            resolved["disposable_page_protected_child"].get("parent_page_id")
+            == resolved["disposable_page_target"]["id"]
+            and int(resolved["disposable_page_protected_child"].get("page_level", 0)) == 2,
+            "Root-only Delete protected child topology is invalid.",
+            "include_subpages=false target owns one protected level-2 child",
+        )
+        checks.require(
+            resolved["disposable_page_subtree_child"].get("parent_page_id")
+            == resolved["disposable_page_target_second"]["id"]
+            and int(resolved["disposable_page_subtree_child"].get("page_level", 0)) == 2,
+            "Subtree Delete child topology is invalid.",
+            "include_subpages=true target owns one selected level-2 child",
         )
         budget_page_ids = {
             resolved[f"budget_page_{index}"].get("section_id")
-            for index in range(1, 5)
+            for index in range(1, 7)
         }
         checks.require(
             budget_page_ids == {resolved["budget_section"]["id"]},
             "Batch budget rejection fixture Pages escaped their confirmed Section.",
-            "budget_section contains four direct Page descendants",
+            "budget_section contains six direct Page descendants",
         )
         return tuple(checks.checks)
 

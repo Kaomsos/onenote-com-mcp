@@ -22,9 +22,9 @@ DESCRIPTION_TITLE = "00-Reparent-Page-Scope-Description"
 DESCRIPTION = """Reparent Page 范围人工验收说明
 
 本场景只使用 disposable Notebook，验证两个相互独立的选择范围：
-1. root-only-default：使用 page_scope=page_only，只迁移选中的 level-2 Page；其后代留在源
+1. root-only-default：使用 include_subpages=false，只迁移选中的 level-2 Page；其后代留在源
    Section 并整体提升一级。
-2. full-subtree：使用 page_scope=indentation_subtree，迁移选中的 level-2 Page 及完整缩进子树；
+2. full-subtree：使用 include_subpages=true，迁移选中的 level-2 Page 及完整缩进子树；
    目标根归一化为 level 1，后代保持相对顺序和相对层级。
 
 Fixture 只使用 OneNote Desktop 支持的 page level 1-3；两棵树的后代均位于 level 3。

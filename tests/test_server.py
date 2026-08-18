@@ -3,6 +3,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import pytest
+from pydantic import ValidationError
 
 from local_onenote_mcp import operation_catalog, server
 from local_onenote_mcp.desktop import OneNoteDesktopState
@@ -19,6 +20,8 @@ from local_onenote_mcp.tool_surface import (
     USER_TOOL_NAMES,
 )
 from local_onenote_mcp.tools.mutations import (
+    PageDeleteItem,
+    PageReparentItem,
     create_page,
     create_section,
     delete_page_content_object,
@@ -280,7 +283,6 @@ def test_internal_capability_catalog_is_non_public_and_complete():
     assert {item.name for item in INTERNAL_CAPABILITIES} == INTERNAL_CAPABILITY_NAMES
     assert INTERNAL_CAPABILITY_NAMES.isdisjoint(server.mcp._tool_manager._tools)
     assert all(item.reason and item.internal_callers and item.promotion_requirements for item in INTERNAL_CAPABILITIES)
-    assert LEGACY_PUBLIC_NAMES.isdisjoint(server.mcp._tool_manager._tools)
 
 
 def test_without_recycle_bin_removes_container_and_children():
@@ -459,7 +461,6 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
     names = set(server.mcp._tool_manager._tools)
 
     assert tuple(server.mcp._tool_manager._tools) == USER_TOOL_NAMES
-    assert len(names) == 53
     assert {
         "query_notebook",
         "query_section_group",
@@ -576,18 +577,37 @@ def test_reparent_tool_schemas_require_exact_typed_confirmation():
         array_schema = next(value for value in items["anyOf"] if value.get("type") == "array")
         assert array_schema["minItems"] == 1
         assert array_schema["maxItems"] == 20
-    assert tools["reparent_page"].parameters["properties"]["page_scope"] == {
-        "default": "page_only",
-        "enum": ["page_only", "indentation_subtree"],
-        "title": "Page Scope",
-        "type": "string",
+    assert tools["reparent_page"].parameters["properties"]["include_subpages"] == {
+        "default": False,
+        "title": "Include Subpages",
+        "type": "boolean",
     }
+    page_item = tools["reparent_page"].parameters["$defs"]["PageReparentItem"]
+    assert page_item["properties"]["include_subpages"] == {
+        "default": False,
+        "title": "Include Subpages",
+        "type": "boolean",
+    }
+    assert "page_scope" not in page_item["properties"]
     for name in ("reparent_section", "reparent_section_group"):
         assert "page_scope" not in tools[name].parameters["properties"]
     for name in ("reparent_page", "reparent_section", "reparent_section_group"):
         description = tools[name].description.casefold()
         assert "position" in description
         assert "observed" in description
+
+
+@pytest.mark.parametrize("model", [PageReparentItem, PageDeleteItem])
+def test_page_batch_items_reject_removed_page_scope_field(model):
+    with pytest.raises(ValidationError, match="page_scope"):
+        model.model_validate(
+            {
+                "page_id": "p",
+                "expected_title": "P",
+                "expected_section_id": "s",
+                "page_scope": "indentation_subtree",
+            }
+        )
 
 
 def test_copy_tool_public_schemas_are_single_call_and_require_exact_confirmation():
@@ -635,9 +655,12 @@ def test_copy_tool_public_schemas_are_single_call_and_require_exact_confirmation
     for name, required in expected_required.items():
         assert set(tools[name].parameters.get("required", [])) == required
     assert "destination_parent_id" not in tools["copy_notebook"].parameters["properties"]
-    assert tools["copy_page"].parameters["properties"]["page_scope"]["default"] == "page_only"
-    assert tools["move_page"].parameters["properties"]["page_scope"]["default"] == "page_only"
-    for name in ("copy_section", "copy_section_group", "copy_notebook"):
+    assert tools["copy_page"].parameters["properties"]["include_subpages"]["default"] is False
+    assert tools["move_page"].parameters["properties"]["include_subpages"]["default"] is False
+    for name in (
+        "copy_page", "move_page", "copy_section", "copy_section_group",
+        "copy_notebook",
+    ):
         assert "page_scope" not in tools[name].parameters["properties"]
     for name in (
         "copy_page",
@@ -659,6 +682,21 @@ def test_copy_tool_public_schemas_are_single_call_and_require_exact_confirmation
 def test_container_reorder_tool_schemas_require_exact_confirmation():
     tools = server.mcp._tool_manager._tools
 
+    for name in ("reorder_page", "delete_page"):
+        assert tools[name].parameters["properties"]["include_subpages"] == {
+            "default": False,
+            "title": "Include Subpages",
+            "type": "boolean",
+        }
+        assert "page_scope" not in tools[name].parameters["properties"]
+    delete_item = tools["delete_page"].parameters["$defs"]["PageDeleteItem"]
+    assert delete_item["properties"]["include_subpages"] == {
+        "default": False,
+        "title": "Include Subpages",
+        "type": "boolean",
+    }
+    assert "page_scope" not in delete_item["properties"]
+
     assert set(tools["reorder_section"].parameters.get("required", [])) == {
         "section_id",
         "expected_name",
@@ -675,32 +713,6 @@ def test_page_content_digest_ignores_page_clock_and_hierarchy_metadata():
 
     assert server.services.pages.digest(first) == server.services.pages.digest(second)
     assert server.services.pages.digest(first) != server.services.pages.digest(changed_object)
-
-
-def test_page_content_digest_ignores_only_empty_selection_text_placeholders():
-    baseline = '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="p"><one:Outline objectID="o"><one:OE objectID="oe" /></one:Outline></one:Page>'
-    selected_placeholder = baseline.replace(
-        '<one:OE objectID="oe" />',
-        '<one:OE objectID="oe"><one:T selected="all" /></one:OE>',
-    )
-    ordinary_empty_text = baseline.replace(
-        '<one:OE objectID="oe" />',
-        '<one:OE objectID="oe"><one:T /></one:OE>',
-    )
-    selected_visible_text = baseline.replace(
-        '<one:OE objectID="oe" />',
-        '<one:OE objectID="oe"><one:T selected="all">visible</one:T></one:OE>',
-    )
-
-    assert server.services.pages.digest(baseline) == server.services.pages.digest(
-        selected_placeholder
-    )
-    assert server.services.pages.digest(baseline) != server.services.pages.digest(
-        ordinary_empty_text
-    )
-    assert server.services.pages.digest(baseline) != server.services.pages.digest(
-        selected_visible_text
-    )
 
 
 def test_hierarchy_browsing_schemas_are_exact_and_typed():

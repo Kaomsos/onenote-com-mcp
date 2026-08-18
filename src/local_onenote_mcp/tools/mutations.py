@@ -75,7 +75,7 @@ class PageReparentItem(_BatchItem):
     expected_title: SafeName
     expected_section_id: ExactId
     expected_modified: str | None = None
-    page_scope: Literal["page_only", "indentation_subtree"] = "page_only"
+    include_subpages: bool = False
 
 
 class _ContainerDeleteItem(_BatchItem):
@@ -97,6 +97,7 @@ class PageDeleteItem(_BatchItem):
     expected_title: SafeName
     expected_section_id: ExactId
     expected_modified: str | None = None
+    include_subpages: bool = False
 
 
 def _dump(items: list[_BatchItem] | None) -> list[dict[str, Any]] | None:
@@ -248,8 +249,9 @@ async def reorder_page(
     after_page_id: str | None = None,
     page_level: int = 0,
     expected_modified: str | None = None,
+    include_subpages: bool = False,
 ) -> dict[str, Any]:
-    """With Writes, reorder an exact Page within its Section and verify order and indentation."""
+    """With Writes, reorder one exact Page or its complete indentation subtree; excluded subpages are protected by promotion."""
 
     return invoke(
         "reorder_page",
@@ -259,6 +261,7 @@ async def reorder_page(
         after_page_id=after_page_id,
         page_level=page_level,
         expected_modified=expected_modified,
+        include_subpages=include_subpages,
     )
 
 
@@ -331,14 +334,14 @@ async def reparent_page(
     expected_title: str | None = None,
     expected_section_id: str | None = None,
     expected_modified: str | None = None,
-    page_scope: Literal["page_only", "indentation_subtree"] = "page_only",
+    include_subpages: bool = False,
     items: PageReparentItems | None = None,
 ) -> dict[str, Any]:
     """With Writes and Organize, reparent one exact Page scope or up to 20 non-overlapping Page scopes to one same-Notebook Section; a batch returns final observed live hierarchy positions in input order.
 
     The selected Page becomes a root Page in the destination Section.  By
     default only that Page moves and excluded descendants remain in the source
-    Section, promoted by one level.  Set page_scope="indentation_subtree" to move
+    Section, promoted by one level.  Set include_subpages=true to move
     the complete indentation subtree.  The response reports only the destination
     root Page's observed final position; it does not request or guarantee placement.
     """
@@ -350,7 +353,7 @@ async def reparent_page(
         expected_title=expected_title,
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
-        page_scope=page_scope,
+        include_subpages=include_subpages,
         items=_dump(items),
     )
 
@@ -511,9 +514,10 @@ async def delete_page(
     expected_title: str | None = None,
     expected_section_id: str | None = None,
     expected_modified: str | None = None,
+    include_subpages: bool = False,
     items: PageDeleteItems | None = None,
 ) -> dict[str, Any]:
-    """With Deletes, non-permanently delete one exact Page or up to 20 non-overlapping same-Notebook Pages; modes are mutually exclusive."""
+    """With Deletes, non-permanently delete one exact Page scope or up to 20 non-overlapping same-Notebook Page scopes; excluded subpages are protected by promotion."""
 
     return invoke(
         "delete_page",
@@ -521,6 +525,7 @@ async def delete_page(
         expected_title=expected_title,
         expected_section_id=expected_section_id,
         expected_modified=expected_modified,
+        include_subpages=include_subpages,
         items=_dump(items),
     )
 

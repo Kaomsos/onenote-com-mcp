@@ -57,12 +57,32 @@ async def _execute_delete(
     ) as client:
         before = await capture_snapshot(client, notebook_id)
         write_json(out / "before.json", before)
+        protected_child_declared = (
+            resolve_manifest_item(manifest, "disposable_page_protected_child")
+            if "disposable_page_protected_child" in manifest.get("structure", {})
+            else None
+        )
+        subtree_child_declared = (
+            resolve_manifest_item(manifest, "disposable_page_subtree_child")
+            if "disposable_page_subtree_child" in manifest.get("structure", {})
+            else None
+        )
+        protected_child_before = (
+            find_snapshot_item(before, protected_child_declared["id"])
+            if protected_child_declared is not None
+            else None
+        )
+        subtree_child_before = (
+            find_snapshot_item(before, subtree_child_declared["id"])
+            if subtree_child_declared is not None
+            else None
+        )
         budget_rejection: dict[str, Any] | None = None
         if "budget_section" in manifest.get("structure", {}):
             if sum(
                 item.get("resource_type") == "page"
                 for item in before.get("items", [])
-            ) <= 3:
+            ) <= 5:
                 raise InvariantFailure(
                     "Delete fixture does not exceed its test Batch effective Page limit."
                 )
@@ -107,6 +127,12 @@ async def _execute_delete(
                     "expected_title": display_name(current),
                     "expected_section_id": current["section_id"],
                     "expected_modified": current.get("modified"),
+                    "include_subpages": (
+                        current["id"]
+                        == resolve_manifest_item(
+                            manifest, "disposable_page_target_second"
+                        )["id"]
+                    ),
                 }
             elif resource_type in {"section", "section_group"}:
                 tool = f"delete_{resource_type}"
@@ -158,6 +184,27 @@ async def _execute_delete(
         write_json(out / "after.json", after)
         if any(find_snapshot_item(after, current["id"]) is not None for current in currents):
             raise InvariantFailure("A Batch Delete target is still visible in the active snapshot.")
+        protected_child_after = (
+            find_snapshot_item(after, protected_child_before["id"])
+            if protected_child_before is not None
+            else None
+        )
+        if protected_child_before is not None and (
+            protected_child_after is None
+            or int(protected_child_after.get("page_level", 0)) != 1
+            or protected_child_after.get("parent_page_id") not in {None, ""}
+            or before.get("page_hashes", {}).get(protected_child_before["id"])
+            != after.get("page_hashes", {}).get(protected_child_before["id"])
+        ):
+            raise InvariantFailure(
+                "include_subpages=false did not preserve and promote the excluded child Page."
+            )
+        if subtree_child_before is not None and find_snapshot_item(
+            after, subtree_child_before["id"]
+        ) is not None:
+            raise InvariantFailure(
+                "include_subpages=true left its selected subtree child active."
+            )
         recycle_tree_result = await client.call_tool(
             "expand_hierarchy",
             {"root_id": notebook_id, "max_depth": 8, "include_recycle_bin": True},
@@ -213,6 +260,24 @@ async def _execute_delete(
                     current.get("resource_type") == "page" for current in currents
                 ),
                 "applied": use_batch,
+            },
+            "include_subpages_validation": {
+                "include_subpages_false_protected_child_id": (
+                    None
+                    if protected_child_after is None
+                    else protected_child_after["id"]
+                ),
+                "include_subpages_true_deleted_child_id": (
+                    None
+                    if subtree_child_before is None
+                    else subtree_child_before["id"]
+                ),
+                "protected_child_content_unchanged": (
+                    protected_child_before is not None
+                    and protected_child_after is not None
+                    and before.get("page_hashes", {}).get(protected_child_before["id"])
+                    == after.get("page_hashes", {}).get(protected_child_before["id"])
+                ),
             },
             "permanently": False,
             "restored": False,

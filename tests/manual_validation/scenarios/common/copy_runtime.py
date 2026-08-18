@@ -218,9 +218,7 @@ def copy_execute_arguments(
             "destination_title": spec["destination_name"],
         }
         if spec.get("include_descendants") is not None:
-            arguments["page_scope"] = (
-                "indentation_subtree" if spec["include_descendants"] else "page_only"
-            )
+            arguments["include_subpages"] = bool(spec["include_descendants"])
         return arguments
     if tool == "copy_section":
         id_key = "section_id"

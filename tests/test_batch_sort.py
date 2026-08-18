@@ -54,6 +54,40 @@ def install_snapshot(monkeypatch, state):
     )
 
 
+def install_page_order_backend(monkeypatch, state, events):
+    plans = []
+
+    def page_order_xml(_section, pages):
+        plans.append(copy.deepcopy(pages))
+        return f"<page-order-plan index='{len(plans)}' />"
+
+    def call(operation, **_params):
+        assert operation == "update_hierarchy"
+        planned = plans.pop(0)
+        section_id = str(planned[0]["section_id"])
+        normalized = [
+            {**value, "order": index} for index, value in enumerate(planned)
+        ]
+        parent_map = server.services.mutations._page_parent_map(normalized)
+        normalized = [
+            {**value, "parent_page_id": parent_map[str(value["id"])]}
+            for value in normalized
+        ]
+        state["items"] = [
+            value
+            for value in state["items"]
+            if not (
+                value.get("resource_type") == "page"
+                and str(value.get("section_id")) == section_id
+            )
+        ] + normalized
+        events.append(("page_order", section_id))
+        return {"updated": True}
+
+    monkeypatch.setattr(server.services.hierarchy, "page_order_xml", page_order_xml)
+    monkeypatch.setattr(server.services.mutations, "call", call)
+
+
 def page_confirmation(value: dict, *, new_title: str | None = None) -> dict:
     result = {
         "page_id": value["id"],
@@ -522,7 +556,7 @@ def test_batch_reparent_rejects_cross_notebook_cycle_overlap_and_oversize_before
             "page",
             "page-dest",
             [
-                {**page_confirmation(root), "page_scope": "indentation_subtree"},
+                {**page_confirmation(root), "include_subpages": True},
                 page_confirmation(child_page),
             ],
         )
@@ -609,8 +643,8 @@ def test_batch_delete_supports_each_recoverable_type_and_never_requests_permanen
     install_snapshot(monkeypatch, state)
     calls = []
     if resource_type == "page":
-        def delete_page(page_id, *_args):
-            calls.append((page_id, _args[-1]))
+        def delete_page_resource(page_id, supplied_type, *_args):
+            calls.append((page_id, supplied_type, _args[-1]))
             state["items"] = [
                 value for value in state["items"] if value.get("id") != page_id
             ]
@@ -618,8 +652,8 @@ def test_batch_delete_supports_each_recoverable_type_and_never_requests_permanen
 
         monkeypatch.setattr(
             server.services.mutations,
-            "delete_page",
-            delete_page,
+            "delete_resource",
+            delete_page_resource,
         )
     else:
         def delete_container(object_id, supplied_type, *_args):
@@ -640,7 +674,7 @@ def test_batch_delete_supports_each_recoverable_type_and_never_requests_permanen
     assert result["applied_count"] == 2
     assert all(entry["result"]["permanently"] is False for entry in result["items"])
     if resource_type == "page":
-        assert calls == [("p0", False), ("p1", False)]
+        assert calls == [("p0", "page", False), ("p1", "page", False)]
     else:
         assert calls == [("x0", resource_type, False), ("x1", resource_type, False)]
 
@@ -740,14 +774,14 @@ def test_batch_delete_ten_leaf_pages_ignores_more_than_two_hundred_unrelated_pag
     )
     calls = []
 
-    def delete_page(page_id, *_args):
+    def delete_page(page_id, _resource_type, *_args):
         calls.append(page_id)
         state["items"] = [
             value for value in state["items"] if value.get("id") != page_id
         ]
         return {"object_id": page_id, "permanently": False, "deleted": True}
 
-    monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
+    monkeypatch.setattr(server.services.mutations, "delete_resource", delete_page)
 
     result = server.services.mutations.batch_delete(
         "page", [page_confirmation(value) for value in targets]
@@ -786,7 +820,7 @@ def test_batch_delete_effective_page_scope_budget_fails_before_mutation(monkeypa
     )
     monkeypatch.setattr(
         server.services.mutations,
-        "delete_page",
+        "delete_resource",
         lambda *_args: (_ for _ in ()).throw(AssertionError("must not delete")),
     )
 
@@ -801,6 +835,408 @@ def test_batch_delete_effective_page_scope_budget_fails_before_mutation(monkeypa
         "configured_limit": 2,
         "content_exposed": False,
     }
+
+
+@pytest.mark.parametrize("include_subpages", [False, True])
+def test_delete_page_protects_or_deletes_complete_subpage_scope(
+    monkeypatch, include_subpages
+):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    section = item("section", "s", "n", "Section")
+    root = item("page", "root", "s", "Root", section_id="s", order=0)
+    child = item(
+        "page", "child", "s", "Child", section_id="s", order=1,
+        level=2, parent_page_id="root"
+    )
+    grandchild = item(
+        "page", "grandchild", "s", "Grandchild", section_id="s", order=2,
+        level=3, parent_page_id="child"
+    )
+    sibling = item("page", "sibling", "s", "Sibling", section_id="s", order=3)
+    state = {"items": [notebook, section, root, child, grandchild, sibling]}
+    install_snapshot(monkeypatch, state)
+    events = []
+    install_page_order_backend(monkeypatch, state, events)
+
+    def delete_resource(object_id, _resource_type, *_args):
+        events.append(("delete", object_id))
+        state["items"] = [
+            value for value in state["items"] if value.get("id") != object_id
+        ]
+        return {"object_id": object_id, "permanently": False, "deleted": True}
+
+    monkeypatch.setattr(server.services.mutations, "delete_resource", delete_resource)
+
+    result = server.services.mutations.delete_page(
+        "root", "Root", "s", root["modified"], False, include_subpages
+    )
+
+    active_pages = sorted(
+        (
+            value
+            for value in state["items"]
+            if value.get("resource_type") == "page"
+        ),
+        key=lambda value: int(value.get("order", 0)),
+    )
+    assert result["include_subpages"] is include_subpages
+    if include_subpages:
+        assert events == [
+            ("delete", "grandchild"),
+            ("delete", "child"),
+            ("delete", "root"),
+        ]
+        assert [value["id"] for value in active_pages] == ["sibling"]
+    else:
+        assert events == [("page_order", "s"), ("delete", "root")]
+        assert [value["id"] for value in active_pages] == [
+            "child", "grandchild", "sibling"
+        ]
+        assert [value["page_level"] for value in active_pages] == [1, 2, 1]
+        assert [value["parent_page_id"] for value in active_pages] == [
+            None, "child", None
+        ]
+        assert result["final_hierarchy"]["protected_active"] is True
+
+
+@pytest.mark.parametrize("include_subpages", [False, True])
+def test_reorder_page_protects_subpages_or_moves_complete_block(
+    monkeypatch, include_subpages
+):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    section = item("section", "s", "n", "Section")
+    root = item("page", "root", "s", "Root", section_id="s", order=0)
+    child = item(
+        "page", "child", "s", "Child", section_id="s", order=1,
+        level=2, parent_page_id="root"
+    )
+    grandchild = item(
+        "page", "grandchild", "s", "Grandchild", section_id="s", order=2,
+        level=3, parent_page_id="child"
+    )
+    sibling = item("page", "sibling", "s", "Sibling", section_id="s", order=3)
+    state = {"items": [notebook, section, root, child, grandchild, sibling]}
+    install_snapshot(monkeypatch, state)
+    events = []
+    install_page_order_backend(monkeypatch, state, events)
+    monkeypatch.setattr(server.services.pages, "confirm", lambda *_args, **_kwargs: root)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda object_id, *_args: next(
+            value for value in state["items"] if value.get("id") == object_id
+        ),
+    )
+
+    result = server.services.mutations.reorder_page(
+        "root", "Root", "s", "sibling", 1, root["modified"], include_subpages
+    )
+
+    pages = sorted(
+        (value for value in state["items"] if value.get("resource_type") == "page"),
+        key=lambda value: int(value["order"]),
+    )
+    if include_subpages:
+        assert events == [("page_order", "s")]
+        assert [value["id"] for value in pages] == [
+            "sibling", "root", "child", "grandchild"
+        ]
+        assert [value["page_level"] for value in pages] == [1, 1, 2, 3]
+    else:
+        assert events == [("page_order", "s"), ("page_order", "s")]
+        assert [value["id"] for value in pages] == [
+            "child", "grandchild", "sibling", "root"
+        ]
+        assert [value["page_level"] for value in pages] == [1, 2, 1, 1]
+    assert result["include_subpages"] is include_subpages
+    assert result["verification_scope"] == {"page_content": "not_read"}
+
+
+def test_batch_delete_plans_all_page_protection_before_principal_items(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    section = item("section", "s", "n", "Section")
+    root = item("page", "root", "s", "Root", section_id="s", order=0)
+    child = item(
+        "page", "child", "s", "Child", section_id="s", order=1,
+        level=2, parent_page_id="root"
+    )
+    leaf = item("page", "leaf", "s", "Leaf", section_id="s", order=2)
+    state = {"items": [notebook, section, root, child, leaf]}
+    install_snapshot(monkeypatch, state)
+    events = []
+    install_page_order_backend(monkeypatch, state, events)
+
+    def delete_resource(object_id, _resource_type, *_args):
+        events.append(("delete", object_id))
+        state["items"] = [
+            value for value in state["items"] if value.get("id") != object_id
+        ]
+        return {"object_id": object_id, "permanently": False, "deleted": True}
+
+    monkeypatch.setattr(server.services.mutations, "delete_resource", delete_resource)
+    result = server.services.mutations.batch_delete(
+        "page",
+        [
+            {**page_confirmation(root), "include_subpages": False},
+            {**page_confirmation(leaf), "include_subpages": True},
+        ],
+    )
+
+    assert events == [
+        ("page_order", "s"),
+        ("delete", "root"),
+        ("delete", "leaf"),
+    ]
+    assert result["preserved_descendants"]["preserved_descendant_ids"] == [
+        "child"
+    ]
+    assert result["final_hierarchy"]["protected_count"] == 1
+    current_child = next(
+        value for value in state["items"] if value.get("id") == "child"
+    )
+    assert (current_child["page_level"], current_child["parent_page_id"]) == (
+        1, None
+    )
+
+
+def test_batch_page_protection_failure_starts_no_principal_delete(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    section = item("section", "s", "n", "Section")
+    root = item("page", "root", "s", "Root", section_id="s", order=0)
+    child = item(
+        "page", "child", "s", "Child", section_id="s", order=1,
+        level=2, parent_page_id="root"
+    )
+    state = {"items": [notebook, section, root, child]}
+    install_snapshot(monkeypatch, state)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "page_order_xml",
+        lambda *_args, **_kwargs: "<planned />",
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("uncertain")),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "delete_resource",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("principal delete must not start")
+        ),
+    )
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.mutations.batch_delete(
+            "page", [{**page_confirmation(root), "include_subpages": False}]
+        )
+
+    assert caught.value.details["principal_mutation_attempted"] is False
+    assert caught.value.details["completed_section_count"] == 0
+    assert caught.value.details["rollback_attempted"] is False
+    assert caught.value.details["mutation_replayed"] is False
+
+
+@pytest.mark.parametrize("operation", ["delete", "reorder"])
+def test_single_page_protection_failure_starts_no_principal_operation(
+    monkeypatch, operation
+):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    section = item("section", "s", "n", "Section")
+    root = item("page", "root", "s", "Root", section_id="s", order=0)
+    child = item(
+        "page", "child", "s", "Child", section_id="s", order=1,
+        level=2, parent_page_id="root"
+    )
+    sibling = item("page", "sibling", "s", "Sibling", section_id="s", order=2)
+    state = {"items": [notebook, section, root, child, sibling]}
+    install_snapshot(monkeypatch, state)
+    monkeypatch.setattr(server.services.pages, "confirm", lambda *_a, **_k: root)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resource",
+        lambda *_args, **_kwargs: section,
+    )
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "page_order_xml",
+        lambda *_args, **_kwargs: "<planned />",
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("uncertain")),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "delete_resource",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("principal delete must not start")
+        ),
+    )
+
+    with pytest.raises(PartialFailure) as caught:
+        if operation == "delete":
+            server.services.mutations.delete_page(
+                "root", "Root", "s", root["modified"], False, False
+            )
+        else:
+            server.services.mutations.reorder_page(
+                "root", "Root", "s", "sibling", 1, root["modified"], False
+            )
+
+    assert caught.value.details["principal_mutation_attempted"] is False
+    assert caught.value.details["rollback_attempted"] is False
+    assert caught.value.details["mutation_replayed"] is False
+
+
+def test_batch_subtree_delete_reports_inner_scope_progress(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    section = item("section", "s", "n", "Section")
+    root = item("page", "root", "s", "Root", section_id="s", order=0)
+    child = item(
+        "page", "child", "s", "Child", section_id="s", order=1,
+        level=2, parent_page_id="root"
+    )
+    grandchild = item(
+        "page", "grandchild", "s", "Grandchild", section_id="s", order=2,
+        level=3, parent_page_id="child"
+    )
+    install_snapshot(
+        monkeypatch, {"items": [notebook, section, root, child, grandchild]}
+    )
+    calls = []
+
+    def fail_on_child(object_id, *_args):
+        calls.append(object_id)
+        if object_id == "child":
+            raise RuntimeError("uncertain")
+        return {"object_id": object_id, "permanently": False}
+
+    monkeypatch.setattr(server.services.mutations, "delete_resource", fail_on_child)
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.mutations.batch_delete(
+            "page", [{**page_confirmation(root), "include_subpages": True}]
+        )
+
+    assert calls == ["grandchild", "child"]
+    nested = caught.value.details["failed_item_details"]
+    assert nested["operation"] == "delete_page_scope"
+    assert nested["include_subpages"] is True
+    assert [entry["object_id"] for entry in nested["items"]] == [
+        "grandchild", "child", "root"
+    ]
+    assert [entry["status"] for entry in nested["items"]] == [
+        "applied", "failed", "not_attempted"
+    ]
+    assert nested["rollback_attempted"] is False
+    assert nested["mutation_replayed"] is False
+
+
+def test_batch_reparent_uses_frozen_mixed_scope_and_batch_wide_protection(monkeypatch):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    source = item("section", "source", "n", "Source")
+    destination = item("section", "destination", "n", "Destination")
+    protected_root = item(
+        "page", "protected-root", "source", "Protected Root",
+        section_id="source", order=0
+    )
+    protected_child = item(
+        "page", "protected-child", "source", "Protected Child",
+        section_id="source", order=1, level=2, parent_page_id="protected-root"
+    )
+    subtree_root = item(
+        "page", "subtree-root", "source", "Subtree Root",
+        section_id="source", order=2
+    )
+    subtree_child = item(
+        "page", "subtree-child", "source", "Subtree Child",
+        section_id="source", order=3, level=2, parent_page_id="subtree-root"
+    )
+    state = {
+        "items": [
+            notebook, source, destination, protected_root, protected_child,
+            subtree_root, subtree_child,
+        ]
+    }
+    install_snapshot(monkeypatch, state)
+    events = []
+    install_page_order_backend(monkeypatch, state, events)
+
+    def reparent_page(page_id, destination_id, *_args):
+        events.append(("reparent", page_id))
+        pages = sorted(
+            (
+                value for value in state["items"]
+                if value.get("resource_type") == "page"
+                and value.get("section_id") == "source"
+            ),
+            key=lambda value: int(value["order"]),
+        )
+        scope = server.services.mutations._page_scope(pages, page_id)
+        moved_ids = {str(value["id"]) for value in scope}
+        root_level = int(scope[0]["page_level"])
+        moved = [
+            {
+                **value,
+                "section_id": destination_id,
+                "parent_id": destination_id,
+                "order": index,
+                "page_level": int(value["page_level"]) - root_level + 1,
+            }
+            for index, value in enumerate(scope)
+        ]
+        moved_parent_map = server.services.mutations._page_parent_map(moved)
+        moved = [
+            {**value, "parent_page_id": moved_parent_map[str(value["id"])]}
+            for value in moved
+        ]
+        state["items"] = [
+            value for value in state["items"] if str(value.get("id")) not in moved_ids
+        ] + moved
+        return {
+            "item": moved[0],
+            "id_map": {str(value["id"]): str(value["id"]) for value in scope},
+        }
+
+    monkeypatch.setattr(server.services.mutations, "reparent_page", reparent_page)
+    result = server.services.mutations.batch_reparent(
+        "page",
+        "destination",
+        [
+            {**page_confirmation(protected_root), "include_subpages": False},
+            {**page_confirmation(subtree_root), "include_subpages": True},
+        ],
+    )
+
+    assert events == [
+        ("page_order", "source"),
+        ("reparent", "protected-root"),
+        ("reparent", "subtree-root"),
+    ]
+    assert result["final_hierarchy"]["scope_item_count"] == 3
+    assert result["final_hierarchy"]["protected_count"] == 1
+    assert result["preserved_descendants"]["preserved_descendant_ids"] == [
+        "protected-child"
+    ]
+    current_protected = next(
+        value for value in state["items"] if value.get("id") == "protected-child"
+    )
+    assert current_protected["section_id"] == "source"
+    assert (current_protected["page_level"], current_protected["parent_page_id"]) == (
+        1, None
+    )
 
 
 @pytest.mark.write_contract
@@ -1054,7 +1490,7 @@ def test_successful_item_calls_require_complete_batch_final_hierarchy_readback(
         monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
         monkeypatch.setattr(
             server.services.mutations,
-            "delete_page",
+            "delete_resource",
             lambda *_args: {
                 "object_id": "p",
                 "permanently": False,
@@ -1426,7 +1862,7 @@ def test_existing_public_name_dispatches_items_batch_mode(monkeypatch):
         reparent_handler({
             "items": supplied,
             "destination_section_id": "s",
-            "page_scope": "indentation_subtree",
+            "include_subpages": True,
             "expected_modified": None,
         })
 
@@ -1451,7 +1887,7 @@ def test_existing_public_name_dispatches_items_batch_mode(monkeypatch):
         ("rename_section", "rename", "section", {"items": [{"section_id": "s"}]}),
         ("rename_section_group", "rename", "section_group", {"items": [{"section_group_id": "g"}]}),
         ("reparent_page", "reparent", "page", {
-            "destination_section_id": "d", "page_scope": "page_only",
+            "destination_section_id": "d", "include_subpages": False,
             "items": [{"page_id": "p"}],
         }),
         ("reparent_section", "reparent", "section", {
