@@ -41,7 +41,7 @@ class MovePageContentRecipe(UserAuthoredRecipe):
 
     bootstrap_scenario_name = BOOTSTRAP_SCENARIO
     capability = "MovePageContent"
-    recipe_version = 1
+    recipe_version = 2
     requested_object_types = frozenset({"Outline"})
     stable_capabilities = frozenset(VALIDATED_COPY_CAPABILITIES)
     representative_capabilities = stable_capabilities - {"Outline", "RichText"}
@@ -50,7 +50,8 @@ class MovePageContentRecipe(UserAuthoredRecipe):
         "In the exact 01-Representative-Page Canvas, create or paste one non-sensitive "
         "representative Page using real OneNote authoring features. Include at least one "
         "supported non-trivial capability such as a table, list/tag, image, attachment, "
-        "display equation, ink, media, or UI shape. Do not edit the reserved marker or add Pages."
+        "display equation, ink, media, or UI shape. The Canvas title may be changed and "
+        "will be frozen with the authored Page. Do not edit the reserved marker or add Pages."
     )
     authoring_zones = (
         AuthoringZoneSpec(
@@ -296,6 +297,35 @@ class MovePageContentRecipe(UserAuthoredRecipe):
                 else "evidence_only"
             ),
             "passed": schema_passed and bool(representative),
+        }
+
+    def freeze_authored_structures(
+        self,
+        observation: FixtureBundleObservation,
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        """Freeze the live Canvas title/path after the user authors representative content."""
+
+        source = observation.roles["source"]
+        resolved, _by_id, _checks = resolve_active_structure(
+            source.snapshot,
+            source.build.structure,
+        )
+        canvas = resolved["source_canvas_page"]
+        if not isinstance(canvas.get("title"), str) or not canvas["title"].strip():
+            raise InvariantFailure(
+                "Representative Move Canvas must retain a non-empty authored Page title."
+            )
+        frozen_source = {
+            key: dict(value) for key, value in source.build.structure.items()
+        }
+        frozen_source["source_canvas_page"] = dict(canvas)
+        destination = observation.roles["destination"]
+        return {
+            "source": frozen_source,
+            "destination": {
+                key: dict(value)
+                for key, value in destination.build.structure.items()
+            },
         }
 
     def freeze_authored_instance(

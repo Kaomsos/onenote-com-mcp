@@ -26,7 +26,9 @@
 - success 路径只在生产 `verified/lossless/copy_contract_satisfied=true` 且 `source_deleted_nonpermanently=true` 后请求 run-bound UI ACCEPT；
 - 新增纯合同覆盖 recipe identity、ready/evidence-only、双 role bootstrap、单次 Move、lossless 失败 envelope 解包、失败保源、诊断脱敏和成功后人工门；聚焦组合为 `176 passed`，manual-validation 纯测试为 `622 passed`，全量 pytest 为 `1352 passed`；两个新场景和 `all` 的 `--dry-run --json` 均通过，`all` 仍只包含原 18 个稳定场景。
 
-尚未执行任何真实 bootstrap 或 Move。首次用户前台 `copy_only` 证据中若确认生产结果缺少足够的 source→transformed→target 定位字段，具体生产回读校验改动记录到空占位 [TODO 040](040_move_readback_validation_followups.md)，不得在没有真实 mismatch 证据前预设 comparator 放宽方案。
+首次用户前台 bootstrap 已确认 source/destination 创建、代表性内容 projection、模板关闭/发布与双 role working copy 打开均可工作；尚未执行 Move。materialize 的 source hierarchy 重绑随后确定性失败：用户改变了 Canvas title，而 v1 template 仍冻结脚手架初始 relative address，连续 16 次都缺少该 Canvas。该失败不是 timeout，也不涉及 lossless gate；working bundle 已精确关闭、template integrity 未受牵连。实现现将 authored Canvas 的 live title/path 在发布前冻结入 role structure，并将 recipe 升至 v2，避免复用该 v1 entry；需由用户重新 bootstrap。
+
+除上述失败但已闭环关闭的 bootstrap 外，尚未执行任何真实 Move。首次用户前台 `copy_only` 证据中若确认生产结果缺少足够的 source→transformed→target 定位字段，具体生产回读校验改动记录到空占位 [TODO 040](040_move_readback_validation_followups.md)，不得在没有真实 mismatch 证据前预设 comparator 放宽方案。
 
 ## 目标
 

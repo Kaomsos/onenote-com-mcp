@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import asdict
-from typing import Any
+from typing import Any, Mapping
 
 from ...runtime import InvariantFailure, RuntimeOptions
 from ...test_utils import capture_snapshot, write_json
@@ -153,6 +153,47 @@ class InteractiveBootstrapScenario(Scenario):
         snapshot = snapshots["source"]
         write_json(options.run_dir / "interactive-authored-snapshot.json", snapshot)
         observation = FixtureBundleObservation(roles=observations)
+        freeze_structures = getattr(recipe, "freeze_authored_structures", None)
+        if callable(freeze_structures):
+            frozen_structures = freeze_structures(observation)
+            if not isinstance(frozen_structures, dict) or set(frozen_structures) != set(
+                declared_roles
+            ):
+                raise InvariantFailure(
+                    "Interactive authored structure freeze does not cover every Recipe role."
+                )
+            rebound_observations: dict[str, FixtureRoleObservation] = {}
+            for role in declared_roles:
+                frozen_structure = frozen_structures[role]
+                declared_structure = observations[role].build.structure
+                if not isinstance(frozen_structure, Mapping) or set(
+                    frozen_structure
+                ) != set(declared_structure):
+                    raise InvariantFailure(
+                        f"Interactive authored structure freeze changed the declared keys for role {role}."
+                    )
+                rebound: dict[str, dict[str, Any]] = {}
+                for key, frozen in frozen_structure.items():
+                    declared = declared_structure[key]
+                    if not isinstance(frozen, Mapping) or (
+                        str(frozen.get("id", "")) != str(declared.get("id", ""))
+                        or frozen.get("resource_type") != declared.get("resource_type")
+                    ):
+                        raise InvariantFailure(
+                            f"Interactive authored structure freeze changed typed identity for {role}.{key}."
+                        )
+                    rebound[key] = dict(frozen)
+                original = observations[role]
+                rebound_observations[role] = FixtureRoleObservation(
+                    role=original.role,
+                    args=original.args,
+                    notebook=original.notebook,
+                    notebook_path=original.notebook_path,
+                    snapshot=original.snapshot,
+                    build=FixtureBuildResult(rebound, original.build.evidence),
+                )
+            observations = rebound_observations
+            observation = FixtureBundleObservation(roles=observations)
         detection = recipe.authored_content_report(observation)
         write_json(options.run_dir / "interactive-detection.json", detection)
         authored = recipe.validate_authored_content(observation, detection)
@@ -177,6 +218,19 @@ class InteractiveBootstrapScenario(Scenario):
         write_json(options.run_dir / "interactive-validation.json", evidence)
         write_json(options.run_dir / "fixture-snapshot.json", snapshot)
         manifest["interactive_fixture"] = evidence
+        frozen_role_structures = {
+            role: {
+                key: dict(value)
+                for key, value in observations[role].build.structure.items()
+            }
+            for role in declared_roles
+        }
+        manifest["role_structures"] = frozen_role_structures
+        manifest["structure"] = {
+            key: value
+            for role in declared_roles
+            for key, value in frozen_role_structures[role].items()
+        }
         fixture_validation = dict(manifest.get("fixture_validation", {}))
         fixture_validation.update(
             status="passed",

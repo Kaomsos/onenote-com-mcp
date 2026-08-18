@@ -154,7 +154,18 @@ def test_representative_move_bootstrap_captures_and_freezes_both_roles(
     }
     source_snapshot = {
         "notebook_id": "source-notebook",
-        "items": list(source_structure.values()),
+        "items": [
+            (
+                {
+                    **item,
+                    "title": "Frozen representative title",
+                    "path": "Source/01-Move-Source/Frozen representative title",
+                }
+                if item["id"] == "canvas-page"
+                else item
+            )
+            for item in source_structure.values()
+        ],
         "page_hashes": {
             "instructions-page": "marker-hash",
             "canvas-page": "representative-hash",
@@ -266,3 +277,9 @@ def test_representative_move_bootstrap_captures_and_freezes_both_roles(
     assert read_json(run_dir / "interactive-validation.json")[
         "synthetic_content_only"
     ] is False
+    assert manifest["role_structures"]["source"]["source_canvas_page"]["title"] == (
+        "Frozen representative title"
+    )
+    assert manifest["structure"]["source_canvas_page"]["path"] == (
+        "Source/01-Move-Source/Frozen representative title"
+    )
