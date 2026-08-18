@@ -7,7 +7,6 @@ from typing import Any, Mapping
 
 from ..mcp_stdio_client import ClientFailure, MCPStdioClient
 from ..runtime import InvariantFailure, RuntimeOptions
-from ..run_identity import run_safe_timestamp
 from ..test_utils import (
     capture_snapshot,
     display_name,
@@ -64,6 +63,7 @@ def _lossless_diagnostic(
         equivalence = value.get("equivalence")
         equivalence = equivalence if isinstance(equivalence, Mapping) else {}
         semantic = equivalence.get("semantic_content_comparison")
+        semantic_stages = value.get("semantic_content_stages")
         page_results.append(
             {
                 "source_page_id": value.get("source_page_id"),
@@ -81,6 +81,11 @@ def _lossless_diagnostic(
                         "passed": semantic.get("passed"),
                     }
                     if isinstance(semantic, Mapping)
+                    else None
+                ),
+                "semantic_content_stages": (
+                    dict(semantic_stages)
+                    if isinstance(semantic_stages, Mapping)
                     else None
                 ),
                 "normalizations": dict(value.get("normalizations", {})),
@@ -117,8 +122,10 @@ def _lossless_diagnostic(
             if isinstance(value, Mapping)
         ],
         "page_results": page_results,
-        "source_to_transformed_projection": "not_exposed_by_current_copy_report",
-        "follow_up_todo": "040_move_readback_validation_followups.md",
+        "semantic_content_stages_available": any(
+            value.get("semantic_content_stages") is not None for value in page_results
+        ),
+        "follow_up_todo": "039_interactive_real_page_move_lossless_validation.md",
         "content_exposed": False,
     }
 
@@ -226,9 +233,6 @@ class InteractiveMovePageContentScenario(Scenario):
             "expected_title": display_name(source),
             "expected_section_id": source_section_id,
             "expected_modified": source.get("modified"),
-            "destination_title": (
-                f"01-Representative-Moved-{run_safe_timestamp(args)}"
-            ),
             "include_subpages": False,
         }
         try:

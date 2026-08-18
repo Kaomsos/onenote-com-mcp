@@ -247,6 +247,7 @@ class InteractiveBootstrapScenario(Scenario):
             "scenario": self.name,
             "status": "passed",
             "interactive_bootstrap": True,
+            "consumer_scenario": getattr(recipe, "consumer_scenario_name", None),
             "template_instance_id": (
                 instance.template_instance_id
                 if instance is not None

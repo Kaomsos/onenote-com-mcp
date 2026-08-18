@@ -155,6 +155,38 @@ def test_compact_non_json_result_never_expands_nested_payload(tmp_path, capsys) 
     assert "response" not in output
 
 
+def test_ready_interactive_bootstrap_prints_explicit_copyable_handoff(tmp_path, capsys) -> None:
+    instance_id = "authored-" + "a" * 24
+    result = {
+        "status": "passed",
+        "scenario": "bootstrap-move-page-content-fixture",
+        "run_dir": str(tmp_path),
+        "notebook_label": "move-page-content",
+        "scenario_result": {
+            "interactive_bootstrap": True,
+            "template_published": True,
+            "template_state": "ready",
+            "template_instance_id": instance_id,
+            "consumer_scenario": "interactive-move-page-content",
+        },
+        "metrics": {
+            "observed_mcp_process_starts": 1,
+            "observed_mcp_tool_calls": 7,
+        },
+        "lifecycle": {"status": "closed"},
+        "cache": {"decision": "bootstrap_published"},
+    }
+
+    print_compact_scenario_result(result, verbosity="normal", dry_run=False)
+
+    output = capsys.readouterr().out
+    assert f"handoff: template_instance_id={instance_id}" in output
+    assert (
+        "interactive-move-page-content --use-cache --template-instance-id "
+        f"{instance_id} --notebook-label move-page-content --keep-worksite"
+    ) in output
+
+
 @pytest.mark.parametrize("verbosity", ["quiet", "normal", "verbose"])
 def test_named_dry_run_non_json_is_compact_and_side_effect_free(
     verbosity, tmp_path, capsys

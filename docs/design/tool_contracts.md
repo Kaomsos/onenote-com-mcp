@@ -147,7 +147,7 @@ Copy 需要 Create + Writes；Move 需要 Create + Writes + Deletes。不存在�
 - `move_section(...)` 与 Section Copy 参数同构
 - `move_section_group(...)` 与 SectionGroup Copy 参数同构
 
-七个操作都是单次调用：Runtime 内部从 live source/destination 建立计划、执行预算检查、复制、验证并返回新 ID 映射；不接受 `plan_digest` 或 planning token。Page fidelity 按内容能力选择验证：既有 MathML、DisplayEquation、List/Tag、Ink/UIShape 档保持独立；包含受支持 Table/Image 的 RichText/List/Tag Page 使用 `semantic_content_v1`，分别验证有效 title、富文本样式/链接、List/Tag、表格行列与单元格语义、非空 Outline、对象类型和 binary hash。只接受 title 文本节点合并、空 Outline 消除与表格 Cell 内 OE 扁平化这三类已知 COM 规范化；投影不完整时回退 strict canonical，任何语义丢失继续 fail closed。Move 只有在 Copy 已验证且源状态重验通过后才执行源对象的非永久删除；partial/indeterminate 不自动重放。Page 默认为单页，容器始终递归。
+七个操作都是单次调用：Runtime 内部从 live source/destination 建立计划、执行预算检查、复制、验证并返回新 ID 映射；不接受 `plan_digest` 或 planning token。Page fidelity 按内容能力选择验证：既有 MathML、DisplayEquation、List/Tag、Ink/UIShape 档保持独立；包含受支持 Table/Image 的 RichText/List/Tag Page 使用 `semantic_content_v1`，分别验证有效 title、富文本样式/链接、List/Tag、表格行列与单元格语义、非空 Outline、对象类型和 binary hash。该投影比较每段文本的有效 inline 格式，而不是 OneNote 可合并的冗余嵌套 `span` 包装；title 文本节点合并、空 Outline 消除与表格 Cell 内 OE 扁平化仍按既有窄规则处理，任何有效样式、链接、正文、结构或 binary 变化继续 fail closed。`page_results[*].semantic_content_stages` 在适用 tier 下返回 content-free 的 source→transformed 与 transformed→target 完整性、check、摘要 hash 和有界 mismatch path，不返回标题、正文、style 值或 raw XML。Move 只有在 Copy 已验证且源状态重验通过后才执行源对象的非永久删除；partial/indeterminate 不自动重放。Page 默认为单页，容器始终递归。
 
 ### Export（1）、UI Navigation（1）、Notebook Lifecycle（2）
 

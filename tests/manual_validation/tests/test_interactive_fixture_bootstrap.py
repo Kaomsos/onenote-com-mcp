@@ -266,6 +266,7 @@ def test_representative_move_bootstrap_captures_and_freezes_both_roles(
 
     assert result["template_state"] == "ready"
     assert result["template_instance_id"].startswith("authored-")
+    assert result["consumer_scenario"] == "interactive-move-page-content"
     assert result["template_instance"]["move_source_deletion_allowed"] is True
     assert result["template_instance"]["observed_capabilities"] == (
         "Outline",

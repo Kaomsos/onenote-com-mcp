@@ -67,12 +67,17 @@ def _structures() -> tuple[dict, dict]:
     return source, destination
 
 
-def _source_snapshot(*, moved: bool = False, unknown: bool = False) -> dict:
+def _source_snapshot(
+    *,
+    moved: bool = False,
+    unknown: bool = False,
+    authored_capabilities: tuple[str, ...] = ("Outline", "RichText", "Table"),
+) -> dict:
     source, _destination = _structures()
     items = list(source.values())
     if moved:
         items = [item for item in items if item["id"] != SOURCE_ID]
-    capabilities = ["Outline", "RichText", "Table"]
+    capabilities = list(authored_capabilities)
     if unknown:
         capabilities.append("UnknownWidget")
     return {
@@ -86,12 +91,32 @@ def _source_snapshot(*, moved: bool = False, unknown: bool = False) -> dict:
             "instructions-page": "instructions-body-hash",
             **({} if moved else {SOURCE_ID: "source-body-hash"}),
         },
+        "page_semantic_content_identities": {
+            **(
+                {}
+                if moved
+                else {
+                    SOURCE_ID: {
+                        "schema_version": 2,
+                        "complete": not unknown,
+                        "sha256": "source-semantic-hash",
+                        "persistence_sha256": "source-persistence-semantic-hash",
+                    }
+                }
+            ),
+        },
         "page_objects": {
             "instructions-page": [{"kind": "Outline"}],
             **(
                 {}
                 if moved
-                else {SOURCE_ID: [{"kind": "Outline"}, {"kind": "Table"}]}
+                else {
+                    SOURCE_ID: [
+                        {"kind": kind}
+                        for kind in ("Outline", "Table")
+                        if kind in authored_capabilities
+                    ]
+                }
             ),
         },
         "page_capability_projections": {
@@ -151,7 +176,11 @@ def _destination_snapshot(*, with_target: bool = False) -> dict:
     }
 
 
-def _observation(*, unknown: bool = False) -> FixtureBundleObservation:
+def _observation(
+    *,
+    unknown: bool = False,
+    authored_capabilities: tuple[str, ...] = ("Outline", "RichText", "Table"),
+) -> FixtureBundleObservation:
     source, destination = _structures()
     return FixtureBundleObservation(
         roles={
@@ -160,7 +189,10 @@ def _observation(*, unknown: bool = False) -> FixtureBundleObservation:
                 args=argparse.Namespace(),
                 notebook={"id": "source-notebook"},
                 notebook_path="C:/working/source",
-                snapshot=_source_snapshot(unknown=unknown),
+                snapshot=_source_snapshot(
+                    unknown=unknown,
+                    authored_capabilities=authored_capabilities,
+                ),
                 build=FixtureBuildResult(source, {}),
             ),
             "destination": FixtureRoleObservation(
@@ -180,6 +212,10 @@ def _identity_observation(
     *,
     title: str = "Frozen representative title",
     body_hash: str = "representative-body-hash",
+    semantic_hash: str = "representative-semantic-hash",
+    persistence_semantic_hash: str = "representative-persistence-semantic-hash",
+    semantic_complete: bool = True,
+    object_kinds: tuple[str, ...] = ("Outline", "Table"),
 ) -> FixtureBundleObservation:
     """Construct semantically equal bundles with intentionally different live IDs."""
 
@@ -220,10 +256,21 @@ def _identity_observation(
                     "items": list(source.values()),
                     "page_hashes": {source_page_id: f"{prefix}-volatile-page-hash"},
                     "page_body_hashes": {source_page_id: body_hash},
+                    "page_semantic_content_identities": {
+                        source_page_id: {
+                            "schema_version": 2,
+                            "complete": semantic_complete,
+                            "sha256": semantic_hash,
+                            "persistence_sha256": persistence_semantic_hash,
+                        }
+                    },
                     "page_objects": {
                         source_page_id: [
-                            {"id": f"{prefix}-outline", "kind": "Outline"},
-                            {"id": f"{prefix}-table", "kind": "Table"},
+                            {
+                                "id": f"{prefix}-object-{index}",
+                                "kind": kind,
+                            }
+                            for index, kind in enumerate(object_kinds)
                         ]
                     },
                     "page_capability_projections": {
@@ -250,6 +297,28 @@ def _identity_observation(
 
 
 def _copy_report(*, passed: bool) -> dict:
+    comparison = {
+        "source_complete": True,
+        "target_complete": True,
+        "checks": {
+            "title": True,
+            "rich_list_tag_table_outline": passed,
+            "binary_objects": True,
+        },
+        "passed": passed,
+        "projection_evidence": {
+            "schema_version": 1,
+            "source": {"outlines_sha256": "a" * 64},
+            "target": {"outlines_sha256": ("a" if passed else "b") * 64},
+            "mismatches": {
+                "limit": 24,
+                "reported": 0 if passed else 1,
+                "truncated": False,
+                "items": [] if passed else [{"path": "$.outlines[0]", "kind": "value"}],
+            },
+            "content_exposed": False,
+        },
+    }
     return {
         "planning": {
             "lossless_candidate": True,
@@ -280,12 +349,22 @@ def _copy_report(*, passed: bool) -> dict:
                         "semantic_projection_complete": True,
                     },
                     "equivalent": passed,
-                    "semantic_content_comparison": {
-                        "source_complete": True,
-                        "target_complete": True,
-                        "checks": {"title": True, "content": passed},
-                        "passed": passed,
+                    "semantic_content_comparison": comparison,
+                },
+                "semantic_content_stages": {
+                    "schema_version": 1,
+                    "title_override_requested": False,
+                    "source_to_transformed": {
+                        **comparison,
+                        "checks": {
+                            "title": True,
+                            "rich_list_tag_table_outline": True,
+                            "binary_objects": True,
+                        },
+                        "passed": True,
                     },
+                    "transformed_to_target": comparison,
+                    "content_exposed": False,
                 },
             }
         ],
@@ -333,7 +412,7 @@ def test_recipe_pair_shares_exact_two_role_cache_identity_and_freezes_ready() ->
     ) == ("destination", "source")
     report = bootstrap.authored_content_report(_observation())
     assert report["passed"] is True
-    assert report["representative_capabilities"] == ["Table"]
+    assert report["representative_capabilities"] == ["RichText", "Table"]
     frozen = bootstrap.freeze_authored_instance(_observation())
     assert frozen.state == "ready"
     assert frozen.move_source_deletion_allowed is True
@@ -342,6 +421,25 @@ def test_recipe_pair_shares_exact_two_role_cache_identity_and_freezes_ready() ->
     assert evidence_only.state == "evidence_only"
     assert evidence_only.move_source_deletion_allowed is False
     assert "UnknownWidget" in evidence_only.unknown_capabilities
+
+
+def test_rich_text_only_page_is_representative_but_outline_placeholder_is_not() -> None:
+    recipe = SCENARIO_REGISTRY.get(
+        "bootstrap-move-page-content-fixture"
+    ).fixture_recipe
+    rich_text = _observation(authored_capabilities=("Outline", "RichText"))
+    placeholder = _observation(authored_capabilities=("Outline",))
+
+    rich_text_report = recipe.authored_content_report(rich_text)
+    assert rich_text_report["passed"] is True
+    assert rich_text_report["representative_capabilities"] == ["RichText"]
+    assert recipe.freeze_authored_instance(rich_text).state == "ready"
+
+    placeholder_report = recipe.authored_content_report(placeholder)
+    assert placeholder_report["passed"] is False
+    assert placeholder_report["representative_capabilities"] == []
+    assert placeholder_report["missing"] == ["representative-content-capability"]
+    assert recipe.freeze_authored_instance(placeholder).state == "evidence_only"
 
 
 def test_representative_move_instance_identity_ignores_materialized_ids_and_paths() -> None:
@@ -353,12 +451,25 @@ def test_representative_move_instance_identity_ignores_materialized_ids_and_path
     renamed = recipe.freeze_authored_instance(
         _identity_observation("working", title="Different representative title")
     )
+    persistence_stabilized = recipe.freeze_authored_instance(
+        _identity_observation(
+            "working",
+            body_hash="different-body-hash",
+            semantic_hash="different-outline-grouping-hash",
+            object_kinds=("Outline", "Table", "Outline", "OE"),
+        )
+    )
     changed_content = recipe.freeze_authored_instance(
-        _identity_observation("working", body_hash="different-body-hash")
+        _identity_observation(
+            "working",
+            semantic_hash="different-semantic-hash",
+            persistence_semantic_hash="different-persistence-semantic-hash",
+        )
     )
 
     assert authored.template_instance_id == materialized.template_instance_id
     assert authored.projection_digest == materialized.projection_digest
+    assert authored.template_instance_id == persistence_stabilized.template_instance_id
     assert authored.template_instance_id != renamed.template_instance_id
     assert authored.template_instance_id != changed_content.template_instance_id
 
@@ -374,6 +485,48 @@ def test_representative_move_instance_identity_requires_stable_body_hash() -> No
         recipe.freeze_authored_instance(observation)
 
 
+def test_representative_move_instance_identity_requires_persistence_digest() -> None:
+    recipe = SCENARIO_REGISTRY.get(
+        "bootstrap-move-page-content-fixture"
+    ).fixture_recipe
+    observation = _identity_observation("template")
+    page_id = next(
+        iter(observation.roles["source"].snapshot["page_semantic_content_identities"])
+    )
+    observation.roles["source"].snapshot["page_semantic_content_identities"][
+        page_id
+    ].pop("persistence_sha256")
+
+    with pytest.raises(InvariantFailure, match="persistence semantic digest"):
+        recipe.freeze_authored_instance(observation)
+
+
+def test_representative_move_instance_identity_falls_back_for_incomplete_semantics() -> None:
+    recipe = SCENARIO_REGISTRY.get(
+        "bootstrap-move-page-content-fixture"
+    ).fixture_recipe
+    authored = recipe.freeze_authored_instance(
+        _identity_observation("template", semantic_complete=False)
+    )
+    changed_body = recipe.freeze_authored_instance(
+        _identity_observation(
+            "working",
+            semantic_complete=False,
+            body_hash="different-body-hash",
+        )
+    )
+    changed_objects = recipe.freeze_authored_instance(
+        _identity_observation(
+            "working",
+            semantic_complete=False,
+            object_kinds=("Outline", "Table", "Image"),
+        )
+    )
+
+    assert authored.template_instance_id != changed_body.template_instance_id
+    assert authored.template_instance_id != changed_objects.template_instance_id
+
+
 def test_interactive_move_lossless_failure_is_one_call_and_preserves_source(
     monkeypatch, tmp_path
 ) -> None:
@@ -386,6 +539,7 @@ def test_interactive_move_lossless_failure_is_one_call_and_preserves_source(
         async def call_tool(self, name: str, arguments: dict) -> dict:
             nonlocal called, move_attempted
             assert name == "move_page"
+            assert "destination_title" not in arguments
             called += 1
             move_attempted = True
             details = {
@@ -443,9 +597,11 @@ def test_interactive_move_lossless_failure_is_one_call_and_preserves_source(
     assert diagnostic["page_results"][0]["verification_tier"] == (
         "semantic_content_v1"
     )
-    assert diagnostic["source_to_transformed_projection"] == (
-        "not_exposed_by_current_copy_report"
-    )
+    stages = diagnostic["page_results"][0]["semantic_content_stages"]
+    assert stages["title_override_requested"] is False
+    assert stages["source_to_transformed"]["passed"] is True
+    assert stages["transformed_to_target"]["passed"] is False
+    assert diagnostic["semantic_content_stages_available"] is True
     assert diagnostic["content_exposed"] is False
 
 
@@ -462,6 +618,7 @@ def test_interactive_move_accepts_only_after_machine_lossless_and_nonpermanent_d
             nonlocal called, moved
             assert name == "move_page"
             assert arguments["include_subpages"] is False
+            assert "destination_title" not in arguments
             called += 1
             moved = True
             return {

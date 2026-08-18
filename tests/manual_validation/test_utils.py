@@ -21,6 +21,7 @@ from local_onenote_mcp.page import (
     page_content_capability_projection,
     semantic_mathml_projection,
 )
+from local_onenote_mcp.page.copying import semantic_content_projection
 from local_onenote_mcp.domain import content_objects
 from local_onenote_mcp.page.copying import MATHML_FRAGMENT_PATTERN
 from local_onenote_mcp.page.parser import html_fragment_to_text, local_name, parse_xml
@@ -205,6 +206,34 @@ def page_body_content_hash(xml: str) -> str:
         if local_name(child.tag) == "Title":
             root.remove(child)
     return canonical_page_digest(ET.tostring(root, encoding="unicode"))
+
+
+def page_semantic_content_identity(xml: str) -> dict[str, Any]:
+    """Return full and persistence-stable digests of reviewed Page semantics."""
+
+    projection = semantic_content_projection(xml)
+
+    def digest(value: Mapping[str, Any]) -> str:
+        payload = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    persistence_projection = dict(projection)
+    persistence_projection["outlines"] = tuple(
+        oe
+        for outline in projection.get("outlines", ())
+        for oe in outline
+    )
+    return {
+        "schema_version": 2,
+        "complete": projection.get("complete") is True,
+        "sha256": digest(projection),
+        "persistence_sha256": digest(persistence_projection),
+    }
 
 
 def page_reparent_content_hash(xml: str) -> str:
@@ -581,6 +610,7 @@ async def capture_snapshot(
     )
     page_hashes: dict[str, str] = {}
     page_body_hashes: dict[str, str] = {}
+    page_semantic_content_identities: dict[str, dict[str, Any]] = {}
     page_canonical_hashes: dict[str, str] = {}
     page_reparent_hashes: dict[str, str] = {}
     page_xml_hashes: dict[str, str] = {}
@@ -595,6 +625,7 @@ async def capture_snapshot(
             page_xml_observer(page, xml)
         page_hashes[page_id] = page_content_hash(xml)
         page_body_hashes[page_id] = page_body_content_hash(xml)
+        page_semantic_content_identities[page_id] = page_semantic_content_identity(xml)
         page_canonical_hashes[page_id] = canonical_page_digest(xml)
         page_reparent_hashes[page_id] = page_reparent_content_hash(xml)
         page_xml_hashes[page_id] = hashlib.sha256(xml.encode("utf-8")).hexdigest()
@@ -622,6 +653,7 @@ async def capture_snapshot(
         "items": [stable_item(item) for item in refreshed_items],
         "page_hashes": page_hashes,
         "page_body_hashes": page_body_hashes,
+        "page_semantic_content_identities": page_semantic_content_identities,
         "page_canonical_hashes": page_canonical_hashes,
         "page_reparent_hashes": page_reparent_hashes,
         "page_xml_hashes": page_xml_hashes,

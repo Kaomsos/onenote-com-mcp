@@ -42,10 +42,11 @@
 | 034 | [用户测试前 MCP 工具发布面收敛](034_pre_user_testing_tool_surface_convergence.md)                                     | 已完成 | P0     | 52 Tool Registry、13 项重命名、5 项非注册 catalog、7 个授权、统一 envelope、98 组合权限矩阵及 convergence/launch 真实证据全部闭合；用户已批准测试准入与提交。               |
 | 035 | [Copy/Move 内部 Planning、Preview 高级能力与 Agent 职责收敛](035_copy_move_internal_planning_and_agent_role.md)          | 已完成 | P1     | 七个单次调用 Copy/Move、无公共 Plan/Preview 与服务端内部 planning/证明职责已冻结；自动化、fresh/cache 真实回归和用户产品边界确认全部完成。                                    |
 | 036 | [Operation Runtime 操作执行控制层与 Tool 迁移](036_operation_runtime_control_plane_and_tool_migration.md)               | 已完成 | P1     | Runtime 控制层与全 Tool 迁移证据已交付；当时 56 项 Registry 由 034 收敛为 52 项，当前 53 项继续使用同一控制面。                                                          |
-| 037 | [用户测试期工具调用与实现体验优化](037_user_testing_experience_feedback_and_optimization.md)                          | 已完成 | P0     | UT-001 至 UT-010 的本轮台账已由用户明确关闭；UT-006 沉淀为 Lesson，UT-009 的受控 fixture 修复保留，但代表性真实 Page content 的 Move lossless 缺口已转交 P0 TODO 039。 |
+| 037 | [用户测试期工具调用与实现体验优化](037_user_testing_experience_feedback_and_optimization.md)                          | 已完成 | P0     | UT-001 至 UT-010 的本轮台账已由用户明确关闭；UT-006 沉淀为 Lesson，UT-009 的真实 Page Move 缺口经已关闭的 TODO 039 建立诊断基础后，现由 P0 TODO 040 继续接管。 |
 | 038 | [Batch Mutation 目标范围预检预算与大型 Notebook 误拒绝修复](038_batch_mutation_target_scoped_preflight_budget.md)      | 已完成 | P1     | 全部 12 个 Create/Rename/Reparent/Delete batch 工具已与 CopyBudget 解耦并按 effective scope 有界计费；用户 fresh disposable Delete run 已证明“大 Notebook/小叶子 batch 成功 + 真实 scope 超限零 mutation”，并完成 UT-010 mixed scope 集成验收。 |
-| 039 | [真实 Page Content 的 Interactive Move Lossless 校验](039_interactive_real_page_move_lossless_validation.md)           | 进行中 | P0     | 双 Notebook 专用 bootstrap + interactive Move scaffold 已实现并通过纯合同/dry-run；等待用户前台冻结代表性内容并取得真实 lossless mismatch/成功证据。 |
-| 040 | [Move 回读校验待解决问题](040_move_readback_validation_followups.md)                                                    | 待办   | P0     | 空占位；等待 TODO 039 的真实 content-free mismatch 证据后记录具体生产回读校验问题。 |
+| 039 | [真实 Page Content 的 Interactive Move Lossless 校验](039_interactive_real_page_move_lossless_validation.md)           | 已完成 | P0     | 已交付代表性内容 bootstrap/interactive Move、真实失败复现和诊断基础；用户决定关闭，剩余回读修复与最终验收统一转交 TODO 040。 |
+| 040 | [Move 回读校验待解决问题](040_move_readback_validation_followups.md)                                                    | 进行中 | P0     | 接管 039；修复 Page 标题/path、纯 RichText verification、Table 列宽 5% 容差和 typed equivalence errors，并完成最终 Move 验收。 |
+| 041 | [统一 Interactive Bootstrap 与 Scenario 验证流程](041_unified_interactive_bootstrap_scenario_flow.md)                  | 待办   | P1     | 统一为 `interactive-<operation>` 单入口；fresh 自动串联用户 authoring、template 发布、working fixture 重开与 scenario，`--use-cache` 确定性跳过 bootstrap。 |
 
 ## 文件命名
 

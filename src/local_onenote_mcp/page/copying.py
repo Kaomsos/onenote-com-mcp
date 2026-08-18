@@ -1269,8 +1269,8 @@ class _SemanticInlineParser(HTMLParser):
         self.complete = True
 
     @staticmethod
-    def _style(value: str) -> str:
-        declarations = []
+    def _style_declarations(value: str) -> dict[str, str]:
+        declarations: dict[str, str] = {}
         for declaration in value.split(";"):
             if ":" not in declaration:
                 continue
@@ -1278,8 +1278,51 @@ class _SemanticInlineParser(HTMLParser):
             name = name.strip().casefold()
             item = " ".join(item.strip().split())
             if name and item:
-                declarations.append((name, item))
-        return ";".join(f"{name}:{value}" for name, value in sorted(declarations))
+                # CSS applies the last declaration for a property. OneNote can
+                # collapse nested or adjacent spans while retaining that
+                # effective formatting, so preserve the computed declaration
+                # rather than the wrapper shape.
+                declarations[name] = item
+        return declarations
+
+    @classmethod
+    def _style(cls, value: str) -> str:
+        return ";".join(
+            f"{name}:{item}"
+            for name, item in sorted(cls._style_declarations(value).items())
+        )
+
+    def _effective_style(self) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+        """Return per-run formatting independent of redundant HTML wrappers."""
+
+        semantic_tags: set[tuple[str, tuple[tuple[str, str], ...]]] = set()
+        span_attributes: dict[str, str] = {}
+        span_style: dict[str, str] = {}
+        font_attributes: dict[str, str] = {}
+        for tag, attributes in self.stack:
+            if tag == "span":
+                for name, value in attributes:
+                    if name == "style":
+                        span_style.update(self._style_declarations(value))
+                    else:
+                        span_attributes[name] = value
+                continue
+            if tag == "font":
+                font_attributes.update(attributes)
+                continue
+            # Repeated strong/em/link wrappers have the same effective meaning
+            # for a text run. Attribute changes remain visible in the set.
+            semantic_tags.add((tag, attributes))
+
+        if span_style:
+            span_attributes["style"] = ";".join(
+                f"{name}:{value}" for name, value in sorted(span_style.items())
+            )
+        if span_attributes:
+            semantic_tags.add(("span", tuple(sorted(span_attributes.items()))))
+        if font_attributes:
+            semantic_tags.add(("font", tuple(sorted(font_attributes.items()))))
+        return tuple(sorted(semantic_tags))
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.casefold()
@@ -1320,7 +1363,7 @@ class _SemanticInlineParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if not data:
             return
-        style = tuple(self.stack)
+        style = self._effective_style()
         if self.runs and self.runs[-1][1] == style:
             previous, _ = self.runs[-1]
             self.runs[-1] = (previous + data, style)
@@ -1509,6 +1552,101 @@ def semantic_content_projection(xml: str) -> dict[str, Any]:
     }
 
 
+def _semantic_projection_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+def _semantic_projection_summary(projection: Mapping[str, Any]) -> dict[str, Any]:
+    title = str(projection.get("title", ""))
+    outlines = projection.get("outlines", ())
+    object_counts = projection.get("object_counts", ())
+    binary_hashes = projection.get("binary_sha256", ())
+    return {
+        "complete": bool(projection.get("complete")),
+        "title_chars": len(title),
+        "title_sha256": sha256(title.encode("utf-8")).hexdigest(),
+        "outline_count": len(outlines),
+        "outlines_sha256": _semantic_projection_digest(outlines),
+        "object_counts": dict(object_counts),
+        "binary_count": len(binary_hashes),
+        "binary_set_sha256": _semantic_projection_digest(binary_hashes),
+    }
+
+
+def _semantic_projection_mismatches(
+    source: Any,
+    target: Any,
+    *,
+    limit: int = 24,
+) -> dict[str, Any]:
+    """Locate bounded semantic differences without returning Page content."""
+
+    mismatches: list[dict[str, Any]] = []
+    truncated = False
+
+    def add(path: str, kind: str, **details: Any) -> None:
+        nonlocal truncated
+        if len(mismatches) >= limit:
+            truncated = True
+            return
+        mismatches.append({"path": path, "kind": kind, **details})
+
+    def compare(left: Any, right: Any, path: str) -> None:
+        nonlocal truncated
+        if truncated:
+            return
+        if isinstance(left, Mapping) and isinstance(right, Mapping):
+            left_keys = set(left)
+            right_keys = set(right)
+            if left_keys != right_keys:
+                add(
+                    path,
+                    "mapping_keys",
+                    source_count=len(left_keys),
+                    target_count=len(right_keys),
+                )
+            for key in sorted(left_keys & right_keys, key=str):
+                compare(left[key], right[key], f"{path}.{key}")
+            return
+        if isinstance(left, (tuple, list)) and isinstance(right, (tuple, list)):
+            if len(left) != len(right):
+                add(
+                    path,
+                    "sequence_length",
+                    source_count=len(left),
+                    target_count=len(right),
+                )
+            for index, (left_item, right_item) in enumerate(
+                zip(left, right, strict=False)
+            ):
+                compare(left_item, right_item, f"{path}[{index}]")
+            return
+        if type(left) is not type(right):
+            add(
+                path,
+                "value_type",
+                source_type=type(left).__name__,
+                target_type=type(right).__name__,
+            )
+            return
+        if left != right:
+            add(path, "value")
+
+    compare(source, target, "$")
+    return {
+        "limit": limit,
+        "reported": len(mismatches),
+        "truncated": truncated,
+        "items": mismatches,
+    }
+
+
 def semantic_content_comparison(expected_xml: str, actual_xml: str) -> dict[str, Any]:
     source = semantic_content_projection(expected_xml)
     target = semantic_content_projection(actual_xml)
@@ -1527,6 +1665,13 @@ def semantic_content_comparison(expected_xml: str, actual_xml: str) -> dict[str,
         "passed": bool(source["complete"])
         and bool(target["complete"])
         and all(checks.values()),
+        "projection_evidence": {
+            "schema_version": 1,
+            "source": _semantic_projection_summary(source),
+            "target": _semantic_projection_summary(target),
+            "mismatches": _semantic_projection_mismatches(source, target),
+            "content_exposed": False,
+        },
     }
 
 

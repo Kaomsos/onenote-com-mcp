@@ -40,17 +40,22 @@ class MovePageContentRecipe(UserAuthoredRecipe):
     """Freeze one exact representative Page plus an isolated Move destination."""
 
     bootstrap_scenario_name = BOOTSTRAP_SCENARIO
+    consumer_scenario_name = CONSUMER_SCENARIO
     capability = "MovePageContent"
-    recipe_version = 3
+    recipe_version = 7
     requested_object_types = frozenset({"Outline"})
     stable_capabilities = frozenset(VALIDATED_COPY_CAPABILITIES)
-    representative_capabilities = stable_capabilities - {"Outline", "RichText"}
+    # Outline alone is the scaffold/placeholder shape.  RichText is a validated
+    # Copy capability and is representative once the typed projection actually
+    # observes embedded rich-text markup on the authored Page.
+    representative_capabilities = stable_capabilities - {"Outline"}
     synthetic_content_only = False
     authoring_instruction = (
         "In the exact 01-Representative-Page Canvas, create or paste one non-sensitive "
-        "representative Page using real OneNote authoring features. Include at least one "
-        "supported non-trivial capability such as a table, list/tag, image, attachment, "
-        "display equation, ink, media, or UI shape. The Canvas title may be changed and "
+        "representative Page using real OneNote authoring features. Include meaningful "
+        "rich text or at least one supported structured capability such as a table, "
+        "list/tag, image, attachment, display equation, ink, media, or UI shape. The "
+        "Canvas title may be changed and "
         "will be frozen with the authored Page. Do not edit the reserved marker or add Pages."
     )
     authoring_zones = (
@@ -262,8 +267,10 @@ class MovePageContentRecipe(UserAuthoredRecipe):
         Cache materialization creates a new OneNote identity graph.  In particular,
         Page/Object IDs, Notebook IDs, and resolved paths are expected to differ even
         when the opaque working bundle is byte-for-byte derived from the published
-        template.  ``page_body_hashes`` is deliberately calculated without those
-        identity fields and is the stable content component for this gate.
+        template.  For the reviewed rich/list/table/image tier, the identity uses
+        the same semantic projection as Copy read-back so OneNote's persistence-time
+        layout stabilization cannot invalidate an opaque byte-for-byte copy.  Other
+        capability tiers retain the stricter stable body-hash fallback.
         """
 
         pages = [
@@ -285,6 +292,22 @@ class MovePageContentRecipe(UserAuthoredRecipe):
             raise InvariantFailure(
                 "Representative Move Canvas is missing its stable page body hash."
             )
+        semantic_identities = snapshot.get("page_semantic_content_identities")
+        semantic_identity = (
+            semantic_identities.get(page_id)
+            if isinstance(semantic_identities, Mapping)
+            else None
+        )
+        semantic_digest = None
+        if (
+            isinstance(semantic_identity, Mapping)
+            and semantic_identity.get("complete") is True
+        ):
+            semantic_digest = semantic_identity.get("persistence_sha256")
+            if not isinstance(semantic_digest, str) or not semantic_digest:
+                raise InvariantFailure(
+                    "Representative Move Canvas has an invalid persistence semantic digest."
+                )
         projections = snapshot.get("page_capability_projections")
         projection = (
             projections.get(page_id) if isinstance(projections, Mapping) else None
@@ -297,7 +320,17 @@ class MovePageContentRecipe(UserAuthoredRecipe):
             "title": page.get("title"),
             "page_level": page.get("page_level"),
             "is_root_page": page.get("parent_page_id") is None,
-            "page_body_hash": body_hash,
+            "content_identity": (
+                {
+                    "kind": "semantic_content_persistence_v2",
+                    "sha256": semantic_digest,
+                }
+                if semantic_digest is not None
+                else {
+                    "kind": "stable_page_body_v1",
+                    "sha256": body_hash,
+                }
+            ),
             "capability_projection": {
                 "capabilities": sorted(
                     str(value)
@@ -323,10 +356,19 @@ class MovePageContentRecipe(UserAuthoredRecipe):
                     else False
                 ),
             },
-            "object_kinds": sorted(
-                str(value.get("kind"))
-                for value in page_objects
-                if isinstance(value, Mapping)
+            "object_kind_identity": (
+                {
+                    "kind": "semantic_content_v1_owned",
+                }
+                if semantic_digest is not None
+                else {
+                    "kind": "exact_object_kind_multiset_v1",
+                    "values": sorted(
+                        str(value.get("kind"))
+                        for value in page_objects
+                        if isinstance(value, Mapping)
+                    ),
+                }
             ),
         }
 
@@ -388,7 +430,7 @@ class MovePageContentRecipe(UserAuthoredRecipe):
             "accepted_kinds": sorted(self.stable_capabilities),
             "observed": classification["observed_capability_counts"],
             "representative_capabilities": representative,
-            "missing": ([] if representative else ["non-trivial-capability"]),
+            "missing": ([] if representative else ["representative-content-capability"]),
             "unexpected": classification["unknown_capabilities"],
             "unexpected_counts": {
                 kind: 1 for kind in classification["unknown_capabilities"]
@@ -404,7 +446,11 @@ class MovePageContentRecipe(UserAuthoredRecipe):
                 if classification["classification_complete"] and representative
                 else "evidence_only"
             ),
-            "passed": schema_passed and bool(representative),
+            "passed": (
+                schema_passed
+                and classification["classification_complete"]
+                and bool(representative)
+            ),
         }
 
     def freeze_authored_structures(
@@ -479,7 +525,8 @@ class MovePageContentRecipe(UserAuthoredRecipe):
         if report.get("passed") is not True:
             raise InvariantFailure(
                 "Representative Move content requires one exact leaf Page, a complete "
-                "typed projection, and at least one supported non-trivial capability."
+                "typed projection, and meaningful RichText or another supported "
+                "structured capability."
             )
         return {
             **report,

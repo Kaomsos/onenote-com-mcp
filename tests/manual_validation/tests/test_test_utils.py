@@ -18,6 +18,7 @@ from tests.manual_validation.test_utils import (
     page_body_content_hash,
     page_content_hash,
     page_reparent_content_hash,
+    page_semantic_content_identity,
     write_json,
     write_sensitive_page_xml,
 )
@@ -94,6 +95,63 @@ def test_page_body_hash_ignores_title_but_not_body_content() -> None:
 
     assert page_body_content_hash(before) == page_body_content_hash(renamed)
     assert page_body_content_hash(before) != page_body_content_hash(changed_body)
+
+
+def test_semantic_content_identity_ignores_empty_layout_outline_but_keeps_meaning() -> None:
+    before = (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">'
+        '<one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>'
+        '<one:Outline><one:Position x="1" y="2"/><one:OEChildren>'
+        '<one:OE><one:T><![CDATA[<span style="font-weight:bold">Body</span>]]>'
+        '</one:T></one:OE></one:OEChildren></one:Outline></one:Page>'
+    )
+    stabilized = before.replace(
+        "</one:Page>",
+        '<one:Outline><one:Position x="99" y="100"/><one:OEChildren/>'
+        "</one:Outline></one:Page>",
+    ).replace('x="1" y="2"', 'x="3" y="4"')
+    changed = stabilized.replace(">Body<", ">Changed<")
+
+    before_identity = page_semantic_content_identity(before)
+    stabilized_identity = page_semantic_content_identity(stabilized)
+    changed_identity = page_semantic_content_identity(changed)
+
+    assert before_identity["complete"] is True
+    assert before_identity == stabilized_identity
+    assert before_identity["sha256"] != changed_identity["sha256"]
+
+
+def test_semantic_persistence_identity_ignores_outline_merge_but_keeps_oe_order() -> None:
+    separate = (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote">'
+        '<one:Title><one:OE><one:T>Title</one:T></one:OE></one:Title>'
+        '<one:Outline><one:OEChildren><one:OE><one:T>First</one:T></one:OE>'
+        '</one:OEChildren></one:Outline>'
+        '<one:Outline><one:OEChildren><one:OE><one:T>Second</one:T></one:OE>'
+        '</one:OEChildren></one:Outline></one:Page>'
+    )
+    merged = separate.replace(
+        "</one:OEChildren></one:Outline><one:Outline><one:OEChildren>",
+        "",
+    )
+    reordered = merged.replace(
+        "<one:T>First</one:T>",
+        "<one:T>Changed</one:T>",
+    )
+
+    separate_identity = page_semantic_content_identity(separate)
+    merged_identity = page_semantic_content_identity(merged)
+    reordered_identity = page_semantic_content_identity(reordered)
+
+    assert separate_identity["sha256"] != merged_identity["sha256"]
+    assert (
+        separate_identity["persistence_sha256"]
+        == merged_identity["persistence_sha256"]
+    )
+    assert (
+        separate_identity["persistence_sha256"]
+        != reordered_identity["persistence_sha256"]
+    )
 
 
 def test_page_tree_and_delete_sandbox_ancestry_checks() -> None:
@@ -273,6 +331,9 @@ def test_capture_snapshot_refreshes_hierarchy_after_page_evidence() -> None:
     assert snapshot["page_hashes"]["page"]
     assert snapshot["page_canonical_hashes"]["page"]
     assert snapshot["page_reparent_hashes"]["page"]
+    assert snapshot["page_semantic_content_identities"]["page"]["complete"] is True
+    assert snapshot["page_semantic_content_identities"]["page"]["sha256"]
+    assert snapshot["page_semantic_content_identities"]["page"]["persistence_sha256"]
     assert snapshot["page_xml_hashes"]["page"]
     assert snapshot["page_capability_projections"]["page"] == {
         "schema_version": 4,

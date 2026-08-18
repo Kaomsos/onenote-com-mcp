@@ -12,6 +12,7 @@ from local_onenote_mcp.page import (
     copy_verification_tier,
     page_content_capability_projection,
     page_equivalence,
+    semantic_content_comparison,
     transform_page_for_copy,
 )
 from local_onenote_mcp.services import PartialFailure
@@ -1161,6 +1162,85 @@ def test_semantic_content_accepts_table_cell_oe_flattening():
     assert result["equivalent"] is True
 
 
+def test_semantic_content_accepts_redundant_nested_span_collapse():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Outline><one:OEChildren><one:OE><one:Table><one:Row><one:Cell>
+      <one:OEChildren><one:OE><one:T><![CDATA[
+        <span style="font-family:Calibri;color:#ff0000"><span style="color:#ff0000">Cell</span></span>
+      ]]></one:T></one:OE></one:OEChildren>
+    </one:Cell></one:Row></one:Table></one:OE></one:OEChildren></one:Outline></one:Page>"""
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        '<span style="font-family:Calibri;color:#ff0000"><span style="color:#ff0000">Cell</span></span>',
+        '<span style="color:#ff0000; font-family:Calibri">Cell</span>',
+    )
+
+    result = page_equivalence(
+        source,
+        target,
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["checks"]["canonical_xml"] is False
+    assert result["semantic_content_comparison"]["checks"][
+        "rich_list_tag_table_outline"
+    ] is True
+    assert result["equivalent"] is True
+
+
+def test_semantic_content_effective_span_projection_still_rejects_style_loss():
+    source = """<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" ID="source">
+    <one:Outline><one:OEChildren><one:OE><one:Table><one:Row><one:Cell>
+      <one:OEChildren><one:OE><one:T><![CDATA[
+        <span style="font-family:Calibri"><span style="color:#ff0000">Cell</span></span>
+      ]]></one:T></one:OE></one:OEChildren>
+    </one:Cell></one:Row></one:Table></one:OE></one:OEChildren></one:Outline></one:Page>"""
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        '<span style="font-family:Calibri"><span style="color:#ff0000">Cell</span></span>',
+        '<span style="font-family:Calibri">Cell</span>',
+    )
+
+    result = page_equivalence(
+        source,
+        target,
+        verification_tier="semantic_content_v1",
+    )
+
+    assert result["semantic_content_comparison"]["checks"][
+        "rich_list_tag_table_outline"
+    ] is False
+    assert result["equivalent"] is False
+
+
+def test_semantic_content_mismatch_evidence_is_bounded_and_content_free():
+    source = page_xml(
+        "source",
+        "Private source title",
+        '<span style="color:#ff0000"><a href="https://secret.invalid/a">Sensitive body</a></span>',
+    ).replace(
+        "</one:OE></one:OEChildren></one:Outline>",
+        "<one:Table><one:Row><one:Cell><one:OEChildren><one:OE>"
+        "<one:T>Private cell</one:T></one:OE></one:OEChildren></one:Cell>"
+        "</one:Row></one:Table></one:OE></one:OEChildren></one:Outline>",
+    )
+    target = source.replace('ID="source"', 'ID="target"').replace(
+        "#ff0000", "#0000ff"
+    )
+
+    comparison = semantic_content_comparison(source, target)
+    serialized = str(comparison)
+
+    assert comparison["passed"] is False
+    evidence = comparison["projection_evidence"]
+    assert evidence["content_exposed"] is False
+    assert evidence["mismatches"]["reported"] >= 1
+    assert evidence["mismatches"]["reported"] <= evidence["mismatches"]["limit"]
+    assert all("path" in item and "kind" in item for item in evidence["mismatches"]["items"])
+    assert "Private source title" not in serialized
+    assert "Sensitive body" not in serialized
+    assert "Private cell" not in serialized
+    assert "secret.invalid" not in serialized
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -2049,6 +2129,31 @@ def test_recursive_section_copy_executes_and_verifies(monkeypatch):
     assert result["copy_report"]["verified"] is True
     assert result["copy_report"]["lossless"] is True
     assert_destination_position_contract(result, state, result["item"]["id"])
+
+
+@pytest.mark.write_contract
+def test_copy_report_exposes_content_free_semantic_stage_diagnostics(monkeypatch):
+    install_recursive_execute_fakes(monkeypatch)
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.copying.copy_verification_tier",
+        lambda *_args, **_kwargs: "semantic_content_v1",
+    )
+    plan = server.services.copying._build_plan(
+        "source-section", "destination-notebook", "Section Copy"
+    )
+
+    result = server.services.copying._execute_copy(plan)
+
+    page_result = result["copy_report"]["page_results"][0]
+    stages = page_result["semantic_content_stages"]
+    assert stages["schema_version"] == 1
+    assert stages["title_override_requested"] is False
+    assert stages["source_to_transformed"]["passed"] is True
+    assert stages["transformed_to_target"]["passed"] is True
+    assert stages["content_exposed"] is False
+    assert stages["source_to_transformed"]["projection_evidence"][
+        "content_exposed"
+    ] is False
 
 
 @pytest.mark.write_contract

@@ -13,9 +13,11 @@ from ..constants import SPECIAL_LOCATIONS, XML_SCHEMA_2013
 from ..hierarchy import display_name
 from ..onenote_errors import transient_read_error
 from ..page import (
+    SEMANTIC_CONTENT_VERIFICATION,
     collect_page_objects,
     copy_verification_tier,
     page_equivalence,
+    semantic_content_comparison,
     transform_page_for_copy,
 )
 from ..policy import CopyBudget, MutationPolicy
@@ -851,8 +853,9 @@ class CopyService(BaseService):
                 check_deadline()
                 target = page_targets[item["id"]]
                 target_title = destination["name"] if item["id"] == source["id"] else item["title"]
+                source_xml = plan["page_xml"][item["id"]]
                 transformed = transform_page_for_copy(
-                    plan["page_xml"][item["id"]],
+                    source_xml,
                     target["id"],
                     id_map,
                     title=(target_title if target_title != item["title"] else None),
@@ -866,6 +869,17 @@ class CopyService(BaseService):
                         transformed["content_types"],
                         page_xml=transformed["xml"],
                     )
+                semantic_content_stages = None
+                if verification_tier == SEMANTIC_CONTENT_VERIFICATION:
+                    semantic_content_stages = {
+                        "schema_version": 1,
+                        "title_override_requested": target_title != item["title"],
+                        "source_to_transformed": semantic_content_comparison(
+                            source_xml,
+                            transformed["xml"],
+                        ),
+                        "content_exposed": False,
+                    }
                 before_target_digest = self.pages.digest(
                     self.pages.xml(target["id"], "all")
                 )
@@ -904,6 +918,10 @@ class CopyService(BaseService):
                 )
                 assert stable_page.value is not None
                 equivalence = stable_page.value["equivalence"]
+                if semantic_content_stages is not None:
+                    semantic_content_stages["transformed_to_target"] = equivalence.get(
+                        "semantic_content_comparison"
+                    )
                 page_results.append(
                     {
                         "source_page_id": item["id"],
@@ -912,6 +930,11 @@ class CopyService(BaseService):
                         "content_types": transformed["content_types"],
                         "normalizations": transformed["normalizations"],
                         "equivalence": equivalence,
+                        **(
+                            {"semantic_content_stages": semantic_content_stages}
+                            if semantic_content_stages is not None
+                            else {}
+                        ),
                         "convergence": stable_page.summary(),
                         "reconciliation": reconciliation.summary(),
                     }

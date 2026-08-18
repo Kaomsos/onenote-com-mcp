@@ -1175,6 +1175,7 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
         "human_only": True,
         "agent_execution_prohibited": True,
         "notebook_name": args.notebook_name,
+        "notebook_label": getattr(args, "notebook_label", None),
         "notebook_id": manifest["notebook"]["id"],
         "notebooks": dict(manifest.get("notebooks", {"source": manifest["notebook"]})),
         "run_dir": str(options.run_dir.resolve()),
