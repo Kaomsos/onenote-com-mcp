@@ -39,6 +39,8 @@ async def _execute_delete(
     notebook_id = validate_manifest_notebook(manifest, args.notebook_name)
     delete_sandbox = resolve_manifest_item(manifest, "delete_sandbox")
     target_keys = tuple(key for key in (
+        "disposable_page_leaf_target",
+        "disposable_page_leaf_target_second",
         "disposable_page_target",
         "disposable_page_target_second",
         "disposable_section_target",
@@ -112,8 +114,11 @@ async def _execute_delete(
             assert_restored(before, rejection_after)
         currents = []
         deleted_results = []
-        batches: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
-        for declared in declared_targets:
+        batch_evidence: list[dict[str, Any]] = []
+        batches: dict[
+            tuple[str, str], list[tuple[dict[str, Any], dict[str, Any]]]
+        ] = {}
+        for target_key, declared in zip(target_keys, declared_targets, strict=True):
             current = find_snapshot_item(before, declared["id"])
             if current is None:
                 raise RunnerFailure("Batch Delete target is not active in the current notebook snapshot.")
@@ -145,8 +150,17 @@ async def _execute_delete(
             else:
                 raise RunnerFailure("Batch Delete supports only Page/Section/SectionGroup targets.")
             currents.append(current)
-            batches.setdefault(tool, []).append((current, batch_item))
-        for tool, entries in batches.items():
+            cohort = (
+                "leaf"
+                if resource_type == "page" and "leaf_target" in target_key
+                else "scope"
+                if resource_type == "page"
+                else "container"
+            )
+            batches.setdefault((tool, cohort), []).append((current, batch_item))
+        leaf_batch_applied = False
+        mixed_scope_batch_applied = False
+        for (tool, cohort), entries in batches.items():
             if use_batch:
                 response = await client.call_tool(
                     tool, {"items": [batch_item for _current, batch_item in entries]}
@@ -180,6 +194,15 @@ async def _execute_delete(
                     "Batch Delete item did not explicitly confirm permanently=false."
                 )
             deleted_results.append(response)
+            batch_evidence.append(
+                {"tool": tool, "cohort": cohort, "response": response}
+            )
+            if tool == "delete_page" and cohort == "leaf":
+                leaf_batch_applied = response.get("applied_count") == len(entries)
+            if tool == "delete_page" and cohort == "scope":
+                mixed_scope_batch_applied = (
+                    response.get("applied_count") == len(entries)
+                )
         after = await capture_snapshot(client, notebook_id)
         write_json(out / "after.json", after)
         if any(find_snapshot_item(after, current["id"]) is not None for current in currents):
@@ -253,15 +276,17 @@ async def _execute_delete(
             "target_ids": [current["id"] for current in currents],
             "target_keys": list(target_keys),
             "batch_results": deleted_results,
+            "batch_evidence": batch_evidence,
             "budget_rejection": budget_rejection,
             "large_notebook_small_page_batch": {
                 "notebook_pages_exceed_effective_limit": budget_rejection is not None,
                 "leaf_page_targets": sum(
-                    current.get("resource_type") == "page" for current in currents
+                    "leaf_target" in key for key in target_keys
                 ),
-                "applied": use_batch,
+                "applied": leaf_batch_applied,
             },
             "include_subpages_validation": {
+                "mixed_scope_batch_applied": mixed_scope_batch_applied,
                 "include_subpages_false_protected_child_id": (
                     None
                     if protected_child_after is None

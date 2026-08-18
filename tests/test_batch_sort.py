@@ -796,7 +796,199 @@ def test_batch_delete_ten_leaf_pages_ignores_more_than_two_hundred_unrelated_pag
     )
 
 
-def test_batch_delete_effective_page_scope_budget_fails_before_mutation(monkeypatch):
+@pytest.mark.parametrize("resource_type", ["page", "section", "section_group"])
+def test_batch_create_each_public_type_ignores_large_unrelated_notebook(
+    monkeypatch, resource_type
+):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    parent_section = item("section", "parent-section", "n", "Parent Section")
+    unrelated_section = item("section", "unrelated-section", "n", "Unrelated")
+    unrelated = [
+        item(
+            "page", f"unrelated-{index}", "unrelated-section", f"Unrelated {index}",
+            section_id="unrelated-section", order=index,
+        )
+        for index in range(225)
+    ]
+    state = {"items": [notebook, parent_section, unrelated_section, *unrelated]}
+    install_snapshot(monkeypatch, state)
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.mutations.CopyBudget.current",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("batch Create must not read CopyBudget")
+        ),
+    )
+
+    if resource_type == "page":
+        parent_id = "parent-section"
+        parent_name = "Parent Section"
+        parent_modified = parent_section["modified"]
+        supplied = [{"title": "Created"}]
+
+        def create_page(*_args):
+            created = item(
+                "page", "created", parent_id, "Created",
+                section_id=parent_id, order=0,
+            )
+            state["items"].append(created)
+            return {"page_id": "created", "allocated_id": "created", "page": created}
+
+        monkeypatch.setattr(server.services.mutations, "create_page", create_page)
+    else:
+        parent_id = "n"
+        parent_name = "Notebook"
+        parent_modified = notebook["modified"]
+        supplied = [{"name": "Created"}]
+        method_name = f"create_{resource_type}"
+
+        def create_container(_parent_id, name):
+            created = item(resource_type, "created", parent_id, name)
+            state["items"].append(created)
+            return {"allocated_id": "created", "item": created}
+
+        monkeypatch.setattr(
+            server.services.mutations, method_name, create_container
+        )
+
+    result = server.services.mutations.batch_create(
+        resource_type,
+        parent_id,
+        parent_name,
+        parent_modified,
+        supplied,
+    )
+
+    assert result["applied_count"] == 1
+    assert result["final_hierarchy"]["item_count"] == 1
+    assert result["final_hierarchy"]["items"][0]["current_id"] == "created"
+
+
+@pytest.mark.parametrize("family", ["rename", "reparent", "delete"])
+@pytest.mark.parametrize("resource_type", ["page", "section", "section_group"])
+def test_each_batch_target_type_ignores_large_unrelated_notebook(
+    monkeypatch, family, resource_type
+):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_ORGANIZE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    source_section = item("section", "source", "n", "Source")
+    destination_section = item("section", "destination-section", "n", "Destination")
+    destination_group = item(
+        "section_group", "destination-group", "n", "Destination Group"
+    )
+    unrelated_section = item("section", "unrelated-section", "n", "Unrelated")
+    unrelated = [
+        item(
+            "page", f"unrelated-{index}", "unrelated-section", f"Unrelated {index}",
+            section_id="unrelated-section", order=index,
+        )
+        for index in range(225)
+    ]
+    if resource_type == "page":
+        target = item(
+            "page", "target", "source", "Target",
+            section_id="source", order=0,
+        )
+        supplied = page_confirmation(
+            target, new_title="Renamed" if family == "rename" else None
+        )
+        destination_id = "destination-section"
+    else:
+        target = item(resource_type, "target", "n", "Target")
+        supplied = container_confirmation(
+            target, new_name="Renamed" if family == "rename" else None
+        )
+        destination_id = "destination-group"
+    state = {
+        "items": [
+            notebook, source_section, destination_section, destination_group,
+            unrelated_section, target, *unrelated,
+        ]
+    }
+    install_snapshot(monkeypatch, state)
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.mutations.CopyBudget.current",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("batch mutation must not read CopyBudget")
+        ),
+    )
+
+    if family == "rename":
+        if resource_type == "page":
+            def rename_page(page_id, *_args):
+                actual = next(value for value in state["items"] if value["id"] == page_id)
+                actual.update(name="Renamed", title="Renamed")
+                return {"item": actual}
+
+            monkeypatch.setattr(
+                server.services.mutations, "update_page_title", rename_page
+            )
+        else:
+            def rename_container(object_id, _type, new_name, *_args):
+                actual = next(value for value in state["items"] if value["id"] == object_id)
+                actual["name"] = new_name
+                return {"item": actual}
+
+            monkeypatch.setattr(
+                server.services.mutations, "rename_resource", rename_container
+            )
+        result = server.services.mutations.batch_rename(
+            resource_type, [supplied]
+        )
+    elif family == "reparent":
+        if resource_type == "page":
+            def reparent_page(page_id, destination_id, *_args):
+                actual = next(value for value in state["items"] if value["id"] == page_id)
+                actual.update(
+                    parent_id=destination_id,
+                    section_id=destination_id,
+                    page_level=1,
+                    parent_page_id=None,
+                )
+                return {"item": actual, "id_map": {page_id: page_id}}
+
+            monkeypatch.setattr(
+                server.services.mutations, "reparent_page", reparent_page
+            )
+        else:
+            def reparent_container(object_id, destination_id, *_args):
+                actual = next(value for value in state["items"] if value["id"] == object_id)
+                actual["parent_id"] = destination_id
+                return {"item": actual}
+
+            monkeypatch.setattr(
+                server.services.mutations,
+                f"reparent_{resource_type}",
+                reparent_container,
+            )
+        result = server.services.mutations.batch_reparent(
+            resource_type, destination_id, [supplied]
+        )
+    else:
+        def delete_resource(object_id, *_args):
+            state["items"] = [
+                value for value in state["items"] if value.get("id") != object_id
+            ]
+            return {"object_id": object_id, "permanently": False}
+
+        monkeypatch.setattr(
+            server.services.mutations, "delete_resource", delete_resource
+        )
+        result = server.services.mutations.batch_delete(
+            resource_type, [supplied]
+        )
+
+    assert result["applied_count"] == 1
+    assert result["final_hierarchy"]["item_count"] == 1
+
+
+@pytest.mark.parametrize("include_subpages", [False, True])
+def test_batch_delete_effective_page_scope_budget_fails_before_mutation(
+    monkeypatch, include_subpages
+):
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES", "2")
     notebook = item("notebook", "n", None, "Notebook")
@@ -804,16 +996,13 @@ def test_batch_delete_effective_page_scope_budget_fails_before_mutation(monkeypa
     root = item("page", "root", "s", "Root", section_id="s", order=0)
     descendants = [
         item(
-            "page",
-            f"child-{index}",
-            "s",
-            f"Child {index}",
-            section_id="s",
-            order=index + 1,
-            level=2,
-            parent_page_id="root",
-        )
-        for index in range(2)
+            "page", "child", "s", "Child", section_id="s", order=1,
+            level=2, parent_page_id="root",
+        ),
+        item(
+            "page", "grandchild", "s", "Grandchild", section_id="s", order=2,
+            level=3, parent_page_id="child",
+        ),
     ]
     install_snapshot(
         monkeypatch, {"items": [notebook, section, root, *descendants]}
@@ -825,7 +1014,10 @@ def test_batch_delete_effective_page_scope_budget_fails_before_mutation(monkeypa
     )
 
     with pytest.raises(MutationPreflightFailure) as caught:
-        server.services.mutations.batch_delete("page", [page_confirmation(root)])
+        server.services.mutations.batch_delete(
+            "page",
+            [{**page_confirmation(root), "include_subpages": include_subpages}],
+        )
 
     assert caught.value.details == {
         "mutation_stage": "preflight",
@@ -835,6 +1027,114 @@ def test_batch_delete_effective_page_scope_budget_fails_before_mutation(monkeypa
         "configured_limit": 2,
         "content_exposed": False,
     }
+
+
+def test_batch_page_scope_union_budget_fails_before_any_promotion_or_delete(
+    monkeypatch,
+):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES", "3")
+    notebook = item("notebook", "n", None, "Notebook")
+    section = item("section", "s", "n", "Section")
+    first = item("page", "first", "s", "First", section_id="s", order=0)
+    first_child = item(
+        "page", "first-child", "s", "First Child", section_id="s", order=1,
+        level=2, parent_page_id="first",
+    )
+    second = item("page", "second", "s", "Second", section_id="s", order=2)
+    second_child = item(
+        "page", "second-child", "s", "Second Child", section_id="s", order=3,
+        level=2, parent_page_id="second",
+    )
+    install_snapshot(
+        monkeypatch,
+        {"items": [notebook, section, first, first_child, second, second_child]},
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "call",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("budget rejection must precede descendant promotion")
+        ),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "delete_resource",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("budget rejection must precede principal Delete")
+        ),
+    )
+
+    with pytest.raises(MutationPreflightFailure) as caught:
+        server.services.mutations.batch_delete(
+            "page",
+            [
+                {**page_confirmation(first), "include_subpages": False},
+                {**page_confirmation(second), "include_subpages": True},
+            ],
+        )
+
+    assert caught.value.details["budget_dimension"] == "effective_pages"
+    assert caught.value.details["observed_count"] == 4
+    assert caught.value.details["configured_limit"] == 3
+    assert caught.value.details["mutation_attempted"] is False
+
+
+@pytest.mark.parametrize("resource_type", ["section", "section_group"])
+def test_batch_container_scope_budget_counts_complete_descendants_before_delete(
+    monkeypatch, resource_type
+):
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    notebook = item("notebook", "n", None, "Notebook")
+    if resource_type == "section":
+        root = item("section", "root", "n", "Root")
+        descendants = [
+            item("page", "page", "root", "Page", section_id="root", order=0)
+        ]
+        configured_limit = 1
+    else:
+        root = item("section_group", "root", "n", "Root")
+        child_section = item("section", "child-section", "root", "Child")
+        descendants = [
+            child_section,
+            item(
+                "page", "page", "child-section", "Page",
+                section_id="child-section", order=0,
+            ),
+        ]
+        configured_limit = 2
+    install_snapshot(monkeypatch, {"items": [notebook, root, *descendants]})
+    monkeypatch.setattr(
+        "local_onenote_mcp.services.mutations.BatchMutationBudget.current",
+        lambda: type(
+            "Budget",
+            (),
+            {
+                "max_catalog_resources": 100,
+                "max_effective_resources": configured_limit,
+                "max_effective_pages": 100,
+                "max_direct_siblings": 100,
+                "max_page_content_chars": 100_000,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        server.services.mutations,
+        "delete_resource",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("must reject the complete container scope")
+        ),
+    )
+
+    with pytest.raises(MutationPreflightFailure) as caught:
+        server.services.mutations.batch_delete(
+            resource_type, [container_confirmation(root)]
+        )
+
+    assert caught.value.details["budget_dimension"] == "effective_resources"
+    assert caught.value.details["observed_count"] == len(descendants) + 1
+    assert caught.value.details["configured_limit"] == configured_limit
+    assert caught.value.details["mutation_attempted"] is False
 
 
 @pytest.mark.parametrize("include_subpages", [False, True])

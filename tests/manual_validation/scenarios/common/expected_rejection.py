@@ -95,6 +95,26 @@ async def expect_mutation_preflight_rejection(
     message = str(error.get("message", ""))
     if expected_message_fragment.casefold() not in message.casefold():
         raise InvariantFailure(f"{label} rejected for an unexpected reason.")
+    execution = envelope.get("execution")
+    if (
+        not isinstance(execution, dict)
+        or execution.get("attempts") != 0
+        or execution.get("replayed") is not False
+    ):
+        raise InvariantFailure(
+            f"{label} rejection did not prove zero mutation attempts and zero replay."
+        )
+    bridge_audit = _read_only_bridge_evidence(
+        audit_path,
+        audit_cursor,
+        label=label,
+    )
+    if bridge_audit.get("verified") is True and execution.get(
+        "backend_calls"
+    ) != len(bridge_audit["bridge_operations"]):
+        raise InvariantFailure(
+            f"{label} rejection backend-call accounting does not match the bridge audit."
+        )
     evidence = {
         "label": label,
         "tool": tool_name,
@@ -108,12 +128,8 @@ async def expect_mutation_preflight_rejection(
             for key in ("budget_dimension", "observed_count", "configured_limit")
             if key in details
         },
-        "execution": envelope.get("execution", {}),
-        "bridge_audit": _read_only_bridge_evidence(
-            audit_path,
-            audit_cursor,
-            label=label,
-        ),
+        "execution": execution,
+        "bridge_audit": bridge_audit,
     }
     write_json(evidence_path, evidence)
     return evidence

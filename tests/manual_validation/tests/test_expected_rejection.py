@@ -28,6 +28,8 @@ def _rejection_envelope() -> dict:
         },
         "execution": {
             "observed_outcome": "not_applied",
+            "attempts": 0,
+            "backend_calls": 1,
             "replayed": False,
         },
     }
@@ -112,6 +114,41 @@ def test_expected_rejection_requires_typed_preflight_details(tmp_path) -> None:
                 {"parent_id": "parent"},
                 tmp_path / "expected-rejection.json",
                 label="duplicate-create",
+                expected_message_fragment="conflicts",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("attempts", 1, "zero mutation attempts"),
+        ("replayed", True, "zero mutation attempts"),
+        ("backend_calls", 2, "backend-call accounting"),
+    ],
+)
+def test_expected_rejection_requires_exact_execution_accounting(
+    tmp_path, field, value, message
+) -> None:
+    class WrongExecutionClient(RejectingClient):
+        async def call_tool(self, _name: str, _arguments: dict) -> dict:
+            audit_path = self.run_dir / "bridge-calls.jsonl"
+            with audit_path.open("a", encoding="utf-8", newline="\n") as stream:
+                stream.write(json.dumps({"operation": "get_hierarchy"}) + "\n")
+            envelope = _rejection_envelope()
+            envelope["execution"][field] = value
+            raise ClientFailure("wrong execution", envelope=envelope)
+
+    run_dir = tmp_path / "scenario-mcp"
+    run_dir.mkdir()
+    with pytest.raises(InvariantFailure, match=message):
+        asyncio.run(
+            expect_mutation_preflight_rejection(
+                WrongExecutionClient(run_dir),
+                "delete_section",
+                {"items": []},
+                tmp_path / "expected-rejection.json",
+                label="batch-budget",
                 expected_message_fragment="conflicts",
             )
         )

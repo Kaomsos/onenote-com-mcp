@@ -107,8 +107,8 @@
 | 用户原始复现的 content-free 摘要 | 2026-08-18：10 个无重叠叶子 Page；validation_error；mutation_attempted=false；attempts=0；backend_calls=1；单项目标随后成功 |
 | 根因与受影响 batch inventory | `_preflight_batch_targets`、`batch_create` 及 Reparent 内层 `_capture_reparent_hierarchy` 均已解除 CopyBudget 耦合；Registry/schema 自动枚举固定当前 12 项 |
 | 新预算合同与公开配置/health 投影 | `BatchMutationBudget` 五维 content-free 合同；`health_check.batch_mutation_budget`、README、Tool contract、Operation Runtime 已同步 |
-| 聚焦自动化与完整 pytest | Batch/Policy/Server/Config 与完整 manual-validation 纯合同已覆盖；完整 `.venv\\Scripts\\python.exe -m pytest -q`：1320 passed |
-| Manual-validation dry-run | `delete`、`reorder-page`、`copy-page`、`move-page`、`reparent-page-with-level` 五个 `--dry-run --json` 均通过；Delete 静态计划投影 `batch_mutation_budget.max_effective_pages=5`、human-only、server_started=false |
+| 聚焦自动化与完整 pytest | Batch/Policy/Server/Config 与完整 manual-validation 纯合同已覆盖；大型 Notebook 的 12 个公开 batch 工具、Page 两种范围/多层树/batch union、容器完整后代、失败 envelope 均有回归；完整 `.venv\\Scripts\\python.exe -m pytest -q`：1340 passed |
+| Manual-validation dry-run | `delete`、`reorder-page`、`copy-page`、`move-page`、`reparent-page-with-level` 五个 `--dry-run --json` 均通过；Delete fixture v5 将两叶子 Page batch 与 mixed `include_subpages=false/true` 树范围 batch 独立执行，并投影 `batch_mutation_budget.max_effective_pages=5`、human-only、server_started=false |
 | UT-010 集成 | 五个 Page Tool 已统一 `include_subpages=false|true`；Page Reparent/Delete batch 冻结整批 scope 并先完成按 Section 的一次性提升；Delete/Reorder 具名场景已扩展，等待用户真实复测 |
 | 用户确认的真实 disposable 证据 | 待填写 |
 

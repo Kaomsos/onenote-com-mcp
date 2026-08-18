@@ -13,7 +13,7 @@ from .recipe_base import RecipeBase
 
 
 class DeleteFixtureRecipe(RecipeBase):
-    recipe_version = 4
+    recipe_version = 5
 
     def __init__(self) -> None:
         super().__init__("delete")
@@ -103,6 +103,24 @@ class DeleteFixtureRecipe(RecipeBase):
                 2,
             ),
         )
+        context.recorder.record_structure(
+            "disposable_page_leaf_target",
+            await ensure_page(
+                context.client,
+                page_section["id"],
+                "Disposable-Page-Leaf-Target",
+                "Independent leaf batch target",
+            ),
+        )
+        context.recorder.record_structure(
+            "disposable_page_leaf_target_second",
+            await ensure_page(
+                context.client,
+                page_section["id"],
+                "Disposable-Page-Leaf-Target-Second",
+                "Independent leaf batch target second",
+            ),
+        )
         budget_section = context.recorder.record_structure(
             "budget_section",
             await ensure_section(
@@ -156,6 +174,20 @@ class DeleteFixtureRecipe(RecipeBase):
             and int(resolved["disposable_page_subtree_child"].get("page_level", 0)) == 2,
             "Subtree Delete child topology is invalid.",
             "include_subpages=true target owns one selected level-2 child",
+        )
+        checks.require(
+            all(
+                resolved[key].get("section_id")
+                == resolved["disposable_page_section"]["id"]
+                and int(resolved[key].get("page_level", 0)) == 1
+                and resolved[key].get("parent_page_id") in {None, ""}
+                for key in (
+                    "disposable_page_leaf_target",
+                    "disposable_page_leaf_target_second",
+                )
+            ),
+            "Independent leaf Page batch targets are not active roots.",
+            "two non-overlapping level-1 leaf Pages form the small-target budget regression batch",
         )
         budget_page_ids = {
             resolved[f"budget_page_{index}"].get("section_id")
