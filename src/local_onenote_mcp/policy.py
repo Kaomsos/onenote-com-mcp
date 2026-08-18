@@ -167,3 +167,34 @@ class CopyBudget:
             max_plan_seconds=env_int("LOCAL_ONENOTE_MAX_COPY_PLAN_SECONDS", 300),
             max_execute_seconds=env_int("LOCAL_ONENOTE_MAX_COPY_EXECUTE_SECONDS", 1_800),
         )
+
+
+@dataclass(frozen=True)
+class BatchMutationBudget:
+    """Content-free limits for bounded mutation batches, independent of Copy."""
+
+    max_catalog_resources: int
+    max_effective_resources: int
+    max_effective_pages: int
+    max_direct_siblings: int
+    max_page_content_chars: int
+
+    @classmethod
+    def current(cls) -> "BatchMutationBudget":
+        return cls(
+            max_catalog_resources=env_int(
+                "LOCAL_ONENOTE_MAX_BATCH_CATALOG_RESOURCES", 100_000
+            ),
+            max_effective_resources=env_int(
+                "LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_RESOURCES", 1_000
+            ),
+            max_effective_pages=env_int(
+                "LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES", 200
+            ),
+            max_direct_siblings=env_int(
+                "LOCAL_ONENOTE_MAX_BATCH_DIRECT_SIBLINGS", 1_000
+            ),
+            max_page_content_chars=env_int(
+                "LOCAL_ONENOTE_MAX_BATCH_PAGE_CONTENT_CHARS", 500_000
+            ),
+        )

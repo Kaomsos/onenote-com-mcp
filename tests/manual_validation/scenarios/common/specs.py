@@ -68,6 +68,7 @@ class ScenarioSpec:
     tool_allowlist: frozenset[str]
     execution_contract: dict[str, Any] = field(default_factory=dict)
     search_budget: dict[str, int] = field(default_factory=dict)
+    batch_mutation_budget: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -77,6 +78,7 @@ class ScenarioSpec:
             "tool_allowlist": sorted(self.tool_allowlist),
             "execution_contract": dict(self.execution_contract),
             "search_budget": dict(self.search_budget),
+            "batch_mutation_budget": dict(self.batch_mutation_budget),
         }
 
 
@@ -507,21 +509,27 @@ SCENARIO_SPECS = {
             (
                 "Delete-Sandbox/Disposable-Group/Disposable-Section",
                 "Delete-Sandbox/Disposable-Section-Target",
-                "Delete-Sandbox/Disposable-Page-Section/Disposable-Page-Target",
+                "Delete-Sandbox/Disposable-Page-Section/two leaf Page targets",
+                "Delete-Sandbox/Budget-Overlimit-Section/four direct Pages",
             ),
             (
                 "delete_sandbox", "disposable_group", "disposable_section",
                 "disposable_section_target", "disposable_page_section", "disposable_page_target",
+                "disposable_page_target_second", "budget_section",
+                "budget_page_1", "budget_page_2", "budget_page_3", "budget_page_4",
             ),
             {"create_section_group", "create_section", "create_page"},
             checks=(
                 "disposable_group is a descendant of delete_sandbox",
                 "disposable_group contains a persisted sentinel Section",
                 "Page, Section, and SectionGroup batch Delete target IDs are manifest-allowlisted",
+                "Notebook total Page count exceeds the test Batch effective Page limit",
+                "four-Page Section scope is rejected before mutation",
             ),
         ),
         DELETE_SCENARIO_POLICY,
         frozenset(DELETE_TOOLS | {"create_section_group", "create_section", "create_page"}),
+        batch_mutation_budget={"max_effective_pages": 3},
     ),
     "copy-page": ScenarioSpec(
         "copy-page",

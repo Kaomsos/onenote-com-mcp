@@ -452,6 +452,8 @@ generation_before, generation_after
 
 `backend_calls` 统计当前 operation 中通过 `BaseService.call()` 发出的 COM 调用，以及 effect Service 显式登记的 filesystem 调用；只计次数，不保留参数或 payload。`completed_steps` 只允许 `operation/status/attempt/count`。Runtime audit 采用固定长度内存队列和 allowlist projection，绝不保存原始参数、Page 正文、raw XML、binary、secret、bridge payload、对象 ID 或完整路径。
 
+`items` Batch Mutation 的 content-free hierarchy catalog 与 effective mutation scope 是两个独立预算维度。Catalog 可包含全部已打开 Notebook，只受 `LOCAL_ONENOTE_MAX_BATCH_CATALOG_RESOURCES` 的高水位约束；无关对象不会计入 effective resource/Page 上限。预检预算拒绝发生在 principal mutation 前并保留真实 hierarchy backend-call 计数。Create/Rename/Reparent/Delete 的全部 item 成功后均追加一次整批最终 hierarchy 回读；这次回读不读取 Page 正文，失败按 `batch_final_hierarchy` partial outcome 返回且禁止自动 replay。
+
 Strategy-specific outcome 保持真实边界：
 
 - `request_notebook_sync` 返回 `accepted=true, complete=false, completion_observable=false`，execution outcome 为 `accepted_completion_unobservable`；

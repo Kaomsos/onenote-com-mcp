@@ -1,6 +1,11 @@
 import pytest
 
-from local_onenote_mcp.policy import CopyBudget, MutationPolicy, SearchBudget
+from local_onenote_mcp.policy import (
+    BatchMutationBudget,
+    CopyBudget,
+    MutationPolicy,
+    SearchBudget,
+)
 
 
 PUBLIC_GATE_ENV = (
@@ -183,3 +188,17 @@ def test_copy_budget_reads_bounded_environment_values(monkeypatch):
     budget = CopyBudget.current()
     assert budget.max_pages == 25
     assert budget.max_total_xml_bytes == 5000
+
+
+def test_batch_mutation_budget_is_independent_and_reads_bounded_environment_values(
+    monkeypatch,
+):
+    monkeypatch.setenv("LOCAL_ONENOTE_MAX_COPY_PAGES", "3")
+    monkeypatch.setenv("LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES", "25")
+    monkeypatch.setenv("LOCAL_ONENOTE_MAX_BATCH_DIRECT_SIBLINGS", "5000")
+
+    budget = BatchMutationBudget.current()
+
+    assert budget.max_effective_pages == 25
+    assert budget.max_direct_siblings == 5000
+    assert CopyBudget.current().max_pages == 3

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tests.manual_validation.mcp_stdio_client import (
+    BATCH_MUTATION_BUDGET_ENV,
     ClientFailure,
     COPY_NO_DELETE_POLICY,
     COPY_POLICY,
@@ -157,6 +158,8 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
         monkeypatch.setenv(env_name, "999999999")
     for env_name, _value in SEARCH_BUDGET_ENV.values():
         monkeypatch.setenv(env_name, "999999999")
+    for env_name, _value in BATCH_MUTATION_BUDGET_ENV.values():
+        monkeypatch.setenv(env_name, "999999999")
     audit_path = tmp_path / "audit" / "bridge.jsonl"
     env = build_server_env(DELETE_POLICY, tmp_path / "temp", 1_800, audit_path)
     assert env["LOCAL_ONENOTE_ENABLE_WRITES"] == "false"
@@ -174,6 +177,8 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
         assert env[env_name] == str(value)
     for env_name, value in SEARCH_BUDGET_ENV.values():
         assert env[env_name] == str(value)
+    for env_name, value in BATCH_MUTATION_BUDGET_ENV.values():
+        assert env[env_name] == str(value)
 
 
 def test_child_env_applies_static_search_budget_override(monkeypatch, tmp_path) -> None:
@@ -188,6 +193,17 @@ def test_child_env_applies_static_search_budget_override(monkeypatch, tmp_path) 
     assert env["LOCAL_ONENOTE_MAX_SEARCH_PAGES"] == "4"
     assert env["LOCAL_ONENOTE_MAX_SEARCH_TOTAL_CHARS"] == "512"
     assert env["LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS"] == "100000"
+
+
+def test_child_env_applies_static_batch_mutation_budget_override(tmp_path) -> None:
+    env = build_server_env(
+        DELETE_POLICY,
+        tmp_path / "temp",
+        batch_mutation_budget={"max_effective_pages": 3},
+    )
+
+    assert env["LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES"] == "3"
+    assert env["LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_RESOURCES"] == "1000"
 
 
 def test_bridge_audit_path_cannot_leak_from_parent_environment(monkeypatch, tmp_path) -> None:

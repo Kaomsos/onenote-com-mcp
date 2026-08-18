@@ -729,6 +729,10 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     )
     if spec.search_budget:
         client_options["search_budget"] = dict(spec.search_budget)
+    if spec.batch_mutation_budget:
+        client_options["batch_mutation_budget"] = dict(
+            spec.batch_mutation_budget
+        )
     client_handle = MCPStdioClient(**client_options)
     client_handle.progress = progress
     entered_client = False

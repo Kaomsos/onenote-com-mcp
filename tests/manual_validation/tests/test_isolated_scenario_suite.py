@@ -856,8 +856,14 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
             {"id": "target", "name": "Disposable-Group"},
             {"id": "sentinel", "name": "Disposable-Section"},
             {"id": "section-target", "name": "Disposable-Section-Target"},
-            {"id": "page-section", "name": "Disposable-Page-Section"},
-            {"id": "page-target", "name": "Disposable-Page-Target"},
+                {"id": "page-section", "name": "Disposable-Page-Section"},
+                {"id": "page-target", "name": "Disposable-Page-Target"},
+                {"id": "page-target-second", "name": "Disposable-Page-Target-Second"},
+                {"id": "budget-section", "name": "Budget-Overlimit-Section"},
+                {"id": "budget-page-1", "name": "Budget-Page-1"},
+                {"id": "budget-page-2", "name": "Budget-Page-2"},
+                {"id": "budget-page-3", "name": "Budget-Page-3"},
+                {"id": "budget-page-4", "name": "Budget-Page-4"},
         ]
     )
 
@@ -899,6 +905,24 @@ def test_fixture_validation_failure_persists_manifest_and_snapshot(monkeypatch, 
                         "resource_type": "page",
                         "section_id": "page-section",
                     },
+                    {
+                        "id": "page-target-second",
+                        "resource_type": "page",
+                        "section_id": "page-section",
+                    },
+                    {
+                        "id": "budget-section",
+                        "resource_type": "section",
+                        "parent_id": "sandbox",
+                    },
+                    *[
+                        {
+                            "id": f"budget-page-{index}",
+                            "resource_type": "page",
+                            "section_id": "budget-section",
+                        }
+                        for index in range(1, 5)
+                    ],
             ],
             "page_hashes": {},
         }

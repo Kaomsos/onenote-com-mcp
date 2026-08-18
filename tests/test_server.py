@@ -196,6 +196,13 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
         },
     }
     assert result["copy_budget"]["max_pages"] > 0
+    assert result["batch_mutation_budget"] == {
+        "max_catalog_resources": 100_000,
+        "max_effective_resources": 1_000,
+        "max_effective_pages": 200,
+        "max_direct_siblings": 1_000,
+        "max_page_content_chars": 500_000,
+    }
     assert result["python_executable"]
     assert result["module_path"].endswith("tools\\system.py") or result["module_path"].endswith("tools/system.py")
     assert result["onenote_desktop"] == {

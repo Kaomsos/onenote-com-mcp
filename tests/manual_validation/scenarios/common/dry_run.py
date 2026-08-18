@@ -351,6 +351,7 @@ def build_isolated_dry_run_plan(
         "timeout_seconds": options.timeout,
         "copy_budget": dict(copy_budget),
         "search_budget": dict(spec.search_budget),
+        "batch_mutation_budget": dict(spec.batch_mutation_budget),
         "lifecycle": "keep" if _keep_source_notebook(args) else "close",
         "lifecycle_lease": str((run_dir / "lifecycle-lease.json")),
         "lifecycle_leases": {

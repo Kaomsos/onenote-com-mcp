@@ -27,7 +27,7 @@ from ..page import (
     proportional_dimensions,
     tag_definitions_from_page_xml,
 )
-from ..policy import CopyBudget, MutationPolicy
+from ..policy import BatchMutationBudget, CopyBudget, MutationPolicy
 from .base import BaseService
 from .convergence import (
     DEFAULT_CONVERGENCE,
@@ -1100,18 +1100,16 @@ class MutationService(BaseService):
     def _capture_reparent_hierarchy(self, notebook_id: str) -> list[dict[str, Any]]:
         """Capture one bounded, content-free hierarchy observation for Reparent."""
 
-        budget = CopyBudget.current()
+        budget = BatchMutationBudget.current()
         items = self._notebook_items(
             self.hierarchy.resources(include_recycle_bin=False), notebook_id
         )
         if not any(item.get("id") == notebook_id for item in items):
             raise ValueError(f"No active notebook found for ID '{notebook_id}'.")
-        if len(items) > budget.max_resources:
+        if len(items) > budget.max_catalog_resources:
             raise ValueError(
-                "Reparent verification exceeds the configured hierarchy resource budget."
+                "Reparent verification exceeds the configured content-free catalog budget."
             )
-        if sum(item.get("resource_type") == "page" for item in items) > budget.max_pages:
-            raise ValueError("Reparent verification exceeds the configured Page budget.")
         return items
 
     @staticmethod
@@ -2604,9 +2602,104 @@ class MutationService(BaseService):
 
     def _batch_snapshot(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
         snapshot = self.hierarchy.resources(include_recycle_bin=True)
+        budget = BatchMutationBudget.current()
+        if len(snapshot) > budget.max_catalog_resources:
+            raise MutationPreflightFailure(
+                "Batch preflight exceeds the configured content-free catalog budget.",
+                mutation_stage="preflight",
+                mutation_attempted=False,
+                budget_dimension="catalog_resources",
+                observed_count=len(snapshot),
+                configured_limit=budget.max_catalog_resources,
+                content_exposed=False,
+            )
         return snapshot, {
             str(item["id"]): item for item in snapshot if item.get("id")
         }
+
+    @staticmethod
+    def _batch_budget_failure(
+        dimension: str, observed_count: int, configured_limit: int
+    ) -> None:
+        labels = {
+            "effective_resources": "effective resource",
+            "effective_pages": "effective Page",
+            "direct_siblings": "direct sibling evidence",
+            "page_content_chars": "Page content character",
+        }
+        raise MutationPreflightFailure(
+            f"Batch preflight exceeds the configured {labels[dimension]} budget.",
+            mutation_stage="preflight",
+            mutation_attempted=False,
+            budget_dimension=dimension,
+            observed_count=observed_count,
+            configured_limit=configured_limit,
+            content_exposed=False,
+        )
+
+    def _enforce_batch_effective_budget(
+        self,
+        effective_items: list[dict[str, Any]],
+        *,
+        requested_resources: int = 0,
+        requested_pages: int = 0,
+        direct_siblings: int = 0,
+        page_content_chars: int = 0,
+    ) -> None:
+        budget = BatchMutationBudget.current()
+        unique_items = {
+            str(item["id"]): item for item in effective_items if item.get("id")
+        }
+        effective_resources = len(unique_items) + requested_resources
+        effective_pages = sum(
+            item.get("resource_type") == "page" for item in unique_items.values()
+        ) + requested_pages
+        dimensions = (
+            (
+                "effective_resources",
+                effective_resources,
+                budget.max_effective_resources,
+            ),
+            ("effective_pages", effective_pages, budget.max_effective_pages),
+            ("direct_siblings", direct_siblings, budget.max_direct_siblings),
+            (
+                "page_content_chars",
+                page_content_chars,
+                budget.max_page_content_chars,
+            ),
+        )
+        for dimension, observed_count, configured_limit in dimensions:
+            if observed_count > configured_limit:
+                self._batch_budget_failure(
+                    dimension, observed_count, configured_limit
+                )
+
+    def _batch_mutation_scope(
+        self,
+        operation: str,
+        resource_type: str,
+        snapshot: list[dict[str, Any]],
+        targets: list[dict[str, Any]],
+        supplied_items: list[dict[str, Any]],
+        *,
+        destination: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        active = self.hierarchy.without_recycle_bin(snapshot)
+        selected: dict[str, dict[str, Any]] = {
+            str(item["id"]): item for item in targets
+        }
+        if operation in {"delete", "reparent"}:
+            for _supplied, target in zip(supplied_items, targets):
+                if resource_type == "page":
+                    # Both subtree mutation and page-only descendant protection need
+                    # evidence for the complete indentation scope.
+                    scope = self._page_scope(active, str(target["id"]))
+                else:
+                    scope = self._container_subtree(active, str(target["id"]))
+                selected.update({str(item["id"]): item for item in scope})
+        if destination is not None:
+            selected[str(destination["id"])] = destination
+        return list(selected.values())
 
     @staticmethod
     def _active_item(
@@ -2682,21 +2775,6 @@ class MutationService(BaseService):
         if None in notebook_ids or len(notebook_ids) != 1:
             raise MutationPreflightFailure(
                 "All batch targets must belong to one active Notebook.",
-                mutation_stage="preflight",
-                mutation_attempted=False,
-            )
-        notebook_id = str(next(iter(notebook_ids)))
-        budget = CopyBudget.current()
-        notebook_items = self._notebook_items(snapshot, notebook_id)
-        if len(notebook_items) > budget.max_resources:
-            raise MutationPreflightFailure(
-                "Batch preflight exceeds the configured hierarchy resource budget.",
-                mutation_stage="preflight",
-                mutation_attempted=False,
-            )
-        if sum(item.get("resource_type") == "page" for item in notebook_items) > budget.max_pages:
-            raise MutationPreflightFailure(
-                "Batch preflight exceeds the configured Page budget.",
                 mutation_stage="preflight",
                 mutation_attempted=False,
             )
@@ -2778,6 +2856,194 @@ class MutationService(BaseService):
             "max_items": MAX_BATCH_ITEMS,
         }
 
+    @staticmethod
+    def _batch_final_failure(
+        operation: str,
+        batch_result: dict[str, Any],
+        exc: Exception,
+    ) -> None:
+        raise PartialFailure(
+            "All item calls returned, but the complete batch final hierarchy could not be verified; inspect live state before any new call.",
+            partial=True,
+            operation=operation,
+            applied_count=batch_result["applied_count"],
+            failed_step="batch_final_hierarchy",
+            items=batch_result["items"],
+            completed_steps=[
+                {"operation": operation, "status": "applied"}
+                for _ in batch_result["items"]
+            ],
+            manual_recovery_required=True,
+            retryability="inspect_live_state_before_new_call",
+            rollback_attempted=False,
+            mutation_replayed=False,
+        ) from exc
+
+    def _final_create_hierarchy(
+        self,
+        resource_type: str,
+        parent_id: str,
+        items: list[dict[str, Any]],
+        batch_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        operation = f"create_{resource_type}"
+        try:
+            snapshot, _ = self._batch_snapshot()
+            by_id = {
+                str(value["id"]): value for value in snapshot if value.get("id")
+            }
+            final_items: list[dict[str, Any]] = []
+            current_ids: set[str] = set()
+            for index, (supplied, outcome) in enumerate(
+                zip(items, batch_result["items"])
+            ):
+                result = outcome.get("result", {})
+                typed_result = result.get(
+                    "page" if resource_type == "page" else resource_type, {}
+                )
+                current_id = str(
+                    result.get(f"{resource_type}_id")
+                    or typed_result.get("id")
+                    or result.get("item", {}).get("id")
+                    or result.get("allocated_id")
+                    or ""
+                )
+                actual = by_id.get(current_id)
+                actual_parent = (
+                    None
+                    if actual is None
+                    else actual.get("section_id")
+                    if resource_type == "page"
+                    else actual.get("parent_id")
+                )
+                expected_name = self.safe_leaf_name(
+                    supplied["title" if resource_type == "page" else "name"]
+                )
+                if resource_type == "section" and expected_name.casefold().endswith(
+                    ".one"
+                ):
+                    expected_name = expected_name[:-4]
+                if (
+                    not current_id
+                    or actual is None
+                    or actual.get("resource_type") != resource_type
+                    or actual.get("is_in_recycle_bin") is True
+                    or actual_parent != parent_id
+                    or display_name(actual) != expected_name
+                    or current_id in current_ids
+                ):
+                    raise ValueError(
+                        "A created batch target is missing, duplicated, mistyped, recycled, renamed, or outside the confirmed parent."
+                    )
+                current_ids.add(current_id)
+                final_items.append(
+                    {
+                        "input_index": index,
+                        "current_id": current_id,
+                        "resource_type": resource_type,
+                        "parent_id": actual_parent,
+                    }
+                )
+        except Exception as exc:
+            self._batch_final_failure(operation, batch_result, exc)
+        return {
+            "parent_id": parent_id,
+            "item_count": len(final_items),
+            "items": final_items,
+            "verification_scope": {"page_content": "not_read"},
+        }
+
+    def _final_rename_hierarchy(
+        self,
+        resource_type: str,
+        items: list[dict[str, Any]],
+        batch_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        operation = f"rename_{resource_type}"
+        try:
+            snapshot, _ = self._batch_snapshot()
+            by_id = {
+                str(value["id"]): value for value in snapshot if value.get("id")
+            }
+            final_items: list[dict[str, Any]] = []
+            for index, supplied in enumerate(items):
+                object_id = self._batch_item_id(supplied)
+                actual = by_id.get(str(object_id))
+                expected_name = self.safe_leaf_name(
+                    supplied["new_title" if resource_type == "page" else "new_name"]
+                )
+                expected_parent = supplied[
+                    "expected_section_id"
+                    if resource_type == "page"
+                    else "expected_parent_id"
+                ]
+                actual_parent = (
+                    None
+                    if actual is None
+                    else actual.get("section_id")
+                    if resource_type == "page"
+                    else actual.get("parent_id")
+                )
+                if (
+                    object_id is None
+                    or actual is None
+                    or actual.get("resource_type") != resource_type
+                    or actual.get("is_in_recycle_bin") is True
+                    or actual_parent != expected_parent
+                    or display_name(actual) != expected_name
+                ):
+                    raise ValueError(
+                        "A renamed batch target is missing, mistyped, recycled, outside its confirmed parent, or has the wrong final name."
+                    )
+                final_items.append(
+                    {
+                        "input_index": index,
+                        "current_id": object_id,
+                        "resource_type": resource_type,
+                        "parent_id": actual_parent,
+                    }
+                )
+        except Exception as exc:
+            self._batch_final_failure(operation, batch_result, exc)
+        return {
+            "item_count": len(final_items),
+            "items": final_items,
+            "verification_scope": {"page_content": "not_read"},
+        }
+
+    def _final_delete_hierarchy(
+        self,
+        resource_type: str,
+        deleted_scope_ids: list[str],
+        batch_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        operation = f"delete_{resource_type}"
+        try:
+            snapshot, _ = self._batch_snapshot()
+            by_id = {
+                str(value["id"]): value for value in snapshot if value.get("id")
+            }
+            final_items: list[dict[str, Any]] = []
+            for object_id in deleted_scope_ids:
+                actual = by_id.get(object_id)
+                if actual is not None and actual.get("is_in_recycle_bin") is not True:
+                    raise ValueError(
+                        "A deleted batch target or selected descendant remains active."
+                    )
+                final_items.append(
+                    {
+                        "current_id": object_id,
+                        "status": "absent" if actual is None else "recycle_bin",
+                    }
+                )
+        except Exception as exc:
+            self._batch_final_failure(operation, batch_result, exc)
+        return {
+            "item_count": len(final_items),
+            "items": final_items,
+            "verification_scope": {"page_content": "not_read"},
+        }
+
     def _final_reparent_hierarchy(
         self,
         resource_type: str,
@@ -2788,7 +3054,7 @@ class MutationService(BaseService):
         """Re-read every applied target after the complete batch, in input order."""
 
         try:
-            snapshot = self.hierarchy.resources(include_recycle_bin=True)
+            snapshot, _ = self._batch_snapshot()
             by_id = {
                 str(value["id"]): value for value in snapshot if value.get("id")
             }
@@ -2836,25 +3102,9 @@ class MutationService(BaseService):
                     )
                 final_items.append(projected)
         except Exception as exc:
-            raise PartialFailure(
-                "All item calls returned, but the complete batch Reparent final hierarchy could not be verified; inspect live state before any new call.",
-                partial=True,
-                operation=f"reparent_{resource_type}",
-                applied_count=batch_result["applied_count"],
-                failed_step="batch_final_hierarchy",
-                items=batch_result["items"],
-                completed_steps=[
-                    {
-                        "operation": f"reparent_{resource_type}",
-                        "status": "applied",
-                    }
-                    for _ in batch_result["items"]
-                ],
-                manual_recovery_required=True,
-                retryability="inspect_live_state_before_new_call",
-                rollback_attempted=False,
-                mutation_replayed=False,
-            ) from exc
+            self._batch_final_failure(
+                f"reparent_{resource_type}", batch_result, exc
+            )
         return {
             "destination_parent_id": destination_parent_id,
             "item_count": len(final_items),
@@ -2903,6 +3153,17 @@ class MutationService(BaseService):
             parent_id = destination_cursor.get("parent_id")
             destination_cursor = by_id.get(str(parent_id)) if parent_id else None
 
+        self._enforce_batch_effective_budget(
+            self._batch_mutation_scope(
+                "reparent",
+                resource_type,
+                snapshot,
+                targets,
+                items,
+                destination=destination,
+            )
+        )
+
         if resource_type == "page":
             result = self._execute_batch(
                 "reparent_page",
@@ -2932,7 +3193,7 @@ class MutationService(BaseService):
         self, resource_type: str, items: list[dict[str, Any]]
     ) -> dict[str, Any]:
         MutationPolicy.current().require_delete(permanently=False)
-        _snapshot, targets, by_id = self._preflight_batch_targets(items, resource_type)
+        snapshot, targets, by_id = self._preflight_batch_targets(items, resource_type)
         selected_ids = {str(item["id"]) for item in targets}
         if any(self._has_selected_ancestor(item, selected_ids, by_id) for item in targets):
             raise MutationPreflightFailure(
@@ -2940,8 +3201,12 @@ class MutationService(BaseService):
                 mutation_stage="preflight",
                 mutation_attempted=False,
             )
+        effective_scope = self._batch_mutation_scope(
+            "delete", resource_type, snapshot, targets, items
+        )
+        self._enforce_batch_effective_budget(effective_scope)
         if resource_type == "page":
-            return self._execute_batch(
+            result = self._execute_batch(
                 "delete_page",
                 items,
                 lambda item: self.delete_page(
@@ -2949,14 +3214,21 @@ class MutationService(BaseService):
                     item.get("expected_modified"), False,
                 ),
             )
-        return self._execute_batch(
-            f"delete_{resource_type}",
-            items,
-            lambda item: self.delete_resource(
-                self._batch_item_id(item), resource_type, item["expected_name"],
-                item["expected_parent_id"], item.get("expected_modified"), False,
-            ),
+        else:
+            result = self._execute_batch(
+                f"delete_{resource_type}",
+                items,
+                lambda item: self.delete_resource(
+                    self._batch_item_id(item), resource_type, item["expected_name"],
+                    item["expected_parent_id"], item.get("expected_modified"), False,
+                ),
+            )
+        result["final_hierarchy"] = self._final_delete_hierarchy(
+            resource_type,
+            [str(item["id"]) for item in effective_scope],
+            result,
         )
+        return result
 
     def batch_rename(
         self, resource_type: str, items: list[dict[str, Any]]
@@ -3000,8 +3272,18 @@ class MutationService(BaseService):
                         mutation_stage="preflight",
                         mutation_attempted=False,
                     )
+        direct_sibling_ids = {
+            str(item["id"])
+            for item in snapshot
+            if item.get("resource_type") == resource_type
+            and str(item.get("parent_id")) in {entry[1] for entry in planned}
+            and item.get("is_in_recycle_bin") is not True
+        }
+        self._enforce_batch_effective_budget(
+            targets, direct_siblings=len(direct_sibling_ids)
+        )
         if resource_type == "page":
-            return self._execute_batch(
+            result = self._execute_batch(
                 "rename_page",
                 items,
                 lambda item: self.update_page_title(
@@ -3009,14 +3291,19 @@ class MutationService(BaseService):
                     item["expected_section_id"], item.get("expected_modified"),
                 ),
             )
-        return self._execute_batch(
-            f"rename_{resource_type}",
-            items,
-            lambda item: self.rename_resource(
-                self._batch_item_id(item), resource_type, item["new_name"],
-                item["expected_name"], item["expected_parent_id"], item.get("expected_modified"),
-            ),
+        else:
+            result = self._execute_batch(
+                f"rename_{resource_type}",
+                items,
+                lambda item: self.rename_resource(
+                    self._batch_item_id(item), resource_type, item["new_name"],
+                    item["expected_name"], item["expected_parent_id"], item.get("expected_modified"),
+                ),
+            )
+        result["final_hierarchy"] = self._final_rename_hierarchy(
+            resource_type, items, result
         )
+        return result
 
     def batch_create(
         self,
@@ -3055,24 +3342,6 @@ class MutationService(BaseService):
             raise MutationPreflightFailure(
                 "Batch Create parent confirmation changed.", mutation_stage="preflight", mutation_attempted=False
             )
-        budget = CopyBudget.current()
-        notebook_id = self._resource_notebook_id(parent)
-        notebook_items = self._notebook_items(snapshot, str(notebook_id))
-        if len(notebook_items) + len(items) > budget.max_resources:
-            raise MutationPreflightFailure(
-                "Batch Create exceeds the configured hierarchy resource budget.", mutation_stage="preflight", mutation_attempted=False
-            )
-        if resource_type == "page" and (
-            sum(item.get("resource_type") == "page" for item in notebook_items) + len(items)
-            > budget.max_pages
-        ):
-            raise MutationPreflightFailure(
-                "Batch Create exceeds the configured Page budget.", mutation_stage="preflight", mutation_attempted=False
-            )
-        if resource_type == "page" and sum(len(str(item.get("content", ""))) for item in items) > 500_000:
-            raise MutationPreflightFailure(
-                "Batch Create Page content exceeds the 500000-character request budget.", mutation_stage="preflight", mutation_attempted=False
-            )
         name_key = "title" if resource_type == "page" else "name"
         normalized_names = []
         for item in items:
@@ -3095,22 +3364,45 @@ class MutationService(BaseService):
             and item.get("parent_id") == parent_id
             and item.get("is_in_recycle_bin") is not True
         }
+        direct_siblings = [
+            item
+            for item in snapshot
+            if item.get("resource_type") == resource_type
+            and item.get("parent_id") == parent_id
+            and item.get("is_in_recycle_bin") is not True
+        ]
+        self._enforce_batch_effective_budget(
+            [parent],
+            requested_resources=len(items),
+            requested_pages=len(items) if resource_type == "page" else 0,
+            direct_siblings=len(direct_siblings),
+            page_content_chars=(
+                sum(len(str(item.get("content", ""))) for item in items)
+                if resource_type == "page"
+                else 0
+            ),
+        )
         if resource_type != "page" and existing_names.intersection(normalized_names):
             raise MutationPreflightFailure(
                 "Batch Create name collides with an active direct child.", mutation_stage="preflight", mutation_attempted=False
             )
         if resource_type == "page":
-            return self._execute_batch(
+            result = self._execute_batch(
                 "create_page",
                 items,
                 lambda item: self.create_page(
                     parent_id, item["title"], item.get("content", ""), item.get("content_format", "plain"), "blank_with_title"
                 ),
             )
-        method = self.create_section if resource_type == "section" else self.create_section_group
-        return self._execute_batch(
-            f"create_{resource_type}", items, lambda item: method(parent_id, item["name"])
+        else:
+            method = self.create_section if resource_type == "section" else self.create_section_group
+            result = self._execute_batch(
+                f"create_{resource_type}", items, lambda item: method(parent_id, item["name"])
+            )
+        result["final_hierarchy"] = self._final_create_hierarchy(
+            resource_type, parent_id, items, result
         )
+        return result
 
     @staticmethod
     def _sort_value(item: dict[str, Any], key: str) -> Any:

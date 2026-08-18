@@ -8,7 +8,7 @@ from .recipe_base import RecipeBase
 
 
 class DeleteFixtureRecipe(RecipeBase):
-    recipe_version = 2
+    recipe_version = 3
 
     def __init__(self) -> None:
         super().__init__("delete")
@@ -35,6 +35,31 @@ class DeleteFixtureRecipe(RecipeBase):
             "disposable_page_target",
             await ensure_page(context.client, page_section["id"], "Disposable-Page-Target", "Disposable Page"),
         )
+        context.recorder.record_structure(
+            "disposable_page_target_second",
+            await ensure_page(
+                context.client,
+                page_section["id"],
+                "Disposable-Page-Target-Second",
+                "Disposable Page Second",
+            ),
+        )
+        budget_section = context.recorder.record_structure(
+            "budget_section",
+            await ensure_section(
+                context.client, sandbox["id"], "Budget-Overlimit-Section"
+            ),
+        )
+        for index in range(4):
+            context.recorder.record_structure(
+                f"budget_page_{index + 1}",
+                await ensure_page(
+                    context.client,
+                    budget_section["id"],
+                    f"Budget-Page-{index + 1}",
+                    f"Budget page {index + 1}",
+                ),
+            )
         return FixtureBuildResult(context.recorder.structure, context.recorder.evidence)
 
     def validate(self, context: FixtureValidationContext, build: FixtureBuildResult) -> tuple[str, ...]:
@@ -52,6 +77,21 @@ class DeleteFixtureRecipe(RecipeBase):
             and resolved["disposable_page_target"].get("section_id") == resolved["disposable_page_section"]["id"],
             "Typed batch Delete targets escaped Delete-Sandbox.",
             "Page, Section, and SectionGroup batch Delete targets are independently allowlisted",
+        )
+        checks.require(
+            resolved["disposable_page_target_second"].get("section_id")
+            == resolved["disposable_page_section"]["id"],
+            "Second leaf Page batch target escaped the disposable Page Section.",
+            "two independent leaf Page targets share the disposable Page Section",
+        )
+        budget_page_ids = {
+            resolved[f"budget_page_{index}"].get("section_id")
+            for index in range(1, 5)
+        }
+        checks.require(
+            budget_page_ids == {resolved["budget_section"]["id"]},
+            "Batch budget rejection fixture Pages escaped their confirmed Section.",
+            "budget_section contains four direct Page descendants",
         )
         return tuple(checks.checks)
 

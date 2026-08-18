@@ -9,7 +9,7 @@ from typing import Any
 
 from .desktop import launch_onenote_gui as launch_desktop_gui
 from .desktop import require_onenote_desktop
-from .policy import CopyBudget, MutationPolicy, SearchBudget
+from .policy import BatchMutationBudget, CopyBudget, MutationPolicy, SearchBudget
 from .services import (
     DEFAULT_METADATA_QUERY_PAGE_SIZE,
     DEFAULT_SEARCH_PAGE_SIZE,
@@ -866,6 +866,7 @@ def _health_snapshot(
     items = services.hierarchy.resources(include_recycle_bin=False)
     budget = SearchBudget.current()
     copy_budget = CopyBudget.current()
+    batch_mutation_budget = BatchMutationBudget.current()
     return {
         "server": MCP_NAME,
         "transport": "stdio",
@@ -966,6 +967,13 @@ def _health_snapshot(
             "max_total_xml_bytes": copy_budget.max_total_xml_bytes,
             "max_plan_seconds": copy_budget.max_plan_seconds,
             "max_execute_seconds": copy_budget.max_execute_seconds,
+        },
+        "batch_mutation_budget": {
+            "max_catalog_resources": batch_mutation_budget.max_catalog_resources,
+            "max_effective_resources": batch_mutation_budget.max_effective_resources,
+            "max_effective_pages": batch_mutation_budget.max_effective_pages,
+            "max_direct_siblings": batch_mutation_budget.max_direct_siblings,
+            "max_page_content_chars": batch_mutation_budget.max_page_content_chars,
         },
         "notebooks": sum(item["resource_type"] == "notebook" for item in items),
         "sections": sum(item["resource_type"] == "section" for item in items),

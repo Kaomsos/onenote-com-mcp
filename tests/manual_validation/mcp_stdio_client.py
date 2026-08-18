@@ -42,6 +42,13 @@ COPY_BUDGET_ENV = {
     "max_plan_seconds": ("LOCAL_ONENOTE_MAX_COPY_PLAN_SECONDS", 300),
     "max_execute_seconds": ("LOCAL_ONENOTE_MAX_COPY_EXECUTE_SECONDS", 1_800),
 }
+BATCH_MUTATION_BUDGET_ENV = {
+    "max_catalog_resources": ("LOCAL_ONENOTE_MAX_BATCH_CATALOG_RESOURCES", 100_000),
+    "max_effective_resources": ("LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_RESOURCES", 1_000),
+    "max_effective_pages": ("LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES", 200),
+    "max_direct_siblings": ("LOCAL_ONENOTE_MAX_BATCH_DIRECT_SIBLINGS", 1_000),
+    "max_page_content_chars": ("LOCAL_ONENOTE_MAX_BATCH_PAGE_CONTENT_CHARS", 500_000),
+}
 SEARCH_BUDGET_ENV = {
     "max_pages": ("LOCAL_ONENOTE_MAX_SEARCH_PAGES", 1_000),
     "max_page_chars": ("LOCAL_ONENOTE_MAX_SEARCH_PAGE_CHARS", 100_000),
@@ -194,6 +201,7 @@ def build_server_env(
     timeout_seconds: int = 180,
     bridge_audit_path: Path | None = None,
     search_budget: dict[str, int] | None = None,
+    batch_mutation_budget: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """Build a complete child env, overriding every mutation switch exactly."""
 
@@ -203,6 +211,16 @@ def build_server_env(
         env[env_name] = "true" if getattr(policy, field) else "false"
     for _field, (env_name, value) in COPY_BUDGET_ENV.items():
         env[env_name] = str(value)
+    unknown_batch_fields = set(batch_mutation_budget or {}) - set(
+        BATCH_MUTATION_BUDGET_ENV
+    )
+    if unknown_batch_fields:
+        raise ValueError(
+            "Unknown Batch Mutation budget fields: "
+            + ", ".join(sorted(unknown_batch_fields))
+        )
+    for field, (env_name, default) in BATCH_MUTATION_BUDGET_ENV.items():
+        env[env_name] = str((batch_mutation_budget or {}).get(field, default))
     unknown_search_fields = set(search_budget or {}) - set(SEARCH_BUDGET_ENV)
     if unknown_search_fields:
         raise ValueError(
@@ -295,6 +313,7 @@ class MCPStdioClient:
         run_dir: Path,
         timeout_seconds: int,
         search_budget: dict[str, int] | None = None,
+        batch_mutation_budget: dict[str, int] | None = None,
         progress: RunProgressReporter | None = None,
         require_desktop_ready: bool = True,
         persist_runtime_logs: bool = True,
@@ -306,6 +325,10 @@ class MCPStdioClient:
         self.search_budget = {
             field: (search_budget or {}).get(field, default)
             for field, (_env_name, default) in SEARCH_BUDGET_ENV.items()
+        }
+        self.batch_mutation_budget = {
+            field: (batch_mutation_budget or {}).get(field, default)
+            for field, (_env_name, default) in BATCH_MUTATION_BUDGET_ENV.items()
         }
         self.progress = progress or RunProgressReporter.disabled()
         self.require_desktop_ready = require_desktop_ready
@@ -352,6 +375,7 @@ class MCPStdioClient:
                         else None
                     ),
                     self.search_budget,
+                    self.batch_mutation_budget,
                 ),
                 encoding="utf-8",
                 encoding_error_handler="replace",
@@ -422,6 +446,12 @@ class MCPStdioClient:
             raise ClientFailure(
                 "Search budget mismatch: "
                 f"expected {self.search_budget}, received {health.get('search_budget')}"
+            )
+        if health.get("batch_mutation_budget") != self.batch_mutation_budget:
+            raise ClientFailure(
+                "Batch Mutation budget mismatch: "
+                f"expected {self.batch_mutation_budget}, "
+                f"received {health.get('batch_mutation_budget')}"
             )
 
     @staticmethod
@@ -777,6 +807,7 @@ async def scenario_client(
     allowed_tools: set[str],
     run_dir: Path,
     timeout_seconds: int,
+    batch_mutation_budget: dict[str, int] | None = None,
     client_factory: type[MCPStdioClient] = MCPStdioClient,
 ):
     """Reuse the one scenario process without allowing policy/tool expansion."""
@@ -798,6 +829,15 @@ async def scenario_client(
             )
         if existing.timeout_seconds != timeout_seconds:
             raise ClientFailure("Existing scenario client timeout does not match the scenario contract.")
+        if batch_mutation_budget is not None:
+            expected_budget = {
+                field: batch_mutation_budget.get(field, default)
+                for field, (_env_name, default) in BATCH_MUTATION_BUDGET_ENV.items()
+            }
+            if existing.batch_mutation_budget != expected_budget:
+                raise ClientFailure(
+                    "Existing scenario client Batch Mutation budget does not match the scenario contract."
+                )
         yield existing
         return
     async with client_factory(
@@ -805,5 +845,6 @@ async def scenario_client(
         allowed_tools=allowed_tools,
         run_dir=run_dir,
         timeout_seconds=timeout_seconds,
+        batch_mutation_budget=batch_mutation_budget,
     ) as created:
         yield created

@@ -103,6 +103,11 @@ async def expect_mutation_preflight_rejection(
         "mutation_stage": details["mutation_stage"],
         "mutation_attempted": details["mutation_attempted"],
         "expected_reason_verified": True,
+        "budget": {
+            key: details.get(key)
+            for key in ("budget_dimension", "observed_count", "configured_limit")
+            if key in details
+        },
         "execution": envelope.get("execution", {}),
         "bridge_audit": _read_only_bridge_evidence(
             audit_path,

@@ -48,6 +48,9 @@ def test_project_json_mcp_configs_are_consistent_and_fail_closed(
             {
                 **EXPECTED_ENV,
                 "LOCAL_ONENOTE_ENABLE_WRITES": "true",
+                "LOCAL_ONENOTE_ENABLE_DELETES": "true",
+                "LOCAL_ONENOTE_ENABLE_ORGANIZE": "true",
+                "LOCAL_ONENOTE_ENABLE_LOCAL_FILE_IO": "true",
                 "LOCAL_ONENOTE_ENABLE_UI_CONTROL": "true",
             },
         ),
