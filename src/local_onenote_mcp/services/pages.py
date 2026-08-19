@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 import xml.etree.ElementTree as ET
 
 from ..bridge import OneNoteBridge
@@ -21,6 +21,9 @@ from ..page import (
 from ..page.copying import is_empty_selection_text_node
 from .base import BaseService
 from .hierarchy import HierarchyService
+
+if TYPE_CHECKING:
+    from .copy_read_cache import HierarchySnapshot
 
 
 VOLATILE_PAGE_ATTRIBUTES = {
@@ -243,8 +246,14 @@ class PageService(BaseService):
         expected_title: str,
         expected_section_id: str,
         expected_modified: str | None = None,
+        preflight: HierarchySnapshot | None = None,
     ) -> dict[str, Any]:
-        item = self.hierarchy.resource(page_id, "page")
+        from .backend_operation_classification import current_mutation_epoch
+
+        if preflight is not None and preflight.epoch == current_mutation_epoch():
+            item = preflight.resource(page_id, "page")
+        else:
+            item = self.hierarchy.resource(page_id, "page")
         if item["title"] != expected_title:
             raise ValueError(f"Confirmation mismatch: expected title '{expected_title}', found '{item['title']}'.")
         if item["section_id"] != expected_section_id:

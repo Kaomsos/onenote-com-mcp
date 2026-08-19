@@ -315,8 +315,14 @@ class DebugTraceSpan:
         category: "BackendCategory",
         *,
         operation: str,
+        read_reason: str | None = None,
     ) -> None:
-        self._emit_backend(execution, category=category, operation=operation)
+        self._emit_backend(
+            execution,
+            category=category,
+            operation=operation,
+            read_reason=read_reason,
+        )
 
     def finish(self, outcome: "OperationOutcome") -> None:
         if self._finished:
@@ -414,23 +420,29 @@ class DebugTraceSpan:
         *,
         category: "BackendCategory",
         operation: str,
+        read_reason: str | None = None,
     ) -> None:
         if self._finished:
             return
         self._last_execution = execution
         try:
-            self._tracer._writer.append(
-                {
-                    "backend_call_id": execution.backend_calls,
-                    "operation": operation,
-                    "tool_call_id": self._tool_call_id,
-                    "tool": self._spec.name,
-                    "recorded_at": datetime.now(timezone.utc).isoformat(),
-                    "elapsed_seconds": self._elapsed_seconds(),
-                    "backend_category": category.value,
-                    "correlation_id": self._correlation_id,
-                }
-            )
+            from .services.read_reasons import READ_REASONS
+
+            record: dict[str, Any] = {
+                "backend_call_id": execution.backend_calls,
+                "operation": operation,
+                "tool_call_id": self._tool_call_id,
+                "tool": self._spec.name,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "elapsed_seconds": self._elapsed_seconds(),
+                "backend_category": category.value,
+                "correlation_id": self._correlation_id,
+            }
+            if read_reason is not None:
+                if read_reason not in READ_REASONS:
+                    raise ValueError(f"Unsupported debug trace read reason: {read_reason!r}.")
+                record["read_reason"] = read_reason
+            self._tracer._writer.append(record)
         except Exception:
             self._tracer._stop_writer("debug_trace_emit_failed")
 

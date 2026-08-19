@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..bridge import OneNoteBridge
 from ..constants import CREATE_FILE_TYPES, NEW_PAGE_STYLES, SPECIAL_LOCATIONS, XML_SCHEMA_2013
@@ -38,6 +38,9 @@ from .convergence import (
     converge,
 )
 from .errors import MutationFailure, MutationPreflightFailure, PartialFailure
+
+if TYPE_CHECKING:
+    from .copy_read_cache import HierarchySnapshot
 from .hierarchy import HierarchyService
 from .mutation_control import (
     MutationAttemptExecutor,
@@ -253,8 +256,14 @@ class MutationService(BaseService):
         expected_name: str,
         expected_parent_id: str | None,
         expected_modified: str | None = None,
+        preflight: HierarchySnapshot | None = None,
     ) -> dict[str, Any]:
-        item = self.hierarchy.resource(object_id, resource_type)
+        from .backend_operation_classification import current_mutation_epoch
+
+        if preflight is not None and preflight.epoch == current_mutation_epoch():
+            item = preflight.resource(object_id, resource_type)
+        else:
+            item = self.hierarchy.resource(object_id, resource_type)
         actual_name = display_name(item)
         if actual_name != expected_name:
             raise ValueError(f"Confirmation mismatch: expected name '{expected_name}', found '{actual_name}'.")

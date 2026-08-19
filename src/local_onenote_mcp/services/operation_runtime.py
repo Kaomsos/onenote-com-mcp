@@ -182,6 +182,7 @@ class TraceSpan(Protocol):
         category: BackendCategory,
         *,
         operation: str,
+        read_reason: str | None = None,
     ) -> None: ...
 
     def finish(self, outcome: "OperationOutcome") -> None: ...
@@ -239,6 +240,7 @@ class _NullTraceSpan:
         category: BackendCategory,
         *,
         operation: str,
+        read_reason: str | None = None,
     ) -> None:
         return None
 
@@ -414,15 +416,22 @@ _CURRENT_EXECUTION: ContextVar[OperationExecution | None] = ContextVar(
 def record_backend_call(backend_operation: str) -> None:
     """Count a backend call without retaining its arguments or payload."""
 
+    from .read_reasons import current_read_reason
+
     execution = _CURRENT_EXECUTION.get()
     if execution is not None:
         execution.backend_calls += 1
-        if backend_operation.startswith("filesystem:"):
+        from .backend_operation_classification import FILESYSTEM_OPERATIONS
+
+        if backend_operation in FILESYSTEM_OPERATIONS:
             category = BackendCategory.FILESYSTEM
         else:
             category = execution.backend
         execution.trace_span.backend_dispatched(
-            execution, category, operation=backend_operation
+            execution,
+            category,
+            operation=backend_operation,
+            read_reason=current_read_reason(),
         )
 
 

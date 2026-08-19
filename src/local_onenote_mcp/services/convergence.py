@@ -87,6 +87,7 @@ def converge(
     sleeper: Callable[[float], None] = time.sleep,
     identity_remap: dict[str, str] | None = None,
     transient: Callable[[Exception], bool] | None = None,
+    initial_value: T | None = None,
 ) -> ConvergenceResult[T]:
     """Observe until the same accepted identity is seen consecutively.
 
@@ -104,23 +105,39 @@ def converge(
     history: list[dict[str, Any]] = []
     transient_errors: list[str] = []
 
-    while attempts < config.max_observations:
+    def record_observation(value: T) -> bool:
+        nonlocal last_value, last_identity, stable, attempts
         attempts += 1
+        last_value = value
+        accepted = bool(accept(value))
+        identity = project_identity(value) if accepted else None
+        if accepted and identity == last_identity:
+            stable += 1
+        elif accepted:
+            stable = 1
+            last_identity = identity
+        else:
+            stable = 0
+            last_identity = object()
+        history.append({"attempt": attempts, "accepted": accepted, "stable": stable})
+        return accepted and stable >= config.required_stable_observations
+
+    if initial_value is not None and record_observation(initial_value):
+        return ConvergenceResult(
+            True,
+            initial_value,
+            attempts,
+            max(0.0, clock() - started),
+            stable,
+            tuple(history),
+            tuple(transient_errors),
+            dict(identity_remap or {}),
+        )
+
+    while attempts < config.max_observations:
         try:
             value = observe()
-            last_value = value
-            accepted = bool(accept(value))
-            identity = project_identity(value) if accepted else None
-            if accepted and identity == last_identity:
-                stable += 1
-            elif accepted:
-                stable = 1
-                last_identity = identity
-            else:
-                stable = 0
-                last_identity = object()
-            history.append({"attempt": attempts, "accepted": accepted, "stable": stable})
-            if stable >= config.required_stable_observations:
+            if record_observation(value):
                 return ConvergenceResult(
                     True,
                     value,

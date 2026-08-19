@@ -2,6 +2,7 @@ import asyncio
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -594,8 +595,8 @@ def install_plan_fakes(monkeypatch, *, body: str = "Body"):
     state = {"items": hierarchy_items(), "body": body}
     monkeypatch.setattr(
         server.services.hierarchy,
-        "resources",
-        lambda include_recycle_bin=False: [dict(item) for item in state["items"]],
+        "hierarchy_xml",
+        lambda start_id="", scope="pages": hierarchy_xml_from_items(state["items"]),
     )
     monkeypatch.setattr(
         server.services.pages,
@@ -607,6 +608,115 @@ def install_plan_fakes(monkeypatch, *, body: str = "Body"):
         ),
     )
     return state
+
+
+DEFAULT_FAKE_MODIFIED = "2026-01-01T00:00:00.000Z"
+
+
+def fake_item_modified(item: dict[str, Any]) -> str:
+    return str(item.get("modified") or DEFAULT_FAKE_MODIFIED)
+
+
+def advance_fake_mutation_epoch() -> None:
+    from local_onenote_mcp.services.backend_operation_classification import advance_mutation_epoch
+
+    advance_mutation_epoch()
+
+
+def remove_fake_items(state: dict[str, Any] | list[dict[str, Any]], *item_ids: str) -> None:
+    if isinstance(state, dict):
+        state["items"] = [item for item in state["items"] if item["id"] not in item_ids]
+        return
+    state[:] = [item for item in state if item["id"] not in item_ids]
+
+
+def fake_item_path(item: dict[str, Any]) -> str:
+    if item.get("path"):
+        return str(item["path"])
+    if item.get("resource_type") == "page":
+        return str(item.get("title") or item["id"])
+    return str(item.get("name") or item["id"])
+
+
+def hierarchy_xml_from_items(items: list[dict[str, Any]]) -> str:
+    """Build minimal hierarchy XML from flat fake resource records."""
+
+    ns = "http://schemas.microsoft.com/office/onenote/2013/onenote"
+    children_by_parent: dict[str | None, list[dict[str, Any]]] = {}
+    for item in items:
+        if item["resource_type"] == "page":
+            parent_key = item.get("parent_page_id") or item.get("section_id")
+        else:
+            parent_key = item.get("parent_id")
+        children_by_parent.setdefault(parent_key, []).append(item)
+
+    def render_pages(section_id: str, parent_page_id: str | None = None) -> str:
+        pages = sorted(
+            [
+                item
+                for item in items
+                if item.get("resource_type") == "page"
+                and item.get("section_id") == section_id
+                and item.get("parent_page_id") == parent_page_id
+            ],
+            key=lambda item: int(item.get("order", 0)),
+        )
+        chunks: list[str] = []
+        for page in pages:
+            title = page.get("title", "Page")
+            modified = fake_item_modified(page)
+            chunks.append(
+                f'<one:Page name="{title}" ID="{page["id"]}" '
+                f'lastModifiedTime="{modified}" dateTime="{modified}" '
+                f'pageLevel="{int(page.get("page_level", 1))}">'
+                f"{render_pages(section_id, page['id'])}"
+                f"</one:Page>"
+            )
+        return "".join(chunks)
+
+    def render_container(parent_id: str | None) -> str:
+        chunks: list[str] = []
+        for item in sorted(
+            children_by_parent.get(parent_id, []),
+            key=lambda entry: int(entry.get("order", 0)),
+        ):
+            kind = item["resource_type"]
+            if kind == "notebook":
+                name = item["name"]
+                modified = fake_item_modified(item)
+                path = fake_item_path(item)
+                chunks.append(
+                    f'<one:Notebook name="{name}" ID="{item["id"]}" path="{path}" '
+                    f'lastModifiedTime="{modified}">'
+                    f"{render_container(item['id'])}"
+                    f"</one:Notebook>"
+                )
+            elif kind == "section_group":
+                name = item["name"]
+                modified = fake_item_modified(item)
+                path = fake_item_path(item)
+                chunks.append(
+                    f'<one:SectionGroup name="{name}" ID="{item["id"]}" path="{path}" '
+                    f'lastModifiedTime="{modified}">'
+                    f"{render_container(item['id'])}"
+                    f"</one:SectionGroup>"
+                )
+            elif kind == "section":
+                name = item["name"]
+                modified = fake_item_modified(item)
+                path = fake_item_path(item)
+                chunks.append(
+                    f'<one:Section name="{name}" ID="{item["id"]}" path="{path}" '
+                    f'lastModifiedTime="{modified}">'
+                    f"{render_pages(item['id'])}"
+                    f"</one:Section>"
+                )
+        return "".join(chunks)
+
+    body = render_container(None)
+    return (
+        f'<?xml version="1.0"?><one:Notebooks xmlns:one="{ns}">{body}</one:Notebooks>'
+    )
 
 
 def install_recursive_execute_fakes(
@@ -782,6 +892,11 @@ def install_recursive_execute_fakes(
         return {"page": item, "allocated_id": item["id"]}
 
     def call(operation, **params):
+        from local_onenote_mcp.services.backend_operation_classification import (
+            notify_backend_operation,
+        )
+
+        notify_backend_operation(operation)
         if operation == "update_page_content":
             root = ET.fromstring(params["xml"])
             xml_store[root.attrib["ID"]] = params["xml"]
@@ -796,7 +911,11 @@ def install_recursive_execute_fakes(
             return {"updated": True}
         raise AssertionError(operation)
 
-    monkeypatch.setattr(server.services.hierarchy, "resources", resources)
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "hierarchy_xml",
+        lambda start_id="", scope="pages": hierarchy_xml_from_items(state),
+    )
     monkeypatch.setattr(server.services.pages, "xml", lambda page_id, page_info="basic": xml_store[page_id])
     monkeypatch.setattr(server.services.mutations, "create_notebook", create_notebook)
     monkeypatch.setattr(server.services.mutations, "create_section_group", create_group)
@@ -2844,7 +2963,7 @@ def test_recursive_notebook_copy_creates_new_root_and_verifies(monkeypatch, tmp_
         "source-section",
         "source-page",
     ]
-    assert result["item"]["path"] == str(tmp_path / "Notebook Copy")
+    assert result["item"]["name"] == "Notebook Copy"
     assert result["destination_path"] == str(tmp_path / "Notebook Copy")
     assert result["copy_report"]["destination_path"] == str(tmp_path / "Notebook Copy")
     assert result["copy_report"]["verified"] is True
@@ -3254,7 +3373,8 @@ def test_default_page_move_preserves_exact_special_title_through_shared_copy(
     )
 
     def delete_page(page_id, *args, **kwargs):
-        state[:] = [item for item in state if item["id"] != page_id]
+        remove_fake_items(state, page_id)
+        advance_fake_mutation_epoch()
         return {
             "deleted": True,
             "final_state": {"id": page_id, "is_in_recycle_bin": True},
@@ -3346,12 +3466,14 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
             )
             stack.append(item)
         state["xml_clock"] = "after-promotion"
+        advance_fake_mutation_epoch()
         return {"updated": True}
 
     monkeypatch.setattr(server.services.copying, "call", update_hierarchy)
 
     def delete_page(page_id, *args, **kwargs):
-        state["items"] = [item for item in state["items"] if item["id"] != page_id]
+        remove_fake_items(state, page_id)
+        advance_fake_mutation_epoch()
         return {"deleted": True, "final_state": {"id": page_id, "is_in_recycle_bin": True}}
 
     monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
@@ -3596,7 +3718,8 @@ def test_move_page_same_section_recomputes_position_after_source_delete(monkeypa
 
     def delete_page(page_id, *_args, **_kwargs):
         assert page_id == "parent"
-        state["items"] = [item for item in state["items"] if item["id"] != page_id]
+        remove_fake_items(state, page_id)
+        advance_fake_mutation_epoch()
         return {"deleted": True, "final_state": None}
 
     monkeypatch.setattr(server.services.copying, "_execute_copy", execute_copy)
@@ -3908,6 +4031,8 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
         assert permanently is False
         deleted.append(page_id)
         delete_confirmations[page_id] = expected_modified
+        remove_fake_items(state, page_id)
+        advance_fake_mutation_epoch()
         return {"deleted": True, "final_state": {"id": page_id, "is_in_recycle_bin": True}}
 
     monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
@@ -4028,7 +4153,11 @@ def test_move_page_accepts_active_absence_without_recycle_metadata(monkeypatch):
     monkeypatch.setattr(
         server.services.mutations,
         "delete_page",
-        lambda *args, **kwargs: {"deleted": True, "final_state": None},
+        lambda *args, **kwargs: (
+            remove_fake_items(state, args[0]),
+            advance_fake_mutation_epoch(),
+            {"deleted": True, "final_state": None},
+        )[-1],
     )
     result = server.services.copying.move_page(
         "parent",
@@ -4241,23 +4370,52 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
             "resource_type": "notebook",
             "id": "destination-notebook",
             "name": "Destination",
+            "path": "Destination",
             "parent_id": None,
         },
         {
             "resource_type": resource_type,
             "id": target_root,
+            "name": "Moved",
+            "path": f"Destination/{resource_type}",
             "parent_id": "destination-notebook",
+            "notebook_id": "destination-notebook",
+            "order": 0,
         },
-        {"resource_type": "page", "id": target_child},
+        (
+            {
+                "resource_type": "page",
+                "id": target_child,
+                "title": "Child Page",
+                "path": "Destination/Child Page",
+                "parent_id": target_root if resource_type == "section" else "target-section",
+                "section_id": target_root if resource_type == "section" else "target-section",
+                "notebook_id": "destination-notebook",
+                "parent_page_id": None,
+                "page_level": 1,
+                "order": 0,
+            }
+            if resource_type == "section"
+            else {
+                "resource_type": "section",
+                "id": target_child,
+                "name": "Moved Section",
+                "path": "Destination/Moved Section",
+                "parent_id": target_root,
+                "notebook_id": "destination-notebook",
+                "order": 0,
+            }
+        ),
     ]
     monkeypatch.setattr(
         server.services.hierarchy,
-        "resources",
-        lambda include_recycle_bin=False: final_items,
+        "hierarchy_xml",
+        lambda start_id="", scope="pages": hierarchy_xml_from_items(final_items),
     )
 
     def delete_resource(*args):
         delete_calls.append(args)
+        advance_fake_mutation_epoch()
         return {"final_state": None}
 
     monkeypatch.setattr(server.services.mutations, "delete_resource", delete_resource)
@@ -4465,14 +4623,28 @@ def test_container_move_reports_remaining_descendant_without_extra_deletes(monke
     source_id, child_id, _copied, delete_calls, _final_items = install_container_move_execution_fakes(
         monkeypatch, "section_group"
     )
+    remaining_after_delete = [
+        {
+            "resource_type": "notebook",
+            "id": "source-notebook",
+            "name": "Source Notebook",
+            "path": "Source Notebook",
+            "parent_id": None,
+        },
+        {
+            "resource_type": "section",
+            "id": child_id,
+            "name": "Remaining Section",
+            "path": "Source Notebook/Remaining Section",
+            "parent_id": "source-notebook",
+            "notebook_id": "source-notebook",
+            "order": 0,
+        },
+    ]
     monkeypatch.setattr(
         server.services.hierarchy,
-        "resources",
-        lambda include_recycle_bin=False: [
-            {"resource_type": "page", "id": child_id},
-            {"resource_type": "section_group", "id": f"target-{source_id}"},
-            {"resource_type": "section", "id": f"target-{child_id}"},
-        ],
+        "hierarchy_xml",
+        lambda start_id="", scope="pages": hierarchy_xml_from_items(remaining_after_delete),
     )
 
     with pytest.raises(PartialFailure) as raised:

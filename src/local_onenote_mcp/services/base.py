@@ -12,8 +12,10 @@ class BaseService:
         self.bridge = bridge
 
     def call(self, operation: str, **params: Any) -> dict[str, Any]:
+        from .backend_operation_classification import notify_backend_operation
         from .operation_runtime import record_backend_call
 
+        notify_backend_operation(operation)
         record_backend_call(operation)
         return self.bridge.call(operation, **params)
 

@@ -139,7 +139,14 @@ def _assert_event_shape(event: dict) -> None:
 
 
 def _assert_backend_shape(event: dict) -> None:
-    assert list(event) == list(_BACKEND_FIELDS)
+    for field in _BACKEND_FIELDS:
+        assert field in event
+    extra = set(event) - set(_BACKEND_FIELDS)
+    assert extra <= {"read_reason"}
+    if "read_reason" in event:
+        from local_onenote_mcp.services.read_reasons import READ_REASONS
+
+        assert event["read_reason"] in READ_REASONS
     assert "event" not in event
     assert _STALE_FIELDS.isdisjoint(event)
 
@@ -359,10 +366,10 @@ def test_keyboard_interrupt_emits_cancelled_and_resets_context(tmp_path: Path) -
     assert "summary" in cancelled
 
 
-def test_backend_dispatch_uses_spec_backend_and_filesystem_prefix(tmp_path: Path) -> None:
+def test_backend_dispatch_uses_spec_backend_and_filesystem_allowlist(tmp_path: Path) -> None:
     def handler(_arguments):
         record_backend_call("get_hierarchy")
-        record_backend_call("filesystem:write")
+        record_backend_call("filesystem:publish_target_exists")
         return {"value": True}
 
     runtime, tracer = _runtime_with_tracer(tmp_path, handler=handler)
@@ -382,9 +389,9 @@ def test_backend_dispatch_uses_spec_backend_and_filesystem_prefix(tmp_path: Path
     assert [event["backend_call_id"] for event in backend_events] == [1, 2, 1, 2]
     assert [event["operation"] for event in backend_events] == [
         "get_hierarchy",
-        "filesystem:write",
+        "filesystem:publish_target_exists",
         "get_hierarchy",
-        "filesystem:write",
+        "filesystem:publish_target_exists",
     ]
     assert [event["tool_call_id"] for event in backend_events] == [1, 1, 2, 2]
     for event in backend_events:
@@ -400,6 +407,21 @@ def test_backend_dispatch_uses_spec_backend_and_filesystem_prefix(tmp_path: Path
         if event.get("event") == TraceEvent.TOOL_CALL_COMPLETED.value
     ]
     assert [event["summary"]["backend_call_count"] for event in terminals] == [2, 2]
+
+
+def test_backend_dispatch_records_allowlisted_read_reason(tmp_path: Path) -> None:
+    from local_onenote_mcp.services.read_reasons import PLAN_CAPTURE, read_reason
+
+    def handler(_arguments):
+        with read_reason(PLAN_CAPTURE):
+            record_backend_call("get_hierarchy")
+        return {"value": True}
+
+    runtime, tracer = _runtime_with_tracer(tmp_path, handler=handler)
+    runtime.execute("operation", {})
+    backend_events = _backend_events(_read_events(tracer))
+    assert backend_events[0]["read_reason"] == PLAN_CAPTURE
+    _assert_backend_shape(backend_events[0])
 
 
 def test_argument_shape_projection_is_content_free() -> None:
