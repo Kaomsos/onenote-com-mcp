@@ -3,14 +3,16 @@
 > ID：043
 > 状态：待办
 > 优先级：P1
-> 类型：功能 / Copy / Move / 元数据保真 / OneNote COM
+> 类型：开放方向 / Copy / Move / 元数据保真 / OneNote COM
 > 更新日期：2026-08-19
 
 ## 决策摘要
 
-Copy 与重建式 Move 在完成目标资源的创建、内容写入和拓扑调整后，应把目标资源的创建时间与修改时间恢复为 source 对应资源的值，并对 exact target ID 做回读验证。Move 只有在该时间元数据与现有内容、标题和拓扑合同全部通过后，才允许删除 source；时间回写不支持、失败或回读不一致时必须保留 source，并返回可诊断的 `copy_only`/未验证结果。
+本 TODO 保留为日后可能开放的研究方向，不是当前产品承诺、已排期路线图或兼容性保证。当前产品明确把 Copy/Move 定义为内容与拓扑级重建：不继承 source revision marker、原始创建时间或原始修改时间；现有 `verified`、`lossless` 与 `copy_contract_satisfied` 也不覆盖这些字段。当前边界见[产品能力边界](../product/README.md)和[工具契约](../design/tool_contracts.md)。
 
-本 TODO 描述目标合同，不把 OneNote COM 对各资源类型时间 attribute 的可写性当作既成事实。实现前必须建立 Page、Section、SectionGroup、Notebook 的能力矩阵；无法可靠回写的类型应显式报告能力限制，不得继续声称完整保真。
+若未来重新作出产品决策，目标可以是：Copy 与重建式 Move 在完成目标资源的创建、内容写入和拓扑调整后，把目标资源的创建时间与修改时间恢复为 source 对应资源的值，并对 exact target ID 做回读验证。Move 只有在该时间元数据与现有内容、标题和拓扑合同全部通过后，才允许删除 source；时间回写不支持、失败或回读不一致时必须保留 source，并返回可诊断的 `copy_only`/未验证结果。
+
+本 TODO 只描述未来探索时可采用的目标合同，不把 OneNote COM 对各资源类型时间 attribute 的可写性当作既成事实。启动实现前必须先有新的产品级决策，并建立 Page、Section、SectionGroup、Notebook 的能力矩阵；无法可靠回写的类型应显式报告能力限制，不得继续声称完整保真。
 
 ## 当前缺口
 

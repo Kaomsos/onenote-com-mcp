@@ -142,6 +142,6 @@ Page 创建/Copy 回读首先要求 COM allocated ID 对应 active Page、exact 
 | Section 同 Notebook 换父级（历史 Move 语义） | 已收敛为 typed `reparent_section`；保持 Section ID，由 Writes + Organize fail closed，已有用户确认的真实 COM 证据 |
 | Reparent | 只表示同一 Notebook 内的容器换父级；公开 typed `reparent_page`、`reparent_section`、`reparent_section_group` 共用 Writes + Organize。Page 默认 `include_subpages=false`，只迁移选中对象并提升被排除后代；设为 `true` 时迁移完整缩进子树。生产 read-back 仅验证 hierarchy，不读取 Page 正文；逐 Page 正文/内容对象比较只在 human-gated manual validation 中保留。生产 MCP 不暴露 raw hierarchy XML。 |
 | Section/SectionGroup 跨 Notebook转移 | 重建式 Move；完整子树 Copy 与验证后只对源容器根执行一次非永久删除，全部后代获得新 ID；同 Notebook 请求 fail closed。需要 Create + Writes + Deletes。 |
-| 四层 Copy、Page/容器 Move | 已实现为单次公开调用；Page Copy/Move 用布尔 `include_subpages` 选择根 Page 或完整缩进子树，容器始终递归。内部 live planning 不暴露 token；Move 采用 Copy→验证→非永久删除源的重建语义。 |
+| 四层 Copy、Page/容器 Move | 已实现为单次公开调用；Page Copy/Move 用布尔 `include_subpages` 选择根 Page 或完整缩进子树，容器始终递归。内部 live planning 不暴露 token；Move 采用 Copy→验证→非永久删除源的重建语义。重建目标获得新 ID，并不继承 source revision marker 或原始 `created/modified`；`lossless` 只描述公开支持的标题、内容对象与拓扑投影。 |
 | Notebook/Section/Page Export、导航、Notebook Sync/Close | P1 typed 契约已实现 |
 | Notebook Delete、SectionGroup Export | 不承诺 |

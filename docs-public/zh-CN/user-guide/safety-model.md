@@ -39,13 +39,14 @@
 
 ## 经验证的 Copy 保真
 
-富对象 Copy 保真采用 allowlist 且证据绑定：对象类型只有在真实后端验证证明可无损往返后才被接受。未支持或未验证的对象 fail closed，而不是产生静默降级的副本。当前边界见 [copy content exclusions](../../../docs/lesson/copy_content_type_exclusions.md)。
+富对象 Copy 保真采用 allowlist 且证据绑定：对象类型只有在真实后端验证证明可无损往返后才被接受。未支持或未验证的对象 fail closed，而不是产生静默降级的副本。该保真合同只覆盖受支持的标题、内容、对象和拓扑投影，不包含 source revision/authorship marker 或原始创建/修改时间。内容边界见 [copy content exclusions](../../../docs/lesson/copy_content_type_exclusions.md)，元数据非承诺见[产品能力边界](../../../docs/product/README.md)。
 
 ## 已知限制
 
 - 仅支持 Windows 桌面单用户本地会话；没有云端或跨进程事务边界。
 - Reparent 限于单个 Notebook 内；跨 Notebook 容器转移使用重建式 Move。
 - Page 正文替换和递归 Copy/Move 是多步非原子操作。
+- Copy/Move 会重建目标，不保留 source revision marker 或原始创建/修改时间；OneNote 可以生成目标自己的元数据。
 - 外部入站链接无法跨重建式 Copy/Move 保持身份（会产生新 ID）。
 - OneNote 可能在 COM 写入时规范化独立单行公式的空白（[观察到的限制](../../../docs/lesson/display_equation_com_leading_whitespace_normalization.md)）。
 - 已验证行为都注明证据范围。在某一个 OneNote/Office 组合上通过，不等于对所有版本的保证。

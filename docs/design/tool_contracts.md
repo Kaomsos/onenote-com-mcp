@@ -131,6 +131,8 @@ Batch Mutation 的预算与 Copy 完全独立。`health_check.batch_mutation_bud
 
 图片格式从文件 magic bytes 推断，并与扩展名交叉验证；调用者不能指定 `image_format`。`replace_page_body` 不修改 title，是可能返回 partial/reconciliation 的多步 saga。内容对象删除 ID 必须来自同一 Page 的 typed object list，并且该对象被标记为可删除。
 
+当前公开写入面不提供 OneNote 修订历史、track-changes、revision ID 选择/回退或任意文本范围 patch。调用者只能使用上述 append、整正文 replace、精确内容对象 delete 和图片添加操作；`expected_modified` 只用于 mutation 前的乐观并发确认，不代表可寻址或可恢复的修订版本。
+
 ### Recoverable Delete（3）
 
 `delete_page(include_subpages=false)`、`delete_section`、`delete_section_group` 均需要 Deletes 和 exact-ID confirmation，并固定执行非永久、可恢复删除。Page Delete 可选择仅删除根并保护后代，或删除完整子树。每个原工具也支持与其类型一致的 `items[1..20]` 批量模式；Page batch item 可独立给出 `include_subpages`。顶层单项字段与 `items` 互斥，请求整体预检并拒绝重复、回收站对象以及祖先/后代范围重叠。公开 schema 没有 `permanently`；永久删除工具当前不存在。
@@ -138,6 +140,8 @@ Batch Mutation 的预算与 Copy 完全独立。`health_check.batch_mutation_bud
 ### Copy（4）与 Reconstructive Move（3）
 
 Copy 需要 Create + Writes；Move 需要 Create + Writes + Deletes。不存在独立 Copy gate。
+
+Copy/Move 是内容与拓扑级重建，不继承 OneNote-owned 修订/审计元数据。Page 转换会排除 source authorship/revision marker 以及 `creationTime`、`dateTime`、`lastModifiedTime` 等 volatile 时间字段；Section、SectionGroup、Notebook 目标也以新建对象的时间元数据为准。OneNote 写回后可以生成目标自己的 marker/时间值，但不承诺与 source 相同。`verified`、`lossless` 与 `copy_contract_satisfied` 仅覆盖下述受支持标题、内容对象和拓扑投影，不表示 source revision marker、原始创建时间或原始修改时间已保真。产品层非承诺见[产品能力边界](../product/README.md)；未来重新评估时间保真的开放方向见 [TODO 043](../todo/043_copy_move_source_timestamp_fidelity.md)。
 
 - `copy_page(page_id, destination_section_id, expected_title, expected_section_id, expected_modified=null, destination_title=null, include_subpages=false)`
 - `copy_section(section_id, destination_parent_id, expected_name, expected_parent_id, expected_modified=null, destination_name=null)`

@@ -38,6 +38,9 @@ policy 在服务器启动时读取一次。重启 MCP 客户端（它会重新�
 **为什么 Move 之后 Page 的 ID 变了？**
 Move 是重建式的：先验证 Copy，再非永久删除源。新对象获得新 ID。指向旧对象的外部链接无法保持身份。
 
+**Copy/Move 会保留 revision marker 和原始时间吗？**
+不会。Copy/Move 会重建目标，明确不继承 source revision/authorship marker 或原始创建/修改时间；OneNote 可以生成目标自己的值。`lossless=true` 只覆盖文档声明支持的标题、内容、对象和拓扑投影。
+
 **删除了对象——还能找回吗？**
 公开删除始终非永久。到 OneNote 回收站（笔记本 → 已删除的笔记）查看。永久删除工具不对外发布。
 

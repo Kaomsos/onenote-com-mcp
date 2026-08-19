@@ -38,6 +38,9 @@ That is intentional bounded work, not a malfunction. Narrow the scope (target a 
 **Why did Move give my page a new ID?**
 Move is reconstructive: verified copy, then non-permanent source delete. New objects get new IDs. External links to the old object cannot retain identity.
 
+**Does Copy/Move preserve revision markers and original timestamps?**
+No. Copy/Move rebuilds the target and deliberately does not carry forward source revision/authorship markers or original creation/modification timestamps. OneNote may generate target-owned values. A `lossless=true` result only covers the documented supported title/content/object/topology projection.
+
 **A delete happened — can I get the object back?**
 Public deletes are always non-permanent. Look in the OneNote recycle bin (Notebook → Deleted Notes). Permanent-delete tools are not published.
 

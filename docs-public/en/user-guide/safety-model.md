@@ -39,13 +39,14 @@ Logs and audit records capture operation names, success/failure, and timing — 
 
 ## Verified-fidelity copy
 
-Rich-object copy fidelity is allowlisted and evidence-bound: object types are only treated as losslessly copyable after real-backend validation. Unsupported or unverified objects fail closed instead of producing silently degraded copies. See [copy content exclusions](../../../docs/lesson/copy_content_type_exclusions.md) for the current boundary.
+Rich-object copy fidelity is allowlisted and evidence-bound: object types are only treated as losslessly copyable after real-backend validation. Unsupported or unverified objects fail closed instead of producing silently degraded copies. This fidelity contract covers the supported title/content/object/topology projection only; it excludes source revision/authorship markers and original creation/modification timestamps. See [copy content exclusions](../../../docs/lesson/copy_content_type_exclusions.md) for the current content boundary and the [product boundary](../../../docs/product/README.md) for metadata non-guarantees.
 
 ## Known limits
 
 - Windows desktop, single-user local sessions only; no cloud or cross-process transaction boundary.
 - Reparent stays within one notebook; cross-notebook container transfer uses reconstructive Move.
 - Page-body replacement and recursive copy/move are multi-step and non-atomic.
+- Copy/Move rebuild targets and do not preserve source revision markers or original creation/modification timestamps. OneNote may generate new target-owned metadata.
 - External inbound links cannot retain identity across reconstructive copy/move (new IDs are created).
 - OneNote may normalize standalone display-equation whitespace during COM writes ([observed limitation](../../../docs/lesson/display_equation_com_leading_whitespace_normalization.md)).
 - Verified behavior is documented with its evidence scope. A pass on one OneNote/Office combination is not claimed as a guarantee for all versions.
