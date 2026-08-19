@@ -19,4 +19,3 @@ LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "true"
 # Local, content-free Runtime traces for the trusted work-log-miner profile.
 # The directory is intentionally ignored and must remain an existing absolute path.
 LOCAL_ONENOTE_MCP_DEBUG_TRACE = "true"
-LOCAL_ONENOTE_MCP_DEBUG_DIR = "E:/code/MCP/local-onenote-mcp/.tmp/grok-runtime-debug"

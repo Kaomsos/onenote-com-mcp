@@ -1,0 +1,5 @@
+# Work-log miner — OneNote traversal, classification, authorized staging move
+description = "按天评估工作日志日期页的直接子页；默认识别，授权后可独立 copy/move 到临时本"
+# Do not set default_capability_mode=read-only. search_tool/use_tool are
+# classified non-readonly, so that mode strips MCP even when inherited.
+reasoning_effort = "high"

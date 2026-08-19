@@ -55,7 +55,6 @@ def test_project_json_mcp_configs_are_consistent_and_fail_closed(
                 "LOCAL_ONENOTE_ENABLE_UI_CONTROL": "true",
                 "LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE": "true",
                 "LOCAL_ONENOTE_MCP_DEBUG_TRACE": "true",
-                "LOCAL_ONENOTE_MCP_DEBUG_DIR": "E:/code/MCP/local-onenote-mcp/.tmp/grok-runtime-debug",
             },
         ),
     ],
