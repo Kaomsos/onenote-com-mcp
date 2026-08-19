@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ..operation_catalog import build_operation_registry
 from ..services import ServiceContainer
-from ..services.operation_runtime import OperationRuntime
+from ..services.operation_runtime import OperationRuntime, TraceSink
 from ..tool_surface import USER_TOOL_NAMES
 from .copying import TOOLS as COPY_TOOLS
 from .context import configure
@@ -37,14 +38,20 @@ if set(_TOOL_BY_NAME) != set(USER_TOOL_NAMES):
 DEFAULT_TOOLS = [_TOOL_BY_NAME[name] for name in USER_TOOL_NAMES]
 
 
-def register_tools(mcp: Any, services: ServiceContainer) -> None:
+def register_tools(
+    mcp: Any,
+    services: ServiceContainer,
+    *,
+    tracer: TraceSink | None = None,
+    trace_status: Mapping[str, Any] | None = None,
+) -> None:
     """Bind the service container and register the production MCP tool surface."""
 
-    registry = build_operation_registry(services)
+    registry = build_operation_registry(services, trace_status=trace_status)
     registry.audit_public_tools(
         tuple(function.__name__ for function in DEFAULT_TOOLS), profile="default"
     )
-    configure(OperationRuntime(registry, services.coordinator))
+    configure(OperationRuntime(registry, services.coordinator, tracer=tracer))
     for function in DEFAULT_TOOLS:
         mcp.tool()(function)
 

@@ -76,6 +76,8 @@ LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
 | --- | --- | --- |
 | `LOCAL_ONENOTE_MCP_TIMEOUT` | — | 单次 bridge 操作超时秒数（如 `90`） |
 | `LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS` | — | 返回文本大小上限（如 `60000`） |
+| `LOCAL_ONENOTE_MCP_DEBUG_TRACE` | `false` | 启用仅本地的 Runtime debug trace JSONL（严格布尔值） |
+| `LOCAL_ONENOTE_MCP_DEBUG_DIR` | `~/.onenote-mcp/debug-trace` | 可选的 session JSONL 输出绝对目录。未设置时，服务器使用并创建该用户本地默认目录。不授权任何 mutation。 |
 | `LOCAL_ONENOTE_MARKDIG_DLL` | 自动探测 | OneMore `Markdig.Signed.dll` 的显式路径，用于 Markdown 编译 |
 
 ## Batch Mutation 预算
@@ -89,6 +91,35 @@ Batch Mutation 有独立的 content-free 预算，由 `health_check.batch_mutati
 - `LOCAL_ONENOTE_MAX_BATCH_PAGE_CONTENT_CHARS`
 
 catalog 中发现的无关对象不消耗 effective target 预算。
+
+## 本地 debug trace（可选，默认关闭）
+
+这**不是遥测**。启用后，MCP 进程会向你指定的目录写入 content-free JSONL，用 `tool_call.*` 记录一次 tool 调用的生命周期，用单独的 backend 行记录具体内部 `operation`，终态再给出 backend 次数摘要和稳定 error code——**不**记录原始参数、Page 正文、对象 ID、secret 或完整路径。
+
+```json
+{
+  "env": {
+    "LOCAL_ONENOTE_MCP_DEBUG_TRACE": "true",
+    "LOCAL_ONENOTE_MCP_DEBUG_DIR": "C:\\\\Users\\\\you\\\\local-onenote-debug"
+  }
+}
+```
+
+规则：
+
+- 仅设置 `LOCAL_ONENOTE_MCP_DEBUG_TRACE=true` 即可：`LOCAL_ONENOTE_MCP_DEBUG_DIR` 未设置时，服务器会创建并使用上表的用户本地默认目录。显式目录必须为绝对路径，缺失的父目录会创建；空值、相对路径、reparse point、非目录或无法创建的路径 fail closed。
+- trace 关闭时零目录创建、零文件写入，即使配置了 `LOCAL_ONENOTE_MCP_DEBUG_DIR` 也不隐式启用。
+- 修改 trace 配置后需重启 MCP 客户端。
+- session 文件有容量上限；分享前请审查——其中包含 tool 名称和时序元数据。
+- `health_check.debug_trace` 投影 `enabled` 以及输出目录是否已配置/可写（不含完整路径）。
+
+本地 smoke（无需真实 OneNote mutation）：
+
+```powershell
+$env:LOCAL_ONENOTE_MCP_DEBUG_TRACE = "true"
+$env:LOCAL_ONENOTE_MCP_DEBUG_DIR = "C:\Users\you\local-onenote-debug"
+# 重启 MCP 后调用 health_check、一个只读 tool 和一个被 policy 拒绝的 mutation tool
+```
 
 ## 权限组合建议
 

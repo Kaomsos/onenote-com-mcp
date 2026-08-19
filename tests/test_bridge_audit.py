@@ -9,6 +9,7 @@ import pytest
 
 from local_onenote_mcp import bridge as bridge_module
 from local_onenote_mcp.bridge import OneNoteBridge, POWERSHELL_BRIDGE
+from local_onenote_mcp.execution_context import reset_correlation_id, set_correlation_id
 from local_onenote_mcp.onenote_errors import OneNoteModalUIBlockedError
 
 
@@ -144,3 +145,30 @@ def test_bridge_audit_keeps_typed_hresult_without_payload_or_message(monkeypatch
     rendered = json.dumps(record)
     assert "secret" not in rendered
     assert "raw XML" not in rendered
+
+
+def test_bridge_audit_includes_optional_correlation_id(monkeypatch, tmp_path) -> None:
+    request_path = tmp_path / "request.json"
+    response_path = tmp_path / "response.json"
+    audit_path = tmp_path / "bridge-calls.jsonl"
+
+    def fake_write(payload):
+        request_path.write_text(json.dumps(payload), encoding="utf-8")
+        return request_path
+
+    def fake_run(*_args, **_kwargs):
+        response_path.write_text(json.dumps({"ok": True, "data": {}}), encoding="utf-8")
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(OneNoteBridge, "_write_temp_json", staticmethod(fake_write))
+    monkeypatch.setattr(OneNoteBridge, "_reserve_temp_path", staticmethod(lambda: response_path))
+    monkeypatch.setattr(bridge_module.subprocess, "run", fake_run)
+
+    token = set_correlation_id("corr-123")
+    try:
+        OneNoteBridge(audit_path=audit_path).call("get_hierarchy")
+    finally:
+        reset_correlation_id(token)
+
+    record = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert record["correlation_id"] == "corr-123"

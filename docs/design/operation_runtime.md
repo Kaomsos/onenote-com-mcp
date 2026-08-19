@@ -1,7 +1,7 @@
 # Operation Runtime 操作执行控制面
 
 > 状态：当前实现态
-> 更新日期：2026-08-17
+> 更新日期：2026-08-19
 > 相关契约：[当前架构](architecture.md) · [公开 Tool 契约](tool_contracts.md) · [Mutation readiness](mutation_readiness_and_call_design.md)
 
 ## 1. 定位与依赖方向
@@ -483,5 +483,49 @@ move_page, move_section, move_section_group
 ## 9. 验证边界
 
 自动化合同必须覆盖 Registry 精确 inventory、五类 Strategy、policy 在 backend execute 前拒绝、generation 只失效一次、异常和取消释放 lease、029 outcome 组合、content-free audit、Sync/Navigate/Publish 语义，以及公开 adapter 无 Service/Bridge 旁路。
+
+## 9. 本地 Debug Trace（可选，默认关闭）
+
+持久 debug trace 由 `LOCAL_ONENOTE_MCP_DEBUG_TRACE` 与 `LOCAL_ONENOTE_MCP_DEBUG_DIR` 控制，在 [`debug_trace.py`](../../src/local_onenote_mcp/debug_trace.py) 中集中实现：配置解析、事件词汇、参数/错误脱敏投影、JSONL writer 与 `status()` 快照。这不是遥测，不改变 mutation 授权。记录与 `health_check.debug_trace` 均不暴露 schema version。
+
+### 所有权与依赖
+
+- `OperationRuntime.execute()` 以 `with tracer.call(...) as span` 拥有完整 trace 生命周期；`tools/responses.invoke()` 不感知 trace。
+- Runtime 只调用 Span 的固定语义方法（`validated`、`authorized`、`authorization_rejected`、`platform_preflight_started|completed|failed`、`handler_started`、`finalizing`、`backend_dispatched`、`finish`），不知道持久化 event 字符串或 JSON 字段名。
+- `TraceSink`/`TraceSpan` Protocol 与 `_NullTraceSink` 定义在 `operation_runtime.py`；生产实现为 `DebugTracer`/`DebugTraceSpan`。
+- `execution_context.py` 仅承载 correlation ID，供 bridge audit 可选对账；bridge 不 import `debug_trace`。
+- `classify_error()` 在 `services/errors.py`，供 `caught()` 与 trace 错误投影共用。
+
+### 事件语义
+
+JSONL 按插入顺序落盘，不再字母序排序。Tool 生命周期行前缀为 `tool_call_id`、`tool`、`recorded_at`、`elapsed_seconds`、`event`、`correlation_id`；其余字段按事件出现。Backend 行是独立记录形状，不含 `event`，前缀为 `backend_call_id`、`operation`、`tool_call_id`、`tool`、`recorded_at`、`elapsed_seconds`，随后是 `backend_category` 与 `correlation_id`。
+
+`tool_call_id` 是 session 内单调递增的整数；`backend_call_id` 在每个 tool call 内从 1 递增；`correlation_id` 继续用于与 bridge audit 跨文件对账。不再逐行重复 `runtime_stage`、累计 `backend_calls`、`attempts`、`replayed` 或 `content_exposed`。
+
+| 记录 | 生产者 | 附加字段 / 语义 |
+| --- | --- | --- |
+| `tool_call.entered` | Span 进入 | `operation_kind`、`operation_strategy`。Runtime 已接收并成功 resolve 到注册 `OperationSpec` 的公开调用 |
+| `tool_call.validated` | Runtime | `argument_shape`（键集合、类型名、集合长度、是否 `None`；**不**记录 optional 是否由调用者显式提供） |
+| `tool_call.authorized` / `tool_call.authorization_rejected` | Runtime | 后者附稳定脱敏 `error` |
+| `tool_call.platform_preflight_started` / `completed` / `failed` | Runtime | 仅 `platform_preflight_policy != "none"` |
+| `tool_call.handler_started` | Strategy | 取得 coordination lease 后 |
+| backend 行 | `record_backend_call` | `backend_call_id`（每个 tool call 从 1 起）、固定内部 `operation`（bridge 操作名或 `filesystem:*`）、`backend_category`。表示一次 backend 调用已登记并即将发出，不表示成功。`filesystem:` 前缀映射 FILESYSTEM，其余回退 spec.backend |
+| `tool_call.finalizing` | Runtime | finalize 前 |
+| `tool_call.completed` / `tool_call.failed` | Runtime 显式 `finish(outcome)` | 每次调用恰好一个终态；`outcome_stage`、`observed_outcome`、`retry_safety` 与 `summary.backend_call_count|attempts|replayed`；失败另附 `error`。`observed_outcome`/`retry_safety` 经固定 allowlist 投影，未命中写 `unspecified`；**不**写入 `recommended_action` |
+| `tool_call.cancelled` | Span `__exit__` 兜底 | 未被 Runtime 转换的 BaseException；附 `summary`；原样继续抛出 |
+
+第一版**不定义** `rejected` 事件（FastMCP schema rejection 到不了 Runtime；policy 拒绝已有 `tool_call.authorization_rejected`）。
+
+`platform_preflight_*` 事件仅在 `OperationSpec.platform_preflight_policy != "none"` 时产生；no-op preflight 仍执行但不记 trace。
+
+`tool_call.finalizing` 由 Strategy 在切换到 `FINALIZE` 后、调用 `runtime.finalizer()` **之前**发出，不在 Runtime 返回后重复通知。
+
+公开 MCP response 的 `execution.backend_calls` 仍由 `record_backend_call()` 计数，与 trace 终态 `summary.backend_call_count` 同源，但中间事件不再回放累计值。
+
+### 非抛出合同与失败语义
+
+`TraceSink`/`TraceSpan` 是内部 non-throwing 接口：生产实现在模块内隔离普通 `Exception`（序列化/I-O 失败→停止本 session 落盘 + 单次 stderr 诊断），绝不捕获 `KeyboardInterrupt`/`SystemExit`/`CancelledError`。trace 写入失败不重放、不回滚已发生的 OneNote operation。
+
+启用时，未设置 `LOCAL_ONENOTE_MCP_DEBUG_DIR` 会使用 `Path.home() / ".onenote-mcp" / "debug-trace"`；显式配置的输出目录或该默认目录不存在时，启动期会尝试创建目录及缺失父目录。相对路径、显式空值、reparse point、非目录或创建失败仍 fail closed。随后以 `O_CREAT|O_EXCL` 独占创建正式 session JSONL 文件作为可写性验证；关闭时只读取 env 字符串，不 stat 或创建目录。Writer 容量检查、写入与计数在同一锁内完成；停止/容量耗尽/写入失败路径幂等 flush/close 句柄。`health_check.debug_trace` 投影 `enabled`、`output_configured`、`writable`，不含完整路径，也不含 schema version。
 
 真实 OneNote 验证保持 HUMAN-GATED。Agent 只能运行 pytest 和带 `--dry-run` 的 manual-validation 命令。Copy/Move 使用七个具名场景的 fresh/cache 输入；`onenote-convergence` 覆盖 mutation/Close，并同时验证 Sync accepted-not-completed、一个 run-scoped Publish 文件结果及 Navigate action accepted。真实结果只有用户执行并确认后才可记录为通过。

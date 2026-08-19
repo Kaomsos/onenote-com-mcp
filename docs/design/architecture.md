@@ -84,6 +84,8 @@ src/local_onenote_mcp/
 │  ├─ models.py              Page 格式化内部块模型
 │  └─ __init__.py            Page 子系统 facade
 ├─ bridge.py                 PowerShell/COM infrastructure adapter
+├─ debug_trace.py            可选本地 Runtime debug trace（JSONL、content-free）
+├─ execution_context.py      单次 execution 的 correlation ID carrier
 ├─ onenote_errors.py         typed HRESULT/backend errors
 ├─ policy.py                 MutationPolicy 与 SearchBudget
 ├─ settings.py               server 名称、超时和文本长度配置

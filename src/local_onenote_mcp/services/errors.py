@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from typing import Any
+
+from ..onenote_errors import OneNoteError
 
 
 class PartialFailure(RuntimeError):
@@ -149,3 +152,129 @@ class MutationPreflightFailure(ValueError):
     def __init__(self, message: str, **details: Any) -> None:
         super().__init__(message)
         self.details = details
+
+
+_ALLOWED_ERROR_TYPES = frozenset(
+    {
+        "MutationPreflightFailure",
+        "MutationFailure",
+        "PartialFailure",
+        "PermissionError",
+        "ValueError",
+        "TimeoutError",
+        "RuntimeError",
+        "OneNoteError",
+        "OneNoteBridgeError",
+        "OneNoteModalUIBlockedError",
+        "OneNoteNotYetSynchronizedError",
+        "OneNoteOperationTimeoutError",
+        "OneNoteObjectUnavailableError",
+        "OneNoteFileUnavailableError",
+        "OneNoteConvergenceTimeoutError",
+        "OneNoteCoordinationTimeoutError",
+        "OneNoteDesktopNotRunningError",
+        "OneNoteDesktopProbeError",
+        "OneNoteDesktopExecutableError",
+        "OneNoteDesktopLaunchError",
+        "OneNoteDesktopLaunchTimeoutError",
+        "OneNoteDesktopWindowUnavailableError",
+        "PageReadbackMismatch",
+        "PageTitleReadbackMismatch",
+        "PageRichTextReadbackMismatch",
+        "PageListReadbackMismatch",
+        "PageTagReadbackMismatch",
+        "PageTableReadbackMismatch",
+        "PageOutlineReadbackMismatch",
+        "PageImageReadbackMismatch",
+        "PageInsertedFileReadbackMismatch",
+        "PageFileAttachmentReadbackMismatch",
+        "PageMediaFileReadbackMismatch",
+        "PageDisplayEquationReadbackMismatch",
+        "PageInkDrawingReadbackMismatch",
+        "PageUIShapeReadbackMismatch",
+        "PageUnknownContentReadbackMismatch",
+        "PageMixedContentReadbackMismatch",
+    }
+)
+
+
+@dataclass(frozen=True)
+class ErrorClassification:
+    code: str
+    error_type: str
+    partial: bool = False
+    indeterminate: bool = False
+    retry_safe: bool = False
+
+
+def _allowlisted_error_type(exc: Exception) -> str:
+    name = type(exc).__name__
+    if name in _ALLOWED_ERROR_TYPES:
+        return name
+    if isinstance(exc, PartialFailure):
+        return "PartialFailure"
+    if isinstance(exc, OneNoteError):
+        return "OneNoteError"
+    return "RuntimeError"
+
+
+def _retry_safe_from_details(details: Mapping[str, Any]) -> bool:
+    retryability = details.get("retryability") or details.get("retry_safety")
+    if isinstance(retryability, str):
+        return retryability in {"not_needed", "safe_to_retry", "after_user_action"}
+    return False
+
+
+def classify_error(exc: Exception) -> ErrorClassification:
+    """Map an exception to a stable, content-free error classification."""
+
+    if isinstance(exc, MutationPreflightFailure):
+        details = exc.details if isinstance(exc.details, Mapping) else {}
+        return ErrorClassification(
+            code=exc.code,
+            error_type=_allowlisted_error_type(exc),
+            partial=bool(details.get("partial", False)),
+            indeterminate=bool(details.get("indeterminate", False)),
+            retry_safe=_retry_safe_from_details(details),
+        )
+    if isinstance(exc, MutationFailure):
+        details = exc.details if isinstance(exc.details, Mapping) else {}
+        return ErrorClassification(
+            code=exc.code,
+            error_type=_allowlisted_error_type(exc),
+            partial=bool(details.get("partial", False)),
+            indeterminate=bool(details.get("indeterminate", False)),
+            retry_safe=_retry_safe_from_details(details),
+        )
+    if isinstance(exc, PartialFailure):
+        details = exc.details if isinstance(exc.details, Mapping) else {}
+        return ErrorClassification(
+            code="partial_failure",
+            error_type=_allowlisted_error_type(exc),
+            partial=True,
+            indeterminate=bool(details.get("indeterminate", False)),
+            retry_safe=False,
+        )
+    if isinstance(exc, OneNoteError):
+        details = exc.public_details()
+        return ErrorClassification(
+            code=exc.code,
+            error_type=_allowlisted_error_type(exc),
+            partial=bool(details.get("partial", False)),
+            indeterminate=bool(details.get("indeterminate", False)),
+            retry_safe=_retry_safe_from_details(details),
+        )
+    if isinstance(exc, PermissionError):
+        return ErrorClassification(
+            code="policy_disabled",
+            error_type="PermissionError",
+        )
+    if isinstance(exc, ValueError):
+        return ErrorClassification(
+            code="validation_error",
+            error_type="ValueError",
+        )
+    return ErrorClassification(
+        code="backend_error",
+        error_type=_allowlisted_error_type(exc),
+    )

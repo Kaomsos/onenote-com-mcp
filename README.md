@@ -58,7 +58,7 @@ Add the server to your MCP client. Claude Desktop or Cursor (`mcpServers` JSON):
 }
 ```
 
-All seven authorization gates (`Create`, `Writes`, `Deletes`, `Organize`, `Local File IO`, `UI Control`, `Notebook Lifecycle`) default to `false`; enable only what you need and restart the MCP client after changing configuration. Start each session with `health_check`, which never launches OneNote.
+All seven authorization gates (`Create`, `Writes`, `Deletes`, `Organize`, `Local File IO`, `UI Control`, `Notebook Lifecycle`) default to `false`; enable only what you need and restart the MCP client after changing configuration. Start each session with `health_check`, which never launches OneNote. Optional local debug trace (`LOCAL_ONENOTE_MCP_DEBUG_TRACE` + `LOCAL_ONENOTE_MCP_DEBUG_DIR`) is off by default and is not telemetry — see [configuration](docs-public/en/user-guide/configuration.md#local-debug-trace-optional-off-by-default).
 
 Full setup, TOML client examples, every environment variable, and the complete tool catalog live in the user guide:
 

@@ -58,7 +58,7 @@ uv run pytest
 }
 ```
 
-七个授权门（`Create`、`Writes`、`Deletes`、`Organize`、`Local File IO`、`UI Control`、`Notebook Lifecycle`）全部默认 `false`；只开启你需要的，改完配置后重启 MCP 客户端。每个会话先调用 `health_check`，它绝不会启动 OneNote。
+七个授权门（`Create`、`Writes`、`Deletes`、`Organize`、`Local File IO`、`UI Control`、`Notebook Lifecycle`）全部默认 `false`；只开启你需要的，改完配置后重启 MCP 客户端。每个会话先调用 `health_check`，它绝不会启动 OneNote。可选的本地 debug trace（`LOCAL_ONENOTE_MCP_DEBUG_TRACE` + `LOCAL_ONENOTE_MCP_DEBUG_DIR`）默认关闭且不是遥测——见[配置文档](docs-public/zh-CN/user-guide/configuration.md#本地-debug-trace可选默认关闭)。
 
 完整的安装步骤、TOML 客户端示例、全部环境变量和完整工具目录见使用文档：
 

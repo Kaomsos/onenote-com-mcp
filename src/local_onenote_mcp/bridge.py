@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .execution_context import current_correlation_id
 from .onenote_errors import OneNoteBridgeError, OneNoteError, bridge_error
 
 
@@ -347,6 +348,9 @@ class OneNoteBridge:
                 "ok": succeeded,
                 "operation": operation,
             }
+            correlation_id = current_correlation_id()
+            if correlation_id is not None:
+                record["correlation_id"] = correlation_id
             if failure is not None:
                 record.update(
                     {

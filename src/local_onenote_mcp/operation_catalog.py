@@ -35,6 +35,7 @@ from .services.operation_runtime import (
     OperationSpec,
     STRATEGIES,
 )
+from .debug_trace import disabled_trace_status
 from .settings import MCP_NAME
 from .tool_surface import (
     INTERNAL_CAPABILITIES,
@@ -284,8 +285,15 @@ def _mutation_policy(
     )
 
 
-def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
+def build_operation_registry(
+    services: ServiceContainer,
+    *,
+    trace_status: Mapping[str, Any] | None = None,
+) -> OperationRegistry:
     registry = OperationRegistry()
+    resolved_trace_status = (
+        dict(trace_status) if trace_status is not None else disabled_trace_status()
+    )
 
     def add(
         name: str,
@@ -359,7 +367,7 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
     add(
         "health_check",
         **read,
-        handler=lambda _a: _health_snapshot(services, registry),
+        handler=lambda _a: _health_snapshot(services, registry, resolved_trace_status),
         handler_id="system.health_snapshot",
         cache="live_bypass",
     )
@@ -857,7 +865,9 @@ def build_operation_registry(services: ServiceContainer) -> OperationRegistry:
 
 
 def _health_snapshot(
-    services: ServiceContainer, registry: OperationRegistry
+    services: ServiceContainer,
+    registry: OperationRegistry,
+    trace_status: Mapping[str, Any],
 ) -> dict[str, Any]:
     policy = MutationPolicy.current()
     desktop = require_onenote_desktop(
@@ -913,6 +923,7 @@ def _health_snapshot(
             "advanced_operations": len(registry.names_for_profile("advanced")),
             "content_free_audit": True,
         },
+        "debug_trace": dict(trace_status),
         "tool_surface": {
             "profile": "user",
             "categories": {

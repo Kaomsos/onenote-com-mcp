@@ -49,7 +49,8 @@
 | 041 | [统一 Interactive Bootstrap 与 Scenario 验证流程](041_unified_interactive_bootstrap_scenario_flow.md)                  | 已完成 | P1     | 七个 `interactive-<operation>` 单入口及 fresh/cache 编排已交付；用户确认 Interactive Copy 配对和代表性 Move 的 bootstrap/fixture、cache lossless Move 真实验收通过。 |
 | 042 | [PyPI 发布准备与 uvx 调用入口](042_pypi_release_uvx_entrypoint.md)                                                      | 待办   | P1     | 准备包元数据（随 023 切换 GPL）、构建产物审计、TestPyPI 演练与 `uvx local-onenote-mcp` 双语安装文档；正式上传由用户执行并以 TODO 023 公开硬门为前置。                        |
 | 043 | [Copy/Move 目标创建与修改时间保真](043_copy_move_source_timestamp_fidelity.md)                                        | 待办   | P1     | 保留为未来开放方向，不是当前产品承诺；如重新启动，须先作产品决策并建立各资源类型 COM 时间字段可写能力矩阵。                                                               |
-| 044 | [MCP Runtime 本地 Debug Trace 与工具调用埋点](044_mcp_runtime_debug_tracing.md)                                        | 待办   | P1     | 环境变量控制默认关闭的本地 Runtime trace 和输出目录，记录工具调用接收、准入、执行、backend progress 与完成阶段，同时保持 content-free、无遥测和有界文件合同。             |
+| 044 | [MCP Runtime 本地 Debug Trace 与工具调用埋点](044_mcp_runtime_debug_tracing.md)                                        | 进行中 | P1     | 已实现 env 控制、Runtime per-call Span、JSONL writer 与 content-free 事件埋点（`tool_call.*` + `operation` backend 行）；待用户本地 smoke 确认。             |
+| 045 | [Copy/Move 回读 Snapshot 效率与快速验证模式](045_copy_move_readback_snapshot_efficiency.md)                           | 待办   | P1     | 规划 operation-local 完整 snapshot 复用、content-free readback 调用预算与显式 fast 验证；默认 strict 保真不降级，fast Move 删源须单独产品决策与真实证据。 |
 
 ## 文件命名
 

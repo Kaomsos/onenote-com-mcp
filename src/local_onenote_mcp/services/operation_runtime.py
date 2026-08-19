@@ -14,7 +14,9 @@ from enum import StrEnum
 import time
 from types import MappingProxyType
 from typing import Any, Protocol
+import uuid
 
+from ..execution_context import reset_correlation_id, set_correlation_id
 from .coordination import ReadWriteCoordinator
 
 
@@ -152,6 +154,122 @@ class OperationExecution:
     observed_outcome: str = "not_observed"
     retry_safety: str = "new_call_required"
     recommended_action: str = "inspect_error_and_retry_only_if_safe"
+    trace_span: "TraceSpan" = field(default_factory=lambda: _NULL_TRACE_SPAN)
+
+
+class TraceSpan(Protocol):
+    def validated(self, execution: OperationExecution) -> None: ...
+
+    def authorized(self, execution: OperationExecution) -> None: ...
+
+    def authorization_rejected(
+        self, execution: OperationExecution, exc: Exception
+    ) -> None: ...
+
+    def platform_preflight_started(self, execution: OperationExecution) -> None: ...
+
+    def platform_preflight_completed(self, execution: OperationExecution) -> None: ...
+
+    def platform_preflight_failed(self, execution: OperationExecution) -> None: ...
+
+    def handler_started(self, execution: OperationExecution) -> None: ...
+
+    def finalizing(self, execution: OperationExecution) -> None: ...
+
+    def backend_dispatched(
+        self,
+        execution: OperationExecution,
+        category: BackendCategory,
+        *,
+        operation: str,
+    ) -> None: ...
+
+    def finish(self, outcome: "OperationOutcome") -> None: ...
+
+    def __enter__(self) -> "TraceSpan": ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> bool: ...
+
+
+class TraceSink(Protocol):
+    def call(
+        self,
+        *,
+        correlation_id: str,
+        spec: OperationSpec,
+        arguments: Mapping[str, Any],
+    ) -> TraceSpan: ...
+
+
+class _NullTraceSpan:
+    def validated(self, execution: OperationExecution) -> None:
+        return None
+
+    def authorized(self, execution: OperationExecution) -> None:
+        return None
+
+    def authorization_rejected(
+        self, execution: OperationExecution, exc: Exception
+    ) -> None:
+        return None
+
+    def platform_preflight_started(self, execution: OperationExecution) -> None:
+        return None
+
+    def platform_preflight_completed(self, execution: OperationExecution) -> None:
+        return None
+
+    def platform_preflight_failed(self, execution: OperationExecution) -> None:
+        return None
+
+    def handler_started(self, execution: OperationExecution) -> None:
+        return None
+
+    def finalizing(self, execution: OperationExecution) -> None:
+        return None
+
+    def backend_dispatched(
+        self,
+        execution: OperationExecution,
+        category: BackendCategory,
+        *,
+        operation: str,
+    ) -> None:
+        return None
+
+    def finish(self, outcome: "OperationOutcome") -> None:
+        return None
+
+    def __enter__(self) -> "_NullTraceSpan":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: Any,
+    ) -> bool:
+        return False
+
+
+class _NullTraceSink:
+    def call(
+        self,
+        *,
+        correlation_id: str,
+        spec: OperationSpec,
+        arguments: Mapping[str, Any],
+    ) -> TraceSpan:
+        return _NULL_TRACE_SPAN
+
+
+_NULL_TRACE_SPAN = _NullTraceSpan()
+_DEFAULT_TRACE_SINK = _NullTraceSink()
 
 
 @dataclass(frozen=True)
@@ -293,12 +411,19 @@ _CURRENT_EXECUTION: ContextVar[OperationExecution | None] = ContextVar(
 )
 
 
-def record_backend_call(_backend_operation: str) -> None:
+def record_backend_call(backend_operation: str) -> None:
     """Count a backend call without retaining its arguments or payload."""
 
     execution = _CURRENT_EXECUTION.get()
     if execution is not None:
         execution.backend_calls += 1
+        if backend_operation.startswith("filesystem:"):
+            category = BackendCategory.FILESYSTEM
+        else:
+            category = execution.backend
+        execution.trace_span.backend_dispatched(
+            execution, category, operation=backend_operation
+        )
 
 
 def _safe_steps(value: Any) -> list[dict[str, Any]]:
@@ -334,6 +459,7 @@ class _BaseStrategy:
         execution.stage = OperationStage.COORDINATION
         scope = runtime.coordination_scope(spec.coordination, timeout_seconds)
         with scope:
+            execution.trace_span.handler_started(execution)
             execution.generation_after = runtime.coordinator.generation
             for stage in self.stages:
                 execution.stage = stage
@@ -344,6 +470,7 @@ class _BaseStrategy:
                         )
                     result = binding.handler(arguments)
             execution.stage = OperationStage.FINALIZE
+            execution.trace_span.finalizing(execution)
             runtime.finalizer(execution)
             return result
 
@@ -419,12 +546,14 @@ class OperationRuntime:
         clock: Callable[[], float] = time.monotonic,
         finalizer: Callable[[OperationExecution], None] | None = None,
         audit_limit: int = 256,
+        tracer: TraceSink | None = None,
     ) -> None:
         self.registry = registry
         self.coordinator = coordinator
         self.clock = clock
         self.finalizer = finalizer or (lambda _execution: None)
         self._audit: deque[dict[str, Any]] = deque(maxlen=audit_limit)
+        self._tracer = tracer or _DEFAULT_TRACE_SINK
 
     @property
     def audit_events(self) -> tuple[Mapping[str, Any], ...]:
@@ -448,62 +577,94 @@ class OperationRuntime:
     ) -> OperationOutcome:
         binding = self.registry.resolve(operation)
         spec = binding.spec
+        correlation_id = str(uuid.uuid4())
+        correlation_token = set_correlation_id(correlation_id)
         started = self.clock()
         timeout = (
             self.coordinator.default_timeout_seconds
             if timeout_seconds is None
             else float(timeout_seconds)
         )
-        execution = OperationExecution(
-            operation=operation,
-            kind=spec.kind,
-            backend=spec.backend,
-            stage=OperationStage.ADMISSION,
-            started_monotonic=started,
-            deadline_monotonic=started + timeout,
-            generation_before=self.coordinator.generation,
-            generation_after=self.coordinator.generation,
-        )
-        token: Token[OperationExecution | None] = _CURRENT_EXECUTION.set(execution)
         safe_arguments = MappingProxyType(dict(arguments))
-        data: dict[str, Any] | None = None
-        error: Exception | None = None
-        try:
-            execution.stage = OperationStage.AUTHORIZATION
-            binding.authorizer(safe_arguments)
-            execution.stage = OperationStage.PLATFORM_PREFLIGHT
-            binding.platform_preflight(safe_arguments)
-            data = binding.strategy.execute(
-                self, binding, execution, safe_arguments, timeout_seconds
-            )
-            self._absorb_result(execution, data)
-            execution.stage = OperationStage.FINALIZE
-        except Exception as exc:
-            error = exc
-            self._absorb_error(execution, exc)
-        finally:
-            execution.generation_after = self.coordinator.generation
-            _CURRENT_EXECUTION.reset(token)
-        outcome = OperationOutcome(
-            operation=operation,
-            success=error is None,
-            stage=execution.stage,
-            kind=spec.kind,
-            backend=spec.backend,
-            data=MappingProxyType(data) if data is not None else None,
-            error=error,
-            attempts=execution.attempts,
-            replayed=execution.replayed,
-            backend_calls=execution.backend_calls,
-            completed_steps=tuple(MappingProxyType(step) for step in execution.completed_steps),
-            observed_outcome=execution.observed_outcome,
-            retry_safety=execution.retry_safety,
-            recommended_action=execution.recommended_action,
-            generation_before=execution.generation_before,
-            generation_after=execution.generation_after,
+        span = self._tracer.call(
+            correlation_id=correlation_id,
+            spec=spec,
+            arguments=safe_arguments,
         )
-        self._audit.append(outcome.public_execution())
-        return outcome
+        try:
+            with span:
+                execution = OperationExecution(
+                    operation=operation,
+                    kind=spec.kind,
+                    backend=spec.backend,
+                    stage=OperationStage.ADMISSION,
+                    started_monotonic=started,
+                    deadline_monotonic=started + timeout,
+                    generation_before=self.coordinator.generation,
+                    generation_after=self.coordinator.generation,
+                    trace_span=span,
+                )
+                token: Token[OperationExecution | None] = _CURRENT_EXECUTION.set(
+                    execution
+                )
+                data: dict[str, Any] | None = None
+                error: Exception | None = None
+                try:
+                    span.validated(execution)
+                    execution.stage = OperationStage.AUTHORIZATION
+                    try:
+                        binding.authorizer(safe_arguments)
+                        span.authorized(execution)
+                    except PermissionError as exc:
+                        span.authorization_rejected(execution, exc)
+                        raise
+                    execution.stage = OperationStage.PLATFORM_PREFLIGHT
+                    if spec.platform_preflight_policy != "none":
+                        span.platform_preflight_started(execution)
+                        try:
+                            binding.platform_preflight(safe_arguments)
+                            span.platform_preflight_completed(execution)
+                        except Exception:
+                            span.platform_preflight_failed(execution)
+                            raise
+                    else:
+                        binding.platform_preflight(safe_arguments)
+                    data = binding.strategy.execute(
+                        self, binding, execution, safe_arguments, timeout_seconds
+                    )
+                    self._absorb_result(execution, data)
+                    execution.stage = OperationStage.FINALIZE
+                except Exception as exc:
+                    error = exc
+                    self._absorb_error(execution, exc)
+                finally:
+                    execution.generation_after = self.coordinator.generation
+                    _CURRENT_EXECUTION.reset(token)
+                outcome = OperationOutcome(
+                    operation=operation,
+                    success=error is None,
+                    stage=execution.stage,
+                    kind=spec.kind,
+                    backend=spec.backend,
+                    data=MappingProxyType(data) if data is not None else None,
+                    error=error,
+                    attempts=execution.attempts,
+                    replayed=execution.replayed,
+                    backend_calls=execution.backend_calls,
+                    completed_steps=tuple(
+                        MappingProxyType(step) for step in execution.completed_steps
+                    ),
+                    observed_outcome=execution.observed_outcome,
+                    retry_safety=execution.retry_safety,
+                    recommended_action=execution.recommended_action,
+                    generation_before=execution.generation_before,
+                    generation_after=execution.generation_after,
+                )
+                span.finish(outcome)
+                self._audit.append(outcome.public_execution())
+                return outcome
+        finally:
+            reset_correlation_id(correlation_token)
 
     @staticmethod
     def _absorb_result(execution: OperationExecution, result: Mapping[str, Any]) -> None:

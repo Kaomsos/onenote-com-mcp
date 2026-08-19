@@ -6,6 +6,7 @@ from typing import Any
 
 from ..onenote_errors import OneNoteError
 from ..services import MutationFailure, MutationPreflightFailure, PartialFailure
+from ..services.errors import classify_error
 
 
 def ok(**data: Any) -> dict[str, Any]:
@@ -40,30 +41,30 @@ def caught(
     exc: Exception, *, execution: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     runtime_details = {"execution": execution} if execution is not None else {}
+    classification = classify_error(exc)
     if isinstance(exc, MutationPreflightFailure):
         details = dict(exc.details)
-        details.setdefault("error_type", type(exc).__name__)
-        return error(str(exc), exc.code, **details, **runtime_details)
+        details.setdefault("error_type", classification.error_type)
+        return error(str(exc), classification.code, **details, **runtime_details)
     if isinstance(exc, MutationFailure):
         details = dict(exc.details)
-        details.setdefault("error_type", type(exc).__name__)
-        return error(str(exc), exc.code, **details, **runtime_details)
+        details.setdefault("error_type", classification.error_type)
+        return error(str(exc), classification.code, **details, **runtime_details)
     if isinstance(exc, PartialFailure):
         details = dict(exc.details)
-        details.setdefault("error_type", type(exc).__name__)
+        details.setdefault("error_type", classification.error_type)
         details.setdefault("partial", True)
         details.setdefault("reconciliation", "partially_applied")
         details.setdefault("retryability", "manual_recovery_required")
-        return error(str(exc), "partial_failure", **details, **runtime_details)
+        return error(str(exc), classification.code, **details, **runtime_details)
     if isinstance(exc, OneNoteError):
-        return error(str(exc), exc.code, **exc.public_details(), **runtime_details)
-    if isinstance(exc, PermissionError):
-        code = "policy_disabled"
-    elif isinstance(exc, ValueError):
-        code = "validation_error"
-    else:
-        code = "backend_error"
-    return error(str(exc), code, **runtime_details)
+        return error(
+            str(exc),
+            classification.code,
+            **exc.public_details(),
+            **runtime_details,
+        )
+    return error(str(exc), classification.code, **runtime_details)
 
 
 def invoke(

@@ -76,6 +76,8 @@ Notes:
 | --- | --- | --- |
 | `LOCAL_ONENOTE_MCP_TIMEOUT` | — | Per-operation bridge timeout in seconds (e.g. `90`) |
 | `LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS` | — | Bound on returned text size (e.g. `60000`) |
+| `LOCAL_ONENOTE_MCP_DEBUG_TRACE` | `false` | Enable local-only Runtime debug trace JSONL (strict boolean) |
+| `LOCAL_ONENOTE_MCP_DEBUG_DIR` | `~/.onenote-mcp/debug-trace` | Optional absolute output directory for session JSONL files. When unset, the server uses and creates this user-local default. Does not authorize any mutation. |
 | `LOCAL_ONENOTE_MARKDIG_DLL` | auto-detect | Explicit path to OneMore's `Markdig.Signed.dll` for Markdown compilation |
 
 ## Batch mutation budgets
@@ -89,6 +91,35 @@ Batch mutation has an independent, content-free budget, projected by `health_che
 - `LOCAL_ONENOTE_MAX_BATCH_PAGE_CONTENT_CHARS`
 
 Unrelated objects found in the catalog do not consume the effective target budget.
+
+## Local debug trace (optional, off by default)
+
+This is **not telemetry**. When enabled, the MCP process writes content-free JSONL to a directory you choose. It records tool-call lifecycle events (`tool_call.entered` … `completed`/`failed`/`cancelled`) separately from outbound backend rows that name the internal `operation`, plus stable error codes and a terminal backend-call summary — never raw arguments, Page content, object IDs, secrets, or full paths.
+
+```json
+{
+  "env": {
+    "LOCAL_ONENOTE_MCP_DEBUG_TRACE": "true",
+    "LOCAL_ONENOTE_MCP_DEBUG_DIR": "C:\\\\Users\\\\you\\\\local-onenote-debug"
+  }
+}
+```
+
+Rules:
+
+- `LOCAL_ONENOTE_MCP_DEBUG_TRACE=true` is sufficient: when `LOCAL_ONENOTE_MCP_DEBUG_DIR` is unset, the server creates and uses the user-local default shown above. An explicit directory must be absolute; missing parents are created, while empty/relative paths, reparse points, non-directories, or paths it cannot create fail at startup.
+- Trace off means zero directory creation and zero file writes, even if `LOCAL_ONENOTE_MCP_DEBUG_DIR` is set.
+- Restart the MCP client after changing trace settings.
+- Session files are bounded; review before sharing — they contain tool names and timing metadata.
+- `health_check.debug_trace` reports `enabled` and whether output is configured/writable (no full path).
+
+Local smoke (no real OneNote mutation required):
+
+```powershell
+$env:LOCAL_ONENOTE_MCP_DEBUG_TRACE = "true"
+$env:LOCAL_ONENOTE_MCP_DEBUG_DIR = "C:\Users\you\local-onenote-debug"
+# restart MCP, then call health_check, a read tool, and a policy-rejected mutation tool
+```
 
 ## Choosing a permission profile
 
