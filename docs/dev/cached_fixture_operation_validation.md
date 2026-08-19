@@ -37,6 +37,7 @@ Scenario/Recipe/cache/lifecycle 的设计原理与架构不变量以[Manual Vali
 
 - Programmatic recipe 的 cold path 必须先在 fresh disposable bundle 上完成 live validation，精确关闭后才能 opaque-copy 并发布 immutable template。
 - Interactive/UserAuthored recipe 由统一 `interactive-<operation>` 入口承载。Fresh 路径在同一次 run 的 bootstrap 阶段完成 human-gated authoring；用户编辑后先运行 detector 和边界 validator，再决定发布 `ready` 或仅保留 `evidence_only`。`--use-cache` 路径跳过 bootstrap，只 materialize 已有 ready template。
+- 若 fixture 必须保留无法在 canvas 上重建的整页状态，使用专用 `interactive-move-page` v3：source scaffold 的 intake Section 必须为空，用户只通过 OneNote UI 转入一个 disposable root-leaf Page，Recipe 再把唯一声明的 placeholder key 重绑定到该新 ID，并与独立 destination Section/anchor 一起发布双 Notebook template。不得接受外部 Notebook/Page ID、任意路径或按标题选择；placeholder/marker 变化、多 Page、子页、缺少正文 revision marker、投影不完整或 unknown capability 均在发布前 fail closed。该 Recipe 显式开启敏感本地 evidence，逐 marker 保存原始作者/initials/resolution ID 值及 SHA-256，并在 artifact 中标明暴露边界；其他 Recipe 默认 hash-only。物化后只对 working source 调用一次公开 `move_page(include_subpages=false)`；生产 lossless gate 通过后才允许非永久删源。moved target 的 revision marker 会被逐项比较并记录，但仅作敏感本地诊断，不阻断已通过生产 Move 门的场景继续进入人工验收。
 - Cache hit 必须 materialize 到本次 run 独有的 working paths，打开完整 hierarchy，记录 old→live ID 映射，并重新执行 live Recipe validation。
 - Cache template 永远不能由 OneNote 打开；运行中的 mutation 只能触及 working copy。
 - Recipe 内容、detector、结构门或 comparator 的输入合同变化时提升 recipe version，使旧 entry 不会命中新合同。

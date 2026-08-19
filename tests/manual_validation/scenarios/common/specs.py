@@ -1210,6 +1210,57 @@ SCENARIO_SPECS["interactive-user-authored-fixture"] = ScenarioSpec(
     {"interactive": True, "user_authored": True, "included_in_all": False},
 )
 
+_MOVE_PAGE_INTAKE_PROFILE = _profile(
+    "interactive-move-page",
+    (
+        "source: 00-System-Instructions/{00-Reserved-Marker-Do-Not-Edit,01-Whole-Page-Intake-Placeholder}",
+        "source: 01-Whole-Page-Intake/<one complete UI-moved Page>",
+        "destination: 01-Move-Destination/99-Destination-Anchor",
+    ),
+    (
+        "source_instructions_section",
+        "source_instructions_page",
+        "source_canvas_section",
+        "source_canvas_page",
+        "destination_section",
+        "destination_anchor",
+    ),
+    {"create_section", "create_page"},
+    content=("complete_ui_moved_page", "body_revision_markers"),
+    checks=(
+        "the reserved marker and scaffold placeholder remain unchanged",
+        "the imported Page is a new exact root leaf identity in the intake Section",
+        "the imported Page retains a complete supported projection and body revision markers",
+        "one production move_page call crosses the two disposable Notebook roles",
+        "the Copy-before-delete gate passes before non-permanent source deletion",
+        "the moved target revision-marker delta is recorded as sensitive local diagnostic evidence",
+    ),
+)
+
+SCENARIO_SPECS["interactive-move-page"] = ScenarioSpec(
+    "interactive-move-page",
+    _MOVE_PAGE_INTAKE_PROFILE,
+    MOVE_PAGE_POLICY,
+    frozenset(MOVE_PAGE_TOOLS | {"create_section", "create_page"}),
+    {
+        "interactive": True,
+        "whole_page_ui_intake": True,
+        "authored_identity_rebind": ["source_canvas_page"],
+        "requires_body_revision_markers": True,
+        "revision_marker_values_exposed": True,
+        "author_metadata_exposed": True,
+        "sensitive_evidence": True,
+        "revision_marker_comparison": "diagnostic_only",
+        "interactive_move_evidence": True,
+        "single_public_move_call": True,
+        "include_subpages": False,
+        "verified_copy_before_delete": True,
+        "cross_notebook_destination": True,
+        "move_source_deletion_allowed": True,
+        "included_in_all": False,
+    },
+)
+
 SCENARIO_SPECS["copy-display-equation"] = ScenarioSpec(
     "copy-display-equation",
     _profile(

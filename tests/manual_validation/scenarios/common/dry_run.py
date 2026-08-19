@@ -126,7 +126,10 @@ def build_isolated_dry_run_plan(
         ),
     }.get(
         args.scenario,
-        f"fixture profile {spec.fixture.name} and selected mutation",
+        str(
+            getattr(recipe, "dry_run_scenario_target", "")
+            or f"fixture profile {spec.fixture.name} and selected mutation"
+        ),
     )
     steps: list[dict[str, Any]] = [
         {
@@ -242,7 +245,10 @@ def build_isolated_dry_run_plan(
                 (
                     "fixed Page, Section, and SectionGroup Rename cases against stable rebound live IDs"
                     if args.scenario == "rename"
-                    else "selected mutation against only stable rebound live IDs"
+                    else str(
+                        getattr(recipe, "dry_run_scenario_target", "")
+                        or "selected mutation against only stable rebound live IDs"
+                    )
                 ),
             ),
         ]
@@ -252,12 +258,18 @@ def build_isolated_dry_run_plan(
                 args.scenario,
                 spec.policy,
                 set(spec.tool_allowlist),
-                f"programmatic scaffold for exact {getattr(recipe, 'capability', '')} Canvas",
+                str(
+                    getattr(recipe, "dry_run_scaffold_target", "")
+                    or f"programmatic scaffold for exact {getattr(recipe, 'capability', '')} Canvas"
+                ),
             ),
             {
                 "step": "interactive-checkpoint",
                 "trust_boundary": "run-bound user confirmation with bounded timeout",
-                "target": "exact disposable role/Canvas or authoring zone",
+                "target": str(
+                    getattr(recipe, "dry_run_checkpoint_target", "")
+                    or "exact disposable role/Canvas or authoring zone"
+                ),
                 "stdin_read_performed": False,
             },
             {

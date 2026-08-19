@@ -18,6 +18,7 @@ from tests.manual_validation.test_utils import (
     page_body_content_hash,
     page_content_hash,
     page_reparent_content_hash,
+    page_revision_marker_projection,
     page_semantic_content_identity,
     write_json,
     write_sensitive_page_xml,
@@ -322,6 +323,55 @@ def test_page_content_hash_ignores_root_hierarchy_metadata_but_detects_content_c
     assert page_content_hash(before) != page_content_hash(changed_object_id)
 
 
+def test_revision_marker_projection_is_body_scoped_content_free_and_value_sensitive() -> None:
+    first = (
+        '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
+        'ID="page" lastModifiedBy="page-owner"><one:Title><one:OE author="title-owner">'
+        '<one:T>secret title</one:T></one:OE></one:Title><one:Outline author="Alice" '
+        'authorInitials="AA"><one:OEChildren><one:OE lastModifiedBy="Bob">'
+        '<one:T>secret body</one:T></one:OE></one:OEChildren></one:Outline></one:Page>'
+    )
+    changed = first.replace('lastModifiedBy="Bob"', 'lastModifiedBy="Carol"')
+
+    projection = page_revision_marker_projection(first)
+    changed_projection = page_revision_marker_projection(changed)
+
+    assert projection["marker_count"] == 3
+    assert projection["attribute_counts"] == {
+        "author": 1,
+        "authorInitials": 1,
+        "lastModifiedBy": 1,
+    }
+    assert projection["node_counts"] == {"OE": 1, "Outline": 1}
+    assert projection["schema_version"] == 2
+    assert [marker["attribute"] for marker in projection["markers"]] == [
+        "author",
+        "authorInitials",
+        "lastModifiedBy",
+    ]
+    assert all("value" not in marker for marker in projection["markers"])
+    assert projection["marker_values_exposed"] is False
+    assert projection["author_metadata_exposed"] is False
+    assert projection["sensitive_evidence"] is False
+    assert projection["content_exposed"] is False
+    assert projection["sha256"] != changed_projection["sha256"]
+    assert "Alice" not in str(projection)
+    assert "secret" not in str(projection)
+
+    exposed = page_revision_marker_projection(first, expose_values=True)
+    assert [marker["value"] for marker in exposed["markers"]] == [
+        "Alice",
+        "AA",
+        "Bob",
+    ]
+    assert exposed["marker_values_exposed"] is True
+    assert exposed["author_metadata_exposed"] is True
+    assert exposed["sensitive_evidence"] is True
+    assert exposed["content_exposed"] is False
+    assert "secret title" not in str(exposed)
+    assert "secret body" not in str(exposed)
+
+
 def test_page_reparent_content_hash_allows_ids_and_tag_indices_but_keeps_rich_semantics() -> None:
     before = (
         '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
@@ -415,6 +465,18 @@ def test_capture_snapshot_refreshes_hierarchy_after_page_evidence() -> None:
     assert snapshot["page_semantic_content_identities"]["page"]["sha256"]
     assert snapshot["page_semantic_content_identities"]["page"]["persistence_sha256"]
     assert snapshot["page_semantic_content_identities"]["page"]["materialization_sha256"]
+    assert snapshot["page_revision_marker_projections"]["page"] == {
+        "schema_version": 2,
+        "marker_count": 0,
+        "attribute_counts": {},
+        "node_counts": {},
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+        "markers": [],
+        "marker_values_exposed": False,
+        "author_metadata_exposed": False,
+        "sensitive_evidence": False,
+        "content_exposed": False,
+    }
     assert snapshot["page_xml_hashes"]["page"]
     assert snapshot["page_capability_projections"]["page"] == {
         "schema_version": 4,

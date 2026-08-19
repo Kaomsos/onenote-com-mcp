@@ -35,6 +35,7 @@ PINNED_RECIPE_VERSIONS = {
     "interactive-copy-media-file": 8,
     "interactive-copy-ui-shape": 5,
     "interactive-user-authored-fixture": 4,
+    "interactive-move-page": 3,
     "interactive-move-page-content": 11,
     "copy-notebook": 3,
     "copy-page": 14,

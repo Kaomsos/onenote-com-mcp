@@ -62,6 +62,7 @@ SCENARIO_MODULES = {
     "interactive_copy_media_file": "InteractiveCopyMediaFileScenario",
     "interactive_copy_ui_shape": "InteractiveCopyUIShapeScenario",
     "interactive_copy_inline_equation": "InteractiveCopyInlineEquationScenario",
+    "interactive_move_page": "InteractiveMovePageScenario",
     "interactive_move_page_content": "InteractiveMovePageContentScenario",
     "interactive_user_authored_fixture": "InteractiveUserAuthoredFixtureScenario",
     "cache_invalidation": "CacheInvalidationScenario",

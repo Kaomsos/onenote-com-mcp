@@ -1172,17 +1172,30 @@ class BundleCacheStore:
                 raise RunnerFailure(
                     "User-authored cache publication requires the full projection digest."
                 )
-            expected_eligible = state == "ready"
+            ready = state == "ready"
             if mutation_eligible is None:
-                mutation_eligible = expected_eligible
+                mutation_eligible = ready
             if move_source_deletion_allowed is None:
-                move_source_deletion_allowed = expected_eligible
-            if (
-                mutation_eligible is not expected_eligible
-                or move_source_deletion_allowed is not expected_eligible
+                move_source_deletion_allowed = ready
+            if ready and mutation_eligible is not True:
+                raise RunnerFailure(
+                    "A ready user-authored cache instance must be mutation eligible."
+                )
+            if ready and (
+                move_source_deletion_allowed is not True
+                and move_source_deletion_allowed is not False
             ):
                 raise RunnerFailure(
-                    "User-authored cache eligibility must match its ready/evidence_only state."
+                    "A ready user-authored cache instance must have Boolean Move source "
+                    "deletion eligibility."
+                )
+            if not ready and (
+                mutation_eligible is not False
+                or move_source_deletion_allowed is not False
+            ):
+                raise RunnerFailure(
+                    "An evidence_only user-authored cache instance cannot be mutation "
+                    "eligible or allow Move source deletion."
                 )
         self._assert_fingerprint_identity(recipe.cache_fingerprint)
         final = self.instance_path(recipe.cache_fingerprint, instance_id)

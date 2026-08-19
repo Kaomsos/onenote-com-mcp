@@ -62,6 +62,7 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "copy-display-equation",
         "cache-invalidation",
         "interactive-user-authored-fixture",
+        "interactive-move-page",
         "interactive-copy-inserted-file",
         "interactive-copy-ink-drawing",
         "interactive-copy-media-file",

@@ -48,6 +48,7 @@
 | 040 | [Move 回读校验待解决问题](040_move_readback_validation_followups.md)                                                    | 已完成 | P0     | Page title/path segments、typed equivalence 与 Table 容差已交付；自动 path/Copy/Move fixture 真实回归通过，interactive Move 保持 bootstrap/cache consumer 约定，用户已批准关闭。 |
 | 041 | [统一 Interactive Bootstrap 与 Scenario 验证流程](041_unified_interactive_bootstrap_scenario_flow.md)                  | 已完成 | P1     | 七个 `interactive-<operation>` 单入口及 fresh/cache 编排已交付；用户确认 Interactive Copy 配对和代表性 Move 的 bootstrap/fixture、cache lossless Move 真实验收通过。 |
 | 042 | [PyPI 发布准备与 uvx 调用入口](042_pypi_release_uvx_entrypoint.md)                                                      | 待办   | P1     | 准备包元数据（随 023 切换 GPL）、构建产物审计、TestPyPI 演练与 `uvx local-onenote-mcp` 双语安装文档；正式上传由用户执行并以 TODO 023 公开硬门为前置。                        |
+| 043 | [Copy/Move 目标创建与修改时间保真](043_copy_move_source_timestamp_fidelity.md)                                        | 待办   | P1     | Copy/Move 在最后一次目标 mutation 后按 exact source→target 映射恢复 `created/modified` 并回读；时间失败必须阻止 Move 删源，且先建立各资源类型 COM 可写能力矩阵。          |
 
 ## 文件命名
 

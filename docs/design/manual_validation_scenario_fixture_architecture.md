@@ -95,7 +95,9 @@ Fixture 准备、working activation、ID rebind、双稳定、内容验证和 sc
 
 ## 8. Interactive 与 User-Authored Fixture
 
-Programmatic Recipe 可以在 cache miss 时自动构建 disposable template。Interactive/UserAuthored Recipe 由统一公开入口 `interactive-<operation>` 承载：fresh 路径在同一次 run 的 bootstrap 阶段完成 human-gated authoring、detection 与 immutable template 发布；`--use-cache` 路径确定性跳过 bootstrap，只 materialize 已验证为 ready、mutation-eligible 且 fingerprint 匹配的 template。Cache miss、歧义、evidence-only 或 invalid entry 返回 `interactive_cache_miss` 或等价 fail-closed 错误，提示不带 `--use-cache` 重新 authoring，不得动态创作、猜测实例或读取任意用户 Notebook。
+Programmatic Recipe 可以在 cache miss 时自动构建 disposable template。Interactive/UserAuthored Recipe 由统一公开入口 `interactive-<operation>` 承载：fresh 路径在同一次 run 的 bootstrap 阶段完成 human-gated authoring、detection 与 immutable template 发布；`--use-cache` 路径确定性跳过 bootstrap，只 materialize 已验证为 ready、mutation-eligible 且 fingerprint 匹配的 template。Authored cache 的状态矩阵保持分层：`ready` 必须 `mutation_eligible=true`，但 `move_source_deletion_allowed` 可以按 Recipe 合同独立为 true 或 false；`evidence_only` 必须同时固定两项为 false。Cache miss、歧义、evidence-only 或 invalid entry 返回 `interactive_cache_miss` 或等价 fail-closed 错误，提示不带 `--use-cache` 重新 authoring，不得动态创作、猜测实例或读取任意用户 Notebook。
+
+Interactive bootstrap 的 authoring target 不限于预建 Page canvas。`interactive-move-page` v3 使用 source 空 intake Section 与独立 destination Notebook：用户通过 OneNote UI 把一个完整 disposable Page 转入 source 后，Recipe 只允许一个静态声明的 manifest key 从 scaffold placeholder ID 重绑定到 intake 中唯一的新 root-leaf Page ID。该例外必须由 Recipe 显式列出、保持 resource type、验证旧 placeholder/marker 未变，并在发布前冻结新 typed address；其他 Interactive Recipe 继续禁止 freeze 阶段改变 ID。整页 intake 不接受外部 ID/path 参数，也不由 MCP 读取或修改来源 Notebook。该 Recipe 单独显式开启敏感 revision evidence，记录每个正文作者/修订 marker 的文档 ordinal、节点类型、属性名、原值与 SHA-256；Page 标题、正文和 raw XML 仍不写入，其他 Recipe 默认继续 hash-only。完整双 Notebook template 发布并物化为新 working bundle 后，scenario 只对物化 source 调用一次公开 `move_page(include_subpages=false)`，以生产 Copy-before-delete gate 验证 lossless 后非永久删源；destination target 与 source 的逐 marker 差异只作为敏感本地诊断记录，不拦截已通过生产 Move gate 的场景进入人工验收；template 本身永不打开或删除。
 
 人工 verdict 只能补充 COM 无法证明的视觉、播放或交互证据，不能覆盖机器 validator、ID/topology/content comparator 或 policy 失败。
 

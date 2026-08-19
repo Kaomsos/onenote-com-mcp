@@ -55,7 +55,18 @@ async def run_interactive_bootstrap_phase(
     )
     if not isinstance(source_structure, dict):
         source_structure = manifest["structure"]
-    canvas = source_structure.get("canvas_page") or source_structure.get("source_canvas_page")
+    checkpoint_key = str(
+        getattr(recipe, "interactive_checkpoint_manifest_key", "") or ""
+    )
+    checkpoint_target = (
+        source_structure.get(checkpoint_key)
+        if checkpoint_key
+        else source_structure.get("canvas_page")
+        or source_structure.get("source_canvas_page")
+    )
+    checkpoint_action = str(
+        getattr(recipe, "interactive_checkpoint_action", "editing the exact Canvas")
+    )
     checkpoint = {
         "schema_version": 1,
         "scenario": scenario.name,
@@ -63,7 +74,22 @@ async def run_interactive_bootstrap_phase(
         "capability": recipe.capability,
         "run_id": run_id,
         "role": "source",
-        "canvas_page_id": canvas.get("id") if isinstance(canvas, dict) else None,
+        "checkpoint_manifest_key": checkpoint_key or None,
+        "checkpoint_target_id": (
+            checkpoint_target.get("id")
+            if isinstance(checkpoint_target, dict)
+            else None
+        ),
+        "checkpoint_target_type": (
+            checkpoint_target.get("resource_type")
+            if isinstance(checkpoint_target, dict)
+            else None
+        ),
+        "canvas_page_id": (
+            checkpoint_target.get("id")
+            if not checkpoint_key and isinstance(checkpoint_target, dict)
+            else None
+        ),
         "authoring_zones": [asdict(zone) for zone in getattr(recipe, "authoring_zones", ())],
         "synthetic_content_only": synthetic_content_only,
         "authoring_instruction": recipe.authoring_instruction,
@@ -75,7 +101,7 @@ async def run_interactive_bootstrap_phase(
     write_json(options.run_dir / "checkpoint.json", checkpoint)
     response = (
         await _bounded_input(
-            f"Type {confirmation!r} after editing the exact Canvas: ",
+            f"Type {confirmation!r} after {checkpoint_action}: ",
             args.interactive_timeout,
         )
     ).strip()
@@ -99,8 +125,20 @@ async def run_interactive_bootstrap_phase(
         raise InvariantFailure("Interactive bootstrap manifest does not cover every Recipe role.")
     observations: dict[str, FixtureRoleObservation] = {}
     snapshots: dict[str, dict[str, Any]] = {}
+    expose_revision_marker_values = bool(
+        getattr(recipe, "expose_revision_marker_values", False)
+    )
+    revision_kwargs = (
+        {"expose_revision_marker_values": True}
+        if expose_revision_marker_values
+        else {}
+    )
     for role in declared_roles:
-        snapshot = await capture_snapshot(client, str(notebooks[role]["id"]))
+        snapshot = await capture_snapshot(
+            client,
+            str(notebooks[role]["id"]),
+            **revision_kwargs,
+        )
         snapshots[role] = snapshot
         write_json(options.run_dir / f"interactive-authored-snapshot-{role}.json", snapshot)
         write_json(options.run_dir / f"fixture-snapshot-{role}.json", snapshot)
@@ -137,6 +175,10 @@ async def run_interactive_bootstrap_phase(
                 "Interactive authored structure freeze does not cover every Recipe role."
             )
         rebound_observations: dict[str, FixtureRoleObservation] = {}
+        identity_rebind_keys = frozenset(
+            str(value)
+            for value in getattr(recipe, "authored_identity_rebind_keys", ())
+        )
         for role in declared_roles:
             frozen_structure = frozen_structures[role]
             declared_structure = observations[role].build.structure
@@ -149,8 +191,14 @@ async def run_interactive_bootstrap_phase(
             rebound: dict[str, dict[str, Any]] = {}
             for key, frozen in frozen_structure.items():
                 declared = declared_structure[key]
-                if not isinstance(frozen, Mapping) or (
-                    str(frozen.get("id", "")) != str(declared.get("id", ""))
+                if not isinstance(frozen, Mapping):
+                    raise InvariantFailure(
+                        f"Interactive authored structure freeze changed typed identity for {role}.{key}."
+                    )
+                same_id = str(frozen.get("id", "")) == str(declared.get("id", ""))
+                allows_rebind = key in identity_rebind_keys and bool(frozen.get("id"))
+                if (
+                    (not same_id and not allows_rebind)
                     or frozen.get("resource_type") != declared.get("resource_type")
                 ):
                     raise InvariantFailure(

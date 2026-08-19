@@ -57,11 +57,14 @@ Interactive/UserAuthored 场景只有统一入口 `interactive-<operation>`，�
 
 真实 fresh run 中：
 
-1. 只编辑终端显示的精确 Canvas 或 authoring zone；
-2. 只添加说明要求的 synthetic 对象和数量；
+1. 只编辑终端显示的精确 Canvas/authoring zone；`interactive-move-page` 例外只向 exact intake Section 转入一个完整 disposable Page，不编辑 placeholder；
+2. 只添加说明要求的 synthetic 对象和数量，或按整页 intake 说明完成唯一 Page 转入；
 3. 等待 OneNote 完成落盘后，输入终端显示的 run-bound confirmation；
 4. 阅读 detector 的 requested/observed/missing/unexpected 摘要；
 5. 只有 UI 结果正确时才输入该 run 的 `ACCEPT`；否则拒绝或让场景失败并保留现场。
+6. 对 `interactive-move-page`，继续等待物化 working bundle 完成一次跨 Notebook `move_page`，检查 exact target 后输入终端要求的第二个 `ACCEPT ... MovePage MOVE`。
+
+`interactive-move-page` 是 revision evidence 的唯一显式敏感例外：该 run 的 bootstrap、物化、Move 前后快照和逐 marker comparison 会保存原始作者名、initials 或 resolution ID，并标记 `author_metadata_exposed=true` / `sensitive_evidence=true`。只可使用非敏感 disposable Page；把整个 `.local-validation/<run>/` 作为敏感本地 artifact 管理。其他 interactive scenario 不会因这一例外自动暴露 marker 原值。该 comparison 仅作诊断：production Move 的 verified/lossless/copy-contract、源非永久删除及目标拓扑门通过后，revision marker 漂移不会阻断场景进入第二个 `ACCEPT`；漂移仍写入本地 evidence。
 
 成功后 runner 会先验证 authored snapshot/detection，再精确关闭 authored bundle、发布 immutable template，并在 fixture 阶段 materialize 第二份 working copy 完成 live validation，随后自动进入 scenario 阶段。Fresh 路径禁止传入 `--template-instance-id`。
 
@@ -72,7 +75,7 @@ Interactive/UserAuthored 场景只有统一入口 `interactive-<operation>`，�
 .venv\Scripts\python.exe tests\manual_validation\run.py <interactive-scenario> --use-cache
 ```
 
-需要显式 instance 的场景（如 `interactive-move-page-content`、`interactive-user-authored-fixture` 在多个 ready instance 并存时）按 README 传入 `--template-instance-id authored-<24 hex>`；恰好只有一个 ready、mutation-eligible 且 fingerprint 匹配的 instance 时可自动选择。
+需要显式 instance 的场景（如 `interactive-move-page`、`interactive-move-page-content`、`interactive-user-authored-fixture` 在多个 ready instance 并存时）按 README 传入 `--template-instance-id authored-<24 hex>`；恰好只有一个 ready、mutation-eligible 且 fingerprint 匹配的 instance 时可自动选择。
 
 ## 第三步：运行待验证操作
 

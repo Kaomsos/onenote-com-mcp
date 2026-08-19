@@ -732,12 +732,96 @@ def test_authored_ready_instance_metadata_drives_unique_and_ambiguous_selection(
         )
 
 
-def test_authored_publish_rejects_state_eligibility_mismatch(tmp_path) -> None:
+def test_authored_publish_accepts_ready_fixture_without_move_source_deletion(
+    tmp_path,
+) -> None:
+    recipe = SCENARIO_REGISTRY.get("interactive-user-authored-fixture").fixture_recipe
+    store = BundleCacheStore(tmp_path / "cache-authored-ready-no-delete")
+    store.initialize()
+    instance_id = f"authored-{'d' * 24}"
+
+    published = store.publish(
+        recipe,
+        instance_id,
+        source_paths={"source": _source(tmp_path / "ready-no-delete")},
+        source_notebooks={
+            "source": {"id": "ready-no-delete-id", "name": "Ready No Delete"}
+        },
+        closed_roles={"source"},
+        validation={"passed": True},
+        projection_digest="d" * 64,
+        state="ready",
+        mutation_eligible=True,
+        move_source_deletion_allowed=False,
+    )
+
+    assert published.entry["state"] == "ready"
+    assert published.entry["mutation_eligible"] is True
+    assert published.entry["move_source_deletion_allowed"] is False
+    assert store.list_ready_instances(recipe, mutation_eligible_only=True) == [
+        instance_id
+    ]
+
+
+def test_whole_page_move_recipe_publishes_complete_delete_eligible_role_bundle(
+    tmp_path,
+) -> None:
+    recipe = SCENARIO_REGISTRY.get("interactive-move-page").fixture_recipe
+    store = BundleCacheStore(tmp_path / "cache-whole-page-move")
+    store.initialize()
+    instance_id = f"authored-{'e' * 24}"
+
+    published = store.publish(
+        recipe,
+        instance_id,
+        source_paths={
+            "destination": _source(tmp_path / "whole-page-destination", "destination"),
+            "source": _source(tmp_path / "whole-page-source", "source"),
+        },
+        source_notebooks={
+            "destination": {
+                "id": "whole-page-destination-id",
+                "name": "Whole Page Destination",
+            },
+            "source": {
+                "id": "whole-page-source-id",
+                "name": "Whole Page Source",
+            },
+        },
+        closed_roles={"destination", "source"},
+        validation={"passed": True},
+        projection_digest="e" * 64,
+        state="ready",
+        mutation_eligible=True,
+        move_source_deletion_allowed=True,
+    )
+
+    assert published.entry["roles"] == ["destination", "source"]
+    assert published.entry["state"] == "ready"
+    assert published.entry["mutation_eligible"] is True
+    assert published.entry["move_source_deletion_allowed"] is True
+
+
+@pytest.mark.parametrize(
+    ("state", "mutation_eligible", "move_source_deletion_allowed", "message"),
+    (
+        ("ready", False, False, "must be mutation eligible"),
+        ("evidence_only", True, False, "cannot be mutation eligible"),
+        ("evidence_only", False, True, "cannot be mutation eligible"),
+    ),
+)
+def test_authored_publish_rejects_invalid_state_eligibility_matrix(
+    tmp_path,
+    state,
+    mutation_eligible,
+    move_source_deletion_allowed,
+    message,
+) -> None:
     recipe = SCENARIO_REGISTRY.get("interactive-user-authored-fixture").fixture_recipe
     store = BundleCacheStore(tmp_path / "cache-authored-mismatch")
     store.initialize()
 
-    with pytest.raises(RunnerFailure, match="eligibility"):
+    with pytest.raises(RunnerFailure, match=message):
         store.publish(
             recipe,
             f"authored-{'d' * 24}",
@@ -746,9 +830,9 @@ def test_authored_publish_rejects_state_eligibility_mismatch(tmp_path) -> None:
             closed_roles={"source"},
             validation={"passed": True},
             projection_digest="d" * 64,
-            state="evidence_only",
-            mutation_eligible=True,
-            move_source_deletion_allowed=False,
+            state=state,
+            mutation_eligible=mutation_eligible,
+            move_source_deletion_allowed=move_source_deletion_allowed,
         )
 
 

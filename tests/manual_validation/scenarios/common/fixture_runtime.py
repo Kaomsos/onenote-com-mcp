@@ -30,6 +30,14 @@ async def _capture_snapshot_with_observer(
     *,
     recipe: Any | None = None,
 ) -> dict[str, Any]:
+    expose_revision_marker_values = bool(
+        getattr(recipe, "expose_revision_marker_values", False)
+    )
+    revision_kwargs = (
+        {"expose_revision_marker_values": True}
+        if expose_revision_marker_values
+        else {}
+    )
     recipe_capture = getattr(recipe, "capture_snapshot", None)
     if callable(recipe_capture):
         if observer is not None:
@@ -38,11 +46,16 @@ async def _capture_snapshot_with_observer(
             )
         return await recipe_capture(client, notebook_id)
     if observer is None:
-        return await capture_snapshot(client, notebook_id)
+        return await capture_snapshot(
+            client,
+            notebook_id,
+            **revision_kwargs,
+        )
     return await capture_snapshot(
         client,
         notebook_id,
         page_xml_observer=observer,
+        **revision_kwargs,
     )
 from .fixture_cache import CacheHit, MaterializedBundle
 from ..fixture_recipes.recipe_base import (
@@ -350,7 +363,12 @@ async def prepare_fixture(
             raise InvariantFailure(
                 f"Fixture manifest keys do not match recipe declaration; missing={missing}, extra={extra}."
             )
-        snapshot = await capture_snapshot(client, str(notebook["id"]))
+        revision_kwargs = (
+            {"expose_revision_marker_values": True}
+            if getattr(recipe, "expose_revision_marker_values", False)
+            else {}
+        )
+        snapshot = await capture_snapshot(client, str(notebook["id"]), **revision_kwargs)
         write_json(options.run_dir / "prepared.json", snapshot)
         write_json(options.run_dir / "fixture-snapshot.json", snapshot)
         write_json(options.run_dir / "page-hashes.json", snapshot.get("page_hashes", {}))

@@ -363,6 +363,91 @@ def page_semantic_content_identity(xml: str) -> dict[str, Any]:
     }
 
 
+REVISION_MARKER_ATTRIBUTES = frozenset(
+    {
+        "author",
+        "authorInitials",
+        "authorResolutionID",
+        "lastModifiedBy",
+        "lastModifiedByInitials",
+        "lastModifiedByResolutionID",
+    }
+)
+
+
+def page_revision_marker_projection(
+    xml: str,
+    *,
+    expose_values: bool = False,
+) -> dict[str, Any]:
+    """Describe body authorship/revision markers, optionally including raw values.
+
+    OneNote uses author/last-modifier attributes on body elements for the UI's
+    revision markings.  The projection deliberately excludes the Page header and
+    Title subtree, hashes every marker value, and retains document order so an
+    opaque fixture round-trip can prove that the imported marker structure is the
+    same. Raw author metadata is included only for an explicitly opted-in local
+    evidence path; Page title, body text, and raw XML remain excluded.
+    """
+
+    root = parse_xml(xml)
+    marker_tuples: list[tuple[str, str, str]] = []
+    markers: list[dict[str, Any]] = []
+    attribute_counts: Counter[str] = Counter()
+    node_counts: Counter[str] = Counter()
+    revision_node_ordinal = 0
+
+    def visit(node: ET.Element, *, in_title: bool) -> None:
+        nonlocal revision_node_ordinal
+        node_kind = local_name(node.tag)
+        current_in_title = in_title or node_kind == "Title"
+        if node is not root and not current_in_title:
+            node_markers: list[tuple[str, str, str]] = []
+            for raw_name, raw_value in sorted(node.attrib.items()):
+                attribute = local_name(raw_name)
+                if attribute not in REVISION_MARKER_ATTRIBUTES:
+                    continue
+                value_hash = hashlib.sha256(str(raw_value).encode("utf-8")).hexdigest()
+                node_markers.append((attribute, str(raw_value), value_hash))
+                attribute_counts[attribute] += 1
+            if node_markers:
+                node_counts[node_kind] += 1
+                for attribute, raw_value, value_hash in node_markers:
+                    marker_tuples.append((node_kind, attribute, value_hash))
+                    marker = {
+                        "ordinal": len(markers),
+                        "revision_node_ordinal": revision_node_ordinal,
+                        "node_kind": node_kind,
+                        "attribute": attribute,
+                        "value_sha256": value_hash,
+                    }
+                    if expose_values:
+                        marker["value"] = raw_value
+                    markers.append(marker)
+                revision_node_ordinal += 1
+        for child in list(node):
+            visit(child, in_title=current_in_title)
+
+    visit(root, in_title=False)
+    payload = json.dumps(
+        marker_tuples,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "schema_version": 2,
+        "marker_count": len(markers),
+        "attribute_counts": dict(sorted(attribute_counts.items())),
+        "node_counts": dict(sorted(node_counts.items())),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "markers": markers,
+        "marker_values_exposed": expose_values,
+        "author_metadata_exposed": expose_values,
+        "sensitive_evidence": expose_values,
+        "content_exposed": False,
+    }
+
+
 def page_reparent_content_hash(xml: str) -> str:
     """Hash rich Page semantics while allowing native ID and Tag-index remapping."""
 
@@ -722,6 +807,7 @@ async def capture_snapshot(
     notebook_id: str,
     *,
     page_xml_observer: Callable[[Mapping[str, Any], str], None] | None = None,
+    expose_revision_marker_values: bool = False,
 ) -> dict[str, Any]:
     consume_handoff = getattr(client, "consume_scenario_before_snapshot", None)
     if callable(consume_handoff):
@@ -738,6 +824,7 @@ async def capture_snapshot(
     page_hashes: dict[str, str] = {}
     page_body_hashes: dict[str, str] = {}
     page_semantic_content_identities: dict[str, dict[str, Any]] = {}
+    page_revision_marker_projections: dict[str, dict[str, Any]] = {}
     page_canonical_hashes: dict[str, str] = {}
     page_reparent_hashes: dict[str, str] = {}
     page_xml_hashes: dict[str, str] = {}
@@ -753,6 +840,10 @@ async def capture_snapshot(
         page_hashes[page_id] = page_content_hash(xml)
         page_body_hashes[page_id] = page_body_content_hash(xml)
         page_semantic_content_identities[page_id] = page_semantic_content_identity(xml)
+        page_revision_marker_projections[page_id] = page_revision_marker_projection(
+            xml,
+            expose_values=expose_revision_marker_values,
+        )
         page_canonical_hashes[page_id] = canonical_page_digest(xml)
         page_reparent_hashes[page_id] = page_reparent_content_hash(xml)
         page_xml_hashes[page_id] = hashlib.sha256(xml.encode("utf-8")).hexdigest()
@@ -781,6 +872,7 @@ async def capture_snapshot(
         "page_hashes": page_hashes,
         "page_body_hashes": page_body_hashes,
         "page_semantic_content_identities": page_semantic_content_identities,
+        "page_revision_marker_projections": page_revision_marker_projections,
         "page_canonical_hashes": page_canonical_hashes,
         "page_reparent_hashes": page_reparent_hashes,
         "page_xml_hashes": page_xml_hashes,
@@ -951,6 +1043,7 @@ __all__ = [
     "manifest_path",
     "page_content_hash",
     "page_body_content_hash",
+    "page_revision_marker_projection",
     "page_topology",
     "read_json",
     "resolve_manifest_item",

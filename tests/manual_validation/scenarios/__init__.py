@@ -49,6 +49,7 @@ from .query import QueryScenario
 from .hierarchy_navigation import HierarchyNavigationScenario
 from .cache_invalidation import CacheInvalidationScenario
 from .interactive_user_authored_fixture import InteractiveUserAuthoredFixtureScenario
+from .interactive_move_page import InteractiveMovePageScenario
 from .interactive_copy_inserted_file import InteractiveCopyInsertedFileScenario
 from .interactive_copy_ink_drawing import InteractiveCopyInkDrawingScenario
 from .interactive_copy_media_file import InteractiveCopyMediaFileScenario
@@ -229,6 +230,7 @@ __all__ = [
     "HierarchyNavigationScenario",
     "CacheInvalidationScenario",
     "InteractiveUserAuthoredFixtureScenario",
+    "InteractiveMovePageScenario",
     "InteractiveCopyInsertedFileScenario",
     "InteractiveCopyInkDrawingScenario",
     "InteractiveCopyMediaFileScenario",
