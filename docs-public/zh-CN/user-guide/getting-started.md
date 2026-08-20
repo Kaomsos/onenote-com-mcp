@@ -2,7 +2,7 @@
 
 [English](../../en/user-guide/getting-started.md) | [文档首页](../../README.zh-CN.md)
 
-Local OneNote MCP 是面向 Windows 上 Microsoft OneNote Desktop 的 local-first MCP 服务器。它通过固定 PowerShell bridge 使用原生 OneNote COM API。任何内容都不会被上传：没有 Microsoft Graph、Azure、在线 OAuth，也没有遥测。
+Local OneNote MCP 是面向 Windows 上 Microsoft OneNote Desktop 的 local-first MCP 服务器。它通过本地 PowerShell COM client 使用原生 OneNote COM API。任何内容都不会被上传：没有 Microsoft Graph、Azure、在线 OAuth，也没有遥测。
 
 ## 前置条件
 

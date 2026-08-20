@@ -99,6 +99,7 @@ from ..common.specs import get_scenario_spec
 from .recipe_base import (
     FixtureBundleObservation,
     FixtureValidationReport,
+    NESTED_SECTION_CACHE_UNSAFE_REASON,
     NotebookRoleSpec,
     RecipeBase,
 )
@@ -106,6 +107,8 @@ from .recipe_base import (
 
 class QueryFixtureRecipe(RecipeBase):
     recipe_version = 6
+    supports_cache = False
+    fresh_only_reason = NESTED_SECTION_CACHE_UNSAFE_REASON
     bundle_invariants = (
         "source and query-b Notebook IDs and paths are unique",
         "both working Notebook roles remain open until the explicit close probe",

@@ -24,6 +24,12 @@ from ..common.specs import FixtureProfile, ScenarioSpec, get_scenario_spec
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
 
+NESTED_SECTION_CACHE_UNSAFE_REASON = (
+    "opaque cache materialization for a Section below a SectionGroup is temporarily "
+    "disabled because current OneNote evidence includes process crashes and "
+    "incomplete Page convergence"
+)
+
 
 class BuildMode(str, Enum):
     PROGRAMMATIC = "programmatic"
@@ -323,6 +329,7 @@ __all__ = [
     "FixtureRoleObservation",
     "FixtureValidationReport",
     "JSONValue",
+    "NESTED_SECTION_CACHE_UNSAFE_REASON",
     "NotebookRoleSpec",
     "RecipeBase",
     "canonical_cache_fingerprint",

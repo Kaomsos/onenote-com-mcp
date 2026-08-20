@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping, TYPE_CHECKING
 
+from ...bridge_adapter import VALIDATION_BRIDGE_ADAPTER
 from ...path_budget import fingerprint_disk_key, instance_location_from_id
 from ...runtime import RunnerFailure, RuntimeOptions
 
@@ -366,6 +367,7 @@ def build_isolated_dry_run_plan(
         "fixture_profile": spec.fixture.as_dict(),
         "scenario_spec": spec.as_dict(),
         "timeout_seconds": options.timeout,
+        "bridge_adapter": VALIDATION_BRIDGE_ADAPTER,
         "copy_budget": dict(copy_budget),
         "search_budget": dict(spec.search_budget),
         "batch_mutation_budget": dict(spec.batch_mutation_budget),

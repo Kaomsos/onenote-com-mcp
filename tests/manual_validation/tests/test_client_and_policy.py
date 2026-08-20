@@ -172,6 +172,7 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
     assert env["LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE"] == "false"
     assert env["TEMP"] == env["TMP"]
     assert env["LOCAL_ONENOTE_MCP_TIMEOUT"] == "1800"
+    assert env["LOCAL_ONENOTE_BRIDGE_ADAPTER"] == "persistent_powershell"
     assert env["LOCAL_ONENOTE_BRIDGE_AUDIT_PATH"] == str(audit_path.resolve())
     for env_name, value in COPY_BUDGET_ENV.values():
         assert env[env_name] == str(value)
@@ -210,6 +211,12 @@ def test_bridge_audit_path_cannot_leak_from_parent_environment(monkeypatch, tmp_
     monkeypatch.setenv("LOCAL_ONENOTE_BRIDGE_AUDIT_PATH", "untrusted-parent-path")
     env = build_server_env(READ_ONLY_POLICY, tmp_path / "temp")
     assert "LOCAL_ONENOTE_BRIDGE_AUDIT_PATH" not in env
+
+
+def test_child_env_pins_bridge_adapter_over_parent(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("LOCAL_ONENOTE_BRIDGE_ADAPTER", "one_shot_powershell")
+    env = build_server_env(READ_ONLY_POLICY, tmp_path / "temp")
+    assert env["LOCAL_ONENOTE_BRIDGE_ADAPTER"] == "persistent_powershell"
 
 def test_non_read_only_tool_classification_never_retries_publish_or_copy() -> None:
     assert is_mutation_tool("export_object_to_pdf") is True

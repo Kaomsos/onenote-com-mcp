@@ -8,7 +8,8 @@
 - `page/` 负责 Page 解析、格式化、构建、图片及面向 Copy 的 Page 语义。XML 处理应集中管理，并由 round-trip 或 invariant 测试覆盖。
 - `services/` 负责应用编排和 OneNote 操作。它是执行 policy、精确 ID 定位、confirmation field、预算和可恢复失败行为的主要边界。
 - `tools/` 将 MCP 输入输出适配到 services。Tool 函数应保持精简、类型化，并与已记录的 response envelope 一致；不要在此重新实现 service 逻辑。
-- `bridge.py` 是可信的本地 COM 边界。继续使用结构化 JSON/临时文件 transport，绝不能把不可信内容插值到 PowerShell 源代码或命令字符串中。
+- `bridge.py` 是可信的本地 COM 边界：装配单一 `ComClient`、独占 audit 与错误投影。默认 transport 是常驻 STA PowerShell host 的受控 JSON 帧；`one_shot_powershell` 才使用临时 JSON 文件。绝不能把不可信内容插值到 PowerShell 源代码或命令字符串中。
+- `com_client.py` 只定义 adapter 契约与两个具体实现，不得 import settings、services 或 runtime。
 - `server.py`、`settings.py` 和 `policy.py` 负责组合与进程级配置。避免环境变量读取散落各处，也不要建立隐藏的替代注册路径。
 
 ## 安全与契约规则

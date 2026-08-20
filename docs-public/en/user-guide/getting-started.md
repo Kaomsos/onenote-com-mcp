@@ -2,7 +2,7 @@
 
 [简体中文](../../zh-CN/user-guide/getting-started.md) | [Documentation home](../../README.md)
 
-Local OneNote MCP is a local-first MCP server for Microsoft OneNote Desktop on Windows. It uses the native OneNote COM API through a fixed PowerShell bridge. Nothing is uploaded anywhere: no Microsoft Graph, no Azure, no online OAuth, no telemetry.
+Local OneNote MCP is a local-first MCP server for Microsoft OneNote Desktop on Windows. It uses the native OneNote COM API through a local PowerShell COM client. Nothing is uploaded anywhere: no Microsoft Graph, no Azure, no online OAuth, no telemetry.
 
 ## Prerequisites
 

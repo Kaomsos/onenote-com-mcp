@@ -1,15 +1,17 @@
 # Fixture cache consumer 必须重新建立 live identity 并执行实时验收
 
 > 状态：当前有效的工程经验<br>
-> 观察日期：2026-08-11、2026-08-13、2026-08-14<br>
+> 观察日期：2026-08-11、2026-08-13、2026-08-14；2026-08-20 补充嵌套 Section 风险边界<br>
 > 范围：Windows OneNote Desktop、本地 COM、隔离的 InsertedFile fixture cache consumer、双 Notebook Copy consumer 与一次完整 `all --use-cache` 失败/成功矩阵<br>
 > 当前架构：[`../design/manual_validation_scenario_fixture_architecture.md`](../design/manual_validation_scenario_fixture_architecture.md)<br>
 > 验证流程：[`../dev/isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md)、[`../../tests/manual_validation/README.md`](../../tests/manual_validation/README.md)<br>
-> 相关对象表示经验：[`onenote_page_object_kind_and_file_attachment_representation.md`](onenote_page_object_kind_and_file_attachment_representation.md)
+> 相关经验：[`onenote_page_object_kind_and_file_attachment_representation.md`](onenote_page_object_kind_and_file_attachment_representation.md)、[`onenote_cached_nested_section_materialization_instability.md`](onenote_cached_nested_section_materialization_instability.md)
 
 ## 结论
 
 关闭并验证过的 OneNote fixture cache 只能证明 template bytes 和发布时证据可信，不能证明新 materialized working copy 已经具备可直接使用的 Notebook hierarchy、对象 ID 或实时内容状态。Materialized working copy 因而仍须在当前 run 中打开、按精确 parent 批量激活、按稳定的类型化结构地址重绑 live ID，并以连续两次 hierarchy 稳定和唯一一次完整内容 snapshot 运行 Recipe validator。2026-08-14 后续对照确认，先前大面积 fixture failure 与 scenario 启动前 OneNote Desktop 未运行稳定相关；close/reopen 的 2/15→12/15 改善是受进程状态混杂的中间结果，不能支持“两套 live identity 是必要条件”的结论。当前实现已改为 GUI preflight 后只打开一次 working copy。
+
+2026-08-20 的后续 runs 同时收窄了这条经验的适用范围：即使 GUI 已预启动，opaque-copy working Notebook 中的 `SectionGroup → Section` 仍可能在 child activation 时使 OneNote 进程崩溃，或者让 Section 内声明 Page 持续不收敛。该问题的根因与 adapter 因果尚未确定，不能再从既有成功样本推导所有 hierarchy shape 都可安全 materialize。当前所有形成该 shape 的 programmatic Recipe 均临时 fresh-only；独立证据、已排除解释和调查计划见[嵌套 Section cache materialization 不稳定](onenote_cached_nested_section_materialization_instability.md)与 [TODO 052](../todo/052_nested_section_cache_crash_investigation.md)。
 
 这次排障还证明，consumer 的失败必须按归因分层。working copy 的临时打开或激活失败不能反向证明 immutable template 损坏；结构重绑定缺失、歧义或实时 validator 失败才提供 template 不应继续命中的证据。working lease 同样必须尽早绑定实际 Notebook ID 和路径，否则失败发生在 hierarchy 激活中途时，后续运行无法可靠区分“Notebook 仍打开”和“遗留 lease 已过期”。同时，传给 COM 的物理 working 路径本身也是兼容性输入；完整显示 identity 应保留在 evidence，不应无界地堆入 Notebook 目录名。
 

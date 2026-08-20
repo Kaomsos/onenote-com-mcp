@@ -853,12 +853,15 @@ def test_open_snapshot_normalizes_file_uri_and_onetoc_path(monkeypatch, tmp_path
     calls = []
 
     class FakeBridge:
-        def __init__(self, *, timeout_seconds):
+        def __init__(self, *, timeout_seconds, **_kwargs):
             assert timeout_seconds == 30
 
         def call(self, operation, **params):
             calls.append((operation, params))
             return {"xml": xml}
+
+        def close(self) -> None:
+            return None
 
     monkeypatch.setattr(cleanup, "OneNoteBridge", FakeBridge)
     snapshot = OpenNotebookPathSnapshot.capture()

@@ -75,6 +75,7 @@ Notes:
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `LOCAL_ONENOTE_MCP_TIMEOUT` | — | Per-operation bridge timeout in seconds (e.g. `90`) |
+| `LOCAL_ONENOTE_BRIDGE_ADAPTER` | `persistent_powershell` | COM client adapter. Default is a resident STA PowerShell host. Set `one_shot_powershell` only for the explicit per-call fallback. Unknown values fail closed. |
 | `LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS` | — | Bound on returned text size (e.g. `60000`) |
 | `LOCAL_ONENOTE_MCP_DEBUG_TRACE` | `false` | Enable local-only Runtime debug trace JSONL (strict boolean) |
 | `LOCAL_ONENOTE_MCP_DEBUG_DIR` | `~/.onenote-mcp/debug-trace` | Optional absolute output directory for session JSONL files. When unset, the server uses and creates this user-local default. Does not authorize any mutation. |

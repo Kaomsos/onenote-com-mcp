@@ -8,9 +8,8 @@ from typing import Any, Mapping
 
 from ..lifecycle import NotebookLifecycleWrapper
 from ..mcp_stdio_client import MCPStdioClient
-from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
+from ..runtime import InvariantFailure, RestoreFailure, RunnerFailure, RuntimeOptions
 from ..test_utils import (
-    assert_restored,
     capture_snapshot,
     find_snapshot_item,
     resolve_manifest_item,
@@ -22,6 +21,91 @@ from .base import Scenario
 from .common.copy_runtime import call_with_result_evidence
 from .common.registry import SCENARIO_REGISTRY
 from .fixture_recipes.onenote_convergence import RECIPE
+
+
+def _convergence_restoration_evidence(
+    before: Mapping[str, Any], restored: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Compare authored state without treating OneNote support-XML churn as loss."""
+
+    def stable_items(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+        return sorted(
+            (
+                {
+                    key: value
+                    for key, value in item.items()
+                    if key != "modified"
+                }
+                for item in snapshot.get("items", ())
+                if isinstance(item, Mapping)
+            ),
+            key=lambda item: str(item.get("id", "")),
+        )
+
+    semantic_projection = {
+        "notebook_id": before.get("notebook_id"),
+        "items": stable_items(before),
+        "page_semantic_content_identities": before.get(
+            "page_semantic_content_identities", {}
+        ),
+        "page_revision_marker_projections": before.get(
+            "page_revision_marker_projections", {}
+        ),
+        "page_objects": before.get("page_objects", {}),
+        "page_capability_projections": before.get("page_capability_projections", {}),
+        "page_mathml_structure_projections": before.get(
+            "page_mathml_structure_projections", {}
+        ),
+    }
+    restored_projection = {
+        "notebook_id": restored.get("notebook_id"),
+        "items": stable_items(restored),
+        "page_semantic_content_identities": restored.get(
+            "page_semantic_content_identities", {}
+        ),
+        "page_revision_marker_projections": restored.get(
+            "page_revision_marker_projections", {}
+        ),
+        "page_objects": restored.get("page_objects", {}),
+        "page_capability_projections": restored.get("page_capability_projections", {}),
+        "page_mathml_structure_projections": restored.get(
+            "page_mathml_structure_projections", {}
+        ),
+    }
+    before_hashes = before.get("page_hashes", {})
+    restored_hashes = restored.get("page_hashes", {})
+    hash_keys = sorted(set(before_hashes) | set(restored_hashes))
+    strict_hash_drift = [
+        {
+            "page_id": page_id,
+            "before": before_hashes.get(page_id),
+            "restored": restored_hashes.get(page_id),
+        }
+        for page_id in hash_keys
+        if before_hashes.get(page_id) != restored_hashes.get(page_id)
+    ]
+    return {
+        "schema_version": 1,
+        "semantic_equivalent": semantic_projection == restored_projection,
+        "strict_page_hash_equivalent": not strict_hash_drift,
+        "strict_page_hash_drift": strict_hash_drift,
+        "comparison": {
+            "items": "exact_except_modified",
+            "page_semantic_content_identities": "exact",
+            "page_revision_marker_projections": "exact",
+            "page_objects": "exact",
+            "page_capability_projections": "exact",
+            "page_mathml_structure_projections": "exact",
+        },
+    }
+
+
+def _assert_convergence_restored(evidence: Mapping[str, Any]) -> None:
+    if evidence.get("semantic_equivalent") is not True:
+        raise RestoreFailure(
+            "Restored snapshot does not match the convergence semantic projection; "
+            "inspect artifacts manually."
+        )
 
 
 def _require_convergence(result: dict[str, Any], operation: str) -> dict[str, Any]:
@@ -542,7 +626,9 @@ class OneNoteConvergenceScenario(Scenario):
         }
         restored = await capture_snapshot(client, notebook_id)
         write_json(out / "restored.json", restored)
-        assert_restored(before, restored)
+        restoration = _convergence_restoration_evidence(before, restored)
+        write_json(out / "restoration-comparison.json", restoration)
+        _assert_convergence_restored(restoration)
         restored_notebook = find_snapshot_item(restored, notebook_id)
         if restored_notebook is None:
             raise InvariantFailure("Restored snapshot omitted the disposable Notebook.")
@@ -566,6 +652,7 @@ class OneNoteConvergenceScenario(Scenario):
             "status": "passed",
             "fixture": fixture_result,
             "convergence": evidence,
+            "restoration": restoration,
             "close_evidence": evidence["close"],
             "lifecycle_close_handoff": {
                 "closed": lifecycle_close["closed"],

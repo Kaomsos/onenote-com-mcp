@@ -22,6 +22,7 @@ from ..common.specs import get_scenario_spec
 from .recipe_base import (
     FixtureBundleObservation,
     FixtureValidationReport,
+    NESTED_SECTION_CACHE_UNSAFE_REASON,
     NotebookRoleSpec,
     RecipeBase,
 )
@@ -49,6 +50,8 @@ def generate_search_probe() -> str:
 
 class SearchAllOpenNotebooksFixtureRecipe(RecipeBase):
     recipe_version = 3
+    supports_cache = False
+    fresh_only_reason = NESTED_SECTION_CACHE_UNSAFE_REASON
     bundle_invariants = (
         "source and search-b Notebook IDs and resolved paths are unique",
         "both working Notebook roles remain open for root Search validation",

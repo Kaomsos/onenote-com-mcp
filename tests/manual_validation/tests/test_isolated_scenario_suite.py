@@ -31,6 +31,9 @@ from tests.manual_validation.scenarios.fixture_recipes.reorder_section_group imp
     RECIPE as REORDER_SECTION_GROUP_RECIPE,
 )
 from tests.manual_validation.scenarios.fixture_recipes.reparent_section import DESCRIPTION as REPARENT_SECTION_DESCRIPTION
+from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
+    NESTED_SECTION_CACHE_UNSAFE_REASON,
+)
 
 
 SCENARIOS = validation.PUBLIC_SCENARIOS
@@ -1314,6 +1317,47 @@ def test_manual_scenario_fails_preflight_before_run_or_notebook_creation(
 
     assert raised.value.exit_code == runtime.EXIT_MCP
     assert not run_dir.exists()
+
+
+def test_nested_section_cache_rejects_before_desktop_or_lifecycle(
+    monkeypatch, tmp_path
+) -> None:
+    run_dir = tmp_path / "run"
+    monkeypatch.setattr(
+        validation,
+        "require_onenote_desktop",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("unsafe cache shape must reject before desktop preflight")
+        ),
+    )
+    monkeypatch.setattr(
+        validation,
+        "NotebookLifecycleWrapper",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unsafe cache shape must reject before lifecycle")
+        ),
+    )
+
+    with pytest.raises(
+        runtime.RunnerFailure,
+        match="Section below a SectionGroup.*remove --use-cache",
+    ):
+        asyncio.run(
+            validation.run_validate(
+                _args(run_dir, "rename"),
+                RuntimeOptions(run_dir, 180, False, False, use_cache=True),
+            )
+        )
+
+    assert not run_dir.exists()
+
+
+def test_unregistered_reorder_section_group_recipe_uses_same_cache_safety_gate() -> None:
+    assert REORDER_SECTION_GROUP_RECIPE.supports_cache is False
+    assert (
+        REORDER_SECTION_GROUP_RECIPE.fresh_only_reason
+        == NESTED_SECTION_CACHE_UNSAFE_REASON
+    )
 
 
 def test_manual_scenario_dry_run_never_probes_desktop(monkeypatch, tmp_path) -> None:

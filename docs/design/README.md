@@ -13,3 +13,4 @@
 | [`mutation_readiness_and_call_design.md`](mutation_readiness_and_call_design.md) | OneNote mutation readiness 不可预先观测的状态模型、调用顺序、reconciliation 与 lifecycle 边界 | 当前实现合同；bounded-attempt 加固已由 TODO 029 完成并由 Operation Runtime 组合 |
 | [`advanced_operations.md`](advanced_operations.md) | 不公开的低层/诊断操作边界 | 当前契约 |
 | [`windows_fixture_cache_path_budget.md`](windows_fixture_cache_path_budget.md) | Windows fixture cache、staging、materialization 与 working copy 路径配额 | 当前实现合同；验证证据由 TODO 021 跟踪 |
+| [`persistent_com_client_bridge.md`](persistent_com_client_bridge.md) | 常驻/one-shot COM client 的生命周期、单飞请求、delivery state、generation 与故障收尾 | 当前实现合同；真实 OneNote 验收由 TODO 048 跟踪 |

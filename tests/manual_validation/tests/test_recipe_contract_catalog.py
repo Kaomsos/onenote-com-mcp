@@ -22,6 +22,7 @@ from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
     FixtureBundleObservation,
     FixtureRoleObservation,
     FixtureCacheIdentity,
+    NESTED_SECTION_CACHE_UNSAFE_REASON,
     NotebookRoleSpec,
     canonical_cache_fingerprint,
 )
@@ -45,6 +46,21 @@ PINNED_RECIPE_VERSIONS = {
     "copy-section-group": 5,
     "create": 5,
     "reparent-page": 3,
+}
+
+NESTED_SECTION_CACHE_UNSAFE_SCENARIOS = {
+    "copy-notebook",
+    "copy-section",
+    "copy-section-group",
+    "delete",
+    "hierarchy-navigation",
+    "move-section-group",
+    "query",
+    "rename",
+    "reorder-section",
+    "reparent-section",
+    "reparent-section-group",
+    "search-all-open-notebooks",
 }
 
 
@@ -133,18 +149,28 @@ def test_catalog_is_unique_and_covers_every_owned_recipe_base_dimension() -> Non
             )
 
 
-def test_search_and_query_have_complete_cache_contracts() -> None:
-    for scenario_name in ("search-all-open-notebooks", "query"):
+def test_nested_section_cache_shapes_are_fresh_only() -> None:
+    for scenario_name in NESTED_SECTION_CACHE_UNSAFE_SCENARIOS:
+        recipe = SCENARIO_REGISTRY.get(scenario_name).fixture_recipe
+        assert recipe.supports_cache is False
+        assert recipe.fresh_only_reason == NESTED_SECTION_CACHE_UNSAFE_REASON
         dimensions = {
             case.dimension for case in CASES if case.scenario_name == scenario_name
         }
-        assert {
-            RecipeContractDimension.CACHE_COLD,
-            RecipeContractDimension.VALIDATED_HIT,
-            RecipeContractDimension.INVALIDATION,
-            RecipeContractDimension.IMMUTABILITY,
-        } <= dimensions
-        assert RecipeContractDimension.CACHE_UNSUPPORTED not in dimensions
+        assert RecipeContractDimension.CACHE_UNSUPPORTED in dimensions
+        assert not dimensions.intersection(
+            {
+                RecipeContractDimension.CACHE_COLD,
+                RecipeContractDimension.VALIDATED_HIT,
+                RecipeContractDimension.INVALIDATION,
+                RecipeContractDimension.IMMUTABILITY,
+            }
+        )
+
+
+def test_flat_section_recipes_remain_cache_supported() -> None:
+    for scenario_name in ("copy-page", "move-section", "reorder-page"):
+        assert SCENARIO_REGISTRY.get(scenario_name).fixture_recipe.supports_cache is True
 
 
 def test_pinned_cache_recipe_versions_match_the_central_catalog() -> None:

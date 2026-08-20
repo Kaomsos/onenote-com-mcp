@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.bridge import OneNoteBridge, OneNoteBridgeError
+from .bridge_adapter import VALIDATION_BRIDGE_ADAPTER
 from local_onenote_mcp.constants import CREATE_FILE_TYPES, HIERARCHY_SCOPES, XML_SCHEMA_2013
 from local_onenote_mcp.hierarchy import display_name, parse_hierarchy
 from local_onenote_mcp.onenote_errors import transient_read_error
@@ -57,11 +58,17 @@ class NotebookLifecycleWrapper:
         self.materialized_evidence_path = (
             self.run_dir / f"materialized-hierarchy-open{suffix}.json"
         )
+        self._owns_bridge = bridge is None
         self._bridge = bridge or OneNoteBridge(
             timeout_seconds=timeout_seconds,
             audit_path=self.run_dir / "lifecycle-bridge-calls.jsonl",
+            adapter=VALIDATION_BRIDGE_ADAPTER,
         )
         self._hierarchy = HierarchyService(self._bridge)
+
+    def close_transport(self) -> None:
+        if self._owns_bridge:
+            self._bridge.close()
 
     def create_fresh_notebook(self, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         self.progress.unit_started("lifecycle", f"{self.role} create", 1, 1)
@@ -480,6 +487,7 @@ class NotebookLifecycleWrapper:
                     "resource_type": request["resource_type"],
                     "path_mode": request["path_mode"],
                     "requested_parent_id": parent_id,
+                    "open_requested": str(request["key"]) in results,
                     "activated": False,
                 }
                 object_id = str(result.get("object_id") or "")
@@ -527,7 +535,11 @@ class NotebookLifecycleWrapper:
                 ):
                     attempt.update(
                         activated=True,
-                        activation_proof="batch_notebook_snapshot",
+                        activation_proof=(
+                            "batch_notebook_snapshot"
+                            if attempt["open_requested"]
+                            else "notebook_snapshot_after_parent_batch"
+                        ),
                         observed_parent_id=str(item.get("parent_id", "")),
                     )
                     opened.append(
@@ -561,14 +573,42 @@ class NotebookLifecycleWrapper:
         try:
             collect(working_path, "", str(notebook["path"]))
             pending = list(requests)
-            for batch_index in range(1, 3):
+            open_attempt_counts: dict[str, int] = {}
+            # A returned SectionGroup ID is not immediately safe to use as an
+            # OpenHierarchy parent in the same COM invocation.  In particular,
+            # a copied Notebook can still be materializing the group's TOC.
+            # Keep the one persistent COM session, but send each dependency
+            # layer in its own bounded batch so the next call uses a parent ID
+            # already accepted by the prior batch.
+            max_batches = max(2, len(requests) + 1)
+            no_progress_batches = 0
+            for batch_index in range(1, max_batches + 1):
                 if not pending:
                     break
                 opened_by_key = {
                     item["relative_path"]: item["object_id"] for item in opened
                 }
-                batch_requests: list[dict[str, Any]] = []
+                ready: list[dict[str, Any]] = []
+                deferred: list[dict[str, Any]] = []
                 for request in pending:
+                    parent_key = str(request["parent_key"])
+                    if parent_key and parent_key not in opened_by_key:
+                        deferred.append(request)
+                    else:
+                        request_key = str(request["key"])
+                        if open_attempt_counts.get(request_key, 0) >= 2:
+                            raise RunnerFailure(
+                                "Materialized hierarchy batch exhausted its retry budget for "
+                                f"{request['relative_path']}."
+                            )
+                        ready.append(request)
+                if not ready:
+                    raise RunnerFailure(
+                        "Materialized hierarchy batch has no request whose exact parent "
+                        "was activated."
+                    )
+                batch_requests: list[dict[str, Any]] = []
+                for request in ready:
                     parent_key = str(request["parent_key"])
                     parent_already_open = parent_key in opened_by_key
                     batch_requests.append(
@@ -585,6 +625,11 @@ class NotebookLifecycleWrapper:
                         }
                     )
                 try:
+                    for request in ready:
+                        request_key = str(request["key"])
+                        open_attempt_counts[request_key] = (
+                            open_attempt_counts.get(request_key, 0) + 1
+                        )
                     response = self._bridge.call(
                         "open_hierarchy_batch",
                         notebook_id=str(notebook["id"]),
@@ -602,7 +647,8 @@ class NotebookLifecycleWrapper:
                         }
                     )
                     save("running")
-                    if batch_index == 1:
+                    if no_progress_batches == 0:
+                        no_progress_batches += 1
                         continue
                     raise
                 hierarchy_error = response.get("hierarchy_error")
@@ -620,8 +666,20 @@ class NotebookLifecycleWrapper:
                         hierarchy_error_hresult=str(hierarchy_error.get("hresult") or ""),
                     )
                 batch_observations.append(observation)
+                # Opening a SectionGroup can make its nested .one Sections
+                # visible in the same Notebook hierarchy response.  Treat
+                # that exact typed/path-bound observation as activation, and
+                # only issue a later OpenHierarchy for nodes still missing.
+                # This avoids re-opening an already materialized child solely
+                # because it was deferred at the start of this batch.
                 pending = observe_batch(response, pending, batch_index)
+                if len(pending) < len(ready) + len(deferred):
+                    no_progress_batches = 0
+                else:
+                    no_progress_batches += 1
                 save("running")
+                if no_progress_batches >= 2:
+                    break
             if pending:
                 raise RunnerFailure(
                     "Materialized hierarchy batch did not activate every exact container: "

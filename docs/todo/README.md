@@ -53,8 +53,11 @@
 | 045 | [Copy/Move 回读 Snapshot 效率与快速验证模式](045_copy_move_readback_snapshot_efficiency.md)                           | 进行中 | P1     | 已实现单次调用内 `CopyReadCache`：单页 Copy 复用同 epoch 的 hierarchy/Page snapshot，mutation 立即失效；共享创建/删除重复回读已由 TODO 049 收窄实现，真实 trace 对比仍待确认。 |
 | 046 | [按资源作用域的 Mutation 协调与细粒度写锁](046_scoped_mutation_coordination.md)                                      | 待办   | P3     | 先冻结锁竞争与完整 mutation footprint；仅在 OneNote COM 平台证据允许时，以 canonical 多资源锁和全局 fallback 减少无冲突调用等待。 |
 | 047 | [并发只读 Tool 调度与共享读协调](047_concurrent_read_tool_execution.md)                                               | 待办   | P1     | 让 catalog 已声明安全的共享 read 经有界 dispatch 真正并发，保持 writer-preference、全程 mutation 独占、调用上下文隔离与 content-free trace。 |
-| 048 | [常驻 OneNote COM Client Bridge](048_persistent_com_client_bridge.md)                                             | 待办   | P0     | 默认目标为受控的常驻 Windows PowerShell STA COM client；pywin32 失败仅作为可选 adapter 的兼容性限制，后续客户端必须通过同一安全与验证契约接入。 |
+| 048 | [常驻 OneNote COM Client Bridge](048_persistent_com_client_bridge.md)                                             | 进行中 | P0     | 默认 `persistent_powershell` STA host 与显式 one-shot fallback 已落地；真实 OneNote read/mutation/restart 证据与双 adapter 性能对比仍待用户确认。 |
 | 049 | [Copy/Move backend readback 调用去重](049_copy_move_backend_readback_call_deduplication.md)                         | 已完成 | P2     | 已实现中性 snapshot、集中 preflight、fresh 删除 confirmation、promotion 后仅重绑 `modified` 与三条组合 ledger；用户已确认 disposable 真实 trace，双页 Move 由 43 降至 33 个 backend call，且七个公开工具的 trace 全部完成。 |
+| 050 | [Page Copy/Move 目标同标题根 Page 回归](050_page_copy_move_duplicate_root_title.md)                              | 待办   | P0     | 修复 Page Copy/Move 将目标 Section 的同标题一级 Page 误判为冲突的问题；保持 exact-ID 创建验证、Copy-before-delete 与容器路径冲突拒绝。 |
+| 051 | [常驻 COM Client 在 OneNote 重启后的代理刷新](051_persistent_com_client_restart_refresh.md)                    | 待办   | P1     | 记录 persistent PowerShell host 在 OneNote 意外退出并经内部启动恢复后仍持有 stale COM proxy 的问题；先比较 host 内刷新与 Python 重建路径，再确定最小恢复契约。 |
+| 052 | [Manual Validation 嵌套 Section Cache 崩溃排查与生产隔离](052_nested_section_cache_crash_investigation.md)       | 待办   | P2     | 调查 opaque cache working copy 中 Group 子 Section 激活导致 OneNote 崩溃或 Page 不收敛的原因；维持 shape-based fail-fast，并审计生产 OpenHierarchy 可达性。 |
 
 ## 文件命名
 

@@ -2,7 +2,7 @@
 
 [English](README.md) | **简体中文**
 
-面向 **Windows 上 Microsoft OneNote Desktop** 的 local-first [MCP](https://modelcontextprotocol.io/) 服务器。它只通过固定 PowerShell bridge 调用原生 OneNote COM API——不使用 Microsoft Graph、Azure、API key、在线 OAuth，没有遥测和远程内容处理，也不直接编辑 `.one` 文件。
+面向 **Windows 上 Microsoft OneNote Desktop** 的 local-first [MCP](https://modelcontextprotocol.io/) 服务器。它只通过本地 PowerShell COM client 调用原生 OneNote COM API——不使用 Microsoft Graph、Azure、API key、在线 OAuth，没有遥测和远程内容处理，也不直接编辑 `.one` 文件。
 
 你的笔记永远不会离开本机。
 

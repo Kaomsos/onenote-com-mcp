@@ -75,6 +75,7 @@ LOCAL_ONENOTE_ENABLE_NOTEBOOK_LIFECYCLE = "false"
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `LOCAL_ONENOTE_MCP_TIMEOUT` | — | 单次 bridge 操作超时秒数（如 `90`） |
+| `LOCAL_ONENOTE_BRIDGE_ADAPTER` | `persistent_powershell` | COM client adapter。默认是常驻 STA PowerShell host。只有显式 fallback 才设为 `one_shot_powershell`。未知值 fail-closed。 |
 | `LOCAL_ONENOTE_MCP_MAX_TEXT_CHARS` | — | 返回文本大小上限（如 `60000`） |
 | `LOCAL_ONENOTE_MCP_DEBUG_TRACE` | `false` | 启用仅本地的 Runtime debug trace JSONL（严格布尔值） |
 | `LOCAL_ONENOTE_MCP_DEBUG_DIR` | `~/.onenote-mcp/debug-trace` | 可选的 session JSONL 输出绝对目录。未设置时，服务器使用并创建该用户本地默认目录。不授权任何 mutation。 |

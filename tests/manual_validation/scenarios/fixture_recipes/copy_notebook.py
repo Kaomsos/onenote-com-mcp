@@ -8,9 +8,12 @@ from ..common.fixture_models import (
     resolve_active_structure,
 )
 from .layered_copy import LayeredCopyFixtureRecipe, LayeredFixtureConfig, LayeredFixtureKind
+from .recipe_base import NESTED_SECTION_CACHE_UNSAFE_REASON
 
 class CopyNotebookFixtureRecipe(LayeredCopyFixtureRecipe):
     recipe_version = 3
+    supports_cache = False
+    fresh_only_reason = NESTED_SECTION_CACHE_UNSAFE_REASON
 
     def __init__(self) -> None:
         super().__init__("copy-notebook", LayeredFixtureConfig(LayeredFixtureKind.NOTEBOOK))

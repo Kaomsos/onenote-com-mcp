@@ -214,6 +214,7 @@ def test_health_check_includes_runtime_diagnostics(monkeypatch):
         "ready": True,
         "probe": "native_windows_process_and_visible_window",
     }
+    assert getattr(server.bridge._client, "state", "NEW") == "NEW"
 
 
 def test_health_check_fails_before_com_when_onenote_gui_is_absent(monkeypatch):
@@ -514,6 +515,11 @@ def test_default_tool_profile_excludes_generic_raw_mutations():
     assert "reorder_section_group" not in names
     assert "plan_reconstructive_move_page" not in names
     assert "reconstructive_move_page" not in names
+
+
+def test_server_import_and_health_do_not_start_com_host():
+    assert getattr(server.bridge._client, "state", "NEW") == "NEW"
+    assert server.bridge._client.generation is None
 
 
 def test_session_tool_descriptions_teach_gui_readiness_recovery_workflow():

@@ -56,6 +56,7 @@ class OneNoteError(RuntimeError):
         partial: bool = False,
         reconciliation: str = "indeterminate",
         details: dict[str, Any] | None = None,
+        delivery_state: str | None = None,
     ) -> None:
         super().__init__(message)
         self.operation = operation
@@ -72,6 +73,8 @@ class OneNoteError(RuntimeError):
         self.partial = bool(partial)
         self.reconciliation = reconciliation
         self.details = dict(details or {})
+        # Internal transport evidence only; never copied into public_details().
+        self.delivery_state = delivery_state
 
     @property
     def hresult(self) -> str | None:
@@ -192,6 +195,7 @@ def bridge_error(
     exception_depth: int | None = None,
     leaf_exception_type: str | None = None,
     timed_out: bool = False,
+    delivery_state: str | None = None,
 ) -> OneNoteBridgeError:
     """Classify a bridge failure only from structured bridge evidence."""
 
@@ -215,6 +219,9 @@ def bridge_error(
     else:
         error_type = OneNoteBridgeError
         message = "OneNote COM operation failed."
+    reconciliation = (
+        "not_applied" if delivery_state == "not_submitted" else "indeterminate"
+    )
     return error_type(
         message,
         operation=operation,
@@ -223,6 +230,8 @@ def bridge_error(
         wrapper_hresult=wrapper_hresult,
         exception_depth=exception_depth,
         leaf_exception_type=leaf_exception_type,
+        reconciliation=reconciliation,
+        delivery_state=delivery_state,
     )
 
 
@@ -243,6 +252,8 @@ def transient_read_error(exc: Exception) -> bool:
 def idempotent_retry_allowed(exc: Exception) -> bool:
     """Allow replay only for typed timeout/synchronization evidence, never unknown/modal errors."""
 
+    if getattr(exc, "delivery_state", None) == "possibly_dispatched":
+        return False
     return isinstance(
         exc,
         (OneNoteNotYetSynchronizedError, OneNoteOperationTimeoutError),

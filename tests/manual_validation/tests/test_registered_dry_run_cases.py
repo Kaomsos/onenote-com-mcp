@@ -11,6 +11,8 @@ import re
 import pytest
 
 from tests.manual_validation import all_scenarios, lifecycle, mcp_stdio_client, test_utils
+from tests.manual_validation.bridge_adapter import VALIDATION_BRIDGE_ADAPTER
+from local_onenote_mcp import com_client as com_client_module
 from tests.manual_validation.runner import build_parser, main
 from tests.manual_validation.path_budget import (
     MAX_ONENOTE_OPEN_PATH_UNITS,
@@ -45,6 +47,8 @@ def _install_sentinels(monkeypatch) -> None:
     monkeypatch.setattr(mcp_stdio_client, "stdio_client", _side_effect_called)
     monkeypatch.setattr(all_scenarios.subprocess, "run", _side_effect_called)
     monkeypatch.setattr(all_scenarios.subprocess, "Popen", _side_effect_called)
+    monkeypatch.setattr(com_client_module.subprocess, "run", _side_effect_called)
+    monkeypatch.setattr(com_client_module.subprocess, "Popen", _side_effect_called)
 
 
 def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
@@ -97,6 +101,7 @@ def test_registered_named_case_round_trips_through_guarded_cli(
     spec = scenario.runtime_spec(parsed)
     multi_role = len(scenario.fixture_recipe.cache_identity.notebook_roles) > 1
     assert payload["dry_run_contract"] is True
+    assert payload["bridge_adapter"] == VALIDATION_BRIDGE_ADAPTER
     assert payload["server_started"] is case.expected.server_started
     assert payload["expected_mcp_process_starts"] == case.expected.expected_mcp_process_starts
     assert payload["lifecycle"] == case.expected.lifecycle

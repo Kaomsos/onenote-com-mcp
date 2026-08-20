@@ -15,11 +15,14 @@ from .layered_copy import LayeredCopyFixtureRecipe, LayeredFixtureConfig, Layere
 from .recipe_base import (
     FixtureBundleObservation,
     FixtureValidationReport,
+    NESTED_SECTION_CACHE_UNSAFE_REASON,
     NotebookRoleSpec,
 )
 
 class CopySectionFixtureRecipe(LayeredCopyFixtureRecipe):
     recipe_version = 4
+    supports_cache = False
+    fresh_only_reason = NESTED_SECTION_CACHE_UNSAFE_REASON
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "same-Notebook and cross-Notebook destination Groups belong to their declared roles",

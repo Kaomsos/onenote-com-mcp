@@ -6,9 +6,9 @@ The design goal is simple to state: **a misconfigured or misbehaving client shou
 
 ## Local-only boundary
 
-- All OneNote access goes through the local COM API via a fixed PowerShell bridge. There is no Microsoft Graph, Azure, online OAuth, telemetry, or remote content processing.
+- All OneNote access goes through the local COM API via a local PowerShell COM client. There is no Microsoft Graph, Azure, online OAuth, telemetry, or remote content processing.
 - Binary `.one` files are never read or edited directly.
-- Untrusted content is never interpolated into PowerShell source or command strings; the bridge uses structured JSON/temp-file transport.
+- Untrusted content is never interpolated into PowerShell source or command strings; the default transport uses structured JSON frames, and the explicit one-shot fallback uses temporary JSON files.
 
 ## Fail-closed authorization
 

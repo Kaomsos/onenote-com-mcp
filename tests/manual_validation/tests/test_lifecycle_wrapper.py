@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.manual_validation import lifecycle
 from tests.manual_validation.lifecycle import NotebookLifecycleWrapper
 from tests.manual_validation.runtime import (
     EXIT_MCP,
@@ -49,7 +50,8 @@ class FakeBridge:
 class BatchFakeBridge(FakeBridge):
     def __init__(self) -> None:
         super().__init__()
-        self.batch_paths_existed: list[bool] = []
+        self.batch_path_checks: list[tuple[str, bool]] = []
+        self._claimed_path_deleted = False
 
     def call(self, name: str, **kwargs):
         if name != "open_hierarchy_batch":
@@ -57,12 +59,14 @@ class BatchFakeBridge(FakeBridge):
         self.calls.append((name, kwargs))
         requests = list(kwargs["requests"])
         working = Path(self.reported_path)
-        self.batch_paths_existed = [
-            (working / request["key"]).exists() for request in requests
-        ]
+        self.batch_path_checks.extend(
+            (str(request["key"]), (working / request["key"]).exists())
+            for request in requests
+        )
         claimed = working / "Group" / "B.one"
-        if claimed.exists():
+        if not self._claimed_path_deleted and claimed.exists():
             claimed.unlink()
+            self._claimed_path_deleted = True
         object_ids = {
             "Group": "group-id",
             "Group/A.one": "section-a-id",
@@ -75,9 +79,7 @@ class BatchFakeBridge(FakeBridge):
                     "key": request["key"],
                     "ok": True,
                     "object_id": object_ids[request["key"]],
-                    "relative_to_id": (
-                        "group-id" if request["parent_key"] == "Group" else "notebook-id"
-                    ),
+                    "relative_to_id": request["relative_to_id"] or "notebook-id",
                     "error": None,
                 }
                 for request in requests
@@ -130,6 +132,30 @@ class RetryingItemBatchFakeBridge(BatchFakeBridge):
         self.batch_call_count += 1
         if self.batch_call_count == 1:
             root = next(item for item in result["items"] if item["key"] == "Root.one")
+            root.update(
+                ok=False,
+                object_id=None,
+                error={
+                    "hresult": -2147023174,
+                    "leaf_exception_type": "System.Runtime.InteropServices.COMException",
+                },
+            )
+            result["xml"] = result["xml"].replace(
+                '<one:Section ID="root-section-id" name="Root" />', ""
+            )
+        return result
+
+
+class PermanentlyFailingRootBatchFakeBridge(BatchFakeBridge):
+    def call(self, name: str, **kwargs):
+        result = super().call(name, **kwargs)
+        if name != "open_hierarchy_batch":
+            return result
+        root = next(
+            (item for item in result["items"] if item["key"] == "Root.one"),
+            None,
+        )
+        if root is not None:
             root.update(
                 ok=False,
                 object_id=None,
@@ -244,7 +270,7 @@ def test_index_checkpoint_reopen_uses_its_own_closed_lease_archive(tmp_path) -> 
     assert not (wrapper.run_dir / "lifecycle-cold-build-lease.json").exists()
 
 
-def test_materialized_batch_freezes_paths_before_one_parent_first_com_session(
+def test_materialized_batch_freezes_paths_before_parent_first_com_session(
     tmp_path,
 ) -> None:
     bridge = BatchFakeBridge()
@@ -276,16 +302,14 @@ def test_materialized_batch_freezes_paths_before_one_parent_first_com_session(
 
     batch_calls = [kwargs for name, kwargs in bridge.calls if name == "open_hierarchy_batch"]
     assert len(batch_calls) == 1
-    assert bridge.batch_paths_existed == [True, True, True, True]
+    assert bridge.batch_path_checks == [
+        ("Group", True),
+        ("Root.one", True),
+    ]
     assert [request["key"] for request in batch_calls[0]["requests"]] == [
         "Group",
-        "Group/A.one",
-        "Group/B.one",
         "Root.one",
     ]
-    assert batch_calls[0]["requests"][1]["parent_key"] == "Group"
-    assert batch_calls[0]["requests"][1]["path"] == "A.one"
-    assert batch_calls[0]["requests"][1]["relative_to_id"] == ""
     assert batch_calls[0]["requests"][0]["relative_to_id"] == ""
     assert Path(batch_calls[0]["requests"][0]["path"]).is_absolute()
     assert [item["relative_path"] for item in lease["opened_hierarchy"]] == [
@@ -304,6 +328,15 @@ def test_materialized_batch_freezes_paths_before_one_parent_first_com_session(
         }
     ]
     assert all(attempt["activated"] is True for attempt in evidence["attempts"])
+    nested_attempts = [
+        attempt
+        for attempt in evidence["attempts"]
+        if attempt["relative_path"] in {"Group/A.one", "Group/B.one"}
+    ]
+    assert all(attempt["open_requested"] is False for attempt in nested_attempts)
+    assert {
+        attempt["activation_proof"] for attempt in nested_attempts
+    } == {"notebook_snapshot_after_parent_batch"}
 
 
 @pytest.mark.parametrize(
@@ -334,17 +367,27 @@ def test_materialized_batch_defers_snapshot_lag_to_fixture_convergence(
         "__ISOLATED__", working, template_paths=(template,)
     )
 
-    assert len([call for call in bridge.calls if call[0] == "open_hierarchy_batch"]) == 1
+    assert len([call for call in bridge.calls if call[0] == "open_hierarchy_batch"]) == 2
     assert len(lease["opened_hierarchy"]) == 4
     assert all(item["snapshot_visible"] is False for item in lease["opened_hierarchy"])
     evidence = read_json(wrapper.materialized_evidence_path)
     assert evidence["status"] == "passed"
-    assert evidence["batch_session_count"] == 1
-    assert evidence["batch_observations"][0]["hierarchy_xml_available"] is xml_available
+    assert evidence["batch_session_count"] == 2
+    assert all(
+        observation["hierarchy_xml_available"] is xml_available
+        for observation in evidence["batch_observations"]
+    )
+    unrequested_attempts = [
+        attempt for attempt in evidence["attempts"] if attempt["open_requested"] is False
+    ]
+    assert all(attempt["activated"] is False for attempt in unrequested_attempts)
+    activated_attempts = [
+        attempt for attempt in evidence["attempts"] if attempt["activated"] is True
+    ]
     assert all(
         attempt["activation_proof"]
         == "open_hierarchy_returned_id_pending_fixture_convergence"
-        for attempt in evidence["attempts"]
+        for attempt in activated_attempts
     )
 
 
@@ -380,6 +423,39 @@ def test_materialized_batch_retries_only_the_item_that_failed_to_open(tmp_path) 
         attempt for attempt in evidence["attempts"] if attempt["relative_path"] == "Root.one"
     ]
     assert [attempt["activated"] for attempt in root_attempts] == [False, True]
+
+
+def test_materialized_batch_never_retries_one_item_more_than_once(tmp_path) -> None:
+    bridge = PermanentlyFailingRootBatchFakeBridge()
+    hierarchy = FakeHierarchy()
+    bridge.hierarchy = hierarchy
+    bridge.reported_path = ""
+    wrapper = NotebookLifecycleWrapper(
+        tmp_path / "run", timeout_seconds=10, bridge=bridge
+    )
+    wrapper._hierarchy = hierarchy
+    working = wrapper.notebook_root / "source-working-copy"
+    template = tmp_path / "cache" / "template-notebook"
+    (working / "Group").mkdir(parents=True)
+    template.mkdir(parents=True)
+    (working / "Group" / "A.one").write_bytes(b"a")
+    (working / "Group" / "B.one").write_bytes(b"b")
+    (working / "Root.one").write_bytes(b"root")
+    bridge.reported_path = str(working.resolve())
+
+    with pytest.raises(RunnerFailure, match="exhausted its retry budget for Root.one"):
+        wrapper.open_working_notebook(
+            "__ISOLATED__", working, template_paths=(template,)
+        )
+
+    batch_calls = [kwargs for name, kwargs in bridge.calls if name == "open_hierarchy_batch"]
+    assert len(batch_calls) == 2
+    root_attempts = [
+        attempt
+        for attempt in read_json(wrapper.materialized_evidence_path)["attempts"]
+        if attempt["relative_path"] == "Root.one"
+    ]
+    assert [attempt["activated"] for attempt in root_attempts] == [False, False]
 
 
 def test_materialized_schema_two_lease_closes_by_exact_id_and_path(tmp_path) -> None:
@@ -813,6 +889,34 @@ def test_get_exact_notebook_validates_open_binding_without_mutation(tmp_path) ->
     ]
 
 
+def test_lifecycle_wrapper_does_not_close_injected_bridge(tmp_path) -> None:
+    class RecordingBridge(FakeBridge):
+        def __init__(self) -> None:
+            super().__init__()
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    bridge = RecordingBridge()
+    wrapper = NotebookLifecycleWrapper(tmp_path / "run", timeout_seconds=10, bridge=bridge)
+    wrapper.close_transport()
+    assert bridge.closed is False
+
+
+def test_lifecycle_wrapper_closes_owned_bridge(tmp_path, monkeypatch) -> None:
+    closed = {"value": False}
+
+    class OwnedBridge(FakeBridge):
+        def close(self) -> None:
+            closed["value"] = True
+
+    monkeypatch.setattr(lifecycle, "OneNoteBridge", lambda **_kwargs: OwnedBridge())
+    wrapper = NotebookLifecycleWrapper(tmp_path / "run", timeout_seconds=10)
+    wrapper.close_transport()
+    assert closed["value"] is True
+
+
 def test_wrapper_exposes_only_bounded_lifecycle_operations() -> None:
     operations = {
         name
@@ -829,6 +933,7 @@ def test_wrapper_exposes_only_bounded_lifecycle_operations() -> None:
         "any_cache_template_open",
         "snapshot_open_notebooks",
         "working_notebook_open_lock",
+        "close_transport",
     }
 
 

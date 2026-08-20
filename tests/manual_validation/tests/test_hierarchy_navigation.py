@@ -269,13 +269,14 @@ class _NavigationClient:
         raise AssertionError((name, arguments))
 
 
-def test_hierarchy_navigation_recipe_and_policy_are_cacheable_and_least_privilege(
+def test_hierarchy_navigation_recipe_is_fresh_only_and_policy_is_least_privilege(
     capsys,
 ) -> None:
     scenario = SCENARIO_REGISTRY.get("hierarchy-navigation")
     recipe = scenario.fixture_recipe
     assert scenario.included_in_all is False
-    assert recipe.supports_cache is True
+    assert recipe.supports_cache is False
+    assert "Section below a SectionGroup" in recipe.fresh_only_reason
     assert recipe.recipe_version == 4
     assert [role.role for role in recipe.cache_identity.notebook_roles] == [
         "browse-b",

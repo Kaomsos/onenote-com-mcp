@@ -23,8 +23,8 @@ _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 
 
 def _bridge_switch_operations() -> set[str]:
-    bridge_path = _SRC_ROOT / "local_onenote_mcp" / "bridge.py"
-    text = bridge_path.read_text(encoding="utf-8")
+    host_path = _SRC_ROOT / "local_onenote_mcp" / "powershell_host.py"
+    text = host_path.read_text(encoding="utf-8")
     return set(re.findall(r'"([a-z_]+)"\s*\{', text))
 
 

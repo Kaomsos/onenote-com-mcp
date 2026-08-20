@@ -2,7 +2,7 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A local-first [MCP](https://modelcontextprotocol.io/) server for **Microsoft OneNote Desktop on Windows**. It talks to OneNote exclusively through the native COM API via a fixed PowerShell bridge — no Microsoft Graph, no Azure, no API keys, no online OAuth, no telemetry, no remote content processing, and no direct editing of `.one` files.
+A local-first [MCP](https://modelcontextprotocol.io/) server for **Microsoft OneNote Desktop on Windows**. It talks to OneNote exclusively through the native COM API via a local PowerShell COM client — no Microsoft Graph, no Azure, no API keys, no online OAuth, no telemetry, no remote content processing, and no direct editing of `.one` files.
 
 Your notes never leave your machine.
 

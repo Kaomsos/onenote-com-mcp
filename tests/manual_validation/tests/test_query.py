@@ -32,7 +32,7 @@ from tests.manual_validation.scenarios.fixture_recipes.query import (
 )
 
 
-def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
+def test_query_metadata_scope_recipe_has_two_complete_fresh_only_roles() -> None:
     scenario = SCENARIO_REGISTRY.get("query")
     recipe = scenario.fixture_recipe
     spec = scenario.spec
@@ -41,7 +41,8 @@ def test_query_metadata_scope_recipe_has_two_complete_cacheable_roles() -> None:
     assert scenario.requires_index_activation_checkpoint is False
     assert scenario.requires_lifecycle_wrappers is True
     assert recipe.recipe_version == 6
-    assert recipe.supports_cache is True
+    assert recipe.supports_cache is False
+    assert "Section below a SectionGroup" in recipe.fresh_only_reason
     assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (
         "query-b",
         "source",
@@ -163,16 +164,24 @@ def test_query_metadata_scope_dry_run_is_human_gated_and_least_privilege(capsys)
     }
 
 
-def test_query_metadata_use_cache_plans_normal_materialization(capsys) -> None:
+def test_query_metadata_use_cache_dry_run_fails_fast(capsys) -> None:
     assert main(
         ["query", "--use-cache", "--dry-run", "--json"]
     ) == 0
     payload = json.loads(capsys.readouterr().out)
 
-    assert payload["cache"]["decision"] == "runtime_lookup_not_performed_in_dry_run"
-    assert payload["cache"]["enabled"] is True
-    assert payload["expected_mcp_process_starts"] == 1
-    assert payload["ordered_steps"][0]["step"] == "resolve-fixture-bundle"
+    assert payload["cache"]["decision"] == "rejected_fresh_only"
+    assert payload["cache"]["enabled"] is False
+    assert payload["expected_mcp_process_starts"] == 0
+    assert payload["ordered_steps"] == [
+        {
+            "step": "preflight-fresh-only-rejects-cache",
+            "trust_boundary": "static fresh-only Recipe contract",
+            "allowed_operations": [],
+            "target": "reject before lifecycle, MCP, cache, or mutation",
+            "reason": SCENARIO_REGISTRY.get("query").fixture_recipe.fresh_only_reason,
+        }
+    ]
 
 
 def _runtime_manifest() -> dict:

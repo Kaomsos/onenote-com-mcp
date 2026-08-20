@@ -1,7 +1,7 @@
-# OneNote 未预启动时，短命 COM client 不能充当 Fixture hierarchy 的存活锚点
+# OneNote 未预启动时，COM client 不能单独充当 Fixture hierarchy 的存活锚点
 
 > 状态：当前有效的工程经验
-> 观察日期：2026-08-14
+> 观察日期：2026-08-14；生产 transport 备注更新于 2026-08-20
 > 观察环境：Windows `10.0.26200.0` x64、OneNote Desktop `16.0.20228.20158`、本地进程外 COM
 > 生产 COM 生命周期：[`../design/architecture.md`](../design/architecture.md#6-运行时生命周期与并发)<br>
 > Manual Validation 架构：[`../design/manual_validation_scenario_fixture_architecture.md`](../design/manual_validation_scenario_fixture_architecture.md)
@@ -14,7 +14,9 @@
 
 这不是 `CloseNotebook(force=false)` 动作本身导致的失败。历史成功与失败路径都执行过相同的 import → exact close → same-path reopen checkpoint；决定性对照变量是 scenario 开始前是否已有 OneNote 进程。该 checkpoint 曾是问题常被观察到的身份交接边界，但不能据此倒置因果关系，当前实现已将它移除。
 
-当前工程推断是：`OneNote.Application` 由 `ONENOTE.EXE` 进程外 COM server 承载，而项目的每次 bridge 调用都会创建一个新的非交互 PowerShell client 和一个新的 COM 对象，调用结束后该 client 进程退出。如果 scenario 需要由第一条调用冷启动 OneNote，就没有一个跨调用持有的 COM 引用或既有 Desktop 会话为刚导入的 live hierarchy 提供稳定存活锚点。后续调用可能重新取得 Notebook shell，却没有前一会话激活的 child hierarchy；更激进时，前一 live identity 整体消失。这个机制解释现有对照，但项目尚未直接测量 COM 引用计数或 OneNote 内部退出条件，因此应保留为工程推断，而不是 Microsoft OneNote 的通用平台保证。
+当前工程推断是：`OneNote.Application` 由 `ONENOTE.EXE` 进程外 COM server 承载。2026-08-14 收集上述对照时，生产 bridge 每次调用都会创建新的非交互 PowerShell client 和一个新的 COM 对象，调用结束后该 client 进程退出；如果 scenario 需要由第一条调用冷启动 OneNote，就没有跨调用持有的 COM 引用或既有 Desktop 会话为刚导入的 live hierarchy 提供稳定存活锚点。后续调用可能重新取得 Notebook shell，却没有前一会话激活的 child hierarchy；更激进时，前一 live identity 整体消失。
+
+2026-08-20 起，默认生产 adapter 已改为同一 MCP 进程内的常驻 STA PowerShell host，并复用单一 COM client。这使“单 MCP process”在默认路径上等于“单 COM client session”，但不等于 Desktop session keeper：COM 仍是进程外 `ONENOTE.EXE`，GUI preflight 仍必要。项目尚未用新 transport 复测冷启动对照，因此不得把常驻 host 写成已证明的 hierarchy 存活修复。这个机制解释现有对照，但项目尚未直接测量 COM 引用计数或 OneNote 内部退出条件，因此应保留为工程推断，而不是 Microsoft OneNote 的通用平台保证。
 
 ## 真实观察
 
@@ -55,10 +57,10 @@ GUI 已预启动的通过运行与未启动的失败运行执行过相同 checkp
 
 1. Manual validation 的 cache 安全含义仍由 immutable template 基线、run-local working copy、typed address 重绑和完整内容验证共同构成；OneNote 初始进程状态属于 working runtime readiness，不属于 template authenticity。
 2. Fixture hierarchy convergence 必须保留双稳定和完整声明对象检查。Notebook shell 可读、`OpenHierarchy` 返回 ID、COM 调用成功或等待时间足够，都不能替代该门限。
-3. 当前 manual runner 没有跨 bridge 调用的 COM lifecycle owner。MCP child 是长驻 Python 进程，但其 `OneNoteBridge` 每次仍启动独立 PowerShell，所以“单 MCP process”不等于“单长驻 COM session”。
+3. 默认生产 adapter 现在让 MCP 进程拥有跨 backend call 的 COM client lifecycle；显式 `one_shot_powershell` fallback 仍没有跨调用 COM owner。这不证明冷启动 hierarchy 可存活，也不授权去掉 GUI preflight。
 4. 当前设计已把“OneNote Desktop 已预启动”落实为代码门限：公开 `health_check` 在首次 COM 读取前 fail closed；manual-validation 单项与真实 `all` 也在 Notebook lifecycle 前检查。该门限阻止已知失败路径，但不等于 runner 已具备冷启动能力。
-5. 后续已选择规划显式 `launch_onenote_gui` 工具，而不是长期 COM owner；范围与安全门限见 [TODO 031](../todo/031_start_onenote_desktop_tool.md)。`health_check` 保持 check-only，不隐式启动应用。
-6. 在没有长期 owner 的情况下，自动重开、重绑、重复 child activation 或增大 timeout 都不应被写成根因修复。
+5. 显式 `launch_onenote_gui` 是 Desktop 会话恢复入口，不是 scenario-scoped COM keeper；范围与安全门限见 [TODO 031](../todo/031_start_onenote_desktop_tool.md)。`health_check` 保持 check-only，不隐式启动应用。
+6. 自动重开、重绑、重复 child activation 或增大 timeout 都不应被写成根因修复。常驻 host 只替换 transport，不替代 Desktop 会话锚点。
 
 ## 适用边界
 

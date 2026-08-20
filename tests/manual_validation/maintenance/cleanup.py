@@ -27,6 +27,8 @@ import xml.etree.ElementTree as ET
 from local_onenote_mcp.bridge import OneNoteBridge
 from local_onenote_mcp.constants import HIERARCHY_SCOPES, XML_SCHEMA_2013
 
+from ..bridge_adapter import VALIDATION_BRIDGE_ADAPTER
+
 from ..local_filesystem import atomic_replace_with_retry
 from ..path_budget import (
     AUTHORED_INSTANCE_KEY_PATTERN,
@@ -279,28 +281,34 @@ class OpenNotebookPathSnapshot:
     @classmethod
     def capture(cls, *, timeout_seconds: int = 30) -> "OpenNotebookPathSnapshot":
         try:
-            bridge = OneNoteBridge(timeout_seconds=timeout_seconds)
-            result = bridge.call(
-                "get_hierarchy",
-                start_id="",
-                scope=HIERARCHY_SCOPES["notebooks"],
-                schema=XML_SCHEMA_2013,
+            bridge = OneNoteBridge(
+                timeout_seconds=timeout_seconds,
+                adapter=VALIDATION_BRIDGE_ADAPTER,
             )
-            root = ET.fromstring(str(result["xml"]))
-            notebooks: list[tuple[str, Path]] = []
-            for node in root.iter():
-                if node.tag.rsplit("}", 1)[-1] != "Notebook":
-                    continue
-                notebook_id = str(node.attrib.get("ID", ""))
-                reported_path = str(node.attrib.get("path", ""))
-                if not notebook_id or not reported_path:
-                    return cls(
-                        "failed",
-                        tuple(notebooks),
-                        "An open Notebook omitted its exact ID or local path.",
-                    )
-                notebooks.append((notebook_id, _canonical_path(reported_path)))
-            return cls("complete", tuple(notebooks))
+            try:
+                result = bridge.call(
+                    "get_hierarchy",
+                    start_id="",
+                    scope=HIERARCHY_SCOPES["notebooks"],
+                    schema=XML_SCHEMA_2013,
+                )
+                root = ET.fromstring(str(result["xml"]))
+                notebooks: list[tuple[str, Path]] = []
+                for node in root.iter():
+                    if node.tag.rsplit("}", 1)[-1] != "Notebook":
+                        continue
+                    notebook_id = str(node.attrib.get("ID", ""))
+                    reported_path = str(node.attrib.get("path", ""))
+                    if not notebook_id or not reported_path:
+                        return cls(
+                            "failed",
+                            tuple(notebooks),
+                            "An open Notebook omitted its exact ID or local path.",
+                        )
+                    notebooks.append((notebook_id, _canonical_path(reported_path)))
+                return cls("complete", tuple(notebooks))
+            finally:
+                bridge.close()
         except Exception as exc:
             return cls("failed", error=f"{type(exc).__name__}: {exc}")
 

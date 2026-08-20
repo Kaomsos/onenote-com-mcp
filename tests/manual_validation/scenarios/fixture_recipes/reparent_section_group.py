@@ -6,7 +6,7 @@ from ...runtime import InvariantFailure
 from ...test_utils import display_name
 from ..common.fixture_builders import ensure_group, ensure_page, ensure_section
 from ..common.fixture_models import FixtureBuildResult, FixtureContext, FixtureValidationContext, resolve_active_structure
-from .recipe_base import RecipeBase
+from .recipe_base import NESTED_SECTION_CACHE_UNSAFE_REASON, RecipeBase
 
 
 DESCRIPTION_TITLE = "00-Reparent-SectionGroup-Description"
@@ -36,6 +36,8 @@ DESCRIPTION = """Reparent SectionGroup 人工验收说明
 
 class ReparentSectionGroupFixtureRecipe(RecipeBase):
     recipe_version = 3
+    supports_cache = False
+    fresh_only_reason = NESTED_SECTION_CACHE_UNSAFE_REASON
 
     def __init__(self) -> None:
         super().__init__("reparent-section-group")

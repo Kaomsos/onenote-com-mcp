@@ -52,6 +52,8 @@ Scenario mutation
 
 Cache build 负责建立模板的权威内容基线；在发布 programmatic template 前，lifecycle wrapper 对每个 exact Notebook 请求一次 `SyncHierarchy`，再执行 `CloseNotebook(force=false)` 并确认精确 ID/path 已关闭，随后才允许 opaque copy。Sync 请求失败会保留 active lease 并阻断发布。此处不 reopen Notebook；Search 的 close/reopen 仍是独立的 index activation 例外。materialized working copy 仍必须重新证明 live identity、完整结构和内容真实性。两条路径最终都向 Scenario 提供同一种 run-local manifest、snapshot 和 validation result，Scenario 不应根据来源降低比较门限。
 
+Cache eligibility 是上述数据流之前的静态安全门。2026-08-20 当前环境观察到，opaque-copy working Notebook 中 `SectionGroup` 下的 `.one` 激活可能使 OneNote 进程崩溃，或者取得 Section ID 后仍永久缺失声明 Page；根因与 adapter 因果尚未确定。因此，任一 role 会形成 `SectionGroup → Section` 的 programmatic Recipe 当前必须声明 `supports_cache=False`。真实 `--use-cache` 在 GUI probe、run directory、cache lookup、Notebook lifecycle 和 MCP 启动前拒绝；dry-run 投影 `rejected_fresh_only`、零 MCP 与空 allowed operations。该临时门限只收紧 manual validation，不定义生产 tool 行为；证据与后续调查见[嵌套 Section cache materialization 不稳定](../lesson/onenote_cached_nested_section_materialization_instability.md)和 [TODO 052](../todo/052_nested_section_cache_crash_investigation.md)。
+
 ## 4. Template、Working Copy 与身份隔离
 
 Template 是关闭、不可变且不被 OneNote 打开的 opaque byte tree。每次消费都 materialize 到新的 run-scoped working paths；OneNote、mutation、restore、`--keep-worksite` 和失败现场只接触 working copy。
@@ -73,7 +75,7 @@ Cache 不保存 working lease，也不与历史 run 建立所有权关系。多�
 
 ## 6. Hierarchy 激活、ID 重绑与单次内容取证
 
-Materialized role 只打开一次 exact working path。Lifecycle 在第一次 child COM 调用前冻结受 manifest 约束的请求，在同一个短命 PowerShell/COM session 中按 parent-before-child 批量激活 SectionGroup/Section，并尝试读取 Notebook Pages hierarchy。精确的顶层 `OneNote_RecycleBin` 是 OneNote 管理的系统子树：它继续保留在 opaque byte inventory 和 template 完整性验证中，但不会被构造成用户 SectionGroup/Section 激活请求；排除前仍必须通过 working-tree containment 与 reparse-point 检查，并在 materialization evidence 中记录 content-free 原因。
+对仍允许 cache 的 Recipe，materialized role 只打开一次 exact working path。Lifecycle 在第一次 child COM 调用前冻结受 manifest 约束的请求，在同一个显式配置的 PowerShell/COM client session 中按 parent-before-child 批量激活声明容器，并尝试读取 Notebook Pages hierarchy。当前 shape gate 保证 programmatic `SectionGroup → Section` Recipe 不会到达 child activation；保留的 parent-aware 实现不能被解释为该 shape 已安全。精确的顶层 `OneNote_RecycleBin` 是 OneNote 管理的系统子树：它继续保留在 opaque byte inventory 和 template 完整性验证中，但不会被构造成用户 SectionGroup/Section 激活请求；排除前仍必须通过 working-tree containment 与 reparse-point 检查，并在 materialization evidence 中记录 content-free 原因。
 
 Fixture observer 随后重新枚举完整 hierarchy，按 Notebook-relative typed address 唯一重绑 SectionGroup、Section 和 Page。全部声明对象必须以相同 ID、type、parent、section、page level、parent Page 和 sibling order 连续稳定两次，之后才允许完整内容读取。
 

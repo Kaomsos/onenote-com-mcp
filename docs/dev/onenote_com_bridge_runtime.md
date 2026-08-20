@@ -5,15 +5,15 @@
 
 ## Windows PowerShell host
 
-当前生产 [`OneNoteBridge`](../../src/local_onenote_mcp/bridge.py) 仅支持 Windows，并固定启动：
+当前生产 [`OneNoteBridge`](../../src/local_onenote_mcp/bridge.py) 仅支持 Windows。默认 adapter 是 `persistent_powershell`，固定启动：
 
 ```text
-powershell.exe -NoProfile -NonInteractive -Command -
+powershell.exe -NoProfile -NonInteractive -Sta -EncodedCommand <UTF-16LE Base64>
 ```
 
-这里的 `powershell.exe` 指 Windows PowerShell 5.1。当前生产代码不调用 PowerShell 7 的 `pwsh`，开发、诊断和兼容性结论也不得把 `pwsh` 当作等价 host。Windows PowerShell 5.1 通常以 STA 启动；任何未来的常驻 COM host 都必须显式建立并验证 STA 所有权，不能依赖调用方线程或跨线程传递 COM proxy。
+这里的 `powershell.exe` 指 Windows PowerShell 5.1。当前生产代码不调用 PowerShell 7 的 `pwsh`，开发、诊断和兼容性结论也不得把 `pwsh` 当作等价 host。默认 host 必须显式建立并验证 STA 所有权；COM proxy 只属于该 host 进程，不能跨线程或跨进程传递。
 
-当前 bridge 每次 backend operation 都启动一个新的 Windows PowerShell 进程，在固定 PowerShell 程序中创建一次 `OneNote.Application`，并通过临时 JSON 请求/响应文件交换结构化数据。参数始终作为数据传递，绝不插值到 PowerShell 源代码或命令字符串。常驻 PowerShell host 是 [TODO 048](../todo/048_persistent_com_client_bridge.md) 的默认目标实现，但尚不是当前 production transport。
+默认 host 在进程内只创建一次 `OneNote.Application`，随后通过 stdin/stdout 上的 `ONB1` + UTF-8 JSON Base64 帧串行处理请求。参数始终作为数据传递，绝不插值到 PowerShell 源代码或命令字符串。`one_shot_powershell` 只在环境变量 `LOCAL_ONENOTE_BRIDGE_ADAPTER` 显式选择时启用，才会为每次 backend operation 启动新的 `powershell.exe` 并使用临时 JSON 文件；默认 adapter 初始化失败必须 fail-closed，不得静默降级。状态机与投递语义见 [常驻 OneNote COM Client Bridge](../design/persistent_com_client_bridge.md)。
 
 ## OneNote COM XML schema
 
@@ -47,6 +47,52 @@ $onenote.GetHierarchy("", 2, [ref]$xml, 2)
 - 最终显式释放 COM RCW。
 
 该 smoke 只证明当前机器上的只读调用与进程内 client 复用可行，不证明独立常驻 child process、stdin/stdout framing、全部 operation、timeout、崩溃、shutdown、不重放语义或端到端性能。真实 mutation 验证仍只能由用户通过具名 manual-validation scenario 显式启动。
+
+## Adapter 选择
+
+`settings.py` 只解析 `LOCAL_ONENOTE_BRIDGE_ADAPTER` 名称，非法值 fail-closed。`OneNoteBridge` 按名称装配具体 client。
+
+| 值 | 行为 |
+| --- | --- |
+| 未设置 / `persistent_powershell` | 默认。懒启动一个 STA host，复用单一 `OneNote.Application`。 |
+| `one_shot_powershell` | 显式 fallback。每次 backend call 启动新的 `powershell.exe` 并使用临时 JSON 文件。 |
+| 其他 | 启动期失败，不静默降级。 |
+
+`import`、`health_check` 与 `launch_onenote_gui` 不 spawn host。manual-validation 的 scenario MCP child 与 lifecycle wrapper 固定写入同一显式 adapter，不继承父进程环境变量；dry-run 计划输出 `bridge_adapter`。
+
+## 同 workload 双 adapter 对比（content-free）
+
+本项只改变每次 backend call 的固定 transport 成本，不减少业务 readback 次数。对比时必须使用同一确定性只读 workload，并区分 TODO 045 的 snapshot/readback 优化。
+
+1. 启动并保留可见 OneNote Desktop GUI。
+2. 两次独立 MCP 进程分别使用默认 adapter 与 `LOCAL_ONENOTE_BRIDGE_ADAPTER=one_shot_powershell`。每个进程同时启用 `LOCAL_ONENOTE_MCP_DEBUG_TRACE=true`，并设置互不重叠的 `LOCAL_ONENOTE_BRIDGE_AUDIT_PATH`。`adapter`、`client_generation` 与 `delivery_state` 只写入 bridge audit，不会出现在 debug trace。
+3. 每个进程执行相同的只读序列：`health_check`，再连续两次 `list_notebooks` 或 `query_notebook`。
+4. 从 debug trace 比较 backend call 数、首次调用耗时与第二次稳态耗时；从对应 audit JSONL 比较 `adapter`、`client_generation`、`delivery_state`。backend call 数应相同；差异只应出现在 transport 耗时和 `client_generation` 是否跨调用保持。
+5. 不得把 Copy/Move readback 次数变化记为本项收益。结论由用户运行后写入 [TODO 048](../todo/048_persistent_com_client_bridge.md)。
+
+Agent 不执行真实 scenario 或真实 MCP 读/写。
+
+## 用户真实验证命令
+
+Agent、pytest、CI 与后台任务只能运行带 `--dry-run` 的命令。下列真实命令必须由用户本人在交互式前台终端启动，且 OneNote Desktop GUI 必须已经可见：
+
+```powershell
+# 静态计划（可含最终 adapter）
+.venv\Scripts\python.exe tests\manual_validation\run.py query --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run --json
+
+# 默认 adapter：只读
+.venv\Scripts\python.exe tests\manual_validation\run.py query
+
+# 默认 adapter：成功 mutation
+.venv\Scripts\python.exe tests\manual_validation\run.py rename
+
+# policy 拒绝 + shutdown/restart smoke（独立 GUI 入口；不要由 Agent 启动）
+.venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --verbosity verbose
+```
+
+显式 fallback 不走 `run.py`（validation child 固定 `persistent_powershell`）。在交互式 MCP 中设置 `LOCAL_ONENOTE_BRIDGE_ADAPTER=one_shot_powershell`，确认 bridge audit 的 `adapter` 字段，以及非法值使服务器启动 fail-closed。debug trace 不含 `adapter`。
 
 ## 变更纪律
 

@@ -509,74 +509,79 @@ async def finalize_notebook(
         timeout_seconds=options.timeout,
         **({} if role == "source" else {"role": role}),
     )
-    notebook = manifest.get("notebooks", {}).get(role, manifest["notebook"])
-    notebook_id = str(notebook["id"])
-    lease = read_json(wrapper.lease_path)
-    source_path = manifest.get("disposable_targets", {}).get(f"{role}_notebook_path")
-    if notebook_id != str(lease.get("notebook_id")):
-        raise RestoreFailure("Manifest Notebook ID does not match the lifecycle lease.")
-    if source_path and Path(str(source_path)).resolve() != Path(
-        str(lease.get("expected_local_path", ""))
-    ).resolve():
-        raise RestoreFailure("Manifest Notebook path does not match the lifecycle lease.")
-    lifecycle_path = options.run_dir / (
-        "lifecycle.json" if role == "source" else f"lifecycle-{role}.json"
-    )
-    lifecycle: dict[str, Any] = {
-        "started_at": utc_now(),
-        "mode": "keep" if _keep_source_notebook(args) else "close",
-        "source_notebook_id": notebook_id,
-        "role": role,
-        "closed": False,
-        "preserved_paths": _preserved_notebook_paths(options.run_dir, manifest),
-        "filesystem_deleted": False,
-        "status": "running",
-    }
-    write_json(lifecycle_path, lifecycle)
-    if lease.get("state") == "closed":
-        closed = lease.get("close_result")
-        if (
-            not isinstance(closed, dict)
-            or closed.get("closed") is not True
-            or str(closed.get("source_notebook_id", "")) != notebook_id
-        ):
-            raise RestoreFailure("Pre-closed lifecycle lease lacks exact close evidence.")
-        lifecycle.update(
-            closed=True,
-            close_before=closed.get("close_before"),
-            close_result=closed,
-            status="closed_preserved",
-            completed_at=utc_now(),
+    try:
+        notebook = manifest.get("notebooks", {}).get(role, manifest["notebook"])
+        notebook_id = str(notebook["id"])
+        lease = read_json(wrapper.lease_path)
+        source_path = manifest.get("disposable_targets", {}).get(f"{role}_notebook_path")
+        if notebook_id != str(lease.get("notebook_id")):
+            raise RestoreFailure("Manifest Notebook ID does not match the lifecycle lease.")
+        if source_path and Path(str(source_path)).resolve() != Path(
+            str(lease.get("expected_local_path", ""))
+        ).resolve():
+            raise RestoreFailure("Manifest Notebook path does not match the lifecycle lease.")
+        lifecycle_path = options.run_dir / (
+            "lifecycle.json" if role == "source" else f"lifecycle-{role}.json"
         )
-        write_json(lifecycle_path, lifecycle)
-        return lifecycle
-    if _keep_source_notebook(args):
-        current = wrapper.get_exact_notebook(lease)
-        preserved = {
+        lifecycle: dict[str, Any] = {
+            "started_at": utc_now(),
+            "mode": "keep" if _keep_source_notebook(args) else "close",
+            "source_notebook_id": notebook_id,
+            "role": role,
             "closed": False,
-            "source_notebook_id": str(current["id"]),
-            "status": "preserved_open",
+            "preserved_paths": _preserved_notebook_paths(options.run_dir, manifest),
             "filesystem_deleted": False,
+            "status": "running",
         }
-        lifecycle.update(
-            status="preserved_open",
-            preserve_result=preserved,
-            completed_at=utc_now(),
-        )
+        write_json(lifecycle_path, lifecycle)
+        if lease.get("state") == "closed":
+            closed = lease.get("close_result")
+            if (
+                not isinstance(closed, dict)
+                or closed.get("closed") is not True
+                or str(closed.get("source_notebook_id", "")) != notebook_id
+            ):
+                raise RestoreFailure("Pre-closed lifecycle lease lacks exact close evidence.")
+            lifecycle.update(
+                closed=True,
+                close_before=closed.get("close_before"),
+                close_result=closed,
+                status="closed_preserved",
+                completed_at=utc_now(),
+            )
+            write_json(lifecycle_path, lifecycle)
+            return lifecycle
+        if _keep_source_notebook(args):
+            current = wrapper.get_exact_notebook(lease)
+            preserved = {
+                "closed": False,
+                "source_notebook_id": str(current["id"]),
+                "status": "preserved_open",
+                "filesystem_deleted": False,
+            }
+            lifecycle.update(
+                status="preserved_open",
+                preserve_result=preserved,
+                completed_at=utc_now(),
+            )
+            write_json(lifecycle_path, lifecycle)
+            return lifecycle
+
+        closed = wrapper.close_exact_notebook()
+        if closed.get("closed") is not True:
+            raise RestoreFailure("Source Notebook close did not return closed=true.")
+        lifecycle["closed"] = True
+        lifecycle["close_before"] = closed.get("close_before")
+        lifecycle["close_result"] = closed
+        write_json(lifecycle_path, lifecycle)
+
+        lifecycle.update(status="closed_preserved", completed_at=utc_now())
         write_json(lifecycle_path, lifecycle)
         return lifecycle
-
-    closed = wrapper.close_exact_notebook()
-    if closed.get("closed") is not True:
-        raise RestoreFailure("Source Notebook close did not return closed=true.")
-    lifecycle["closed"] = True
-    lifecycle["close_before"] = closed.get("close_before")
-    lifecycle["close_result"] = closed
-    write_json(lifecycle_path, lifecycle)
-
-    lifecycle.update(status="closed_preserved", completed_at=utc_now())
-    write_json(lifecycle_path, lifecycle)
-    return lifecycle
+    finally:
+        closer = getattr(wrapper, "close_transport", None)
+        if callable(closer):
+            closer()
 
 
 async def finalize_bundle(

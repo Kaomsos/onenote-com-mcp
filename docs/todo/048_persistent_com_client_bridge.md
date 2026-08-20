@@ -1,18 +1,16 @@
 # 048：常驻 OneNote COM Client Bridge
 
 > ID：048
-> 状态：待办
+> 状态：进行中
 > 优先级：P0
 > 类型：OneNote COM / Bridge Transport / 性能 / Mutation 安全
 > 更新日期：2026-08-20
 
 ## 决策摘要
 
-当前每次 `OneNoteBridge.call()` 都以 `subprocess.run()` 启动新的 `powershell.exe`、传入固定 bridge 脚本、在该进程中创建 `OneNote.Application`，并使用本次调用的临时 JSON 请求/响应文件。一次 tool call 的每个 backend call 因而重复承担 PowerShell 进程启动、脚本解析、COM activation 与临时文件 I/O。
+生产默认 adapter 现为 `persistent_powershell`：`OneNoteBridge` 持有单一 `ComClient`，懒启动一个 STA PowerShell host，并在该 host 内复用一个 `OneNote.Application` client。`one_shot_powershell` 只在 `LOCAL_ONENOTE_BRIDGE_ADAPTER` 显式选择时启用。本项不绑定 `pywin32` 或 Python 进程内 COM。Runtime、service 与公开 tool 只调用统一 `OneNoteBridge.call()`，不取得或跨线程/跨进程传递 COM proxy。
 
-本项不再绑定 `pywin32` 或 Python 进程内 COM。目标是建立受控的常驻 COM client 边界：每个 MCP server 进程只启用一个选定 adapter，由 adapter 的单一受控执行 owner 创建、串行使用、释放并在故障后替换一个 `OneNote.Application` client。Runtime、service 与公开 tool 只调用统一 bridge，不取得或跨线程/跨进程传递 COM proxy。
-
-默认目标实现是常驻 Windows PowerShell STA host：host 启动后一次创建 `$onenote = New-Object -ComObject OneNote.Application`，以固定 JSON request/response protocol 串行处理调用，并复用现有 PowerShell operation allowlist、`[ref]` out 参数适配与 HRESULT 投影。当前 one-shot PowerShell bridge 仍是生产基线；只有完成本 TODO 的实现与验证后，常驻 PowerShell host 才成为默认 production adapter。
+实现与纯合同测试已落地；真实 OneNote read/mutation/restart 证据与同 workload 性能对比仍待用户确认，因此状态保持进行中。
 
 未来 adapter（包括 pywin32）可以接入该边界，但必须独立满足相同的 operation、错误、安全、生命周期和验证契约。它们不能成为默认 PowerShell adapter 的运行依赖，也不能改变公开 tool 权限或结果语义。
 
@@ -47,14 +45,19 @@
 
 项目决定以常驻 COM client bridge 为目标，并将 Windows PowerShell STA host 定为默认实现。该决定消除了继续寻找 pywin32 名称解析规避方案的前置依赖；当前 pywin32 失败证据保留为 optional adapter 的兼容性限制，而非本项 blocker。
 
-因此状态从“阻塞”改为“待办”。实现仍不得仅凭 fake COM 或本次进程内 smoke 推进到完成：默认 PowerShell adapter 必须满足下述全部生产和真实验证门限；后续任何 client adapter 也必须逐一通过同等门限后才能被显式接入。
+因此状态从“阻塞”改为实施。实现仍不得仅凭 fake COM 或本次进程内 smoke 推进到完成：默认 PowerShell adapter 必须满足下述全部生产和真实验证门限；后续任何 client adapter 也必须逐一通过同等门限后才能被显式接入。
 
-## 当前边界与缺口
+## 2026-08-20 实现状态
 
-- `OneNoteBridge.call()` 当前为每个 backend operation 创建并等待一个新的 `powershell.exe`；COM proxy 不能跨该进程保存；
-- PowerShell 的 `[ref]` 参数包装了 `GetHierarchy`、`OpenHierarchy` 等 OneNote API 的 out 参数；默认 adapter 必须复用或经逐 operation 合同测试证明等价的适配，而不是把 23 个调用机械复制到另一种语言；
-- 当前错误投影、timeout、audit、debug trace backend 行、operation catalog 和 mutation 收敛/对账契约均依赖 bridge 的稳定结果语义；
-- FastMCP/Runtime 的调用线程不应直接跨线程或跨进程持有 COM proxy。每种 adapter 都必须由其单一受控 execution owner 管理 apartment、proxy/client 的创建、调用和释放。
+- [`com_client.py`](../../src/local_onenote_mcp/com_client.py) 定义 `ComClient` 契约与投递三态：`responded`、`not_submitted`、`possibly_dispatched`。模块不 import settings、services 或 runtime。
+- [`powershell_host.py`](../../src/local_onenote_mcp/powershell_host.py) 持有 23 个 operation 的共享 switch；one-shot wrapper 与常驻 host 由固定常量拼装，不插值用户数据。
+- 默认 `PersistentPowerShellClient` 使用 `powershell.exe -NoProfile -NonInteractive -Sta -EncodedCommand`、`ONB1` 帧、generation/sequence、单槽 pending、v1 断连判定、帧大小上限，以及 idle/in-flight 两条 `close()` 路径。CLOSED 后 `execute` 稳定失败。host 与 Python 使用同一 encoded/decoded 上限；host 在 COM 前校验 object、字段类型、generation、sequence 与 operation allowlist；Python 对 response 做完整 schema/类型校验，任何异常 poison 当前 generation。`close()`/`_reap()` 在 reader 结束后关闭 stdout 并清空 `_reader_io`。
+- `possibly_dispatched` 接入 `idempotent_retry_allowed()` 与 `MutationAttemptExecutor`：即使重新观察到 exact pre-state 也不二次 execute。`delivery_state` 只保留在内部异常和 bridge audit，`public_details()` 不变。
+- `settings.py` 只解析 `LOCAL_ONENOTE_BRIDGE_ADAPTER`；非法值 fail-closed。persistent 初始化失败不降级。
+- `server.py` `finally` 与 manual-validation 的 lifecycle wrapper、`mcp_stdio_client`、maintenance cleanup 显式关闭自有 bridge。validation child 与 lifecycle 固定同一 adapter；dry-run 打印 `bridge_adapter`。
+- 仍待用户：同 workload 双 adapter content-free 性能对比，以及 disposable 场景的 read / 成功 mutation / policy rejection / shutdown-restart 真实证据。
+
+对比命令与用户清单见 [OneNote COM Bridge 运行依赖](../dev/onenote_com_bridge_runtime.md)。
 
 ## 工作范围
 
@@ -92,15 +95,18 @@
 
 ## 完成定义
 
-- [ ] client-adapter 契约已落地，默认 `persistent_powershell` adapter 已实现，且生产 bridge 不再为每次 backend call 启动 `powershell.exe`；
-- [ ] 默认 STA PowerShell host 完整拥有 COM client 生命周期、串行 dispatch、显式 shutdown 与故障后的干净重建；后续 adapter 通过同一边界接入，不能暴露或跨 owner 传递 COM proxy；
-- [ ] 所有既有 bridge operation 的参数/out 参数、成功/partial/失败结果及 HRESULT 投影与公开 Runtime 契约兼容；
-- [ ] 自动化测试证明 host/worker 不跨调用串线、不会泄漏 COM/client/process/thread/queue 资源，timeout/崩溃不会重放任何 operation，且 trace/audit 不含内容或敏感标识；
+- [x] client-adapter 契约已落地，默认 `persistent_powershell` adapter 已实现，且生产 bridge 不再为每次 backend call 启动 `powershell.exe`；
+- [x] 默认 STA PowerShell host 完整拥有 COM client 生命周期、串行 dispatch、显式 shutdown 与故障后的干净重建；后续 adapter 通过同一边界接入，不能暴露或跨 owner 传递 COM proxy；
+- [x] 所有既有 bridge operation 的参数/out 参数、成功/partial/失败结果及 HRESULT 投影与公开 Runtime 契约兼容；
+- [x] 自动化测试证明 host/worker 不跨调用串线、不会泄漏 COM/client/process/thread/queue 资源，timeout/崩溃不会重放任何 operation，且 trace/audit 不含内容或敏感标识；
 - [ ] 已记录同 workload 的 transport 性能基线与收益，未将 readback 数量优化误归因于本项；
 - [ ] 用户确认默认 adapter 在 disposable 本地 OneNote 场景中的必要 read/mutation/restart 真实证据；如 fallback 或可选 adapter 保留，已验证其选择与故障语义。
 
+自动化四项在全量 pytest 通过后视为代码合同已满足；后两项必须由用户确认真实证据后才能勾选，不得用 mock 或 `--dry-run` 替代。
+
 ## 关联
 
+- [常驻 OneNote COM Client Bridge 状态模型](../design/persistent_com_client_bridge.md)：当前 adapter/client 生命周期、单飞 pending 请求、delivery state、generation 与故障收尾。
 - [TODO 025](025_onenote_com_convergence_and_mutation_coordination.md)：当前 COM error、收敛、对账与进程内协调基线。
 - [TODO 044](044_mcp_runtime_debug_tracing.md)：content-free backend transport 与 per-call trace 证据。
 - [TODO 045](045_copy_move_readback_snapshot_efficiency.md)：减少单次 Copy/Move 的业务 readback；与本项的固定 bridge 成本优化互补。

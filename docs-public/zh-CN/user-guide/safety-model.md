@@ -6,9 +6,9 @@
 
 ## Local-only 边界
 
-- 全部 OneNote 访问通过固定 PowerShell bridge 走本地 COM API。没有 Microsoft Graph、Azure、在线 OAuth、遥测或远程内容处理。
+- 全部 OneNote 访问通过本地 PowerShell COM client 走本地 COM API。没有 Microsoft Graph、Azure、在线 OAuth、遥测或远程内容处理。
 - 绝不直接读取或编辑二进制 `.one` 文件。
-- 绝不把不可信内容插值到 PowerShell 源代码或命令字符串中；bridge 使用结构化 JSON/临时文件传输。
+- 绝不把不可信内容插值到 PowerShell 源代码或命令字符串中；默认 transport 使用结构化 JSON 帧，显式 one-shot fallback 才使用临时 JSON 文件。
 
 ## Fail-closed 授权
 

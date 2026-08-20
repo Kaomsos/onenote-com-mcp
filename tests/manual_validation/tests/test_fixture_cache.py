@@ -2207,15 +2207,16 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
     identity = new_run_identity(
         datetime(2026, 8, 11, 11, 5, 49, 123_000, tzinfo=timezone(timedelta(hours=8)))
     )
+    scenario_name = "reorder-page"
     fresh_names = validation_notebook_names(
-        "copy-notebook", identity, ("source",), cached=False
+        scenario_name, identity, ("source",), cached=False
     )
     cached_names = validation_notebook_names(
-        "copy-notebook", identity, ("source",), cached=True
+        scenario_name, identity, ("source",), cached=True
     )
     initial_name = fresh_names["source"]
     working_name = cached_names["source"]
-    recipe = SCENARIO_REGISTRY.get("copy-notebook").fixture_recipe
+    recipe = SCENARIO_REGISTRY.get(scenario_name).fixture_recipe
     seed_store = BundleCacheStore(cache_root)
     seed_store.initialize()
     seed_hit: CacheHit | None = None
@@ -2439,11 +2440,11 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
         fake_prepare_materialized_fixture_bundle,
     )
     monkeypatch.setattr(validation, "render_report", lambda path: path / "report.md")
-    monkeypatch.setattr(SCENARIO_REGISTRY.get("copy-notebook"), "execute", fake_execute)
+    monkeypatch.setattr(SCENARIO_REGISTRY.get(scenario_name), "execute", fake_execute)
 
     args = argparse.Namespace(
-        command="copy-notebook",
-        scenario="copy-notebook",
+        command=scenario_name,
+        scenario=scenario_name,
         notebook_name=initial_name,
         run_dir=run_dir,
         timeout=1_800,
@@ -2454,6 +2455,7 @@ def test_programmatic_cold_build_adopts_materialized_working_notebook_name(
         run_identity=identity,
         fresh_notebook_names=fresh_names,
         cached_notebook_names=cached_names,
+        page_level=2,
     )
     result = asyncio.run(
         run_validate(

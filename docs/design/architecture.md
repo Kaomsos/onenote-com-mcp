@@ -21,8 +21,9 @@ flowchart LR
     Page --> Domain
     Services --> Policy["policy.py\n权限与搜索预算"]
     Services --> Bridge["bridge.py\n固定操作白名单"]
-    Bridge --> PowerShell["PowerShell bridge"]
-    PowerShell --> COM["OneNote.Application COM"]
+    Bridge --> Client["ComClient adapter"]
+    Client --> Host["persistent PowerShell STA host"]
+    Host --> COM["OneNote.Application COM"]
 ```
 
 必须保持的边界：
@@ -83,7 +84,9 @@ src/local_onenote_mcp/
 │  ├─ images.py              图片尺寸读取与等比换算
 │  ├─ models.py              Page 格式化内部块模型
 │  └─ __init__.py            Page 子系统 facade
-├─ bridge.py                 PowerShell/COM infrastructure adapter
+├─ bridge.py                 COM client 装配与公开 call/audit 边界
+├─ com_client.py             persistent/one-shot PowerShell adapters
+├─ powershell_host.py        固定 PowerShell operation switch 与 host 脚本
 ├─ debug_trace.py            可选本地 Runtime debug trace（JSONL、content-free）
 ├─ execution_context.py      单次 execution 的 correlation ID carrier
 ├─ onenote_errors.py         typed HRESULT/backend errors
@@ -217,7 +220,7 @@ classDiagram
 | `MutationPolicy` | `policy` | 从环境变量生成不可变权限快照。 |
 | `SearchBudget` | `policy` | 从环境变量生成不可变搜索预算。 |
 | `CopyBudget` | `policy` | 限制 Copy 的对象/Page 数、完整 XML 字节和计划/执行时间。 |
-| `OneNoteBridge` | `bridge` | 通过临时 JSON 与固定 PowerShell 脚本执行白名单 COM 操作。 |
+| `OneNoteBridge` | `bridge` | 通过选定 COM client adapter 执行白名单 COM 操作；默认复用常驻 STA PowerShell host。 |
 | `PartialFailure` | `services.errors` | 携带非原子多步 mutation 已完成步骤。 |
 | `MutationFailure` / `MutationPreflightFailure` | `services.errors` | 为纳入 attempt control 的 operation 提供未应用、preflight 与统一失败字段；typed OneNote backend error 仍保留原类型和 HRESULT。 |
 | `OneNoteError` | `onenote_errors` | 保留 operation、最内层 signed/unsigned HRESULT、content-free category、retryability、partial 和 reconciliation；bridge audit 另记 PowerShell wrapper HRESULT、异常深度和最内层异常类型。按 Microsoft OneNote error table 分类 modal、not-yet-synchronized、timeout、object/file unavailable，未知值保持 fail-closed。 |
@@ -416,15 +419,15 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 
 - `server.py` 创建一个 `FastMCP`、一个 `OneNoteBridge` 和一个 `ServiceContainer`，随后注册工具并运行 stdio。
 - service 实例共享同一个 bridge；当前没有 repository 或 hierarchy cache。
-- 每个 bridge 调用启动非交互 PowerShell，并在该进程中创建 OneNote COM 对象。
+- 默认 bridge 懒启动一个 STA PowerShell host，并在该 host 内复用一个 `OneNote.Application` client；COM 调用在 host 内串行。显式 `one_shot_powershell` 才为每次 backend call 启动新进程。
 - 工具函数是 async transport 接口，service 和 bridge 当前为同步阻塞执行。
 - mutation 回读使用有限次数的同步轮询；搜索顺序读取 Page，不并行调用 COM。
 
-`OneNote.Application` 在当前 Windows 安装中由 `ONENOTE.EXE` 进程外 COM server 承载。`OneNoteBridge` 只复用 Python 配置对象，不复用 PowerShell 进程或 COM reference；因此长驻 MCP server 也不构成跨 bridge 调用的 COM lifecycle owner。生产 MCP 当前不承诺自动启动的 OneNote 实例会在两个独立 bridge 调用之间保持运行，也不承诺前一 client 激活的临时 live hierarchy 会被下一 client 继承。
+`OneNote.Application` 在当前 Windows 安装中由 `ONENOTE.EXE` 进程外 COM server 承载。默认 persistent adapter 让一个 MCP 进程拥有跨 backend call 的 COM client lifecycle；这不改变 GUI preflight，也不承诺冷启动 OneNote 后 live hierarchy 一定可继承。显式 one-shot fallback 仍不复用 PowerShell 进程或 COM reference。状态机与投递语义见 [常驻 OneNote COM Client Bridge](persistent_com_client_bridge.md)。
 
-当前生产代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在。相同 native probe 由 Registry 中独立的 `platform_preflight_policy` 绑定到所有需公开 gate 的 effect，并在 authorization 后、协调和首个 backend call 前执行；纯 read 不绑定，恢复入口 `launch_onenote_gui` 明确豁免。进程缺失、process-only、窗口不可见或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote。失败 envelope 给出 `health_check → launch_onenote_gui → health_check → retry original operation`，并在 UI Control 关闭时提示开启最小 gate 或手动启动。短命 COM client 冷启动 OneNote 时的已观察平台限制见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)；测试 runner 如何复用该门限由独立的 [Manual Validation 架构](manual_validation_scenario_fixture_architecture.md)定义。
+当前生产代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在。相同 native probe 由 Registry 中独立的 `platform_preflight_policy` 绑定到所有需公开 gate 的 effect，并在 authorization 后、协调和首个 backend call 前执行；纯 read 不绑定，恢复入口 `launch_onenote_gui` 明确豁免。进程缺失、process-only、窗口不可见或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote。失败 envelope 给出 `health_check → launch_onenote_gui → health_check → retry original operation`，并在 UI Control 关闭时提示开启最小 gate 或手动启动。冷启动 OneNote 时的已观察平台限制见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)；测试 runner 如何复用该门限由独立的 [Manual Validation 架构](manual_validation_scenario_fixture_architecture.md)定义。
 
-生产 MCP 已提供显式、无参数、UI Control 授权的 `launch_onenote_gui`；它在进程完全不存在时最多请求一次受信任 `ONENOTE.EXE` launch，再有界观察可见 GUI，不实现 scenario-scoped COM keeper。标准 manual-validation runner 仍要求启动前已有可见 GUI，避免 fixture 场景隐式改变 session；长期 COM owner 暂不采用。
+生产 MCP 已提供显式、无参数、UI Control 授权的 `launch_onenote_gui`；它在进程完全不存在时最多请求一次受信任 `ONENOTE.EXE` launch，再有界观察可见 GUI，不实现 scenario-scoped COM keeper。标准 manual-validation runner 仍要求启动前已有可见 GUI，避免 fixture 场景隐式改变 session；scenario-scoped Desktop COM keeper 暂不采用。默认 persistent host 只拥有 MCP 进程内的 COM client lifecycle。
 
 ## 7. 测试与写入隔离
 

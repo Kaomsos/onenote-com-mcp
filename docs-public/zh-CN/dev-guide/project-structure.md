@@ -11,7 +11,8 @@ onenote-com-mcp/
 │  ├─ page/                   Page 解析、格式化、构建、图片与 Copy 语义
 │  ├─ services/               应用编排；policy、精确 ID、预算
 │  ├─ tools/                  services 之上的精简 MCP 适配层
-│  ├─ bridge.py               可信本地 COM 边界（PowerShell、JSON 传输）
+│  ├─ bridge.py               可信本地 COM 边界（adapter 装配与 audit）
+│  ├─ com_client.py           常驻/one-shot PowerShell COM adapter
 │  ├─ server.py / settings.py / policy.py   组合与进程级配置
 │  └─ operation_catalog.py / tool_surface.py  canonical operation registry 与工具发布面
 ├─ tests/                     确定性自动化测试（mock/合同级）
@@ -31,18 +32,18 @@ onenote-com-mcp/
 - **`page/`** 拥有 Page XML 语义：解析、格式化、构建、图片和面向 Copy 的投影。XML 处理集中管理，由 round-trip/invariant 测试覆盖。
 - **`services/`** 是编排层，也是 policy、精确 ID 定位、confirmation 字段、预算和可恢复失败行为的主要执行边界。
 - **`tools/`** 把 MCP 输入输出适配到 services。Tool 函数保持精简、类型化，与已记录的响应 envelope 一致；绝不重新实现 service 逻辑。
-- **`bridge.py`** 是可信的本地 COM 边界。它使用结构化 JSON/临时文件传输，绝不把不可信内容插值到 PowerShell 源代码或命令字符串。
+- **`bridge.py`** 是可信的本地 COM 边界。它装配单一 `ComClient`、独占 audit 与错误投影，绝不把不可信内容插值到 PowerShell 源代码或命令字符串。
 - **`server.py`、`settings.py`、`policy.py`** 负责组合与进程级配置。环境变量读取集中管理；没有隐藏的替代注册路径。
 
 ## PowerShell 与 OneNote COM 运行依赖
 
-生产 bridge 仅支持 Windows，并通过 `powershell.exe` 启动 Windows PowerShell 5.1：
+生产 bridge 仅支持 Windows，并通过 `powershell.exe` 启动 Windows PowerShell 5.1。默认 adapter 是常驻 STA host：
 
 ```text
-powershell.exe -NoProfile -NonInteractive -Command -
+powershell.exe -NoProfile -NonInteractive -Sta -EncodedCommand <UTF-16LE Base64>
 ```
 
-生产代码不调用 PowerShell 7（`pwsh`），因此 `pwsh` 不是等价的兼容性 probe 或受支持的 bridge 替代 host。当前 transport 为每个 backend operation 启动一个 Windows PowerShell 进程并创建一个 `OneNote.Application` COM client；常驻 PowerShell host 仍是探索项，不是当前生产行为。
+生产代码不调用 PowerShell 7（`pwsh`），因此 `pwsh` 不是等价的兼容性 probe 或受支持的 bridge 替代 host。默认 host 创建一个 `OneNote.Application` COM client，并在同一 MCP 进程的后续 backend call 中复用。只有显式 fallback 才设置 `LOCAL_ONENOTE_BRIDGE_ADAPTER=one_shot_powershell`。常驻 host 初始化失败必须 fail-closed，不得静默降级。
 
 OneNote COM XML 调用固定使用 OneNote 2013 schema 数值 `2`（`XMLSchema.xs2013`）。Hierarchy scope 是独立参数：
 

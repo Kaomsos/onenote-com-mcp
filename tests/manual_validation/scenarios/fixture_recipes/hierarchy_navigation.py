@@ -20,11 +20,17 @@ from ..common.fixture_models import (
     resolve_active_structure,
 )
 from ..common.page_readback import SPECIAL_PAGE_TITLE
-from .recipe_base import NotebookRoleSpec, RecipeBase
+from .recipe_base import (
+    NESTED_SECTION_CACHE_UNSAFE_REASON,
+    NotebookRoleSpec,
+    RecipeBase,
+)
 
 
 class HierarchyNavigationFixtureRecipe(RecipeBase):
     recipe_version = 4
+    supports_cache = False
+    fresh_only_reason = NESTED_SECTION_CACHE_UNSAFE_REASON
 
     def __init__(self) -> None:
         profile = self._profile("hierarchy-navigation")

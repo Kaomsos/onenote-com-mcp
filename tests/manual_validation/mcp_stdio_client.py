@@ -21,6 +21,7 @@ from local_onenote_mcp.bridge import OneNoteBridge
 from local_onenote_mcp.constants import PAGE_INFO, XML_SCHEMA_2013
 from local_onenote_mcp.tool_surface import INTERNAL_CAPABILITY_NAMES
 
+from .bridge_adapter import VALIDATION_BRIDGE_ADAPTER
 from .progress import RunProgressReporter
 
 
@@ -231,6 +232,7 @@ def build_server_env(
     env["TEMP"] = str(temp_dir.resolve())
     env["TMP"] = str(temp_dir.resolve())
     env["LOCAL_ONENOTE_MCP_TIMEOUT"] = str(timeout_seconds)
+    env["LOCAL_ONENOTE_BRIDGE_ADAPTER"] = VALIDATION_BRIDGE_ADAPTER
     if bridge_audit_path is not None:
         env["LOCAL_ONENOTE_BRIDGE_AUDIT_PATH"] = str(bridge_audit_path.resolve())
     else:
@@ -346,6 +348,7 @@ class MCPStdioClient:
                 if persist_runtime_logs
                 else None
             ),
+            adapter=VALIDATION_BRIDGE_ADAPTER,
         )
         self._scenario_before_snapshots: dict[str, dict[str, Any]] = {}
         self._scenario_before_handoff: dict[str, Any] | None = None
@@ -406,6 +409,7 @@ class MCPStdioClient:
             return self
         except BaseException:
             await self._stack.aclose()
+            self._internal_bridge.close()
             raise
 
     def validate_health_contract(
@@ -504,6 +508,7 @@ class MCPStdioClient:
     async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         self._discard_scenario_before_snapshots("client_exit")
         await self._stack.aclose()
+        self._internal_bridge.close()
 
     async def call_tool(
         self,

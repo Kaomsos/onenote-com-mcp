@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from local_onenote_mcp import bridge as bridge_module
+from local_onenote_mcp import com_client as com_client_module
 from local_onenote_mcp.bridge import OneNoteBridge, POWERSHELL_BRIDGE
+from local_onenote_mcp.com_client import OneShotPowerShellClient
 from local_onenote_mcp.execution_context import reset_correlation_id, set_correlation_id
 from local_onenote_mcp.onenote_errors import OneNoteModalUIBlockedError
 
@@ -34,6 +35,14 @@ def test_internal_hierarchy_batch_uses_one_com_session_and_one_snapshot() -> Non
     assert "hierarchy_error = $hierarchyError" in branch
 
 
+def _patch_one_shot(monkeypatch, *, fake_write, response_path, fake_run) -> None:
+    monkeypatch.setattr(OneShotPowerShellClient, "_write_temp_json", staticmethod(fake_write))
+    monkeypatch.setattr(
+        OneShotPowerShellClient, "_reserve_temp_path", staticmethod(lambda: response_path)
+    )
+    monkeypatch.setattr(com_client_module.subprocess, "run", fake_run)
+
+
 def test_bridge_audit_records_operation_without_params_or_result(monkeypatch, tmp_path) -> None:
     request_path = tmp_path / "request.json"
     response_path = tmp_path / "response.json"
@@ -50,11 +59,11 @@ def test_bridge_audit_records_operation_without_params_or_result(monkeypatch, tm
         )
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
-    monkeypatch.setattr(OneNoteBridge, "_write_temp_json", staticmethod(fake_write))
-    monkeypatch.setattr(OneNoteBridge, "_reserve_temp_path", staticmethod(lambda: response_path))
-    monkeypatch.setattr(bridge_module.subprocess, "run", fake_run)
+    _patch_one_shot(monkeypatch, fake_write=fake_write, response_path=response_path, fake_run=fake_run)
 
-    result = OneNoteBridge(audit_path=audit_path).call(
+    result = OneNoteBridge(
+        audit_path=audit_path, adapter="one_shot_powershell"
+    ).call(
         "get_hierarchy",
         object_id="secret-id",
     )
@@ -63,6 +72,8 @@ def test_bridge_audit_records_operation_without_params_or_result(monkeypatch, tm
     record = json.loads(audit_path.read_text(encoding="utf-8"))
     assert record["operation"] == "get_hierarchy"
     assert record["ok"] is True
+    assert record["adapter"] == "one_shot_powershell"
+    assert record["delivery_state"] == "responded"
     assert record["elapsed_seconds"] >= 0
     rendered = json.dumps(record)
     assert "secret-id" not in rendered
@@ -85,11 +96,9 @@ def test_bridge_timeout_override_is_internal_and_capped_by_global_timeout(monkey
         response_path.write_text(json.dumps({"ok": True, "data": {}}), encoding="utf-8")
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
-    monkeypatch.setattr(OneNoteBridge, "_write_temp_json", staticmethod(fake_write))
-    monkeypatch.setattr(OneNoteBridge, "_reserve_temp_path", staticmethod(lambda: response_path))
-    monkeypatch.setattr(bridge_module.subprocess, "run", fake_run)
+    _patch_one_shot(monkeypatch, fake_write=fake_write, response_path=response_path, fake_run=fake_run)
 
-    bridge = OneNoteBridge(timeout_seconds=10)
+    bridge = OneNoteBridge(timeout_seconds=10, adapter="one_shot_powershell")
     bridge.call("find_pages", _timeout_seconds=2.5, query="probe")
     bridge.call("find_pages", _timeout_seconds=30, query="probe")
 
@@ -125,17 +134,16 @@ def test_bridge_audit_keeps_typed_hresult_without_payload_or_message(monkeypatch
         )
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
-    monkeypatch.setattr(OneNoteBridge, "_write_temp_json", staticmethod(fake_write))
-    monkeypatch.setattr(OneNoteBridge, "_reserve_temp_path", staticmethod(lambda: response_path))
-    monkeypatch.setattr(bridge_module.subprocess, "run", fake_run)
+    _patch_one_shot(monkeypatch, fake_write=fake_write, response_path=response_path, fake_run=fake_run)
 
     with pytest.raises(OneNoteModalUIBlockedError):
-        OneNoteBridge(audit_path=audit_path).call(
+        OneNoteBridge(audit_path=audit_path, adapter="one_shot_powershell").call(
             "update_page_content", xml="secret raw XML"
         )
 
     record = json.loads(audit_path.read_text(encoding="utf-8"))
     assert record["error_code"] == "onenote_modal_ui_blocked"
+    assert record["delivery_state"] == "responded"
     assert record["hresult"] == "0x80042030"
     assert record["hresult_signed"] == -2147213264
     assert record["wrapper_hresult"] == "0x80131501"
@@ -160,13 +168,11 @@ def test_bridge_audit_includes_optional_correlation_id(monkeypatch, tmp_path) ->
         response_path.write_text(json.dumps({"ok": True, "data": {}}), encoding="utf-8")
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
-    monkeypatch.setattr(OneNoteBridge, "_write_temp_json", staticmethod(fake_write))
-    monkeypatch.setattr(OneNoteBridge, "_reserve_temp_path", staticmethod(lambda: response_path))
-    monkeypatch.setattr(bridge_module.subprocess, "run", fake_run)
+    _patch_one_shot(monkeypatch, fake_write=fake_write, response_path=response_path, fake_run=fake_run)
 
     token = set_correlation_id("corr-123")
     try:
-        OneNoteBridge(audit_path=audit_path).call("get_hierarchy")
+        OneNoteBridge(audit_path=audit_path, adapter="one_shot_powershell").call("get_hierarchy")
     finally:
         reset_correlation_id(token)
 

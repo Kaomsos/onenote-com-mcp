@@ -25,6 +25,7 @@ def main() -> None:
     finally:
         if _debug_tracer is not None:
             _debug_tracer.close()
+        bridge.close()
 
 
 if __name__ == "__main__":

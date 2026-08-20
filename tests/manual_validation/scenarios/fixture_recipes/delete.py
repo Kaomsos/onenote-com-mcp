@@ -9,11 +9,13 @@ from ..common.fixture_builders import (
     ensure_section,
 )
 from ..common.fixture_models import FixtureBuildResult, FixtureContext, FixtureValidationContext, resolve_active_structure
-from .recipe_base import RecipeBase
+from .recipe_base import NESTED_SECTION_CACHE_UNSAFE_REASON, RecipeBase
 
 
 class DeleteFixtureRecipe(RecipeBase):
     recipe_version = 5
+    supports_cache = False
+    fresh_only_reason = NESTED_SECTION_CACHE_UNSAFE_REASON
 
     def __init__(self) -> None:
         super().__init__("delete")

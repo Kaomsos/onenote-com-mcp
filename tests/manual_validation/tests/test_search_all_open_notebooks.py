@@ -95,13 +95,14 @@ def test_search_cache_snapshot_rehydrates_probes_without_an_extra_page_read() ->
     assert build.evidence == {}
 
 
-def test_search_scenario_is_two_role_cache_supported_and_least_privilege() -> None:
+def test_search_scenario_is_two_role_fresh_only_and_least_privilege() -> None:
     scenario = SCENARIO_REGISTRY.get("search-all-open-notebooks")
     spec = scenario.spec
 
     assert scenario.included_in_all is True
     assert scenario.requires_index_activation_checkpoint is True
-    assert scenario.fixture_recipe.supports_cache is True
+    assert scenario.fixture_recipe.supports_cache is False
+    assert "Section below a SectionGroup" in scenario.fixture_recipe.fresh_only_reason
     assert tuple(
         role.role for role in scenario.fixture_recipe.cache_identity.notebook_roles
     ) == ("search-b", "source")
@@ -144,16 +145,17 @@ def test_search_audit_redacts_query_content_text_and_snippet() -> None:
     assert value["id"] == "safe-page-id"
 
 
-def test_search_use_cache_dry_run_plans_normal_materialization(capsys) -> None:
+def test_search_use_cache_dry_run_fails_fast(capsys) -> None:
     assert main(
         ["search-all-open-notebooks", "--use-cache", "--dry-run", "--json"]
     ) == 0
     payload = json.loads(capsys.readouterr().out)
 
-    assert payload["cache"]["decision"] == "runtime_lookup_not_performed_in_dry_run"
-    assert payload["cache"]["enabled"] is True
-    assert payload["expected_mcp_process_starts"] == 1
-    assert payload["ordered_steps"][0]["step"] == "resolve-fixture-bundle"
+    assert payload["cache"]["decision"] == "rejected_fresh_only"
+    assert payload["cache"]["enabled"] is False
+    assert payload["expected_mcp_process_starts"] == 0
+    assert payload["ordered_steps"][0]["step"] == "preflight-fresh-only-rejects-cache"
+    assert payload["ordered_steps"][0]["allowed_operations"] == []
     assert "activate-search-index-fixture" not in {
         step["step"] for step in payload["ordered_steps"]
     }

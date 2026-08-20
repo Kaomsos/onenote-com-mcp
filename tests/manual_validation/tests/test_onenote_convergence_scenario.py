@@ -5,7 +5,9 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.manual_validation.runtime import RuntimeOptions
+import pytest
+
+from tests.manual_validation.runtime import RestoreFailure, RuntimeOptions
 from tests.manual_validation.scenarios import onenote_convergence as convergence_runtime
 from tests.manual_validation.scenarios.onenote_convergence import (
     OneNoteConvergenceScenario,
@@ -127,10 +129,66 @@ def _snapshot(*, include_probe: bool = False, probe_order: int = 2) -> dict:
             }
         )
     return {
+        "notebook_id": "notebook-id",
         "items": items,
         "page_hashes": {"first-id": "h1", "second-id": "h2"},
+        "page_semantic_content_identities": {
+            "first-id": {
+                "sha256": "first-semantic",
+                "persistence_sha256": "first-persistence",
+                "materialization_sha256": "first-materialization",
+            },
+            "second-id": {
+                "sha256": "second-semantic",
+                "persistence_sha256": "second-persistence",
+                "materialization_sha256": "second-materialization",
+            },
+        },
+        "page_revision_marker_projections": {
+            "first-id": {"sha256": "first-revision"},
+            "second-id": {"sha256": "second-revision"},
+        },
         "page_objects": {"first-id": [], "second-id": []},
+        "page_capability_projections": {
+            "first-id": {"complete": True, "capabilities": ["Outline"]},
+            "second-id": {"complete": True, "capabilities": ["Outline"]},
+        },
+        "page_mathml_structure_projections": {
+            "first-id": {"complete": True, "candidate_count": 0},
+            "second-id": {"complete": True, "candidate_count": 0},
+        },
     }
+
+
+def test_convergence_restore_records_strict_page_hash_drift_without_masking_semantics() -> None:
+    before = _snapshot()
+    restored = deepcopy(before)
+    restored["page_hashes"]["first-id"] = "one-note-reserialized"
+
+    evidence = convergence_runtime._convergence_restoration_evidence(before, restored)
+
+    assert evidence["semantic_equivalent"] is True
+    assert evidence["strict_page_hash_equivalent"] is False
+    assert evidence["strict_page_hash_drift"] == [
+        {
+            "page_id": "first-id",
+            "before": "h1",
+            "restored": "one-note-reserialized",
+        }
+    ]
+    convergence_runtime._assert_convergence_restored(evidence)
+
+
+def test_convergence_restore_rejects_semantic_drift() -> None:
+    before = _snapshot()
+    restored = deepcopy(before)
+    restored["page_semantic_content_identities"]["first-id"]["sha256"] = "changed"
+
+    evidence = convergence_runtime._convergence_restoration_evidence(before, restored)
+
+    assert evidence["semantic_equivalent"] is False
+    with pytest.raises(RestoreFailure, match="convergence semantic projection"):
+        convergence_runtime._assert_convergence_restored(evidence)
 
 
 def test_convergence_scenario_exercises_public_control_plane_contracts(
@@ -372,6 +430,20 @@ def test_convergence_scenario_exercises_public_control_plane_contracts(
     )
 
     assert result["status"] == "passed"
+    assert result["restoration"] == {
+        "schema_version": 1,
+        "semantic_equivalent": True,
+        "strict_page_hash_equivalent": True,
+        "strict_page_hash_drift": [],
+        "comparison": {
+            "items": "exact_except_modified",
+            "page_semantic_content_identities": "exact",
+            "page_revision_marker_projections": "exact",
+            "page_objects": "exact",
+            "page_capability_projections": "exact",
+            "page_mathml_structure_projections": "exact",
+        },
+    }
     assert client.calls == [
         "request_notebook_sync",
         "create_notebook",
