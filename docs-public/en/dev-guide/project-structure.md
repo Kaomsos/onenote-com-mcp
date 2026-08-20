@@ -34,6 +34,25 @@ The production code enforces a strict layering, documented authoritatively in [a
 - **`bridge.py`** is the trusted local COM boundary. It uses structured JSON/temp-file transport and never interpolates untrusted content into PowerShell source or command strings.
 - **`server.py`, `settings.py`, `policy.py`** own composition and process-level configuration. Environment reading is centralized; there are no hidden alternative registration paths.
 
+## PowerShell and OneNote COM runtime
+
+The production bridge is Windows-only and launches Windows PowerShell 5.1 through `powershell.exe`:
+
+```text
+powershell.exe -NoProfile -NonInteractive -Command -
+```
+
+It does not invoke PowerShell 7 (`pwsh`), so `pwsh` is not an equivalent compatibility probe or a supported drop-in bridge host. The current transport starts one Windows PowerShell process and creates one `OneNote.Application` COM client for each backend operation; a persistent PowerShell host is still exploratory work, not current production behavior.
+
+OneNote COM XML calls use the fixed OneNote 2013 schema value `2` (`XMLSchema.xs2013`). Hierarchy scope is a separate argument:
+
+| Read shape | `scope` | `schema` |
+| --- | ---: | ---: |
+| Notebooks only | `2` | `2` |
+| Through Pages | `4` | `2` |
+
+In particular, `HierarchyScope.hsPages = 4` must not be passed as the XML schema. The schema is an internal constant, not a user setting or retry fallback. See the authoritative maintainer workflow, [OneNote COM Bridge runtime dependencies](../../../docs/dev/onenote_com_bridge_runtime.md), for exact diagnostics and evidence boundaries.
+
 ## The Operation Registry
 
 A canonical **53-operation Registry** owns, for every public tool: exposure, category, authorization, independent platform preflight policy, execution strategy, handler, audit, and retry semantics. Reads share a process-local lease; mutation and lifecycle effects use exclusive coordination through preflight, execution, reconciliation, and stable read-back.

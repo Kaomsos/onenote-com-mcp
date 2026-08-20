@@ -34,6 +34,25 @@ onenote-com-mcp/
 - **`bridge.py`** 是可信的本地 COM 边界。它使用结构化 JSON/临时文件传输，绝不把不可信内容插值到 PowerShell 源代码或命令字符串。
 - **`server.py`、`settings.py`、`policy.py`** 负责组合与进程级配置。环境变量读取集中管理；没有隐藏的替代注册路径。
 
+## PowerShell 与 OneNote COM 运行依赖
+
+生产 bridge 仅支持 Windows，并通过 `powershell.exe` 启动 Windows PowerShell 5.1：
+
+```text
+powershell.exe -NoProfile -NonInteractive -Command -
+```
+
+生产代码不调用 PowerShell 7（`pwsh`），因此 `pwsh` 不是等价的兼容性 probe 或受支持的 bridge 替代 host。当前 transport 为每个 backend operation 启动一个 Windows PowerShell 进程并创建一个 `OneNote.Application` COM client；常驻 PowerShell host 仍是探索项，不是当前生产行为。
+
+OneNote COM XML 调用固定使用 OneNote 2013 schema 数值 `2`（`XMLSchema.xs2013`）。Hierarchy scope 是独立参数：
+
+| 读取形状 | `scope` | `schema` |
+| --- | ---: | ---: |
+| 仅 Notebook | `2` | `2` |
+| 读取到 Page 层级 | `4` | `2` |
+
+尤其不能把 `HierarchyScope.hsPages = 4` 传作 XML schema。Schema 是内部常量，不是用户配置或失败后的重试 fallback。精确诊断与证据边界见维护者权威流程：[OneNote COM Bridge 运行依赖](../../../docs/dev/onenote_com_bridge_runtime.md)。
+
 ## Operation Registry
 
 一个 canonical 的 **53-operation Registry** 为每个公开工具统一持有：发布面、类别、授权、独立平台 preflight policy、执行策略、handler、审计和重试语义。读取共享进程级 lease；mutation 和 lifecycle effect 通过 preflight、执行、reconciliation 和稳定 read-back 使用独占协调。

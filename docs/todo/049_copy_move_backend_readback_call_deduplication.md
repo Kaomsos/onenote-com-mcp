@@ -12,7 +12,7 @@ TODO 045 已交付调用专属、按 mutation epoch 失效的 `CopyReadCache`，
 
 优化不得降低 strict Copy fidelity、创建/删除收敛、Move 的 Copy-before-delete、source drift 检查或非永久删除的 typed outcome 证据。目标是让已由同一 epoch 的完整 hierarchy snapshot 证明的信息以类型化内部参数传递，而不是再次调用 OneNote；每次状态改变后仍必须重新获取 live evidence。
 
-这与 [TODO 048](048_pywin32_persistent_com_bridge.md) 相互独立：048 降低每次 backend call 的 transport 固定成本；本项减少需要发出的 backend call 数量。
+这与 [TODO 048](048_persistent_com_client_bridge.md) 相互独立：048 降低每次 backend call 的 transport 固定成本；本项减少需要发出的 backend call 数量。
 
 **2026-08-20 完成证据**：中性 `HierarchySnapshot`、集中 `_resolve_full_preflight`、创建/排序 catalog 去重、fresh 删除 confirmation（不入 cache）、`UNSET`/`None` convergence、MutationService 私有 delete observation，以及七工具轻量 ledger + 三条共享服务组合路径均已落地。root-only promotion 在收敛验证后只从该 observation 重绑源 root 的 `modified`，标题/Section 仍用 source-drift/plan 确认值，第二次 fresh confirmation 继续拦截随后的外部 drift；私有 clock 不进入公开 `preserved_descendants`。自动化验证：聚焦合同、`tests/manual_validation/tests`、七个 Copy/Move scenario `--dry-run --json` 与全量 pytest **1513 passed**。用户已确认 disposable 本地 OneNote 手动测试通过；2026-08-20 content-free Debug Trace 也记录到七个公开 Copy/Move 操作共 16 次调用全部完成。
 
@@ -63,7 +63,7 @@ Read reason 将可合并的层级读取定位为：
 - 不减少必要的双稳定创建/删除收敛 observation，也不把“后端调用返回成功”当作持久化成功；
 - 不合并跨 mutation epoch 的读取，不引入跨 tool call 缓存、TTL cache 或全局 mutable snapshot；后者仍属于 TODO 024；
 - 不改变 fast 验证模式的产品决策与删源门；该方向仍属于 TODO 045 的独立工作范围；
-- 不将本项的 call-count 降低归因于或绑定到 pywin32 transport；048 可以独立实施；
+- 不将本项的 call-count 降低归因于或绑定到任何特定 COM client adapter；048 可以独立实施；
 - 不增加并发 OneNote COM 调用，不改变 TODO 046/047 的锁与调度边界；
 - `mutation_epoch` 不能代表外部一致性；fresh confirmation 不提供跨进程原子性。
 
@@ -83,7 +83,7 @@ Read reason 将可合并的层级读取定位为：
 ## 关联
 
 - [TODO 045](045_copy_move_readback_snapshot_efficiency.md)：phase-local cache、strict readback 基线与 fast mode 的上层性能工作；049 是其共享服务重复 call 的窄化后续。
-- [TODO 048](048_pywin32_persistent_com_bridge.md)：降低仍不可省略的 backend call transport 成本。
+- [TODO 048](048_persistent_com_client_bridge.md)：降低仍不可省略的 backend call transport 成本。
 - [TODO 024](024_search_and_query_read_snapshot_cache.md)：跨 tool call 的短时只读缓存，明确不在本项范围。
 - [TODO 046](046_scoped_mutation_coordination.md)：mutation footprint、锁与缓存失效范围需要保持一致。
 - [Copy/Move read reason ledger](../dev/copy_move_read_reason_ledger.md)：本项的 trace 归因与预算依据。
