@@ -49,8 +49,12 @@
 | 041 | [统一 Interactive Bootstrap 与 Scenario 验证流程](041_unified_interactive_bootstrap_scenario_flow.md)                  | 已完成 | P1     | 七个 `interactive-<operation>` 单入口及 fresh/cache 编排已交付；用户确认 Interactive Copy 配对和代表性 Move 的 bootstrap/fixture、cache lossless Move 真实验收通过。 |
 | 042 | [PyPI 发布准备与 uvx 调用入口](042_pypi_release_uvx_entrypoint.md)                                                      | 待办   | P1     | 准备包元数据（随 023 切换 GPL）、构建产物审计、TestPyPI 演练与 `uvx local-onenote-mcp` 双语安装文档；正式上传由用户执行并以 TODO 023 公开硬门为前置。                        |
 | 043 | [Copy/Move 目标创建与修改时间保真](043_copy_move_source_timestamp_fidelity.md)                                        | 待办   | P1     | 保留为未来开放方向，不是当前产品承诺；如重新启动，须先作产品决策并建立各资源类型 COM 时间字段可写能力矩阵。                                                               |
-| 044 | [MCP Runtime 本地 Debug Trace 与工具调用埋点](044_mcp_runtime_debug_tracing.md)                                        | 进行中 | P1     | 已实现 env 控制、Runtime per-call Span、JSONL writer 与 content-free 事件埋点（`tool_call.*` + `operation` backend 行）；待用户本地 smoke 确认。             |
-| 045 | [Copy/Move 回读 Snapshot 效率与快速验证模式](045_copy_move_readback_snapshot_efficiency.md)                           | 待办   | P1     | 规划 operation-local 完整 snapshot 复用、content-free readback 调用预算与显式 fast 验证；默认 strict 保真不降级，fast Move 删源须单独产品决策与真实证据。 |
+| 044 | [MCP Runtime 本地 Debug Trace 与工具调用埋点](044_mcp_runtime_debug_tracing.md)                                        | 已完成 | P1     | env 控制、Runtime per-call Span、JSONL writer 与 content-free 事件埋点（`tool_call.*` + `operation` backend 行）已交付；用户已确认本地 smoke 与 local-only 边界。 |
+| 045 | [Copy/Move 回读 Snapshot 效率与快速验证模式](045_copy_move_readback_snapshot_efficiency.md)                           | 进行中 | P1     | strict 优化 + 审阅修复已落地：ContextVar task-local cache、精确 filesystem allowlist、typed preflight epoch 校验、全操作冻结 ledger。待 human-gated trace 对比。 |
+| 046 | [按资源作用域的 Mutation 协调与细粒度写锁](046_scoped_mutation_coordination.md)                                      | 待办   | P3     | 先冻结锁竞争与完整 mutation footprint；仅在 OneNote COM 平台证据允许时，以 canonical 多资源锁和全局 fallback 减少无冲突调用等待。 |
+| 047 | [并发只读 Tool 调度与共享读协调](047_concurrent_read_tool_execution.md)                                               | 待办   | P1     | 让 catalog 已声明安全的共享 read 经有界 dispatch 真正并发，保持 writer-preference、全程 mutation 独占、调用上下文隔离与 content-free trace。 |
+| 048 | [pywin32 进程内常驻 OneNote COM Bridge](048_pywin32_persistent_com_bridge.md)                                      | 待办   | P0     | 以单一 STA Python COM worker 取代每个 backend call 新开 PowerShell；保持串行 COM、无自动 mutation 重放、typed HRESULT 与既有收敛契约。 |
+| 049 | [Copy/Move backend readback 调用去重](049_copy_move_backend_readback_call_deduplication.md)                         | 待办   | P2     | 在严格证据和 epoch 失效不变前提下，向共享创建/删除服务传递 typed snapshot、复用删除 observation，并消除 Page 排序 XML 的重复 hierarchy call。 |
 
 ## 文件命名
 

@@ -17,3 +17,4 @@ tmp/
 .tmp/
 .t/
 .pytest-tmp-*/
+.cursor/plans/

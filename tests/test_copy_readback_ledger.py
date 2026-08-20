@@ -10,7 +10,15 @@ from typing import Any, Callable, Iterator
 import pytest
 
 from local_onenote_mcp import server
-from local_onenote_mcp.services.read_reasons import READ_REASONS, current_read_reason
+from local_onenote_mcp.services.read_reasons import (
+    DELETE_CONFIRMATION,
+    DELETE_CONVERGENCE,
+    DESTINATION_PRECONDITION,
+    POST_CREATE_CONVERGENCE,
+    READ_REASONS,
+    copy_move_read_attribution,
+    current_read_reason,
+)
 from tests.test_copying import (
     advance_fake_mutation_epoch,
     install_recursive_execute_fakes,
@@ -66,21 +74,20 @@ def _planning_hierarchy_reads(ledger: list[tuple[str, str | None]]) -> int:
 
 
 # Frozen per-operation budgets for the recursive execute fake fixture.
-# Keys are (backend_operation, read_reason). Unattributed create/wait reads use None.
+# Keys are (backend_operation, read_reason). Copy/Move hierarchy and Page reads
+# must carry one of the public allowlisted reasons.
 _COPY_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
-    ("get_hierarchy", None): 1,
     ("get_hierarchy", "source_confirmation"): 1,
-    ("get_hierarchy", "topology_verification"): 2,
+    ("get_hierarchy", "topology_verification"): 3,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
     ("get_page_content", "pre_write_target_observation"): 1,
 }
 _MOVE_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
-    ("get_hierarchy", None): 1,
     ("get_hierarchy", "delete_convergence"): 1,
     ("get_hierarchy", "source_confirmation"): 1,
     ("get_hierarchy", "source_drift_revalidation"): 1,
-    ("get_hierarchy", "topology_verification"): 2,
+    ("get_hierarchy", "topology_verification"): 3,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
     ("get_page_content", "pre_write_target_observation"): 1,
@@ -88,11 +95,10 @@ _MOVE_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
 }
 _CONTAINER_COPY_BUDGET: dict[tuple[str, str | None], int] = dict(_COPY_PAGE_BUDGET)
 _MOVE_CONTAINER_BUDGET: dict[tuple[str, str | None], int] = {
-    ("get_hierarchy", None): 1,
     ("get_hierarchy", "delete_convergence"): 1,
     ("get_hierarchy", "source_confirmation"): 1,
     ("get_hierarchy", "source_drift_revalidation"): 1,
-    ("get_hierarchy", "topology_verification"): 2,
+    ("get_hierarchy", "topology_verification"): 3,
     ("get_page_content", "delete_convergence"): 1,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
@@ -138,6 +144,86 @@ def _install_delete_fakes(monkeypatch: pytest.MonkeyPatch, state: list[dict[str,
 
     monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
     monkeypatch.setattr(server.services.mutations, "delete_resource", delete_resource)
+
+
+def _install_real_mutation_readback_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, Any]]:
+    """Keep real create/delete readback while replacing only backend writes."""
+
+    actual_create_page = server.services.mutations.create_page
+    actual_delete_page = server.services.mutations.delete_page
+    state = install_recursive_execute_fakes(
+        monkeypatch,
+        include_destination_section=True,
+    )
+    monkeypatch.setattr(server.services.mutations, "create_page", actual_create_page)
+    monkeypatch.setattr(server.services.mutations, "delete_page", actual_delete_page)
+
+    def call(operation: str, **params: Any) -> dict[str, Any]:
+        if operation == "create_new_page":
+            section = next(item for item in state if item["id"] == params["section_id"])
+            page_id = "created-page"
+            state.append(
+                {
+                    "resource_type": "page",
+                    "id": page_id,
+                    "title": "Created Page",
+                    "path": f"{section['path']}/Created Page",
+                    "parent_id": section["id"],
+                    "notebook_id": section["notebook_id"],
+                    "section_id": section["id"],
+                    "parent_page_id": None,
+                    "page_level": 1,
+                    "order": 0,
+                }
+            )
+            return {"page_id": page_id}
+        if operation == "update_page_content":
+            return {"updated": True}
+        if operation == "delete_hierarchy":
+            target_id = str(params["object_id"])
+            state[:] = [item for item in state if item.get("id") != target_id]
+            return {"deleted": True}
+        raise AssertionError(operation)
+
+    monkeypatch.setattr(server.services.mutations, "call", call)
+    return state
+
+
+@pytest.mark.parametrize(
+    ("invoke", "expected_reasons"),
+    [
+        (
+            lambda: server.services.mutations.create_page(
+                "destination-section",
+                "Created Page",
+            ),
+            {DESTINATION_PRECONDITION, POST_CREATE_CONVERGENCE},
+        ),
+        (
+            lambda: server.services.mutations.delete_page(
+                "source-page",
+                "Page",
+                "source-section",
+            ),
+            {DELETE_CONFIRMATION, DELETE_CONVERGENCE},
+        ),
+    ],
+)
+def test_copy_move_shared_mutation_readback_uses_reasons(
+    monkeypatch: pytest.MonkeyPatch,
+    invoke: Callable[[], Any],
+    expected_reasons: set[str],
+) -> None:
+    _install_real_mutation_readback_fakes(monkeypatch)
+
+    with copy_move_read_attribution(), _ledger_recording() as ledger:
+        invoke()
+
+    reasons = {reason for _, reason in ledger}
+    assert reasons == expected_reasons
+    assert all(reason in READ_REASONS for _, reason in ledger)
 
 
 @pytest.mark.parametrize(
@@ -296,7 +382,7 @@ def test_copy_move_readback_ledger_freezes_exact_budgets(
     with _ledger_recording() as ledger:
         invoke(tmp_path)
 
-    assert all(reason in READ_REASONS or reason is None for _, reason in ledger)
+    assert all(reason in READ_REASONS for _, reason in ledger)
     assert _budget(ledger) == expected_budget
     assert _planning_hierarchy_reads(ledger) == 1
     assert _count(ledger, "get_page_content", "plan_capture") == 1

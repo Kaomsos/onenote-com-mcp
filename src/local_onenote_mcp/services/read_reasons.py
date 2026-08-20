@@ -38,10 +38,25 @@ _CURRENT_READ_REASON: ContextVar[str | None] = ContextVar(
     "local_onenote_copy_read_reason",
     default=None,
 )
+_COPY_MOVE_READ_ATTRIBUTION_ACTIVE: ContextVar[bool] = ContextVar(
+    "local_onenote_copy_move_read_attribution_active",
+    default=False,
+)
 
 
 def current_read_reason() -> str | None:
     return _CURRENT_READ_REASON.get()
+
+
+@contextmanager
+def copy_move_read_attribution() -> Iterator[None]:
+    """Enable Copy/Move-only attribution for shared mutation-service reads."""
+
+    token = _COPY_MOVE_READ_ATTRIBUTION_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _COPY_MOVE_READ_ATTRIBUTION_ACTIVE.reset(token)
 
 
 @contextmanager
@@ -53,3 +68,14 @@ def read_reason(reason: str) -> Iterator[None]:
         yield
     finally:
         _CURRENT_READ_REASON.reset(token)
+
+
+@contextmanager
+def copy_move_read_reason(reason: str) -> Iterator[None]:
+    """Tag a shared-service read only while an enclosing Copy/Move is active."""
+
+    if not _COPY_MOVE_READ_ATTRIBUTION_ACTIVE.get():
+        yield
+        return
+    with read_reason(reason):
+        yield

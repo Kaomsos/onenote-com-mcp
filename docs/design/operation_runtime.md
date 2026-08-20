@@ -480,11 +480,39 @@ move_page, move_section, move_section_group
 
 本版本不交付 Preview。`health_check.copy_move.preview.available=false` 是当前能力事实；文档不得暗示存在 `preview_copy`、`preview_move` 或任何 Preview exposure。未来若引入 Preview，必须只读、默认隐藏、与 mutation authorization 独立、非执行前置且不产生 token。
 
+### 8.1 Copy/Move phase-local readback snapshot（045 strict 优化）
+
+`CopyService` 在每次公开 Copy/Move 调用内通过 task-local `ContextVar` 安装短生命周期的 `CopyReadCache`（`set_copy_read_cache` / `restore_copy_read_cache`），调用结束即 reset；**不得**把本次 tool call 的 cache 保存在共享 `CopyService` 实例属性上。`HierarchyService`、`PageService` 与 `BaseService` 不持有该 cache。优化只减少同一 **mutation evidence epoch** 内的重复 I/O，不改变 strict fidelity、typed failure、`CopyBudget`、confirmation、source drift/reconciliation 或 Move 的 Copy-before-delete 删源门。
+
+**Mutation epoch 与 operation 分类**（[`backend_operation_classification.py`](../../src/local_onenote_mcp/services/backend_operation_classification.py)）：
+
+- `BaseService.call()` 在每次 backend 调用前调用 `notify_backend_operation(operation)`；
+- 读操作、状态变更 bridge 操作与内部 filesystem effect 操作各自为**精确闭合 allowlist**（禁止 `startswith`/`endswith`/通配符等模式匹配）；filesystem 分类表为 `FILESYSTEM_OPERATIONS`，与源码中 `record_backend_call("filesystem:...")` 字面量闭合对齐；
+- 未出现在 allowlist 中的 operation（含未知 `filesystem:...`）**fail-safe** 按可能 mutation 处理并在发出前推进 task-local mutation epoch；
+- `BaseService` 只负责分类与 epoch 通知，不保存 cache；Copy/Move 在 `_execute_copy` 完成（含 partial failure 路径）后也会显式 `advance_mutation_epoch()`，使规划期 snapshot 在写后阶段失效。
+
+**Hierarchy snapshot 合同**（[`copy_read_cache.py`](../../src/local_onenote_mcp/services/copy_read_cache.py)）：
+
+- cache 保存**完整解析 hierarchy**（含回收站），由 `HierarchySnapshot.resources(include_recycle_bin=...)` 派生活跃视图；条目 key 含 `(start_id, scope)`，不同视图不得互相污染；
+- `resources()` / `resource()` 对外返回条目**副本**，消费者无法改写 cache 内部 dict；
+- Page XML 以 `(page_id, scope)` 为 key，携带 epoch；不匹配即透明重新 live read；
+- confirm/plan/destination precondition 共享同一 epoch 的 hierarchy snapshot；reorder 每个 Section 的 `resource()`+`resources()` 双读合并为单次读；
+- 深层 helper（`mutations.confirm*` / `pages.confirm`）只接收类型化的 `HierarchySnapshot | None` preflight，并在消费前校验 `preflight.epoch == current_mutation_epoch()`；epoch 不匹配时透明回退 fresh live read，不接收整个 `CopyReadCache`。
+
+**Read reason 归因**（[`read_reasons.py`](../../src/local_onenote_mcp/services/read_reasons.py)）：
+
+- 固定 11 类 allowlist：`source_confirmation`、`plan_capture`、`destination_precondition`、`post_create_convergence`、`pre_write_target_observation`、`post_write_reconciliation`、`post_write_convergence`、`topology_verification`、`source_drift_revalidation`、`delete_confirmation`、`delete_convergence`；
+- Debug Trace backend 行可选投影 `read_reason`（仅 allowlist 值）；确定性 fake ledger（`tests/test_copy_readback_ledger.py`）按全部公开 Copy/Move 操作 × 受支持形态冻结精确 `(operation, reason)` 预算。
+
+**明确不复用**（跨 mutation 边界必须 live read）：`wait_for_created`/收敛轮询、写后 reconciliation（作为独立证据阶段）、Move 删源前 source drift、删源后验证；reconciliation 成功后可将该 observation 作为 convergence 的 `initial_value` 首样本，但不减少所需连续稳定观察数。
+
+**本轮不含**：fast 验证模式（工作范围 F）与容器专属批量化（工作范围 D）；容器 Copy/Move 通过通用 `_build_plan` → `_execute_copy` 路径间接受益于 Page 与 hierarchy 优化。
+
 ## 9. 验证边界
 
 自动化合同必须覆盖 Registry 精确 inventory、五类 Strategy、policy 在 backend execute 前拒绝、generation 只失效一次、异常和取消释放 lease、029 outcome 组合、content-free audit、Sync/Navigate/Publish 语义，以及公开 adapter 无 Service/Bridge 旁路。
 
-## 9. 本地 Debug Trace（可选，默认关闭）
+## 10. 本地 Debug Trace（可选，默认关闭）
 
 持久 debug trace 由 `LOCAL_ONENOTE_MCP_DEBUG_TRACE` 与 `LOCAL_ONENOTE_MCP_DEBUG_DIR` 控制，在 [`debug_trace.py`](../../src/local_onenote_mcp/debug_trace.py) 中集中实现：配置解析、事件词汇、参数/错误脱敏投影、JSONL writer 与 `status()` 快照。这不是遥测，不改变 mutation 授权。记录与 `health_check.debug_trace` 均不暴露 schema version。
 
@@ -509,7 +537,7 @@ JSONL 按插入顺序落盘，不再字母序排序。Tool 生命周期行前缀
 | `tool_call.authorized` / `tool_call.authorization_rejected` | Runtime | 后者附稳定脱敏 `error` |
 | `tool_call.platform_preflight_started` / `completed` / `failed` | Runtime | 仅 `platform_preflight_policy != "none"` |
 | `tool_call.handler_started` | Strategy | 取得 coordination lease 后 |
-| backend 行 | `record_backend_call` | `backend_call_id`（每个 tool call 从 1 起）、固定内部 `operation`（bridge 操作名或 `filesystem:*`）、`backend_category`。表示一次 backend 调用已登记并即将发出，不表示成功。`filesystem:` 前缀映射 FILESYSTEM，其余回退 spec.backend |
+| backend 行 | `record_backend_call` | `backend_call_id`（每个 tool call 从 1 起）、固定内部 `operation`（bridge 操作名或精确 `FILESYSTEM_OPERATIONS` 名）、`backend_category`、可选 `read_reason`（Copy/Move readback 固定 allowlist，无 ID/标题/路径/XML）。表示一次 backend 调用已登记并即将发出，不表示成功。仅 allowlist 内的 filesystem 操作映射 FILESYSTEM，其余回退 spec.backend |
 | `tool_call.finalizing` | Runtime | finalize 前 |
 | `tool_call.completed` / `tool_call.failed` | Runtime 显式 `finish(outcome)` | 每次调用恰好一个终态；`outcome_stage`、`observed_outcome`、`retry_safety` 与 `summary.backend_call_count|attempts|replayed`；失败另附 `error`。`observed_outcome`/`retry_safety` 经固定 allowlist 投影，未命中写 `unspecified`；**不**写入 `recommended_action` |
 | `tool_call.cancelled` | Span `__exit__` 兜底 | 未被 Runtime 转换的 BaseException；附 `summary`；原样继续抛出 |

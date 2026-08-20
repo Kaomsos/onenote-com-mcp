@@ -60,6 +60,8 @@ from .read_reasons import (
     SOURCE_CONFIRMATION,
     SOURCE_DRIFT_REVALIDATION,
     TOPOLOGY_VERIFICATION,
+    copy_move_read_attribution,
+    copy_move_read_reason,
 )
 from .reconciliation import ReconciliationState
 
@@ -109,7 +111,10 @@ class CopyService(BaseService):
         if target_id:
             try:
                 return destination_position(
-                    self.hierarchy.resources(include_recycle_bin=False),
+                    self._hierarchy_resources(
+                        reason=TOPOLOGY_VERIFICATION,
+                        include_recycle_bin=False,
+                    ),
                     target_id,
                 )
             except Exception:
@@ -137,7 +142,8 @@ class CopyService(BaseService):
         cache = CopyReadCache(self.hierarchy, self.pages)
         cache_token = set_copy_read_cache(cache)
         try:
-            yield cache
+            with copy_move_read_attribution():
+                yield cache
         finally:
             restore_copy_read_cache(cache_token)
             restore_mutation_epoch(epoch_token)
@@ -151,7 +157,8 @@ class CopyService(BaseService):
         cache = current_copy_read_cache()
         if cache is not None:
             return cache.resources(reason=reason, include_recycle_bin=include_recycle_bin)
-        return self.hierarchy.resources(include_recycle_bin=include_recycle_bin)
+        with copy_move_read_reason(reason):
+            return self.hierarchy.resources(include_recycle_bin=include_recycle_bin)
 
     def _hierarchy_resource(
         self,
@@ -163,7 +170,8 @@ class CopyService(BaseService):
         cache = current_copy_read_cache()
         if cache is not None:
             return cache.resource(object_id, resource_type, reason=reason)
-        return self.hierarchy.resource(object_id, resource_type)
+        with copy_move_read_reason(reason):
+            return self.hierarchy.resource(object_id, resource_type)
 
     def _page_xml(
         self,
@@ -175,7 +183,8 @@ class CopyService(BaseService):
         cache = current_copy_read_cache()
         if cache is not None:
             return cache.page_xml(page_id, page_info, reason=reason)
-        return self.pages.xml(page_id, page_info)
+        with copy_move_read_reason(reason):
+            return self.pages.xml(page_id, page_info)
 
     def _preflight_snapshot(
         self,
@@ -1225,9 +1234,11 @@ class CopyService(BaseService):
                             "order": order,
                             "page_level": int(page["page_level"]),
                         }
+                with copy_move_read_reason(TOPOLOGY_VERIFICATION):
+                    page_order_xml = self.hierarchy.page_order_xml(section, ordered)
                 self.call(
                     "update_hierarchy",
-                    xml=self.hierarchy.page_order_xml(section, ordered),
+                    xml=page_order_xml,
                     schema=XML_SCHEMA_2013,
                 )
                 completed_steps.append(
@@ -1596,9 +1607,11 @@ class CopyService(BaseService):
             }
             for item in pages
         ]
+        with copy_move_read_reason(DELETE_CONFIRMATION):
+            page_order_xml = self.hierarchy.page_order_xml(section, adjusted)
         self.call(
             "update_hierarchy",
-            xml=self.hierarchy.page_order_xml(section, adjusted),
+            xml=page_order_xml,
             schema=XML_SCHEMA_2013,
         )
 

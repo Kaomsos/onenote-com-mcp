@@ -26,6 +26,7 @@
 
 ## 开发与验证入口
 
+- [Copy/Move read reason ledger](dev/copy_move_read_reason_ledger.md)：本地 Debug Trace 中 Copy/Move hierarchy/Page 回读的固定证据用途、cache/epoch 边界与 ledger 合同。
 - [Pytest Windows sandbox 临时产物隔离](dev/pytest_windows_sandbox_artifact_isolation.md)：默认自动测试在人工终端、Codex sandbox 与并发 session 之间的临时根、cache 和保留策略。
 - [OneNote mutation 隔离验证流程](dev/isolated_mutation_validation.md)：只能由用户本人启动的真实后端验证边界与操作步骤。
 

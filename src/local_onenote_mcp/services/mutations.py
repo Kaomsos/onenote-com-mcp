@@ -51,6 +51,13 @@ from .operation_runtime import record_backend_call
 from .pages import PageService, stable_page_content_digest
 from .position import destination_position, unavailable_destination_position
 from .reconciliation import ReconciliationState, reconcile_mutation
+from .read_reasons import (
+    DELETE_CONFIRMATION,
+    DELETE_CONVERGENCE,
+    DESTINATION_PRECONDITION,
+    POST_CREATE_CONVERGENCE,
+    copy_move_read_reason,
+)
 
 
 REPLACE_BODY_OBJECT_TYPES = {"Outline", "Image", "InkDrawing", "FileAttachment", "InsertedFile", "MediaFile"}
@@ -413,11 +420,12 @@ class MutationService(BaseService):
 
     def create_notebook(self, name_or_path: str, base_folder: str = "") -> dict[str, Any]:
         MutationPolicy.current().require_create()
-        before_ids = {
-            str(item["id"])
-            for item in self.hierarchy.resources(include_recycle_bin=True)
-            if item.get("id")
-        }
+        with copy_move_read_reason(DESTINATION_PRECONDITION):
+            before_ids = {
+                str(item["id"])
+                for item in self.hierarchy.resources(include_recycle_bin=True)
+                if item.get("id")
+            }
         raw = Path(name_or_path)
         if raw.is_absolute():
             notebook_path = raw
@@ -434,14 +442,15 @@ class MutationService(BaseService):
             relative_to_id="",
             create_file_type=CREATE_FILE_TYPES["notebook"],
         )
-        notebook = self.hierarchy.wait_for_created(
-            notebook_path.name,
-            "notebook",
-            result["object_id"],
-            expected_parent_id=None,
-            validate_parent=True,
-            before_ids=before_ids,
-        )
+        with copy_move_read_reason(POST_CREATE_CONVERGENCE):
+            notebook = self.hierarchy.wait_for_created(
+                notebook_path.name,
+                "notebook",
+                result["object_id"],
+                expected_parent_id=None,
+                validate_parent=True,
+                before_ids=before_ids,
+            )
         if notebook is None:
             raise PartialFailure(
                 "Notebook creation returned success, but the new notebook could not be verified.",
@@ -469,14 +478,15 @@ class MutationService(BaseService):
 
     def create_section(self, parent_id: str, section_name: str) -> dict[str, Any]:
         MutationPolicy.current().require_create()
-        parent = self.hierarchy.resource(parent_id)
-        if parent["resource_type"] not in {"notebook", "section_group"}:
-            raise ValueError("parent_id must identify a notebook or section_group.")
-        before_ids = {
-            str(item["id"])
-            for item in self.hierarchy.resources(include_recycle_bin=True)
-            if item.get("id")
-        }
+        with copy_move_read_reason(DESTINATION_PRECONDITION):
+            parent = self.hierarchy.resource(parent_id)
+            if parent["resource_type"] not in {"notebook", "section_group"}:
+                raise ValueError("parent_id must identify a notebook or section_group.")
+            before_ids = {
+                str(item["id"])
+                for item in self.hierarchy.resources(include_recycle_bin=True)
+                if item.get("id")
+            }
         filename = self.safe_leaf_name(section_name)
         if not filename.lower().endswith(".one"):
             filename += ".one"
@@ -487,14 +497,15 @@ class MutationService(BaseService):
             create_file_type=CREATE_FILE_TYPES["section"],
         )
         expected_path = self.hierarchy.friendly_child_path(parent["path"], filename)
-        section = self.hierarchy.wait_for_created(
-            expected_path,
-            "section",
-            result["object_id"],
-            expected_parent_id=parent["id"],
-            validate_parent=True,
-            before_ids=before_ids,
-        )
+        with copy_move_read_reason(POST_CREATE_CONVERGENCE):
+            section = self.hierarchy.wait_for_created(
+                expected_path,
+                "section",
+                result["object_id"],
+                expected_parent_id=parent["id"],
+                validate_parent=True,
+                before_ids=before_ids,
+            )
         if section is None:
             raise PartialFailure(
                 "Section creation returned success, but the new section could not be verified.",
@@ -524,14 +535,15 @@ class MutationService(BaseService):
 
     def create_section_group(self, parent_id: str, group_name: str) -> dict[str, Any]:
         MutationPolicy.current().require_create()
-        parent = self.hierarchy.resource(parent_id)
-        if parent["resource_type"] not in {"notebook", "section_group"}:
-            raise ValueError("parent_id must identify a notebook or section_group.")
-        before_ids = {
-            str(item["id"])
-            for item in self.hierarchy.resources(include_recycle_bin=True)
-            if item.get("id")
-        }
+        with copy_move_read_reason(DESTINATION_PRECONDITION):
+            parent = self.hierarchy.resource(parent_id)
+            if parent["resource_type"] not in {"notebook", "section_group"}:
+                raise ValueError("parent_id must identify a notebook or section_group.")
+            before_ids = {
+                str(item["id"])
+                for item in self.hierarchy.resources(include_recycle_bin=True)
+                if item.get("id")
+            }
         result = self.call(
             "open_hierarchy",
             path=self.safe_leaf_name(group_name),
@@ -539,14 +551,15 @@ class MutationService(BaseService):
             create_file_type=CREATE_FILE_TYPES["section_group"],
         )
         expected_path = self.hierarchy.friendly_child_path(parent["path"], group_name)
-        group = self.hierarchy.wait_for_created(
-            expected_path,
-            "section_group",
-            result["object_id"],
-            expected_parent_id=parent["id"],
-            validate_parent=True,
-            before_ids=before_ids,
-        )
+        with copy_move_read_reason(POST_CREATE_CONVERGENCE):
+            group = self.hierarchy.wait_for_created(
+                expected_path,
+                "section_group",
+                result["object_id"],
+                expected_parent_id=parent["id"],
+                validate_parent=True,
+                before_ids=before_ids,
+            )
         if group is None:
             raise PartialFailure(
                 "Section-group creation returned success, but the new group could not be verified.",
@@ -588,12 +601,13 @@ class MutationService(BaseService):
         policy.require_create()
         policy.require_write()
         title = self.page_title(title)
-        section = self.hierarchy.resource(section_id, "section")
-        before_ids = {
-            str(item["id"])
-            for item in self.hierarchy.resources(include_recycle_bin=True)
-            if item.get("id")
-        }
+        with copy_move_read_reason(DESTINATION_PRECONDITION):
+            section = self.hierarchy.resource(section_id, "section")
+            before_ids = {
+                str(item["id"])
+                for item in self.hierarchy.resources(include_recycle_bin=True)
+                if item.get("id")
+            }
         page_id = self.call(
             "create_new_page",
             section_id=section["id"],
@@ -612,15 +626,16 @@ class MutationService(BaseService):
             self.call("update_page_content", xml=xml, schema=XML_SCHEMA_2013, force=False)
             completed_steps.append({"operation": "update_page_content", "object_id": page_id})
             expected_path = self.hierarchy.friendly_child_path(section["path"], title)
-            page = self.hierarchy.wait_for_created(
-                expected_path,
-                "page",
-                page_id,
-                expected_parent_id=section["id"],
-                validate_parent=True,
-                before_ids=before_ids,
-                expected_name=title,
-            )
+            with copy_move_read_reason(POST_CREATE_CONVERGENCE):
+                page = self.hierarchy.wait_for_created(
+                    expected_path,
+                    "page",
+                    page_id,
+                    expected_parent_id=section["id"],
+                    validate_parent=True,
+                    before_ids=before_ids,
+                    expected_name=title,
+                )
             if page is None:
                 raise RuntimeError("Page creation returned success, but the new page could not be verified.")
         except Exception as exc:
@@ -4360,18 +4375,20 @@ class MutationService(BaseService):
         permanently: bool,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_delete(permanently=permanently)
-        item = self.confirm_resource(
-            object_id,
-            resource_type,
-            expected_name=expected_name,
-            expected_parent_id=expected_parent_id,
-            expected_modified=expected_modified,
-        )
+        with copy_move_read_reason(DELETE_CONFIRMATION):
+            item = self.confirm_resource(
+                object_id,
+                resource_type,
+                expected_name=expected_name,
+                expected_parent_id=expected_parent_id,
+                expected_modified=expected_modified,
+            )
         def observe():
-            try:
-                return self.hierarchy.resource(object_id, resource_type)
-            except ValueError:
-                return None
+            with copy_move_read_reason(DELETE_CONVERGENCE):
+                try:
+                    return self.hierarchy.resource(object_id, resource_type)
+                except ValueError:
+                    return None
 
         postcondition = lambda value: value is None or (
             not permanently and value.get("is_in_recycle_bin") is True
@@ -4416,7 +4433,8 @@ class MutationService(BaseService):
         include_subpages: bool = False,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_delete(permanently=permanently)
-        snapshot = self.hierarchy.resources(include_recycle_bin=True)
+        with copy_move_read_reason(DELETE_CONFIRMATION):
+            snapshot = self.hierarchy.resources(include_recycle_bin=True)
         by_id = {str(item["id"]): item for item in snapshot if item.get("id")}
         page = self._active_item(by_id, page_id, "page")
         self._confirm_batch_item(
@@ -4521,7 +4539,8 @@ class MutationService(BaseService):
                 {"object_id": target_id, "status": "applied", "result": result}
             )
 
-        final_snapshot = self.hierarchy.resources(include_recycle_bin=True)
+        with copy_move_read_reason(DELETE_CONVERGENCE):
+            final_snapshot = self.hierarchy.resources(include_recycle_bin=True)
         final_by_id = {
             str(item["id"]): item for item in final_snapshot if item.get("id")
         }

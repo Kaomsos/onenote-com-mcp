@@ -1,7 +1,7 @@
 # 044：MCP Runtime 本地 Debug Trace 与工具调用埋点
 
 > ID：044
-> 状态：进行中
+> 状态：已完成
 > 优先级：P1
 > 类型：功能 / Operation Runtime / 可观测性 / Debug / 本地文件
 > 更新日期：2026-08-19
@@ -18,7 +18,7 @@
 - **参数形状投影**：只记录键集合、值类型名、集合长度、是否 `None`；不声称记录“调用者是否提供 optional field”（tool 适配层会透传默认值，该信息在 Runtime 插入点不可观测）。
 - **`tool_call.entered` 时点**：表示 Runtime 已接收并成功 resolve 到注册 `OperationSpec` 的公开调用（非 transport 层最早点）。
 - **2026-08-19 审阅修正**：终态 trace 删除 `recommended_action`，`observed_outcome`/`retry_safety` 经 allowlist 投影；`classify_error()` 全分支严格 error type allowlist；Writer 容量与写入同锁、停止路径关闭句柄；`tool_call.finalizing` 在 Strategy finalizer 前发出；`platform_preflight_*` 仅 policy 非 `none` 时记录；`caught()` 恢复 `isinstance(OneNoteError)`。
-- **2026-08-19 可读性重塑（未发版，直接替换）**：用 `event` 记录 `tool_call.*` 生命周期；backend 行删除重复 `event`，改为 `operation`（固定内部 bridge / `filesystem:*` 标识）+ 每个 tool call 内从 1 起的 `backend_call_id`；JSONL 按阅读优先级插入顺序落盘，不再 `sort_keys`；累计统计只出现在终态 `summary`；删除记录与 `health_check.debug_trace` 中的 `schema_version`，以及逐行 `runtime_stage`/`backend_calls`/`attempts`/`replayed`/`content_exposed`。不保留兼容 alias、双写或迁移分支。
+- **2026-08-19 可读性重塑**：用 `event` 记录 `tool_call.*` 生命周期；backend 行删除重复 `event`，改为 `operation`（固定内部 bridge / `filesystem:*` 标识）+ 每个 tool call 内从 1 起的 `backend_call_id`；JSONL 按阅读优先级插入顺序落盘，不再 `sort_keys`；累计统计只出现在终态 `summary`；删除记录与 `health_check.debug_trace` 中的 `schema_version`，以及逐行 `runtime_stage`/`backend_calls`/`attempts`/`replayed`/`content_exposed`。不保留兼容 alias、双写或迁移分支。
 
 ## 目标环境变量
 
@@ -70,9 +70,13 @@ Tool 行前缀为 `tool_call_id`、`tool`、时间、`event`、`correlation_id`�
 - [x] Runtime outcome、bridge audit（可选 `correlation_id`）、debug trace 可对账；
 - [x] 纯自动化合同通过（聚焦 debug trace / bridge audit，以及全量 pytest）；
 - [x] 当前设计文档、根 README 和中英文公开配置文档同步完成；
-- [ ] 用户确认默认关闭、显式目录和本地-only/no-telemetry 产品边界（本地 smoke）。
+- [x] 用户已确认默认关闭、显式目录和本地-only/no-telemetry 产品边界（本地 smoke；2026-08-19）。
 
-## 本地人工 smoke（用户执行）
+## 本地 smoke（用户确认，2026-08-19）
+
+用户已在本地启用 trace 的进程中生成并提供 session JSONL，用于后续字段顺序、每次 tool call 的 `backend_call_id` 重置、`tool_call_id` 关联和 backend `operation` 可读性的审阅。本条确认仅覆盖本地 trace 能力及其 local-only/content-free 边界；不替代任何独立的 OneNote mutation 验收。
+
+复现配置示例：
 
 ```powershell
 $env:LOCAL_ONENOTE_MCP_DEBUG_TRACE = "true"
