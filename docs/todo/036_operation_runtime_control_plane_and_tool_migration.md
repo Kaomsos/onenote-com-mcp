@@ -130,7 +130,7 @@ finalize
 
 - Get/List/Expand/Query/Search 等只读 Tool 使用 shared lease、budget、cache policy、typed error 与统一 Outcome；
 - 不引入 mutation reconciliation；
-- live confirmation/postcondition 必须能声明绕过 [TODO 024](024_search_and_query_read_snapshot_cache.md) 规划的 TTL cache。
+- live confirmation/postcondition 必须独立于任何可选 cache，保持 live backend 读取；原 TODO 024 的 TTL cache 方案已在后续取消。
 
 ### Filesystem 与 UI Effect Strategy
 
@@ -151,7 +151,7 @@ finalize
 - [x] 在 `docs/design/` 新增或整合 Operation Runtime canonical 设计，明确层次、依赖、阶段、对象和各 Operation kind 的结果语义；
 - [x] 盘点所有当前公开 Tool，记录 operation name、kind、backend、capability、coordination、budget、cache、side effect 和当前 Handler；
 - [x] 明确 control plane/data plane 分界，禁止 Runtime audit 捕获正文、raw XML、binary、完整路径、secret 或原始参数；
-- [x] 确认与 TODO 024、029、031、034、035 的依赖和非重叠范围。
+- [x] 确认与当时规划中的 TODO 024、029、031、034、035 的依赖和非重叠范围；TODO 024 已在后续取消。
 
 ### 阶段 B：Runtime 骨架与兼容入口
 
@@ -266,7 +266,7 @@ Runtime 骨架本身不得创造新的真实 mutation。每个迁移阶段如果
 - [Design：当前架构](../design/architecture.md)
 - [Design：Operation Runtime](../design/operation_runtime.md)
 - [Design：当前 Tool 合同](../design/tool_contracts.md)
-- [TODO 024：Search 与 Typed Query 短时只读快照缓存](024_search_and_query_read_snapshot_cache.md)
+- [TODO 024：Search 与 Typed Query 短时只读快照缓存（已取消）](024_search_and_query_read_snapshot_cache.md)
 - [TODO 025：OneNote COM 收敛、Mutation 对账与调用协调](025_onenote_com_convergence_and_mutation_coordination.md)
 - [TODO 029：Mutation Readiness 与 Page Reparent 加固](029_mcp_mutation_readiness_and_reconciliation_hardening.md)
 - [TODO 031：显式 launch_onenote_gui 工具](031_start_onenote_desktop_tool.md)

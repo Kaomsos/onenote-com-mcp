@@ -1,20 +1,22 @@
 # 024：Search 与 Typed Query 短时只读快照缓存
 
 > ID：024
-> 状态：待办
+> 状态：已取消
 > 优先级：P3
 > 类型：只读性能 / Search 与 Query 契约 / Manual Validation
-> 更新日期：2026-08-17
+> 更新日期：2026-08-20
 
-## 决策摘要
+## 取消决定（2026-08-20）
 
-OneNote Desktop 通常不是高频修改的数据源，而一次公开 Search 或 hierarchy metadata Query 当前需要启动 PowerShell bridge 并调用 OneNote COM。为连续查询、Agent 重试和分页重复读取增加一个轻量的进程内缓存，可以减少 `FindPages` 与 `GetHierarchy` 调用；但缓存不得进入 mutation 的确认、执行后 read-back 或收敛重试路径，也不得演变为磁盘索引、后台同步器或复杂的一致性协议。
+本 TODO 已取消，未实现进程内 TTL read cache。当前 `search_pages` 与四个 typed metadata Query 继续保持 live `FindPages`/`GetHierarchy` 读取、`live_index`/`live_hierarchy` pagination consistency，以及既有预算和 fail-closed 边界；不存在 `LOCAL_ONENOTE_READ_CACHE_TTL_SECONDS`、`health_check.read_cache`、cached read API 或 `read-cache-coherence` scenario。
 
-本 TODO 采用默认 15 秒、可通过 `LOCAL_ONENOTE_READ_CACHE_TTL_SECONDS` 配置的进程内只读快照缓存。缓存只服务 `search_pages` 和 TODO 022 规划的四个 typed metadata Query，不提供公开 `refresh` 参数。由本 MCP 进程发起的潜在 OneNote mutation 在 COM 调用前立即使缓存失效；用户直接在 OneNote Desktop 中造成的外部修改通过当前配置的 TTL 收敛，因此 Agent 可见合同必须明确当前最大陈旧窗口。
+取消原因是已完成的 TODO 045/049 和默认 persistent PowerShell host 已降低已证实的单次调用成本，而当前没有 trace 证明 Search/Query 的跨调用重复读取仍是值得用 bounded-staleness、TTL/LRU、候选分页快照、mutation-before-COM invalidation、generation 防旧值回填和新增人工验证来交换的瓶颈。尤其 `FindPages` 候选快照会改变 Agent 可见分页一致性与 snippet 的时间边界，不能仅作为内部优化悄然引入。
 
-该设计只优化调用成本，不改变 local-only、index-only Search、精确 ID、open-only、回收站、候选预算或 fail-closed 边界。TODO 022 的 typed Query 工具迁移仍由其自身跟踪；本 TODO 不提前实施或重新定义那组公开工具。
+未来若出现量化证据，跨层级/跨调用 hierarchy snapshot 必须先与写保护和 invalidation footprint 一起由 [TODO 046](046_scoped_mutation_coordination.md) 审查；该条目不自动恢复本文件的 TTL 或 `FindPages` 候选缓存设计。若仍需要 Search 专属缓存，应以新的、证据驱动且范围更窄的 TODO 重新决策。
 
-## 缓存边界
+下文保留为取消前的历史方案，不是当前实现契约或待办目标。
+
+## 原计划缓存边界（历史）
 
 ### 生命周期与容量
 
@@ -79,7 +81,7 @@ Hierarchy cache key 固定包含：
 - mutation Tool description 不需要暴露实现细节，但当前 design 文档必须明确 confirmation/read-back 不使用该缓存；
 - 同步根 README、`docs/design/architecture.md`、`docs/design/tool_contracts.md`、Search TODO 008、typed Query TODO 022 和受影响的 manual-validation 文档，删除“每页必定重新执行一次 `FindPages`”等过期说明。
 
-## 自动化合同
+## 原计划自动化合同（历史）
 
 至少覆盖：
 
@@ -101,7 +103,7 @@ Hierarchy cache key 固定包含：
 .venv\Scripts\python.exe -m pytest -q
 ```
 
-## 真实后端验证场景
+## 原计划真实后端验证场景（历史）
 
 新增具名 human-gated 场景 `read-cache-coherence`，放在 `tests/manual_validation/`，使用场景本次运行创建的 fresh-only disposable Notebook 和 run-unique Page 内容。场景默认 `included_in_all=false`，禁止 fixture cache，使用静态最小权限和 content-free bridge audit；Agent 只能运行纯测试及：
 
@@ -122,7 +124,7 @@ Hierarchy cache key 固定包含：
 
 真实验证证据必须由用户确认。Mock、完整 pytest、`--dry-run` 或 Agent 推断都不能单独满足本 TODO 的真实场景完成门。
 
-## 非目标
+## 原计划非目标（历史）
 
 - 不建立磁盘缓存、SQLite/全文索引、文件 watcher、OneNote 事件订阅、后台刷新或跨进程 cache daemon；
 - 不缓存 Page XML、正文、snippet、binary content、mutation confirmation 或 read-back；
@@ -131,14 +133,11 @@ Hierarchy cache key 固定包含：
 - 不在本 TODO 中实施 TODO 022 的工具替换，也不保留 `query_hierarchy` 兼容 alias；
 - 不承诺用户在 OneNote Desktop 外部修改后的即时一致性。
 
-## 完成定义
+## 取消记录
 
-- 进程内可配置 TTL（默认 15 秒、合法范围 `1..300`）、有界容量、不可变值、generation 防旧值回填和 mutation-before-COM 失效全部实现；
-- Search 和 typed metadata Query 使用显式 cached snapshot API，一致性敏感读路径经测试证明保持 live；
-- Search 分页合同、Tool description、`health_check`、README、design、TODO 008/022 与 manual-validation 文档同步且不存在旧 `live_index` 叙述；
-- 聚焦纯测试与完整 pytest 通过，`read-cache-coherence --dry-run --json` 为零副作用成功；
-- 用户显式运行 `read-cache-coherence`，并确认自定义 TTL 被 health 与真实过期行为采用，以及 cold/hit、key 隔离、分页复用、MCP mutation 立即失效、snippet live read、脱敏和 lifecycle 证据满足场景断言；
-- 真实证据未闭合前，本 TODO 不得标记为“已完成”。
+- 未实现原计划的 TTL、LRU、query candidate snapshot、环境变量、health projection、自动化合同或 human-gated scenario；
+- 未发布 bounded-staleness 公开契约，当前 live Search/Query 行为不变；
+- 取消不代表跨调用缓存已安全或无价值；它只说明当前没有足够的性能证据授权这套复杂度。层级化 snapshot/cache 的唯一现行评估入口是 TODO 046。
 
 ## 关联
 

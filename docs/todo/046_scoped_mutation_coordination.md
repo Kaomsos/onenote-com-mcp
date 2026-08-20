@@ -3,8 +3,8 @@
 > ID：046
 > 状态：待办
 > 优先级：P3
-> 类型：并发 / Mutation 安全 / OneNote COM / 性能
-> 更新日期：2026-08-19
+> 类型：并发 / Mutation 安全 / 层级缓存一致性 / OneNote COM / 性能
+> 更新日期：2026-08-20
 
 ## 决策摘要
 
@@ -12,7 +12,7 @@
 
 本项仅评估在已证明存在跨作用域 mutation 排队成本后，是否能按精确资源作用域减少不必要的等待。优先级为 P3：OneNote COM 是否支持并行 mutation、完整调用的实际作用域、以及完整层级读取带来的全局观察依赖均未被证明。没有这些证据，不得用“不同 Page/Notebook”推断可以并行写入。
 
-细粒度写锁不得独立于细粒度失效判断推进。每个 mutation 的 lock footprint 应同时成为其 hierarchy/Page snapshot 与可缓存 read 结果的失效 footprint；否则两个表面上无冲突的写入仍可能让后续 read 使用陈旧状态。本项与 TODO 045 的 phase-local snapshot 失效模型同步设计，跨调用只读缓存的进一步细化则与 TODO 024 同步审查。
+细粒度写锁不得独立于细粒度失效判断推进。每个 mutation 的 lock footprint 应同时成为其 hierarchy/Page snapshot 与可缓存 read 结果的失效 footprint；否则两个表面上无冲突的写入仍可能让后续 read 使用陈旧状态。TODO 045 已完成 operation-local、按 mutation epoch 失效的 snapshot 优化；任何更复杂的跨层级、跨调用或按资源子树复用 cache 的方案现统一并入本项，与层级化写保护锁从同一份 verified footprint 派生。原 TODO 024 的 TTL Search/Query cache 已取消；没有新的量化证据时，本项也不实现它。
 
 ## 当前边界与缺口
 
@@ -45,6 +45,13 @@
 3. 在任何宣称性能收益前，比较旧全局锁与候选锁下的相同 deterministic workload；报告等待时间、吞吐量和安全不变量，均不得包含对象 ID、标题或内容。
 4. 若实施影响真实 mutation 时，为每个接入 operation 补充具名 manual-validation scenario；由用户在 disposable 数据上验证并发拒绝/串行与无冲突路径，Agent 不执行真实 scenario。
 
+### D. 层级化 snapshot/cache 与写保护共同设计
+
+1. 不单独新增 Copy/Move fast cache、容器批量 cache 或隐藏的跨调用 snapshot；候选复用必须先具有与锁相同的 typed resource/subtree footprint。
+2. 锁 footprint、cache key scope 和 mutation invalidation footprint 必须由同一份 verified hierarchy relation 导出；任何一项只能证明到 Notebook/root hierarchy 时，三者都回退到全局作用域。
+3. 外部 OneNote 客户端造成的变化不受进程内锁保护，因此跨调用 cache 仍须有 live generation/drift 证明和 fail-closed miss；锁命中不能被当成 cache freshness 证明。
+4. 只有 A 节证明锁竞争或重复层级读取仍是实际瓶颈后，才设计这一层；TODO 045 已确认当前单次 Copy/Move 无需为性能单独推进该复杂度。
+
 ## 非目标与安全边界
 
 - 不并行化单次 Move/Copy 内的创建、回读、删源或收敛步骤；
@@ -59,11 +66,12 @@
 - [ ] 细粒度锁模型具有 canonical 获取顺序、全局 fallback 与所有异常/timeout 的无泄漏释放合同；
 - [ ] 确定性并发测试证明重叠 mutation 永不并行、无冲突 mutation 仅在平台 gate 允许时并行，且现有失败/删源语义不变；
 - [ ] 若实际接入 mutation：相关设计、公开契约、自动化合同和具名 human-gated scenario 已同步，且用户确认 disposable 真实证据；
+- [ ] 若接入层级化 snapshot/cache：其 key、lock 与 invalidation footprint 同源，无法精确证明时统一回退到全局作用域，外部 drift 继续 fail closed；
 - [ ] 若证据表明单次 COM/readback 才是主要瓶颈，记录结论并保持全局锁，不为了完成 TODO 而强行拆锁。
 
 ## 关联
 
 - [TODO 025](025_onenote_com_convergence_and_mutation_coordination.md)：当前进程内读写协调、收敛与对账的已完成基线。
-- [TODO 045](045_copy_move_readback_snapshot_efficiency.md)：单次 Copy/Move 的 phase-local hierarchy/Page snapshot 与 mutation 后失效模型；细粒度写锁必须与其细粒度失效判断同步推进。
-- [TODO 024](024_search_and_query_read_snapshot_cache.md)：跨调用只读缓存及 mutation invalidation 的既有规划；本项的 lock/invalidation footprint 是其细化前提之一。
+- [TODO 045](045_copy_move_readback_snapshot_efficiency.md)：已完成单次 Copy/Move 的 phase-local hierarchy/Page snapshot；更复杂的层级化 cache 已从 045 移交本项，与写锁/失效 footprint 共同设计。
+- [TODO 024](024_search_and_query_read_snapshot_cache.md)：已取消的 TTL Search/Query cache 方案；未来若有新证据，只能通过本项的 lock/invalidation footprint 先行审查，必要时另建窄范围工作项。
 - [Operation Runtime](../design/operation_runtime.md)：operation coordination、generation 与 Outcome 模型。

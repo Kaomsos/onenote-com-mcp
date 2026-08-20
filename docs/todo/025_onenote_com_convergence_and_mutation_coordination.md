@@ -19,7 +19,7 @@ Fixture cache clone 的 materialization/open readiness 由 fixture cache/lifecyc
 ## 实施进度（2026-08-13）
 
 - 已新增 `onenote_errors.py`、`services/convergence.py`、`services/reconciliation.py` 与 `services/coordination.py`；bridge/service/response 保留 typed HRESULT、retryability、partial 和 reconciliation。官方 `0x8004201D/23/30` 与 object/file unavailable HRESULT 已映射为稳定类型；只有明确 typed transient read 才进入 convergence，modal/object/file unavailable 均不构成 mutation replay 依据。
-- 所有公开 Tool 通过进程级 reader/writer coordinator；mutation 从 confirmation 前进入独占区，generation invalidation hook 在任何 COM mutation 前执行，为 TODO 024 保留无旧读回填的接入点。首版仍明确不覆盖其他 MCP 进程或 Desktop 直接修改。
+- 所有公开 Tool 通过进程级 reader/writer coordinator；mutation 从 confirmation 前进入独占区，generation invalidation hook 在任何 COM mutation 前执行，为 operation-local snapshot 与未来经审查的 cache 保留无旧读回填接入点。原 TODO 024 的 TTL cache 方案已于 2026-08-20 取消；首版仍明确不覆盖其他 MCP 进程或 Desktop 直接修改。
 - Create/open、Page title/content、Rename、Page/Section Reorder、Reparent、Copy Page fidelity/最终 topology、Delete、Move 源缺席与 Close 已迁移到公共连续稳定观察；`sync_notebook` 改为 `accepted=true/converged=false` 请求语义。
 - 已新增 fresh-only、`included_in_all=false` 的 `onenote-convergence` scenario 与独立最小 recipe；它直接验证生产 Create→Page update→Reorder→非永久 Delete timing，并由共享 lifecycle 记录 Close 证据。
 - README、当前架构、Tool contract 和 manual-validation 文档已同步。自动化、dry-run 与用户前台真实证据均已闭合。
@@ -96,7 +96,7 @@ src/local_onenote_mcp/
 - convergence 以 operation-specific `observe`、`accept` 和 stable identity projection 工作，不内置 Copy、Reparent 或 Page fidelity 业务规则；
 - 默认必须要求至少两个连续一致且满足 postcondition 的观察，避免单个瞬时 snapshot 被当成稳定状态；具体 deadline、间隔和最大 observation 数必须有统一配置或固定合同，不允许各 Tool 随意复制 magic numbers；
 - 成功返回 attempts、elapsed、stable observations、identity remap 和 content-free transient error 分类；失败返回最后可证明状态，但不泄露 Page XML、正文、binary 或用户路径参数；
-- mutation confirmation、convergence 和 reconciliation 必须读取 live OneNote 状态，不得使用 TODO 024 规划的 TTL read cache。
+- mutation confirmation、convergence 和 reconciliation 必须读取 live OneNote 状态，不得使用任何可选 cache。
 
 ### Mutation reconciliation
 
@@ -113,7 +113,7 @@ src/local_onenote_mcp/
 - mutation 稳定 read-back 完成或 fail-closed 分类前不得释放独占权，避免另一 Tool 读取中间状态；
 - 等待 coordinator 时必须受 Tool/bridge 总 timeout 约束，取消或异常必须可靠释放，不得形成永久锁；
 - 首版只承诺单 MCP 进程内协调，不建立跨进程 daemon、文件锁分布式事务或 OneNote 全局锁；多个独立 MCP 进程和用户在 Desktop 中的直接修改仍属于外部并发，继续由 confirmation 和 reconciliation fail closed；
-- 与 TODO 024 协作时，mutation 必须在 COM 前使只读缓存失效，并用 generation 防止旧读回填；协调器不能让 cached snapshot 进入 confirmation 或 read-back。
+- 原计划曾要求与 TODO 024 协作时，mutation 在 COM 前使只读缓存失效并以 generation 防止旧读回填；该 TTL cache 方案已取消。协调器当前仍禁止 operation-local snapshot 进入 confirmation 或 read-back。
 
 ## 优先接入顺序
 
@@ -121,7 +121,7 @@ src/local_onenote_mcp/
 2. 实现可独立测试的 convergence helper，替换现有分散的 `wait_for*`、Delete/Close/Reparent 等价轮询；
 3. 优先加强 `open_hierarchy(create_type=none)`、Page content mutation、Reorder 和 Copy 最终验证；
 4. 加入 operation-specific reconciliation，先覆盖 Page update、Create 和 Copy/Move 的 allocated-ID 路径；
-5. 在所有生产 Tool 的 service 入口接入进程内 coordinator，并与 TODO 024 的 mutation-before-COM 失效顺序共同测试；
+5. 在所有生产 Tool 的 service 入口接入进程内 coordinator，并测试 mutation-before-COM 的 generation 顺序；原 TODO 024 的 TTL cache 依赖已在后续取消；
 6. 统一 manual-validation timing evidence，使场景验证生产机制，不复制另一套 magic retry loop。
 
 ## 公开 Tool 合同
@@ -148,7 +148,7 @@ src/local_onenote_mcp/
 - `open_hierarchy(create_type=none)` 不再返回未经 read-back 的完成状态；
 - 两个并发 mutation 严格串行，一个 read 不得观察另一个 mutation 的中间窗口；多个纯 read 在没有 mutation 时可以按合同共享；
 - coordinator timeout、异常与取消后锁被释放，后续调用可以继续；
-- TODO 024 cache generation 与 coordinator 顺序正确：COM 前失效，confirmation/read-back live，旧 read 不能回填；
+- generation 与 coordinator 顺序正确：COM 前失效，confirmation/read-back live，旧 read 不能回填；原 TODO 024 的 TTL cache 后续未实施并已取消；
 - response/audit 不包含 Page 正文、raw XML、binary、secret 或完整请求参数。
 
 聚焦测试通过后运行完整纯测试：
@@ -183,7 +183,7 @@ src/local_onenote_mcp/
 
 - HRESULT typed error、公共 convergence、mutation reconciliation 和进程内 coordinator 按上述职责落地，原有分散时序代码完成审计与迁移；
 - `open_hierarchy(create_type=none)`、Page mutation、Reorder、Copy/Move、Delete、Close 和 Sync 的 accepted/converged/partial 语义明确且有自动化覆盖；
-- 所有 mutation confirmation 与 read-back 保持 live，并与 TODO 024 的失效/generation 合同兼容；
+- 所有 mutation confirmation 与 read-back 保持 live；若未来引入经审查的 cache，必须遵守既有失效/generation 安全边界；
 - 公共 response schema、README、`docs/design/architecture.md`、`docs/design/tool_contracts.md` 和 manual-validation 文档同步；
 - 聚焦测试、完整 pytest 和 `onenote-convergence --dry-run --json` 通过；
 - 用户显式运行并确认 `onenote-convergence` 以及受影响的既有真实回归场景，证明正常路径收敛、并发协调、错误分类和 partial safety 符合合同；
@@ -193,7 +193,7 @@ src/local_onenote_mcp/
 
 - [TODO 014](014_recipe_fixture_validation_and_local_notebook_cache.md)：fixture cache 与隔离 working copy 的既有架构；clone activation 不由本 TODO 实施。
 - [TODO 021](021_windows_fixture_cache_path_budget.md)：受管路径预算与结构化 path failure；不负责 COM convergence。
-- [TODO 024](024_search_and_query_read_snapshot_cache.md)：只读 TTL cache、mutation-before-COM 失效与 generation；实施时必须共同审查协调顺序。
+- [TODO 024](024_search_and_query_read_snapshot_cache.md)：已取消的只读 TTL cache 方案；当前不构成实施依赖，未来层级化 cache 由 TODO 046 审查。
 - [当前架构](../design/architecture.md)：实现后 coordinator、convergence 与 bridge error 边界的 canonical 归属。
 - [公开 Tool 契约](../design/tool_contracts.md)：实现后 accepted/converged/partial、typed error 和 response 字段的 canonical 归属。
 - [Manual Validation Runner](../../tests/manual_validation/README.md)：真实场景的权限、证据与 HUMAN-GATED 执行边界。

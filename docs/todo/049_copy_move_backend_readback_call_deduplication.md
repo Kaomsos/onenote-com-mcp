@@ -61,8 +61,8 @@ Read reason 将可合并的层级读取定位为：
 ## 非目标与安全边界
 
 - 不减少必要的双稳定创建/删除收敛 observation，也不把“后端调用返回成功”当作持久化成功；
-- 不合并跨 mutation epoch 的读取，不引入跨 tool call 缓存、TTL cache 或全局 mutable snapshot；后者仍属于 TODO 024；
-- 不改变 fast 验证模式的产品决策与删源门；该方向仍属于 TODO 045 的独立工作范围；
+- 不合并跨 mutation epoch 的读取，不引入跨 tool call 缓存、TTL cache 或全局 mutable snapshot；原 TODO 024 已取消，未来层级化 cache 仅能按 TODO 046 的 footprint 规则重新评估；
+- 不新增 fast 验证模式；该方向已由 TODO 045 的完成决策移除，strict fidelity 与删源门保持唯一合同；
 - 不将本项的 call-count 降低归因于或绑定到任何特定 COM client adapter；048 可以独立实施；
 - 不增加并发 OneNote COM 调用，不改变 TODO 046/047 的锁与调度边界；
 - `mutation_epoch` 不能代表外部一致性；fresh confirmation 不提供跨进程原子性。
@@ -74,7 +74,7 @@ Read reason 将可合并的层级读取定位为：
 - [x] readback ledger 冻结优化后的精确 `(backend operation, read_reason)` 预算，并覆盖 stale/partial/timeout/promotion 等负向路径（自动化侧）；
 - [x] 自动化测试证明 strict fidelity、Copy-before-delete、source drift、typed partial outcome、recycle-bin 不确定性与 content-free trace 合同保持不变；
 - [x] 用户确认 disposable 本地 OneNote trace 对比：backend call 数按预期下降，且无 source 意外删除或验证降级；
-- [x] 当前设计文档、开发 ledger、TODO 045 边界与索引已同步（不改动用户正在修改的 048 正文）。
+- [x] 当前设计文档、开发 ledger、TODO 045 完成边界与索引已同步。
 
 ## Human-gated 验收（已完成）
 
@@ -82,9 +82,9 @@ Read reason 将可合并的层级读取定位为：
 
 ## 关联
 
-- [TODO 045](045_copy_move_readback_snapshot_efficiency.md)：phase-local cache、strict readback 基线与 fast mode 的上层性能工作；049 是其共享服务重复 call 的窄化后续。
+- [TODO 045](045_copy_move_readback_snapshot_efficiency.md)：已完成 phase-local cache 与 strict readback 优化；049 是其共享服务重复 call 的窄化后续，fast mode 已移除。
 - [TODO 048](048_persistent_com_client_bridge.md)：降低仍不可省略的 backend call transport 成本。
-- [TODO 024](024_search_and_query_read_snapshot_cache.md)：跨 tool call 的短时只读缓存，明确不在本项范围。
+- [TODO 024](024_search_and_query_read_snapshot_cache.md)：已取消的跨 tool call TTL cache 方案；当前不在本项范围。
 - [TODO 046](046_scoped_mutation_coordination.md)：mutation footprint、锁与缓存失效范围需要保持一致。
 - [Copy/Move read reason ledger](../dev/copy_move_read_reason_ledger.md)：本项的 trace 归因与预算依据。
 - [Operation Runtime §8.1](../design/operation_runtime.md#81-copymove-phase-local-readback-snapshot045-strict-优化)：当前 phase-local snapshot、fresh confirmation 与 mutation epoch 合同。

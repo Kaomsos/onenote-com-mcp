@@ -205,7 +205,7 @@ classDiagram
 | --- | --- | --- |
 | `ServiceContainer` | `services.container` | 构造并持有共享 bridge 上的六个 service；表达显式依赖。 |
 | `BaseService` | `services.base` | 透传 typed bridge error，并提供 enum 校验。 |
-| `ReadWriteCoordinator` | `services.coordination` | 允许纯读共享；mutation 从 confirmation 到稳定回读持有独占权。writer 等待有界，异常必释放；generation/invalidator 是 TODO 024 cache 的接入点。 |
+| `ReadWriteCoordinator` | `services.coordination` | 允许纯读共享；mutation 从 confirmation 到稳定回读持有独占权。writer 等待有界，异常必释放；当前不实现跨调用 TTL cache，未来层级化 cache 只能与 TODO 046 的 lock/invalidation footprint 同步评估。 |
 | `ConvergenceResult` | `services.convergence` | 用 monotonic deadline、可注入 clock/sleeper、连续稳定观察和 content-free history 表达 read-after-write 收敛。 |
 | `ReconciliationResult` | `services.reconciliation` | 将 live 后置状态分类为 `not_applied/applied/partially_applied/indeterminate`；仅精确 pre-state 且 typed retryability 允许时有界重放一次幂等动作。 |
 | `MutationAttemptPolicy` | `services.mutation_control` | 为一个有界 principal attempt 声明 replay、identity、observer、partial boundary、execute-error postcondition 是否足够、persistence checkpoint 与禁止的 backend operation；未知 policy fail closed。 |

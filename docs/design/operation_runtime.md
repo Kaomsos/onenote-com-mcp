@@ -519,7 +519,7 @@ move_page, move_section, move_section_group
 
 **明确不复用**（跨 mutation 边界必须 live read）：`wait_for_created`/收敛轮询、写后 reconciliation（作为独立证据阶段）、Move 删源前 source drift、每次源拓扑 mutation 前的 fresh delete/promotion confirmation、删源后至少一次新的 live 稳定观察。reconciliation 成功后可将该 observation 作为 convergence 的 `initial_value` 首样本，但不减少所需连续稳定观察数。
 
-**本轮不含**：fast 验证模式（工作范围 F）与容器专属批量化（工作范围 D）；容器 Copy/Move 通过通用 `_build_plan` → `_execute_copy` 路径间接受益于 Page 与 hierarchy 优化。共享创建/删除重复 call 的去重见 [TODO 049](../todo/049_copy_move_backend_readback_call_deduplication.md)。
+产品已决定不实现 fast 验证模式；Copy/Move 继续只有 strict fidelity 合同。容器 Copy/Move 通过通用 `_build_plan` → `_execute_copy` 路径受益于 Page 与 hierarchy 优化，共享创建/删除重复 call 的去重见 [TODO 049](../todo/049_copy_move_backend_readback_call_deduplication.md)。任何进一步的跨层级、跨调用或按资源子树复用 snapshot/cache，必须与层级化写保护和 mutation invalidation footprint 共同设计，统一由 [TODO 046](../todo/046_scoped_mutation_coordination.md) 跟踪。
 
 ## 9. 验证边界
 
