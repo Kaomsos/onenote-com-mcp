@@ -31,6 +31,7 @@ from tests.manual_validation.scenarios.fixture_recipes.reorder_section_group imp
     RECIPE as REORDER_SECTION_GROUP_RECIPE,
 )
 from tests.manual_validation.scenarios.fixture_recipes.reparent_section import DESCRIPTION as REPARENT_SECTION_DESCRIPTION
+from tests.manual_validation.tests.fixture_validate import recipe_validate_checks
 from tests.manual_validation.scenarios.fixture_recipes.recipe_base import (
     NESTED_SECTION_CACHE_UNSAFE_REASON,
 )
@@ -63,13 +64,12 @@ def _validate_fixture_snapshot(scenario, snapshot, structure, content_fixture):
             "sha256": "a" * 64,
             "payload_persisted": False,
         }
-    return list(
-        SCENARIO_REGISTRY.get(scenario).fixture_recipe.validate(
-            FixtureValidationContext(
-                args=argparse.Namespace(scenario=scenario), snapshot=snapshot
-            ),
-            FixtureBuildResult(structure, evidence),
-        )
+    return recipe_validate_checks(
+        scenario,
+        FixtureValidationContext(
+            args=argparse.Namespace(scenario=scenario), snapshot=snapshot
+        ),
+        FixtureBuildResult(structure, evidence),
     )
 
 

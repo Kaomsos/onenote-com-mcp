@@ -31,21 +31,23 @@ from tests.manual_validation.scenarios.common.fixture_models import FixtureBuild
 
 CASES = required_recipe_contract_cases(SCENARIO_REGISTRY)
 PINNED_RECIPE_VERSIONS = {
+    "cache-invalidation": 1,
+    "copy-display-equation": 1,
+    "copy-page": 14,
+    "create": 5,
     "interactive-copy-ink-drawing": 3,
+    "interactive-copy-inline-equation": 2,
     "interactive-copy-inserted-file": 3,
     "interactive-copy-media-file": 8,
     "interactive-copy-ui-shape": 5,
-    "interactive-user-authored-fixture": 4,
     "interactive-move-page": 3,
     "interactive-move-page-content": 11,
-    "copy-notebook": 3,
-    "copy-page": 14,
-    "hierarchy-navigation": 4,
+    "interactive-user-authored-fixture": 4,
     "move-page": 7,
-    "copy-section": 4,
-    "copy-section-group": 5,
-    "create": 5,
+    "move-section": 2,
+    "reorder-page": 2,
     "reparent-page": 3,
+    "reparent-page-with-level": 2,
 }
 
 NESTED_SECTION_CACHE_UNSAFE_SCENARIOS = {
@@ -174,6 +176,11 @@ def test_flat_section_recipes_remain_cache_supported() -> None:
 
 
 def test_pinned_cache_recipe_versions_match_the_central_catalog() -> None:
+    assert set(PINNED_RECIPE_VERSIONS) == {
+        scenario.name
+        for scenario in SCENARIO_REGISTRY.values()
+        if scenario.fixture_recipe.supports_cache
+    }
     assert {
         name: SCENARIO_REGISTRY.get(name).fixture_recipe.recipe_version
         for name in PINNED_RECIPE_VERSIONS

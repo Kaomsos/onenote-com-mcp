@@ -62,6 +62,7 @@ def test_legacy_copy_experimental_and_move_switches_are_not_aliases(monkeypatch)
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_REORDER_SECTION_GROUP",
         "LOCAL_ONENOTE_ENABLE_EXPERIMENTAL_COPY",
         "LOCAL_ONENOTE_ENABLE_COPY",
+        "LOCAL_ONENOTE_ENABLE_MOVE",
         "LOCAL_ONENOTE_ENABLE_MOVE_PAGE",
         "LOCAL_ONENOTE_ENABLE_MOVE_CONTAINERS",
     ):

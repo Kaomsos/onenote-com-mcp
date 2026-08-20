@@ -420,7 +420,7 @@ def test_each_required_gate_rejects_before_backend_for_every_public_operation(
     assert outcome.generation_before == outcome.generation_after == generation
 
 
-def test_registry_is_the_unique_default_and_advanced_tool_inventory() -> None:
+def test_registry_freezes_user_tool_names() -> None:
     registry = get_runtime().registry
     default_names = {tool.__name__ for tool in DEFAULT_TOOLS}
     advanced_names = set(registry.names_for_profile("advanced"))

@@ -226,7 +226,6 @@ def test_move_page_recipe_owns_exact_three_column_special_title_fixture() -> Non
 
     contract = SCENARIO_REGISTRY.get("move-page").spec.execution_contract
     root_case = contract["cases"][0]
-    assert recipe.recipe_version == 7
     assert root_case["destination_title"] == "omitted"
     assert SPECIAL_PAGE_TITLE in xml
     assert "<table>" not in PURE_RICH_TEXT_HTML

@@ -644,7 +644,7 @@ def test_keep_worksite_copy_spec_removes_cleanup_permissions(tmp_path) -> None:
     assert not {"copy_section", "copy_section_group", "copy_notebook"} & spec["tools"]
 
 
-def _legacy_copy_page_two_case_fixture(
+def _keep_worksite_copy_page_two_case_fixture(
     monkeypatch,
     tmp_path,
     keep_worksite,

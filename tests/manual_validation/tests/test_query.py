@@ -40,7 +40,6 @@ def test_query_metadata_scope_recipe_has_two_complete_fresh_only_roles() -> None
     assert scenario.included_in_all is True
     assert scenario.requires_index_activation_checkpoint is False
     assert scenario.requires_lifecycle_wrappers is True
-    assert recipe.recipe_version == 6
     assert recipe.supports_cache is False
     assert "Section below a SectionGroup" in recipe.fresh_only_reason
     assert tuple(role.role for role in recipe.cache_identity.notebook_roles) == (

@@ -854,7 +854,7 @@ def test_rejected_partial_copy_captures_xml_structure_before_reraising(
     assert sensitive["source"]["binary_data_retained"] is False
 
 
-def _legacy_display_equation_copy_chain_keeps_one_known_com_break_bounded(
+def _display_equation_copy_chain_keeps_one_known_com_span_break_bounded(
     monkeypatch, tmp_path
 ) -> None:
     scenario = SCENARIO_REGISTRY.get("copy-display-equation")

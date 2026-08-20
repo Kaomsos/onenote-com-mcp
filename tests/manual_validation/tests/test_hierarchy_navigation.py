@@ -277,7 +277,6 @@ def test_hierarchy_navigation_recipe_is_fresh_only_and_policy_is_least_privilege
     assert scenario.included_in_all is False
     assert recipe.supports_cache is False
     assert "Section below a SectionGroup" in recipe.fresh_only_reason
-    assert recipe.recipe_version == 4
     assert [role.role for role in recipe.cache_identity.notebook_roles] == [
         "browse-b",
         "source",

@@ -114,11 +114,9 @@ _MOVE_CONTAINER_BUDGET: dict[tuple[str, str | None], int] = {
 
 
 @pytest.fixture(autouse=True)
-def _enable_copy_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+def _enable_ledger_mutation_gates(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_COPY", "true")
-    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_MOVE", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
 
 

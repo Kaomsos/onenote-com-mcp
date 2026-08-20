@@ -16,7 +16,6 @@ from local_onenote_mcp.services import PartialFailure
 from local_onenote_mcp.tool_surface import (
     INTERNAL_CAPABILITIES,
     INTERNAL_CAPABILITY_NAMES,
-    LEGACY_PUBLIC_NAMES,
     USER_TOOL_NAMES,
 )
 from local_onenote_mcp.tools.mutations import (
@@ -459,62 +458,7 @@ def test_metadata_query_schemas_are_typed_strict_and_bounded():
 
 
 def test_default_tool_profile_excludes_generic_raw_mutations():
-    names = set(server.mcp._tool_manager._tools)
-
     assert tuple(server.mcp._tool_manager._tools) == USER_TOOL_NAMES
-    assert {
-        "query_notebook",
-        "query_section_group",
-        "query_section",
-        "query_page",
-    } <= names
-    assert "query_hierarchy" not in names
-    assert "global_query" not in names
-    assert {
-        "list_notebooks",
-        "expand_notebook",
-        "expand_section_group",
-        "expand_section",
-        "expand_page",
-        "expand_hierarchy",
-    } <= names
-    assert {
-        "list_hierarchy",
-        "list_section_groups",
-        "list_sections",
-        "list_pages",
-        "get_tree",
-    }.isdisjoint(names)
-    assert INTERNAL_CAPABILITY_NAMES.isdisjoint(names)
-    assert LEGACY_PUBLIC_NAMES.isdisjoint(names)
-    assert {
-        "reorder_section",
-        "reparent_page",
-        "reparent_section",
-        "reparent_section_group",
-    } <= names
-    assert {
-        "copy_page",
-        "copy_section",
-        "copy_section_group",
-        "copy_notebook",
-        "move_page",
-        "move_section",
-        "move_section_group",
-    } <= names
-    assert {
-        "plan_copy",
-        "plan_move_page",
-        "plan_move_section",
-        "plan_move_section_group",
-    }.isdisjoint(names)
-    assert "update_page_xml" not in names
-    assert "update_hierarchy_xml" not in names
-    assert "delete_hierarchy" not in names
-    assert "merge_sections" not in names
-    assert "reorder_section_group" not in names
-    assert "plan_reconstructive_move_page" not in names
-    assert "reconstructive_move_page" not in names
 
 
 def test_server_import_and_health_do_not_start_com_host():

@@ -34,7 +34,7 @@ from tests.destination_position_assertions import assert_destination_position_co
 pytestmark = pytest.mark.usefixtures("virtual_convergence_clock")
 
 
-async def plan_copy(
+async def _inspect_copy_plan(
     source_id: str,
     destination_parent_id: str = "",
     destination_name: str = "",
@@ -1991,11 +1991,11 @@ def test_default_validated_copy_types_are_lossless_candidates():
     assert not any(issue["code"] == "content_type_unverified" for issue in result["issues"])
 
 
-def test_plan_copy_defaults_to_only_the_selected_page(monkeypatch):
+def test_inspect_copy_plan_defaults_to_only_the_selected_page(monkeypatch):
     install_plan_fakes(monkeypatch)
 
-    first = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
-    second = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    first = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
+    second = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
 
     assert first["ok"] is True
     assert first["plan_digest"] == second["plan_digest"]
@@ -2010,7 +2010,7 @@ def test_plan_copy_defaults_to_only_the_selected_page(monkeypatch):
     assert first["copyability"]["lossless_candidate"] is True
 
 
-def test_plan_copy_ignores_volatile_raw_page_xml_but_exposes_its_digest(monkeypatch):
+def test_inspect_copy_plan_ignores_volatile_raw_page_xml_but_exposes_its_digest(monkeypatch):
     state = install_plan_fakes(monkeypatch)
     reads = {"count": 0}
 
@@ -2023,8 +2023,8 @@ def test_plan_copy_ignores_volatile_raw_page_xml_but_exposes_its_digest(monkeypa
 
     monkeypatch.setattr(server.services.pages, "xml", volatile_xml)
 
-    first = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
-    second = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    first = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
+    second = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
 
     assert first["plan_digest"] == second["plan_digest"]
     assert first["source_snapshot_digest"] == second["source_snapshot_digest"]
@@ -2038,7 +2038,7 @@ def test_plan_copy_ignores_volatile_raw_page_xml_but_exposes_its_digest(monkeypa
     )
 
 
-def test_plan_copy_rejects_inserted_file_without_readable_path_before_mutation(
+def test_inspect_copy_plan_rejects_inserted_file_without_readable_path_before_mutation(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -2059,7 +2059,7 @@ def test_plan_copy_rejects_inserted_file_without_readable_path_before_mutation(
     monkeypatch.setattr(server.services.pages, "xml", inserted_file_xml)
 
     result = asyncio.run(
-        plan_copy("parent", "destination-section", "Copied Parent")
+        _inspect_copy_plan("parent", "destination-section", "Copied Parent")
     )
 
     assert result["ok"] is False
@@ -2072,24 +2072,24 @@ def test_plan_copy_rejects_inserted_file_without_readable_path_before_mutation(
     assert str(missing_cache) not in result["error"]
 
 
-def test_plan_copy_still_changes_digest_when_authored_content_changes(monkeypatch):
+def test_inspect_copy_plan_still_changes_digest_when_authored_content_changes(monkeypatch):
     state = install_plan_fakes(monkeypatch)
 
-    first = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    first = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
     state["body"] = "Changed body"
-    second = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    second = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
 
     assert first["plan_digest"] != second["plan_digest"]
     assert first["source_snapshot_digest"] != second["source_snapshot_digest"]
 
 
-def test_plan_copy_ignores_modified_clock_drift_but_preserves_observation(monkeypatch):
+def test_inspect_copy_plan_ignores_modified_clock_drift_but_preserves_observation(monkeypatch):
     state = install_plan_fakes(monkeypatch)
 
-    first = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    first = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
     for item in state["items"]:
         item["modified"] = "one-note-clock-drift"
-    second = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    second = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
 
     assert first["plan_digest"] == second["plan_digest"]
     assert first["source_snapshot_digest"] == second["source_snapshot_digest"]
@@ -2100,12 +2100,12 @@ def test_plan_copy_ignores_modified_clock_drift_but_preserves_observation(monkey
     assert first["destination"] != second["destination"]
 
 
-def test_plan_copy_explicitly_includes_complete_page_subtree_and_changes_digest(monkeypatch):
+def test_inspect_copy_plan_explicitly_includes_complete_page_subtree_and_changes_digest(monkeypatch):
     install_plan_fakes(monkeypatch)
 
-    root_only = asyncio.run(plan_copy("parent", "destination-section", "Copied Parent"))
+    root_only = asyncio.run(_inspect_copy_plan("parent", "destination-section", "Copied Parent"))
     subtree = asyncio.run(
-        plan_copy(
+        _inspect_copy_plan(
             "parent",
             "destination-section",
             "Copied Parent",
@@ -2124,10 +2124,10 @@ def test_plan_copy_explicitly_includes_complete_page_subtree_and_changes_digest(
     assert subtree["estimated"]["pages"] == 2
 
 
-def test_plan_copy_rejects_case_insensitive_direct_name_conflict(monkeypatch):
+def test_inspect_copy_plan_rejects_case_insensitive_direct_name_conflict(monkeypatch):
     install_plan_fakes(monkeypatch)
 
-    result = asyncio.run(plan_copy("parent", "source-section", "parent"))
+    result = asyncio.run(_inspect_copy_plan("parent", "source-section", "parent"))
 
     assert result["ok"] is False
     assert "never overwrites" in result["error"]
@@ -2170,7 +2170,7 @@ def test_non_notebook_plan_rejects_destination_base_folder(monkeypatch, tmp_path
     install_plan_fakes(monkeypatch)
 
     result = asyncio.run(
-        plan_copy(
+        _inspect_copy_plan(
             "parent",
             "destination-section",
             "Copied Parent",
@@ -2363,7 +2363,7 @@ def test_section_group_plan_rejects_destination_inside_source_tree(monkeypatch):
         lambda include_recycle_bin=False: [*items, group, child_group],
     )
 
-    result = asyncio.run(plan_copy("g", "child-g", "Nested Copy"))
+    result = asyncio.run(_inspect_copy_plan("g", "child-g", "Nested Copy"))
 
     assert result["ok"] is False
     assert "cannot be copied into itself" in result["error"]
@@ -2379,7 +2379,7 @@ def test_plan_budget_rejects_subtree_before_reading_page_xml(monkeypatch):
     )
 
     result = asyncio.run(
-        plan_copy(
+        _inspect_copy_plan(
             "parent",
             "destination-section",
             "Copied Parent",

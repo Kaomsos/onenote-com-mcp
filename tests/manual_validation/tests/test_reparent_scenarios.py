@@ -38,19 +38,19 @@ from tests.manual_validation.scenarios.reparent_page_with_level import (
 from tests.manual_validation.scenarios.reparent_section_group import (
     ReparentSectionGroupScenario,
 )
+from tests.manual_validation.tests.fixture_validate import recipe_validate_checks
 
 
 def _validate_fixture_snapshot(name, snapshot, structure, content_fixture):
     evidence = {}
     if content_fixture is not None:
         evidence["reparent_page_fixture"] = content_fixture
-    return list(
-        SCENARIO_REGISTRY.get(name).fixture_recipe.validate(
-            FixtureValidationContext(
-                args=SimpleNamespace(scenario=name), snapshot=snapshot
-            ),
-            FixtureBuildResult(structure, evidence),
-        )
+    return recipe_validate_checks(
+        name,
+        FixtureValidationContext(
+            args=SimpleNamespace(scenario=name), snapshot=snapshot
+        ),
+        FixtureBuildResult(structure, evidence),
     )
 
 
