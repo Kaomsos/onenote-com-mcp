@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import xml.etree.ElementTree as ET
 
 from ..bridge import OneNoteBridge
@@ -20,10 +20,7 @@ from ..page import (
 )
 from ..page.copying import is_empty_selection_text_node
 from .base import BaseService
-from .hierarchy import HierarchyService
-
-if TYPE_CHECKING:
-    from .copy_read_cache import HierarchySnapshot
+from .hierarchy import HierarchyService, HierarchySnapshot, is_current_full_preflight
 
 
 VOLATILE_PAGE_ATTRIBUTES = {
@@ -248,9 +245,8 @@ class PageService(BaseService):
         expected_modified: str | None = None,
         preflight: HierarchySnapshot | None = None,
     ) -> dict[str, Any]:
-        from .backend_operation_classification import current_mutation_epoch
-
-        if preflight is not None and preflight.epoch == current_mutation_epoch():
+        if is_current_full_preflight(preflight):
+            assert preflight is not None
             item = preflight.resource(page_id, "page")
         else:
             item = self.hierarchy.resource(page_id, "page")

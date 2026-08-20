@@ -6,10 +6,12 @@ from collections import Counter
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
+import xml.etree.ElementTree as ET
 
 import pytest
 
 from local_onenote_mcp import server
+from local_onenote_mcp.bridge import OneNoteBridge
 from local_onenote_mcp.services.read_reasons import (
     DELETE_CONFIRMATION,
     DELETE_CONVERGENCE,
@@ -23,6 +25,8 @@ from tests.test_copying import (
     advance_fake_mutation_epoch,
     install_recursive_execute_fakes,
 )
+
+pytestmark = pytest.mark.usefixtures("virtual_convergence_clock")
 
 
 @contextmanager
@@ -78,16 +82,17 @@ def _planning_hierarchy_reads(ledger: list[tuple[str, str | None]]) -> int:
 # must carry one of the public allowlisted reasons.
 _COPY_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
     ("get_hierarchy", "source_confirmation"): 1,
-    ("get_hierarchy", "topology_verification"): 3,
+    ("get_hierarchy", "topology_verification"): 2,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
     ("get_page_content", "pre_write_target_observation"): 1,
 }
 _MOVE_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
+    ("get_hierarchy", "delete_confirmation"): 1,
     ("get_hierarchy", "delete_convergence"): 1,
     ("get_hierarchy", "source_confirmation"): 1,
     ("get_hierarchy", "source_drift_revalidation"): 1,
-    ("get_hierarchy", "topology_verification"): 3,
+    ("get_hierarchy", "topology_verification"): 2,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
     ("get_page_content", "pre_write_target_observation"): 1,
@@ -95,10 +100,11 @@ _MOVE_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
 }
 _CONTAINER_COPY_BUDGET: dict[tuple[str, str | None], int] = dict(_COPY_PAGE_BUDGET)
 _MOVE_CONTAINER_BUDGET: dict[tuple[str, str | None], int] = {
+    ("get_hierarchy", "delete_confirmation"): 1,
     ("get_hierarchy", "delete_convergence"): 1,
     ("get_hierarchy", "source_confirmation"): 1,
     ("get_hierarchy", "source_drift_revalidation"): 1,
-    ("get_hierarchy", "topology_verification"): 3,
+    ("get_hierarchy", "topology_verification"): 2,
     ("get_page_content", "delete_convergence"): 1,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
@@ -477,3 +483,410 @@ def test_reorder_phase_uses_single_hierarchy_read_per_section(
 
     topology_reads = _count(ledger, "get_hierarchy", "topology_verification")
     assert topology_reads >= 1
+
+
+def _scripted_bridge(state: list[dict[str, Any]], xml_store: dict[str, str]):
+    from tests.test_copying import hierarchy_xml_from_items, page_xml
+
+    operations: list[str] = []
+    counters = {"page": 0, "section": 0, "section_group": 0, "clock": 0}
+
+    def parent_item(parent_id: str) -> dict[str, Any]:
+        return next(item for item in state if item["id"] == parent_id)
+
+    def mark_recycled(target_id: str) -> None:
+        removed = {target_id}
+        expanded = True
+        while expanded:
+            expanded = False
+            for item in state:
+                if item["id"] in removed:
+                    continue
+                if (
+                    item.get("parent_id") in removed
+                    or item.get("section_id") in removed
+                    or item.get("parent_page_id") in removed
+                ):
+                    removed.add(item["id"])
+                    expanded = True
+        for item in state:
+            if item["id"] in removed:
+                item["is_in_recycle_bin"] = True
+
+    def call(*args: Any, **params: Any) -> dict[str, Any]:
+        operation = args[-1] if args and isinstance(args[-1], str) else str(params.pop("operation", ""))
+        operations.append(operation)
+        if operation == "get_hierarchy":
+            return {"xml": hierarchy_xml_from_items(state)}
+        if operation == "get_page_content":
+            return {"xml": xml_store[str(params["page_id"])]}
+        if operation == "create_new_page":
+            counters["page"] += 1
+            page_id = f"created-page-{counters['page']}"
+            section = parent_item(str(params["section_id"]))
+            state.append(
+                {
+                    "resource_type": "page",
+                    "id": page_id,
+                    "title": "Created Page",
+                    "path": f"{section['path']}/Created Page",
+                    "parent_id": section["id"],
+                    "notebook_id": section.get("notebook_id"),
+                    "section_id": section["id"],
+                    "parent_page_id": None,
+                    "page_level": 1,
+                    "order": 99,
+                    "is_in_recycle_bin": False,
+                }
+            )
+            xml_store[page_id] = page_xml(page_id, "Created Page")
+            return {"page_id": page_id}
+        if operation == "update_page_content":
+            from local_onenote_mcp.page import title_from_page_xml
+
+            root = ET.fromstring(params["xml"])
+            page_id = root.attrib["ID"]
+            title = title_from_page_xml(params["xml"]) or root.attrib.get("name") or next(
+                item.get("title", "") for item in state if item["id"] == page_id
+            )
+            xml_store[page_id] = params["xml"]
+            for item in state:
+                if item["id"] == page_id:
+                    item["title"] = title
+                    item["path"] = f"{parent_item(item['section_id'])['path']}/{title}"
+            return {"updated": True}
+        if operation == "update_hierarchy":
+            root = ET.fromstring(params["xml"])
+            pages = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Page"]
+            stack: list[dict[str, Any]] = []
+            for order, node in enumerate(pages):
+                item = next(entry for entry in state if entry["id"] == node.attrib["ID"])
+                level = int(node.attrib.get("pageLevel") or item.get("page_level") or 1)
+                while stack and int(stack[-1]["page_level"]) >= level:
+                    stack.pop()
+                item["order"] = order
+                item["page_level"] = level
+                item["parent_page_id"] = stack[-1]["id"] if stack else None
+                counters["clock"] += 1
+                item["modified"] = f"2026-08-20T00:00:{counters['clock']:02d}.000Z"
+                stack.append(item)
+            return {"updated": True}
+        if operation == "delete_hierarchy":
+            mark_recycled(str(params["object_id"]))
+            return {"deleted": True}
+        if operation == "open_hierarchy":
+            parent = parent_item(str(params["relative_to_id"]))
+            name = Path(str(params["path"])).stem
+            create_type = int(params.get("create_file_type") or 0)
+            if create_type == 2:
+                counters["section_group"] += 1
+                kind = "section_group"
+                object_id = f"created-section-group-{counters['section_group']}"
+            else:
+                counters["section"] += 1
+                kind = "section"
+                object_id = f"created-section-{counters['section']}"
+            state.append(
+                {
+                    "resource_type": kind,
+                    "id": object_id,
+                    "name": name,
+                    "path": f"{parent['path']}/{name}",
+                    "parent_id": parent["id"],
+                    "notebook_id": parent["id"]
+                    if parent["resource_type"] == "notebook"
+                    else parent["notebook_id"],
+                    "is_in_recycle_bin": False,
+                }
+            )
+            return {"object_id": object_id}
+        raise AssertionError(operation)
+
+    return call, operations
+
+
+def test_create_page_current_preflight_skips_extra_hierarchy_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_onenote_mcp.hierarchy import parse_hierarchy
+    from local_onenote_mcp.services.backend_operation_classification import (
+        current_mutation_epoch,
+        reset_mutation_epoch,
+        restore_mutation_epoch,
+    )
+    from local_onenote_mcp.services.hierarchy import HierarchySnapshot
+    from tests.test_copying import hierarchy_xml_from_items
+
+    state = _install_real_mutation_readback_fakes(monkeypatch)
+    token = reset_mutation_epoch()
+    try:
+        snapshot = HierarchySnapshot.from_items(
+            start_id="",
+            scope="pages",
+            epoch=current_mutation_epoch(),
+            items=parse_hierarchy(hierarchy_xml_from_items(state)),
+        )
+        with copy_move_read_attribution(), _ledger_recording() as ledger:
+            server.services.mutations.create_page(
+                "destination-section",
+                "Created Page",
+                preflight=snapshot,
+            )
+        assert _count(ledger, "get_hierarchy", DESTINATION_PRECONDITION) == 0
+        assert _count(ledger, "get_hierarchy", POST_CREATE_CONVERGENCE) >= 2
+    finally:
+        restore_mutation_epoch(token)
+
+
+def test_stale_delete_preflight_falls_back_to_live_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from local_onenote_mcp.hierarchy import parse_hierarchy
+    from local_onenote_mcp.services.backend_operation_classification import (
+        notify_backend_operation,
+        reset_mutation_epoch,
+        restore_mutation_epoch,
+    )
+    from local_onenote_mcp.services.hierarchy import HierarchySnapshot
+    from tests.test_copying import hierarchy_xml_from_items
+
+    state = _install_real_mutation_readback_fakes(monkeypatch)
+    token = reset_mutation_epoch()
+    try:
+        stale = HierarchySnapshot.from_items(
+            start_id="",
+            scope="pages",
+            epoch=0,
+            items=parse_hierarchy(hierarchy_xml_from_items(state)),
+        )
+        notify_backend_operation("update_hierarchy")
+        with copy_move_read_attribution(), _ledger_recording() as ledger:
+            server.services.mutations.delete_page(
+                "source-page",
+                "Page",
+                "source-section",
+                preflight=stale,
+            )
+        assert _count(ledger, "get_hierarchy", DELETE_CONFIRMATION) >= 1
+    finally:
+        restore_mutation_epoch(token)
+
+
+def test_shared_service_page_move_fresh_confirmation_follows_source_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_copying import hierarchy_xml_from_items, page_xml
+
+    state = [
+        {
+            "resource_type": "notebook",
+            "id": "source-notebook",
+            "name": "Source Notebook",
+            "path": "Source Notebook",
+            "parent_id": None,
+        },
+        {
+            "resource_type": "section",
+            "id": "source-section",
+            "name": "Notes",
+            "path": "Source Notebook/Notes",
+            "parent_id": "source-notebook",
+            "notebook_id": "source-notebook",
+        },
+        {
+            "resource_type": "page",
+            "id": "source-page",
+            "title": "Page",
+            "path": "Source Notebook/Notes/Page",
+            "parent_id": "source-section",
+            "notebook_id": "source-notebook",
+            "section_id": "source-section",
+            "parent_page_id": None,
+            "page_level": 1,
+            "order": 0,
+            "is_in_recycle_bin": False,
+        },
+        {
+            "resource_type": "notebook",
+            "id": "destination-notebook",
+            "name": "Destination Notebook",
+            "path": "Destination Notebook",
+            "parent_id": None,
+        },
+        {
+            "resource_type": "section",
+            "id": "destination-section",
+            "name": "Destination",
+            "path": "Destination Notebook/Destination",
+            "parent_id": "destination-notebook",
+            "notebook_id": "destination-notebook",
+        },
+    ]
+    xml_store = {"source-page": page_xml("source-page", "Page", "body")}
+    call, operations = _scripted_bridge(state, xml_store)
+    monkeypatch.setattr(OneNoteBridge, "call", call)
+
+    with _ledger_recording() as ledger:
+        result = server.services.copying.move_page(
+            "source-page",
+            "destination-section",
+            "Page",
+            "source-section",
+            destination_title="Moved Page",
+            include_descendants=False,
+        )
+
+    assert result["outcome"] == "moved"
+    reasons = [reason for op, reason in ledger if op == "get_hierarchy"]
+    assert reasons.index("source_drift_revalidation") < reasons.index("delete_confirmation")
+    assert operations.count("delete_hierarchy") == 1
+    assert _count(ledger, "get_hierarchy", DELETE_CONFIRMATION) >= 1
+
+
+def test_shared_service_root_only_promotion_has_two_fresh_confirmations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_copying import page_xml
+
+    state = [
+        {
+            "resource_type": "notebook",
+            "id": "n",
+            "name": "Notebook",
+            "path": "Notebook",
+            "parent_id": None,
+        },
+        {
+            "resource_type": "section",
+            "id": "source-section",
+            "name": "Source",
+            "path": "Notebook/Source",
+            "parent_id": "n",
+            "notebook_id": "n",
+        },
+        {
+            "resource_type": "page",
+            "id": "parent",
+            "title": "Parent",
+            "path": "Notebook/Source/Parent",
+            "parent_id": "source-section",
+            "notebook_id": "n",
+            "section_id": "source-section",
+            "parent_page_id": None,
+            "page_level": 1,
+            "order": 0,
+            "is_in_recycle_bin": False,
+        },
+        {
+            "resource_type": "page",
+            "id": "child",
+            "title": "Child",
+            "path": "Notebook/Source/Child",
+            "parent_id": "source-section",
+            "notebook_id": "n",
+            "section_id": "source-section",
+            "parent_page_id": "parent",
+            "page_level": 2,
+            "order": 1,
+            "is_in_recycle_bin": False,
+        },
+        {
+            "resource_type": "section",
+            "id": "destination-section",
+            "name": "Destination",
+            "path": "Notebook/Destination",
+            "parent_id": "n",
+            "notebook_id": "n",
+        },
+    ]
+    xml_store = {
+        "parent": page_xml("parent", "Parent", "parent-body"),
+        "child": page_xml("child", "Child", "child-body"),
+    }
+    call, operations = _scripted_bridge(state, xml_store)
+    monkeypatch.setattr(OneNoteBridge, "call", call)
+
+    with _ledger_recording() as ledger:
+        result = server.services.copying.move_page(
+            "parent",
+            "destination-section",
+            "Parent",
+            "source-section",
+            destination_title="Moved Parent",
+            include_descendants=False,
+        )
+
+    assert result["outcome"] == "moved"
+    assert result["preserved_descendants"]["promoted"] is True
+    assert "source_root_modified" not in result["preserved_descendants"]
+    assert "modified" not in result["preserved_descendants"]
+    confirm_indexes = [
+        index
+        for index, (op, reason) in enumerate(ledger)
+        if op == "get_hierarchy" and reason == DELETE_CONFIRMATION
+    ]
+    assert len(confirm_indexes) == 2
+    assert _count(ledger, "get_hierarchy", DELETE_CONFIRMATION) == 2
+    assert operations.count("delete_hierarchy") == 1
+    assert operations.count("update_hierarchy") >= 2
+
+
+def test_shared_service_container_move_fresh_confirmation_before_delete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.test_copying import page_xml
+
+    state = [
+        {
+            "resource_type": "notebook",
+            "id": "source-notebook",
+            "name": "Source Notebook",
+            "path": "Source Notebook",
+            "parent_id": None,
+        },
+        {
+            "resource_type": "section",
+            "id": "source-section",
+            "name": "Notes",
+            "path": "Source Notebook/Notes",
+            "parent_id": "source-notebook",
+            "notebook_id": "source-notebook",
+        },
+        {
+            "resource_type": "page",
+            "id": "source-page",
+            "title": "Page",
+            "path": "Source Notebook/Notes/Page",
+            "parent_id": "source-section",
+            "notebook_id": "source-notebook",
+            "section_id": "source-section",
+            "parent_page_id": None,
+            "page_level": 1,
+            "order": 0,
+            "is_in_recycle_bin": False,
+        },
+        {
+            "resource_type": "notebook",
+            "id": "destination-notebook",
+            "name": "Destination Notebook",
+            "path": "Destination Notebook",
+            "parent_id": None,
+        },
+    ]
+    xml_store = {"source-page": page_xml("source-page", "Page", "body")}
+    call, operations = _scripted_bridge(state, xml_store)
+    monkeypatch.setattr(OneNoteBridge, "call", call)
+
+    with _ledger_recording() as ledger:
+        result = server.services.copying.move_section(
+            "source-section",
+            "destination-notebook",
+            "Notes",
+            "source-notebook",
+            destination_name="Moved Notes",
+        )
+
+    assert result["outcome"] == "moved"
+    reasons = [reason for op, reason in ledger if op == "get_hierarchy"]
+    assert reasons.index("source_drift_revalidation") < reasons.index("delete_confirmation")
+    assert operations.count("delete_hierarchy") == 1

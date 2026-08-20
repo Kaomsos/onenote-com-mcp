@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -82,6 +83,21 @@ MOVE_EXECUTE_TOOLS = {
     "move_section": "move_section",
     "move_section_group": "move_section_group",
 }
+
+
+@dataclass(frozen=True)
+class _MovePromotionResult:
+    """Private promotion outcome: public evidence plus the rebound root clock."""
+
+    evidence: dict[str, Any]
+    source_root_modified: str | None = None
+
+
+def _empty_move_promotion() -> _MovePromotionResult:
+    return _MovePromotionResult(
+        evidence={"promoted": False, "preserved_descendant_ids": [], "pages": {}},
+    )
+
 
 class CopyService(BaseService):
     @staticmethod
@@ -195,6 +211,12 @@ class CopyService(BaseService):
         if cache is None:
             return None
         return cache.get_hierarchy_snapshot(reason=reason)
+
+    def _fresh_hierarchy_snapshot(self, *, reason: str) -> HierarchySnapshot:
+        """Read live hierarchy evidence without consulting or updating Copy cache."""
+
+        with copy_move_read_reason(reason):
+            return self.hierarchy.snapshot()
 
     @staticmethod
     def _stable_resource(item: dict[str, Any]) -> dict[str, Any]:
@@ -905,14 +927,27 @@ class CopyService(BaseService):
                 kind = item["resource_type"]
                 is_root = item["id"] == source["id"]
                 target_name = destination["name"] if is_root else display_name(item)
+                preflight = self._preflight_snapshot(reason=DESTINATION_PRECONDITION)
                 if kind == "notebook":
-                    result = self.mutations.create_notebook(target_name, destination["base_folder"])
+                    result = self.mutations.create_notebook(
+                        target_name,
+                        destination["base_folder"],
+                        preflight=preflight,
+                    )
                 elif kind == "section_group":
                     parent_id = destination["parent"]["id"] if is_root else id_map[item["parent_id"]]
-                    result = self.mutations.create_section_group(parent_id, target_name)
+                    result = self.mutations.create_section_group(
+                        parent_id,
+                        target_name,
+                        preflight=preflight,
+                    )
                 elif kind == "section":
                     parent_id = destination["parent"]["id"] if is_root else id_map[item["parent_id"]]
-                    result = self.mutations.create_section(parent_id, target_name)
+                    result = self.mutations.create_section(
+                        parent_id,
+                        target_name,
+                        preflight=preflight,
+                    )
                 else:
                     if source["resource_type"] == "page":
                         section_id = destination["parent"]["id"]
@@ -922,6 +957,7 @@ class CopyService(BaseService):
                         section_id,
                         target_name,
                         forbidden_ids=source_ids | set(resolved_target_ids),
+                        preflight=preflight,
                     )
                 allocated_id = str(
                     result.get("allocated_id")
@@ -1133,13 +1169,13 @@ class CopyService(BaseService):
                     is_pre_state=lambda value: value["digest"] == before_target_digest,
                     is_post_state=lambda value: value["equivalence"]["equivalent"],
                 )
-                convergence_initial = (
-                    reconciliation.value
-                    if reconciliation.value is not None
+                stable_kwargs: dict[str, Any] = {}
+                if (
+                    reconciliation.value is not None
                     and reconciliation.state is ReconciliationState.APPLIED
                     and reconciliation.value["equivalence"]["equivalent"]
-                    else None
-                )
+                ):
+                    stable_kwargs["initial_value"] = reconciliation.value
                 stable_page = converge(
                     lambda: observe_page(reason=POST_WRITE_CONVERGENCE),
                     lambda value: value["equivalence"]["equivalent"],
@@ -1148,7 +1184,7 @@ class CopyService(BaseService):
                     clock=self.convergence_runtime.clock,
                     sleeper=self.convergence_runtime.sleeper,
                     transient=transient_read_error,
-                    initial_value=convergence_initial,
+                    **stable_kwargs,
                 )
                 assert stable_page.value is not None
                 equivalence = stable_page.value["equivalence"]
@@ -1213,13 +1249,14 @@ class CopyService(BaseService):
                     "section",
                     reason=TOPOLOGY_VERIFICATION,
                 )
+                catalog = self._hierarchy_resources(
+                    reason=TOPOLOGY_VERIFICATION,
+                    include_recycle_bin=False,
+                )
                 target_ids = {page["id"] for page in new_pages}
                 existing = [
                     item
-                    for item in self._hierarchy_resources(
-                        reason=TOPOLOGY_VERIFICATION,
-                        include_recycle_bin=False,
-                    )
+                    for item in catalog
                     if item["resource_type"] == "page"
                     and item.get("section_id") == section_id
                     and item["id"] not in target_ids
@@ -1235,7 +1272,11 @@ class CopyService(BaseService):
                             "page_level": int(page["page_level"]),
                         }
                 with copy_move_read_reason(TOPOLOGY_VERIFICATION):
-                    page_order_xml = self.hierarchy.page_order_xml(section, ordered)
+                    page_order_xml = self.hierarchy.page_order_xml(
+                        section,
+                        ordered,
+                        catalog=catalog,
+                    )
                 self.call(
                     "update_hierarchy",
                     xml=page_order_xml,
@@ -1541,12 +1582,12 @@ class CopyService(BaseService):
     def _promote_preserved_move_descendants(
         self,
         plan: dict[str, Any],
-    ) -> dict[str, Any]:
+    ) -> _MovePromotionResult:
         """Detach descendants excluded by a root-only Move before deleting its root."""
 
         move_bundle = plan.get("move_source_bundle")
         if not isinstance(move_bundle, dict):
-            return {"promoted": False, "preserved_descendant_ids": [], "pages": {}}
+            return _empty_move_promotion()
         selected_ids = {str(item["id"]) for item in plan["resources"]}
         preserved = [
             item
@@ -1554,14 +1595,12 @@ class CopyService(BaseService):
             if str(item["id"]) not in selected_ids
         ]
         if not preserved:
-            return {"promoted": False, "preserved_descendant_ids": [], "pages": {}}
+            return _empty_move_promotion()
 
         source = plan["source"]
         section_id = str(source["section_id"])
-        catalog = self._hierarchy_resources(
-            reason=DELETE_CONFIRMATION,
-            include_recycle_bin=False,
-        )
+        snapshot = self._fresh_hierarchy_snapshot(reason=DELETE_CONFIRMATION)
+        catalog = snapshot.resources(include_recycle_bin=False)
         section = next(
             (
                 item
@@ -1608,7 +1647,11 @@ class CopyService(BaseService):
             for item in pages
         ]
         with copy_move_read_reason(DELETE_CONFIRMATION):
-            page_order_xml = self.hierarchy.page_order_xml(section, adjusted)
+            page_order_xml = self.hierarchy.page_order_xml(
+                section,
+                adjusted,
+                catalog=catalog,
+            )
         self.call(
             "update_hierarchy",
             xml=page_order_xml,
@@ -1667,11 +1710,22 @@ class CopyService(BaseService):
                 "parent_page_id": expected_parent[page_id],
                 "page_hash": current_hash,
             }
-        return {
-            "promoted": True,
-            "preserved_descendant_ids": preserved_ids,
-            "pages": page_evidence,
-        }
+        # Rebind only the source-root modification clock from this verified
+        # post-promotion observation. Title/Section stay on the earlier
+        # source-drift confirmation so the next fresh delete confirmation
+        # can still see later external drift.
+        source_root = refreshed_by_id[str(source["id"])]
+        raw_modified = source_root.get("modified")
+        return _MovePromotionResult(
+            evidence={
+                "promoted": True,
+                "preserved_descendant_ids": preserved_ids,
+                "pages": page_evidence,
+            },
+            source_root_modified=(
+                str(raw_modified) if raw_modified is not None else None
+            ),
+        )
 
     def _verify_preserved_move_descendants(
         self,
@@ -1858,27 +1912,25 @@ class CopyService(BaseService):
                 for item in plan["resources"]
                 if item["resource_type"] == "page"
             ]
-            if preservation.get("promoted"):
-                current_by_id = {
-                    str(item["id"]): item
-                    for item in self._hierarchy_resources(
-                        reason=DELETE_CONFIRMATION,
-                        include_recycle_bin=False,
-                    )
-                }
-                source_pages = [
-                    current_by_id.get(str(item["id"]), item) for item in source_pages
-                ]
+            source_root_id = str(plan["source"]["id"])
             try:
                 for page in reversed(source_pages):
                     check_move_deadline()
+                    preflight = self._fresh_hierarchy_snapshot(reason=DELETE_CONFIRMATION)
                     attempted.append(page["id"])
+                    expected_modified = page.get("modified")
+                    if (
+                        preservation.evidence.get("promoted") is True
+                        and str(page["id"]) == source_root_id
+                    ):
+                        expected_modified = preservation.source_root_modified
                     deletion = self.mutations.delete_page(
                         page["id"],
                         page["title"],
                         page["section_id"],
-                        page.get("modified"),
+                        expected_modified,
                         False,
+                        preflight=preflight,
                     )
                     removed.append(page["id"])
                     final_state = deletion.get("final_state")
@@ -1909,10 +1961,10 @@ class CopyService(BaseService):
                     ),
                     copy_report=report,
                     created_ids=copied["created_ids"],
-                    preserved_descendants=preservation,
+                    preserved_descendants=preservation.evidence,
                 ) from exc
             try:
-                self._verify_preserved_move_descendants(preservation)
+                self._verify_preserved_move_descendants(preservation.evidence)
             except Exception as exc:
                 raise PartialFailure(
                     "The selected source Page was removed, but an excluded descendant could not be "
@@ -1930,7 +1982,7 @@ class CopyService(BaseService):
                     ),
                     copy_report=report,
                     created_ids=copied["created_ids"],
-                    preserved_descendants=preservation,
+                    preserved_descendants=preservation.evidence,
                     preservation_error=str(exc),
                 ) from exc
             copied.update(
@@ -1951,7 +2003,7 @@ class CopyService(BaseService):
                     "recycle_unverified_source_ids": recycle_unverified,
                     "deleted_source_ids": removed,
                     "include_descendants": bool(include_descendants),
-                    "preserved_descendants": preservation,
+                    "preserved_descendants": preservation.evidence,
                     "warnings": [
                         *copied.get("warnings", []),
                         *(
@@ -2119,6 +2171,7 @@ class CopyService(BaseService):
             deletion_error: Exception | None = None
             try:
                 check_move_deadline()
+                preflight = self._fresh_hierarchy_snapshot(reason=DELETE_CONFIRMATION)
                 deletion = self.mutations.delete_resource(
                     source_id,
                     resource_type,
@@ -2126,6 +2179,7 @@ class CopyService(BaseService):
                     expected_parent_id,
                     current_source.get("source", {}).get("modified", expected_modified),
                     False,
+                    preflight=preflight,
                 )
             except Exception as exc:
                 deletion_error = exc

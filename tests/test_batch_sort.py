@@ -10,6 +10,8 @@ from local_onenote_mcp import operation_catalog, server
 from local_onenote_mcp.services.errors import MutationPreflightFailure, PartialFailure
 from local_onenote_mcp.tools.responses import caught as caught_response
 
+pytestmark = pytest.mark.usefixtures("virtual_convergence_clock")
+
 
 def item(
     resource_type: str,
@@ -61,7 +63,14 @@ def install_page_order_backend(monkeypatch, state, events):
         plans.append(copy.deepcopy(pages))
         return f"<page-order-plan index='{len(plans)}' />"
 
-    def call(operation, **_params):
+    def call(operation, **params):
+        if operation == "delete_hierarchy":
+            object_id = str(params["object_id"])
+            state["items"] = [
+                value for value in state["items"] if value.get("id") != object_id
+            ]
+            events.append(("delete", object_id))
+            return {"deleted": True}
         assert operation == "update_hierarchy"
         planned = plans.pop(0)
         section_id = str(planned[0]["section_id"])
@@ -1175,15 +1184,6 @@ def test_delete_page_protects_or_deletes_complete_subpage_scope(
     install_snapshot(monkeypatch, state)
     events = []
     install_page_order_backend(monkeypatch, state, events)
-
-    def delete_resource(object_id, _resource_type, *_args):
-        events.append(("delete", object_id))
-        state["items"] = [
-            value for value in state["items"] if value.get("id") != object_id
-        ]
-        return {"object_id": object_id, "permanently": False, "deleted": True}
-
-    monkeypatch.setattr(server.services.mutations, "delete_resource", delete_resource)
 
     result = server.services.mutations.delete_page(
         "root", "Root", "s", root["modified"], False, include_subpages
@@ -2314,3 +2314,60 @@ def test_sort_children_infers_child_type_and_rejects_conflicts(
             "ascending",
         )
     assert len(calls) == 1
+
+
+def _page_order_catalog() -> list[dict]:
+    notebook = item("notebook", "n", None, "Notebook")
+    section = item("section", "s", "n", "Section")
+    root = item("page", "root", "s", "Root", section_id="s", order=0)
+    child = item(
+        "page",
+        "child",
+        "s",
+        "Child",
+        section_id="s",
+        order=1,
+        level=2,
+        parent_page_id="root",
+    )
+    return [notebook, section, root, child]
+
+
+def test_page_order_xml_catalog_accepts_nested_pages_and_uses_canonical_names():
+    catalog = _page_order_catalog()
+    section = catalog[1]
+    pages = [
+        {**catalog[2], "page_level": 1, "title": "Ignored Root Title"},
+        {**catalog[3], "page_level": 1, "title": "Ignored Child Title"},
+    ]
+    xml = server.services.hierarchy.page_order_xml(section, pages, catalog=catalog)
+    assert 'ID="root"' in xml
+    assert 'ID="child"' in xml
+    assert 'name="Root"' in xml
+    assert 'name="Child"' in xml
+    assert 'pageLevel="1"' in xml
+
+
+@pytest.mark.parametrize(
+    "broken",
+    ["missing_ancestor", "wrong_section", "duplicate_id", "missing_sibling", "extra_page"],
+)
+def test_page_order_xml_catalog_fail_closed(broken):
+    catalog = _page_order_catalog()
+    section = catalog[1]
+    pages = [
+        {**catalog[2], "page_level": 1},
+        {**catalog[3], "page_level": 2},
+    ]
+    if broken == "missing_ancestor":
+        catalog = [item for item in catalog if item["id"] != "n"]
+    elif broken == "wrong_section":
+        pages[1] = {**pages[1], "section_id": "other"}
+    elif broken == "duplicate_id":
+        pages.append({**pages[0], "page_level": 1})
+    elif broken == "missing_sibling":
+        pages = pages[:1]
+    else:
+        pages.append(item("page", "extra", "s", "Extra", section_id="s", order=2))
+    with pytest.raises((ValueError, RuntimeError)):
+        server.services.hierarchy.page_order_xml(section, pages, catalog=catalog)

@@ -7,7 +7,8 @@ from datetime import datetime
 from pathlib import Path
 import re
 import time
-from typing import TYPE_CHECKING, Any
+from dataclasses import dataclass
+from typing import Any
 
 from ..bridge import OneNoteBridge
 from ..constants import CREATE_FILE_TYPES, NEW_PAGE_STYLES, SPECIAL_LOCATIONS, XML_SCHEMA_2013
@@ -29,19 +30,18 @@ from ..page import (
 )
 from ..policy import BatchMutationBudget, CopyBudget, MutationPolicy
 from .base import BaseService
+from .backend_operation_classification import current_mutation_epoch
 from .convergence import (
     DEFAULT_CONVERGENCE,
     DEFAULT_CONVERGENCE_RUNTIME,
+    UNSET,
     ConvergenceConfig,
     ConvergenceResult,
     ConvergenceRuntime,
     converge,
 )
 from .errors import MutationFailure, MutationPreflightFailure, PartialFailure
-
-if TYPE_CHECKING:
-    from .copy_read_cache import HierarchySnapshot
-from .hierarchy import HierarchyService
+from .hierarchy import HierarchyService, HierarchySnapshot, is_current_full_preflight
 from .mutation_control import (
     MutationAttemptExecutor,
     MutationAttemptOutcome,
@@ -71,6 +71,13 @@ SECTION_GROUP_REPARENT_CONVERGENCE = ConvergenceConfig(
 )
 
 
+@dataclass(frozen=True)
+class _DeleteObservation:
+    object_id: str
+    item: dict[str, Any] | None
+    snapshot: HierarchySnapshot
+
+
 class MutationService(BaseService):
     def __init__(
         self,
@@ -86,6 +93,15 @@ class MutationService(BaseService):
         self.mutation_attempts = MutationAttemptExecutor()
         self.convergence_runtime = convergence_runtime
 
+    def _resolve_full_preflight(
+        self,
+        preflight: HierarchySnapshot | None,
+    ) -> HierarchySnapshot:
+        if is_current_full_preflight(preflight):
+            assert preflight is not None
+            return preflight
+        return self.hierarchy.snapshot()
+
     def _converge(
         self,
         *,
@@ -95,6 +111,7 @@ class MutationService(BaseService):
         project_identity,
         failure_message: str,
         identity_remap: dict[str, str] | None = None,
+        initial_value: Any = UNSET,
     ) -> ConvergenceResult[Any]:
         result = converge(
             observe,
@@ -105,6 +122,7 @@ class MutationService(BaseService):
             transient=transient_read_error,
             clock=self.convergence_runtime.clock,
             sleeper=self.convergence_runtime.sleeper,
+            initial_value=initial_value,
         )
         if not result.converged:
             raise OneNoteConvergenceTimeoutError(
@@ -265,12 +283,7 @@ class MutationService(BaseService):
         expected_modified: str | None = None,
         preflight: HierarchySnapshot | None = None,
     ) -> dict[str, Any]:
-        from .backend_operation_classification import current_mutation_epoch
-
-        if preflight is not None and preflight.epoch == current_mutation_epoch():
-            item = preflight.resource(object_id, resource_type)
-        else:
-            item = self.hierarchy.resource(object_id, resource_type)
+        item = self._resolve_full_preflight(preflight).resource(object_id, resource_type)
         actual_name = display_name(item)
         if actual_name != expected_name:
             raise ValueError(f"Confirmation mismatch: expected name '{expected_name}', found '{actual_name}'.")
@@ -418,12 +431,19 @@ class MutationService(BaseService):
             data["item"] = item
         return data
 
-    def create_notebook(self, name_or_path: str, base_folder: str = "") -> dict[str, Any]:
+    def create_notebook(
+        self,
+        name_or_path: str,
+        base_folder: str = "",
+        *,
+        preflight: HierarchySnapshot | None = None,
+    ) -> dict[str, Any]:
         MutationPolicy.current().require_create()
         with copy_move_read_reason(DESTINATION_PRECONDITION):
+            snapshot = self._resolve_full_preflight(preflight)
             before_ids = {
                 str(item["id"])
-                for item in self.hierarchy.resources(include_recycle_bin=True)
+                for item in snapshot.resources(include_recycle_bin=True)
                 if item.get("id")
             }
         raw = Path(name_or_path)
@@ -476,15 +496,22 @@ class MutationService(BaseService):
             },
         }
 
-    def create_section(self, parent_id: str, section_name: str) -> dict[str, Any]:
+    def create_section(
+        self,
+        parent_id: str,
+        section_name: str,
+        *,
+        preflight: HierarchySnapshot | None = None,
+    ) -> dict[str, Any]:
         MutationPolicy.current().require_create()
         with copy_move_read_reason(DESTINATION_PRECONDITION):
-            parent = self.hierarchy.resource(parent_id)
+            snapshot = self._resolve_full_preflight(preflight)
+            parent = snapshot.resource(parent_id)
             if parent["resource_type"] not in {"notebook", "section_group"}:
                 raise ValueError("parent_id must identify a notebook or section_group.")
             before_ids = {
                 str(item["id"])
-                for item in self.hierarchy.resources(include_recycle_bin=True)
+                for item in snapshot.resources(include_recycle_bin=True)
                 if item.get("id")
             }
         filename = self.safe_leaf_name(section_name)
@@ -533,15 +560,22 @@ class MutationService(BaseService):
             },
         }
 
-    def create_section_group(self, parent_id: str, group_name: str) -> dict[str, Any]:
+    def create_section_group(
+        self,
+        parent_id: str,
+        group_name: str,
+        *,
+        preflight: HierarchySnapshot | None = None,
+    ) -> dict[str, Any]:
         MutationPolicy.current().require_create()
         with copy_move_read_reason(DESTINATION_PRECONDITION):
-            parent = self.hierarchy.resource(parent_id)
+            snapshot = self._resolve_full_preflight(preflight)
+            parent = snapshot.resource(parent_id)
             if parent["resource_type"] not in {"notebook", "section_group"}:
                 raise ValueError("parent_id must identify a notebook or section_group.")
             before_ids = {
                 str(item["id"])
-                for item in self.hierarchy.resources(include_recycle_bin=True)
+                for item in snapshot.resources(include_recycle_bin=True)
                 if item.get("id")
             }
         result = self.call(
@@ -596,16 +630,18 @@ class MutationService(BaseService):
         new_page_style: str = "blank_with_title",
         *,
         forbidden_ids: set[str] | None = None,
+        preflight: HierarchySnapshot | None = None,
     ) -> dict[str, Any]:
         policy = MutationPolicy.current()
         policy.require_create()
         policy.require_write()
         title = self.page_title(title)
         with copy_move_read_reason(DESTINATION_PRECONDITION):
-            section = self.hierarchy.resource(section_id, "section")
+            snapshot = self._resolve_full_preflight(preflight)
+            section = snapshot.resource(section_id, "section")
             before_ids = {
                 str(item["id"])
-                for item in self.hierarchy.resources(include_recycle_bin=True)
+                for item in snapshot.resources(include_recycle_bin=True)
                 if item.get("id")
             }
         page_id = self.call(
@@ -4373,7 +4409,31 @@ class MutationService(BaseService):
         expected_parent_id: str,
         expected_modified: str | None,
         permanently: bool,
+        *,
+        preflight: HierarchySnapshot | None = None,
     ) -> dict[str, Any]:
+        public, _observation = self._delete_resource_observed(
+            object_id,
+            resource_type,
+            expected_name,
+            expected_parent_id,
+            expected_modified,
+            permanently,
+            preflight=preflight,
+        )
+        return public
+
+    def _delete_resource_observed(
+        self,
+        object_id: str,
+        resource_type: str,
+        expected_name: str,
+        expected_parent_id: str,
+        expected_modified: str | None,
+        permanently: bool,
+        *,
+        preflight: HierarchySnapshot | None = None,
+    ) -> tuple[dict[str, Any], _DeleteObservation]:
         MutationPolicy.current().require_delete(permanently=permanently)
         with copy_move_read_reason(DELETE_CONFIRMATION):
             item = self.confirm_resource(
@@ -4382,16 +4442,23 @@ class MutationService(BaseService):
                 expected_name=expected_name,
                 expected_parent_id=expected_parent_id,
                 expected_modified=expected_modified,
+                preflight=preflight,
             )
-        def observe():
-            with copy_move_read_reason(DELETE_CONVERGENCE):
-                try:
-                    return self.hierarchy.resource(object_id, resource_type)
-                except ValueError:
-                    return None
 
-        postcondition = lambda value: value is None or (
-            not permanently and value.get("is_in_recycle_bin") is True
+        def observe() -> _DeleteObservation:
+            with copy_move_read_reason(DELETE_CONVERGENCE):
+                snapshot = self.hierarchy.snapshot()
+            try:
+                observed = snapshot.resource(object_id, resource_type)
+            except ValueError:
+                observed = None
+            return _DeleteObservation(object_id=object_id, item=observed, snapshot=snapshot)
+
+        def item_of(value: _DeleteObservation | None) -> dict[str, Any] | None:
+            return None if value is None else value.item
+
+        postcondition = lambda value: item_of(value) is None or (
+            not permanently and item_of(value).get("is_in_recycle_bin") is True
         )
         reconciliation = self._execute_mutation_attempt(
             operation="delete_hierarchy",
@@ -4399,29 +4466,43 @@ class MutationService(BaseService):
                 "delete_hierarchy", object_id=object_id, permanently=permanently
             ),
             observe=observe,
-            is_pre_state=lambda value: value is not None
-            and value.get("is_in_recycle_bin") is not True,
+            is_pre_state=lambda value: item_of(value) is not None
+            and item_of(value).get("is_in_recycle_bin") is not True,
             is_post_state=postcondition,
-            is_partial_state=lambda value: value is not None
-            and value.get("is_in_recycle_bin") is True
+            is_partial_state=lambda value: item_of(value) is not None
+            and item_of(value).get("is_in_recycle_bin") is True
             and permanently,
         )
+        initial = UNSET
+        if reconciliation.applied and postcondition(reconciliation.reconciliation.value):
+            initial = reconciliation.reconciliation.value
         stable = self._converge(
             operation="delete_hierarchy",
             observe=observe,
             accept=postcondition,
-            project_identity=lambda value: self.hierarchy._resource_identity(value),
+            project_identity=lambda value: self.hierarchy._resource_identity(item_of(value)),
             failure_message="Delete was accepted, but the object state did not converge.",
+            initial_value=initial,
         )
-        return {
-            "item": item,
-            "object_id": object_id,
-            "permanently": permanently,
-            "deleted": True,
-            "final_state": stable.value,
-            "convergence": stable.summary(),
-            "reconciliation": reconciliation.summary(),
-        }
+        observation = stable.value
+        if observation is None:
+            observation = _DeleteObservation(
+                object_id=object_id,
+                item=None,
+                snapshot=self.hierarchy.snapshot(),
+            )
+        return (
+            {
+                "item": item,
+                "object_id": object_id,
+                "permanently": permanently,
+                "deleted": True,
+                "final_state": observation.item,
+                "convergence": stable.summary(),
+                "reconciliation": reconciliation.summary(),
+            },
+            observation,
+        )
 
     def delete_page(
         self,
@@ -4431,10 +4512,13 @@ class MutationService(BaseService):
         expected_modified: str | None = None,
         permanently: bool = False,
         include_subpages: bool = False,
+        *,
+        preflight: HierarchySnapshot | None = None,
     ) -> dict[str, Any]:
         MutationPolicy.current().require_delete(permanently=permanently)
         with copy_move_read_reason(DELETE_CONFIRMATION):
-            snapshot = self.hierarchy.resources(include_recycle_bin=True)
+            resolved = self._resolve_full_preflight(preflight)
+            snapshot = resolved.resources(include_recycle_bin=True)
         by_id = {str(item["id"]): item for item in snapshot if item.get("id")}
         page = self._active_item(by_id, page_id, "page")
         self._confirm_batch_item(
@@ -4488,17 +4572,23 @@ class MutationService(BaseService):
 
         outcomes: list[dict[str, Any]] = []
         deletion_order = list(reversed(selected))
+        delete_preflight = None if promotion.get("promoted") else resolved
+        last_observation: _DeleteObservation | None = None
+        last_target_id = ""
         for index, target in enumerate(deletion_order):
             target_id = str(target["id"])
             try:
-                result = self.delete_resource(
+                result, last_observation = self._delete_resource_observed(
                     target_id,
                     "page",
                     display_name(target),
                     str(target["section_id"]),
                     target.get("modified"),
                     permanently,
+                    preflight=delete_preflight,
                 )
+                last_target_id = target_id
+                delete_preflight = None
             except Exception as exc:
                 outcomes.append(
                     {
@@ -4539,8 +4629,17 @@ class MutationService(BaseService):
                 {"object_id": target_id, "status": "applied", "result": result}
             )
 
-        with copy_move_read_reason(DELETE_CONVERGENCE):
-            final_snapshot = self.hierarchy.resources(include_recycle_bin=True)
+        last_selected_id = str(deletion_order[-1]["id"]) if deletion_order else ""
+        if (
+            last_observation is not None
+            and last_observation.object_id == last_selected_id
+            and last_observation.object_id == last_target_id
+            and last_observation.snapshot.epoch == current_mutation_epoch()
+        ):
+            final_snapshot = last_observation.snapshot.resources(include_recycle_bin=True)
+        else:
+            with copy_move_read_reason(DELETE_CONVERGENCE):
+                final_snapshot = self.hierarchy.resources(include_recycle_bin=True)
         final_by_id = {
             str(item["id"]): item for item in final_snapshot if item.get("id")
         }

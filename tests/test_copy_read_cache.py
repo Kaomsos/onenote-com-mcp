@@ -13,11 +13,11 @@ from local_onenote_mcp.services.backend_operation_classification import (
 )
 from local_onenote_mcp.services.copy_read_cache import (
     CopyReadCache,
-    HierarchySnapshot,
     current_copy_read_cache,
     restore_copy_read_cache,
     set_copy_read_cache,
 )
+from local_onenote_mcp.services.hierarchy import HierarchySnapshot
 
 from tests.test_copying import page_xml
 
@@ -57,11 +57,11 @@ _HIERARCHY_XML = """<?xml version="1.0"?>
 
 def test_hierarchy_snapshot_derives_active_and_recycle_views():
     items = parse_hierarchy(_HIERARCHY_XML)
-    snapshot = HierarchySnapshot(
+    snapshot = HierarchySnapshot.from_items(
         start_id="",
         scope="pages",
         epoch=0,
-        all_items=tuple(items),
+        items=items,
     )
     active = snapshot.resources(include_recycle_bin=False)
     full = snapshot.resources(include_recycle_bin=True)
@@ -72,11 +72,11 @@ def test_hierarchy_snapshot_derives_active_and_recycle_views():
 
 def test_hierarchy_snapshot_returns_copies_that_do_not_mutate_cache():
     items = parse_hierarchy(_HIERARCHY_XML)
-    snapshot = HierarchySnapshot(
+    snapshot = HierarchySnapshot.from_items(
         start_id="",
         scope="pages",
         epoch=0,
-        all_items=tuple(items),
+        items=items,
     )
     first = snapshot.resources(include_recycle_bin=True)
     first[0]["name"] = "mutated"
@@ -228,11 +228,11 @@ def test_stale_preflight_falls_back_to_live_hierarchy_read():
 
     service = PageService.__new__(PageService)
     service.hierarchy = _LiveHierarchy()  # type: ignore[assignment]
-    stale = HierarchySnapshot(
+    stale = HierarchySnapshot.from_items(
         start_id="",
         scope="pages",
         epoch=0,
-        all_items=tuple(parse_hierarchy(_HIERARCHY_XML)),
+        items=parse_hierarchy(_HIERARCHY_XML),
     )
     token = reset_mutation_epoch()
     try:
@@ -247,4 +247,62 @@ def test_stale_preflight_falls_back_to_live_hierarchy_read():
         assert item["id"] == "{page-id}"
         assert len(hierarchy_calls) == 1
     finally:
+        restore_mutation_epoch(token)
+
+
+def test_hierarchy_snapshot_hides_mutable_item_storage():
+    snapshot = HierarchySnapshot.from_items(
+        start_id="",
+        scope="pages",
+        epoch=0,
+        items=parse_hierarchy(_HIERARCHY_XML),
+    )
+    assert "all_items" not in snapshot.__dataclass_fields__
+    leaked = snapshot.resources(include_recycle_bin=True)
+    leaked[0]["name"] = "mutated"
+    assert snapshot.resources(include_recycle_bin=True)[0]["name"] != "mutated"
+
+
+def test_incomplete_preflight_does_not_count_as_current():
+    from local_onenote_mcp.services.hierarchy import is_current_full_preflight
+
+    token = reset_mutation_epoch()
+    try:
+        scoped = HierarchySnapshot.from_items(
+            start_id="{sec-id}",
+            scope="pages",
+            epoch=0,
+            items=parse_hierarchy(_HIERARCHY_XML),
+        )
+        assert is_current_full_preflight(scoped) is False
+        assert is_current_full_preflight(None) is False
+    finally:
+        restore_mutation_epoch(token)
+
+
+def test_hierarchy_fresh_snapshot_does_not_read_or_write_copy_cache():
+    from local_onenote_mcp.services.hierarchy import HierarchyService
+
+    hierarchy_calls: list[tuple[str, str]] = []
+    stub = _HierarchyStub(xml=_HIERARCHY_XML, calls=hierarchy_calls)
+    service = HierarchyService.__new__(HierarchyService)
+    service.hierarchy_xml = stub.hierarchy_xml  # type: ignore[method-assign]
+    cache = CopyReadCache(stub, _PagesStub(xml_by_key={}, calls=[]))
+    token = reset_mutation_epoch()
+    cache_token = set_copy_read_cache(cache)
+    try:
+        snapshot = service.snapshot()
+        assert snapshot.resource("{page-id}", "page")["id"] == "{page-id}"
+        assert cache._hierarchy_entries == {}
+        cache.resources(reason="source_drift_revalidation")
+        service.snapshot()
+        assert len(hierarchy_calls) == 3
+        assert list(cache._hierarchy_entries) == [("", "pages")]
+        cache_snapshot = cache.get_hierarchy_snapshot(reason="source_drift_revalidation")
+        assert cache_snapshot.epoch == current_mutation_epoch()
+        service.snapshot()
+        assert len(hierarchy_calls) == 4
+        assert cache.get_hierarchy_snapshot(reason="source_drift_revalidation") is cache_snapshot
+    finally:
+        restore_copy_read_cache(cache_token)
         restore_mutation_epoch(token)

@@ -4,7 +4,7 @@
 > 状态：进行中
 > 优先级：P1
 > 类型：性能 / Copy / Move / 回读验证 / 保真合同
-> 更新日期：2026-08-19
+> 更新日期：2026-08-20
 
 ## 决策摘要
 
@@ -19,6 +19,8 @@ Copy 与重建式 Move 的安全边界仍是 Copy-before-delete：默认严格�
 **2026-08-19 实施进度（strict 优化，不含 fast 模式与工作范围 D）**：已完成 read reason allowlist、`CopyReadCache`、backend operation 闭合分类与 mutation epoch、`CopyService` 通用路径接入、reconciliation→convergence 首样本合并、参数化 fake ledger 与相关 pytest。
 
 **2026-08-19 审阅修复**：已按增量审阅关闭两项 P1 与两项 P2——`CopyReadCache` 改为 task-local `ContextVar`（并发/交错隔离合同）、ledger 覆盖全部公开 Copy/Move（含 `copy_notebook`/`move_section_group`）并冻结精确 `(operation, reason)` 预算、移除 `filesystem:` 前缀匹配改精确 `FILESYSTEM_OPERATIONS` allowlist、`confirm*` preflight 类型化为 `HierarchySnapshot` 并校验 epoch（陈旧则 live read）、snapshot 返回副本。待用户 human-gated 真实 trace 对比证据。
+
+**2026-08-20**：共享创建/删除与 Page 排序 XML 的重复 live read 已由 [TODO 049](049_copy_move_backend_readback_call_deduplication.md) 收窄实现；`HierarchySnapshot` 下沉到 hierarchy 层，`CopyReadCache` 仍只保存普通同 epoch 读取。049 的真实 trace 验收与本项 human-gated 对比可以共用同一组 disposable 场景，但本项完成定义仍要求用户确认 045 基线对比。
 
 ## 已观测基线（非验收证据）
 
@@ -35,6 +37,7 @@ Copy 与重建式 Move 的安全边界仍是 Copy-before-delete：默认严格�
 - Page 写前/写后/收敛读数：reconciliation 首样本可并入 convergence，其余跨 mutation 读仍独立；**每页 `get_page_content` 预期从 ≥4 次降至约 3 次**（待真实 trace 量化）；
 - 容器专属批量化（工作范围 D）与 fast 模式（工作范围 F）**明确不在本轮**；
 - ~~Runtime Debug Trace 尚未把 read reason 投影到 backend 行~~ → **已实现 allowlist 限定的 `read_reason` 字段**；
+- 共享创建/删除与 `page_order_xml` 的重复 live read 已移交 [TODO 049](049_copy_move_backend_readback_call_deduplication.md) 并完成自动化侧实现；
 - 用户 human-gated disposable fresh/cache 场景的优化前后 trace 对比**尚未完成**。
 
 ## 工作范围
@@ -121,4 +124,5 @@ $env:LOCAL_ONENOTE_MCP_DEBUG_TRACE = "true"
 - [TODO 035](035_copy_move_internal_planning_and_agent_role.md)：Copy/Move 内部 planning 与服务端证明职责。
 - [TODO 040](040_move_readback_validation_followups.md)：已闭合的 Page fidelity/readback bug；本项不重开其缺陷，只优化读取复用与验证等级。
 - [Operation Runtime §8.1](../design/operation_runtime.md#81-copymove-phase-local-readback-snapshot045-strict-优化)：phase-local snapshot、epoch 分类与 trace read_reason。
+- [TODO 049](049_copy_move_backend_readback_call_deduplication.md)：共享创建/删除与 Page 排序 XML 的重复 live read 去重。
 - [TODO 索引](README.md)：本条的状态、优先级与摘要必须同步维护。

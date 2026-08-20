@@ -924,7 +924,7 @@ def test_create_section_returns_refreshed_current_section_id(monkeypatch):
     refreshed = {"resource_type": "section", "id": "current-section-id", "path": "Notebook/Group/New Sec", "name": "New Sec"}
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda object_id, resource_type=None: parent)
-    monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
+    monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [parent])
     monkeypatch.setattr(server.services.mutations, "call", lambda operation, **params: {"object_id": "stale-id"})
     monkeypatch.setattr(server.services.hierarchy, "wait_for_created", lambda *args, **kwargs: refreshed)
 
@@ -1391,7 +1391,11 @@ def test_create_page_reports_allocated_id_when_initial_content_write_fails(monke
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: section)
-    monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [section],
+    )
 
     def fake_call(operation, **params):
         if operation == "create_new_page":
@@ -1457,7 +1461,11 @@ def test_create_container_reports_allocated_id_when_readback_fails(monkeypatch, 
     }
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.hierarchy, "resource", lambda *args, **kwargs: parent)
-    monkeypatch.setattr(server.services.hierarchy, "resources", lambda include_recycle_bin=False: [])
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [parent],
+    )
     monkeypatch.setattr(
         server.services.mutations,
         "call",

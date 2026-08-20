@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
-from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
-from ..hierarchy import find_resource_by_id, parse_hierarchy
+from ..hierarchy import parse_hierarchy
 from ..page import page_equivalence, title_from_page_xml
 from .backend_operation_classification import current_mutation_epoch
-from .hierarchy import HierarchyService
+from .hierarchy import HierarchyService, HierarchySnapshot
 from .pages import PageService, stable_page_content_digest
 from .read_reasons import read_reason
+
+__all__ = [
+    "CopyReadCache",
+    "HierarchySnapshot",
+    "PageContentDerivation",
+    "current_copy_read_cache",
+    "restore_copy_read_cache",
+    "set_copy_read_cache",
+]
 
 _CURRENT_COPY_READ_CACHE: ContextVar[CopyReadCache | None] = ContextVar(
     "local_onenote_copy_read_cache",
@@ -30,40 +38,6 @@ def set_copy_read_cache(cache: CopyReadCache | None) -> Token:
 
 def restore_copy_read_cache(token: Token) -> None:
     _CURRENT_COPY_READ_CACHE.reset(token)
-
-
-def _item_copy(item: dict[str, Any]) -> dict[str, Any]:
-    """Return a consumer-safe copy so callers cannot mutate cache internals."""
-
-    return deepcopy(item)
-
-
-@dataclass(frozen=True)
-class HierarchySnapshot:
-    """Immutable parsed hierarchy for one read-only evidence epoch."""
-
-    start_id: str
-    scope: str
-    epoch: int
-    all_items: tuple[dict[str, Any], ...]
-
-    def resources(self, include_recycle_bin: bool = False) -> list[dict[str, Any]]:
-        items = [_item_copy(item) for item in self.all_items]
-        if not include_recycle_bin:
-            items = HierarchyService.without_recycle_bin(items)
-        return items
-
-    def resource(self, object_id: str, resource_type: str | None = None) -> dict[str, Any]:
-        if not object_id:
-            raise ValueError("An object ID is required.")
-        item = find_resource_by_id(list(self.all_items), object_id, resource_type)
-        if item is None:
-            label = resource_type or "object"
-            raise ValueError(f"No {label} found for ID '{object_id}'.")
-        return _item_copy(item)
-
-    def by_id(self, include_recycle_bin: bool = False) -> dict[str, dict[str, Any]]:
-        return {str(item["id"]): item for item in self.resources(include_recycle_bin)}
 
 
 @dataclass(frozen=True)
@@ -115,11 +89,11 @@ class CopyReadCache:
             return cached[1]
         with read_reason(reason):
             xml = self._hierarchy.hierarchy_xml(start_id, scope)
-        snapshot = HierarchySnapshot(
+        snapshot = HierarchySnapshot.from_items(
             start_id=start_id,
             scope=scope,
             epoch=epoch,
-            all_items=tuple(parse_hierarchy(xml)),
+            items=parse_hierarchy(xml),
         )
         self._hierarchy_entries[key] = (epoch, snapshot)
         return snapshot

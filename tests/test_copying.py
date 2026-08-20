@@ -665,10 +665,15 @@ def hierarchy_xml_from_items(items: list[dict[str, Any]]) -> str:
         for page in pages:
             title = page.get("title", "Page")
             modified = fake_item_modified(page)
+            recycle = (
+                ' isInRecycleBin="true"'
+                if page.get("is_in_recycle_bin") is True
+                else ""
+            )
             chunks.append(
                 f'<one:Page name="{title}" ID="{page["id"]}" '
                 f'lastModifiedTime="{modified}" dateTime="{modified}" '
-                f'pageLevel="{int(page.get("page_level", 1))}">'
+                f'pageLevel="{int(page.get("page_level", 1))}"{recycle}>'
                 f"{render_pages(section_id, page['id'])}"
                 f"</one:Page>"
             )
@@ -681,13 +686,18 @@ def hierarchy_xml_from_items(items: list[dict[str, Any]]) -> str:
             key=lambda entry: int(entry.get("order", 0)),
         ):
             kind = item["resource_type"]
+            recycle = (
+                ' isInRecycleBin="true"'
+                if item.get("is_in_recycle_bin") is True
+                else ""
+            )
             if kind == "notebook":
                 name = item["name"]
                 modified = fake_item_modified(item)
                 path = fake_item_path(item)
                 chunks.append(
                     f'<one:Notebook name="{name}" ID="{item["id"]}" path="{path}" '
-                    f'lastModifiedTime="{modified}">'
+                    f'lastModifiedTime="{modified}"{recycle}>'
                     f"{render_container(item['id'])}"
                     f"</one:Notebook>"
                 )
@@ -697,7 +707,7 @@ def hierarchy_xml_from_items(items: list[dict[str, Any]]) -> str:
                 path = fake_item_path(item)
                 chunks.append(
                     f'<one:SectionGroup name="{name}" ID="{item["id"]}" path="{path}" '
-                    f'lastModifiedTime="{modified}">'
+                    f'lastModifiedTime="{modified}"{recycle}>'
                     f"{render_container(item['id'])}"
                     f"</one:SectionGroup>"
                 )
@@ -707,7 +717,7 @@ def hierarchy_xml_from_items(items: list[dict[str, Any]]) -> str:
                 path = fake_item_path(item)
                 chunks.append(
                     f'<one:Section name="{name}" ID="{item["id"]}" path="{path}" '
-                    f'lastModifiedTime="{modified}">'
+                    f'lastModifiedTime="{modified}"{recycle}>'
                     f"{render_pages(item['id'])}"
                     f"</one:Section>"
                 )
@@ -844,7 +854,7 @@ def install_recursive_execute_fakes(
         state.append(item)
         return item
 
-    def create_notebook(name, base_folder):
+    def create_notebook(name, base_folder, **_kwargs):
         counters["notebook"] += 1
         item = {
             "resource_type": "notebook",
@@ -860,11 +870,11 @@ def install_recursive_execute_fakes(
             "allocated_id": item["id"],
         }
 
-    def create_group(parent_id, name):
+    def create_group(parent_id, name, **_kwargs):
         item = append_container("section_group", parent_id, name)
         return {"section_group": item, "allocated_id": item["id"]}
 
-    def create_section(parent_id, name):
+    def create_section(parent_id, name, **_kwargs):
         item = append_container("section", parent_id, name)
         return {"section": item, "allocated_id": item["id"]}
 
@@ -3077,8 +3087,8 @@ def test_notebook_copy_path_mismatch_is_partial_and_reports_allocated_id(monkeyp
     )
     original_create = server.services.mutations.create_notebook
 
-    def create_with_wrong_path(name, base_folder):
-        result = original_create(name, base_folder)
+    def create_with_wrong_path(name, base_folder, **kwargs):
+        result = original_create(name, base_folder, **kwargs)
         result["path"] = str(tmp_path / "wrong-place")
         return result
 
@@ -3464,14 +3474,33 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
                 page_level=level,
                 parent_page_id=stack[-1]["id"] if stack else None,
             )
+            if item["id"] == "parent":
+                item["modified"] = "after-promotion-clock"
             stack.append(item)
         state["xml_clock"] = "after-promotion"
         advance_fake_mutation_epoch()
         return {"updated": True}
 
     monkeypatch.setattr(server.services.copying, "call", update_hierarchy)
+    delete_calls: list[dict[str, Any]] = []
 
-    def delete_page(page_id, *args, **kwargs):
+    def delete_page(
+        page_id,
+        expected_title,
+        expected_section_id,
+        expected_modified,
+        permanently,
+        **kwargs,
+    ):
+        delete_calls.append(
+            {
+                "page_id": page_id,
+                "expected_title": expected_title,
+                "expected_section_id": expected_section_id,
+                "expected_modified": expected_modified,
+                "permanently": permanently,
+            }
+        )
         remove_fake_items(state, page_id)
         advance_fake_mutation_epoch()
         return {"deleted": True, "final_state": {"id": page_id, "is_in_recycle_bin": True}}
@@ -3490,6 +3519,21 @@ def test_root_only_move_promotes_and_preserves_excluded_descendants(monkeypatch)
     assert result["include_descendants"] is False
     assert result["deleted_source_ids"] == ["parent"]
     assert result["preserved_descendants"]["preserved_descendant_ids"] == ["child"]
+    assert "source_root_modified" not in result["preserved_descendants"]
+    assert "modified" not in result["preserved_descendants"]
+    assert all(
+        "modified" not in page_evidence
+        for page_evidence in result["preserved_descendants"]["pages"].values()
+    )
+    assert delete_calls == [
+        {
+            "page_id": "parent",
+            "expected_title": "Parent",
+            "expected_section_id": "source-section",
+            "expected_modified": "after-promotion-clock",
+            "permanently": False,
+        }
+    ]
     assert child["page_level"] == 1
     assert child["parent_page_id"] is None
     assert_destination_position_contract(
@@ -4027,7 +4071,7 @@ def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
     deleted = []
     delete_confirmations = {}
 
-    def delete_page(page_id, expected_title, expected_section_id, expected_modified, permanently):
+    def delete_page(page_id, expected_title, expected_section_id, expected_modified, permanently, **_kwargs):
         assert permanently is False
         deleted.append(page_id)
         delete_confirmations[page_id] = expected_modified
@@ -4413,7 +4457,7 @@ def install_container_move_execution_fakes(monkeypatch, resource_type: str):
         lambda start_id="", scope="pages": hierarchy_xml_from_items(final_items),
     )
 
-    def delete_resource(*args):
+    def delete_resource(*args, **_kwargs):
         delete_calls.append(args)
         advance_fake_mutation_epoch()
         return {"final_state": None}
@@ -4661,3 +4705,334 @@ def test_container_move_reports_remaining_descendant_without_extra_deletes(monke
     assert raised.value.details["outcome"] == "source_partially_removed"
     assert raised.value.details["attempted_source_ids"] == [source_id]
     assert raised.value.details["remaining_source_ids"] == [child_id]
+
+
+def _enable_copy_move(monkeypatch) -> None:
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
+
+
+@pytest.mark.write_contract
+def test_gui_change_after_source_drift_blocks_delete_and_promotion(monkeypatch):
+    state = install_recursive_execute_fakes(
+        monkeypatch,
+        include_destination_section=True,
+    )
+    _enable_copy_move(monkeypatch)
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    dispatched: list[str] = []
+
+    def mutations_call(operation, **params):
+        dispatched.append(operation)
+        raise AssertionError(f"unexpected mutation after GUI intercept: {operation}")
+
+    monkeypatch.setattr(server.services.mutations, "call", mutations_call)
+    original_fresh = server.services.copying._fresh_hierarchy_snapshot
+
+    def fresh_then_hijack(*, reason: str):
+        if reason == "delete_confirmation":
+            for item in state:
+                if item["id"] == "source-page":
+                    item["title"] = "Hijacked By GUI"
+        return original_fresh(reason=reason)
+
+    monkeypatch.setattr(server.services.copying, "_fresh_hierarchy_snapshot", fresh_then_hijack)
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.move_page(
+            "source-page",
+            "destination-section",
+            "Page",
+            "source-section",
+            destination_title="Moved Page",
+            include_descendants=False,
+        )
+
+    assert "delete_hierarchy" not in dispatched
+    assert caught.value.details["outcome"] == "source_delete_failed"
+    assert caught.value.details["source_deleted"] is False
+    assert caught.value.details.get("deleted_source_ids") in (None, [])
+
+
+@pytest.mark.write_contract
+def test_gui_change_after_source_drift_blocks_promotion_update(monkeypatch):
+    state = install_plan_fakes(monkeypatch, body="")
+    _enable_copy_move(monkeypatch)
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server.services.copying,
+        "_execute_copy",
+        lambda value: {
+            "item": {"id": "new-parent", "resource_type": "page"},
+            "created_ids": ["new-parent"],
+            "copy_report": {
+                "lossless": True,
+                "verified": True,
+                "copy_contract_satisfied": True,
+                "id_map": {"parent": "new-parent"},
+            },
+            "warnings": [],
+        },
+    )
+    dispatched: list[str] = []
+
+    def record_call(operation, **params):
+        dispatched.append(operation)
+        raise AssertionError(f"unexpected mutation after GUI intercept: {operation}")
+
+    monkeypatch.setattr(server.services.copying, "call", record_call)
+    monkeypatch.setattr(server.services.mutations, "call", record_call)
+    original_fresh = server.services.copying._fresh_hierarchy_snapshot
+
+    def fresh_then_remove_child(*, reason: str):
+        if reason == "delete_confirmation":
+            state["items"] = [item for item in state["items"] if item["id"] != "child"]
+        return original_fresh(reason=reason)
+
+    monkeypatch.setattr(server.services.copying, "_fresh_hierarchy_snapshot", fresh_then_remove_child)
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.move_page(
+            "parent",
+            "destination-section",
+            "Parent",
+            "source-section",
+            destination_title="Moved Parent",
+            include_descendants=False,
+        )
+
+    assert dispatched == []
+    assert caught.value.details["outcome"] == "copy_only"
+    assert caught.value.details["source_deleted"] is False
+    assert caught.value.details.get("source_topology_may_have_changed") is True
+
+
+@pytest.mark.write_contract
+def test_gui_change_after_promotion_keeps_update_and_blocks_delete(monkeypatch):
+    state = install_plan_fakes(monkeypatch, body="")
+    state["xml_clock"] = "before-promotion"
+    _enable_copy_move(monkeypatch)
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server.services.copying,
+        "_execute_copy",
+        lambda value: state["items"].append(
+            {
+                "resource_type": "page",
+                "id": "new-parent",
+                "title": "Moved Parent",
+                "parent_id": "destination-section",
+                "section_id": "destination-section",
+                "notebook_id": "n",
+                "page_level": 1,
+                "parent_page_id": None,
+                "order": 0,
+            }
+        )
+        or {
+            "item": {"id": "new-parent", "resource_type": "page"},
+            "created_ids": ["new-parent"],
+            "copy_report": {
+                "lossless": True,
+                "verified": True,
+                "copy_contract_satisfied": True,
+                "id_map": {"parent": "new-parent"},
+            },
+            "warnings": [],
+        },
+    )
+
+    def hierarchy_sensitive_page_xml(page_id, page_info="basic"):
+        item = next(value for value in state["items"] if value["id"] == page_id)
+        return page_xml(page_id, item["title"], state["body"]).replace(
+            'lastModifiedTime="clock"',
+            f'lastModifiedTime="{state["xml_clock"]}" pageLevel="{item["page_level"]}"',
+        )
+
+    monkeypatch.setattr(server.services.pages, "xml", hierarchy_sensitive_page_xml)
+    dispatched: list[str] = []
+
+    def update_hierarchy(operation, **params):
+        dispatched.append(operation)
+        assert operation == "update_hierarchy"
+        root = ET.fromstring(params["xml"])
+        nodes = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Page"]
+        stack = []
+        for order, node in enumerate(nodes):
+            item = next(value for value in state["items"] if value["id"] == node.attrib["ID"])
+            level = int(node.attrib["pageLevel"])
+            while stack and stack[-1]["page_level"] >= level:
+                stack.pop()
+            item.update(
+                order=order,
+                page_level=level,
+                parent_page_id=stack[-1]["id"] if stack else None,
+            )
+            stack.append(item)
+        state["xml_clock"] = "after-promotion"
+        advance_fake_mutation_epoch()
+        return {"updated": True}
+
+    monkeypatch.setattr(server.services.copying, "call", update_hierarchy)
+
+    def mutations_call(operation, **params):
+        dispatched.append(operation)
+        raise AssertionError(f"delete must remain blocked: {operation}")
+
+    monkeypatch.setattr(server.services.mutations, "call", mutations_call)
+    original_fresh = server.services.copying._fresh_hierarchy_snapshot
+    confirmations = {"count": 0}
+
+    def fresh_then_hijack_after_promotion(*, reason: str):
+        snapshot = original_fresh(reason=reason)
+        if reason == "delete_confirmation":
+            confirmations["count"] += 1
+            if confirmations["count"] >= 2:
+                for item in state["items"]:
+                    if item["id"] == "parent":
+                        item["title"] = "Hijacked By GUI"
+                return original_fresh(reason=reason)
+        return snapshot
+
+    monkeypatch.setattr(
+        server.services.copying,
+        "_fresh_hierarchy_snapshot",
+        fresh_then_hijack_after_promotion,
+    )
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.move_page(
+            "parent",
+            "destination-section",
+            "Parent",
+            "source-section",
+            destination_title="Moved Parent",
+            include_descendants=False,
+        )
+
+    assert dispatched.count("update_hierarchy") == 1
+    assert "delete_hierarchy" not in dispatched
+    assert caught.value.details["outcome"] == "source_delete_failed"
+    assert caught.value.details["source_deleted"] is False
+    assert caught.value.details["preserved_descendants"]["promoted"] is True
+    child = next(item for item in state["items"] if item["id"] == "child")
+    assert child["page_level"] == 1
+    assert child["parent_page_id"] is None
+
+
+@pytest.mark.write_contract
+def test_gui_modified_drift_after_promotion_keeps_update_and_blocks_delete(monkeypatch):
+    state = install_plan_fakes(monkeypatch, body="")
+    state["xml_clock"] = "before-promotion"
+    _enable_copy_move(monkeypatch)
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server.services.copying,
+        "_execute_copy",
+        lambda value: state["items"].append(
+            {
+                "resource_type": "page",
+                "id": "new-parent",
+                "title": "Moved Parent",
+                "parent_id": "destination-section",
+                "section_id": "destination-section",
+                "notebook_id": "n",
+                "page_level": 1,
+                "parent_page_id": None,
+                "order": 0,
+            }
+        )
+        or {
+            "item": {"id": "new-parent", "resource_type": "page"},
+            "created_ids": ["new-parent"],
+            "copy_report": {
+                "lossless": True,
+                "verified": True,
+                "copy_contract_satisfied": True,
+                "id_map": {"parent": "new-parent"},
+            },
+            "warnings": [],
+        },
+    )
+
+    def hierarchy_sensitive_page_xml(page_id, page_info="basic"):
+        item = next(value for value in state["items"] if value["id"] == page_id)
+        return page_xml(page_id, item["title"], state["body"]).replace(
+            'lastModifiedTime="clock"',
+            f'lastModifiedTime="{state["xml_clock"]}" pageLevel="{item["page_level"]}"',
+        )
+
+    monkeypatch.setattr(server.services.pages, "xml", hierarchy_sensitive_page_xml)
+    dispatched: list[str] = []
+
+    def update_hierarchy(operation, **params):
+        dispatched.append(operation)
+        assert operation == "update_hierarchy"
+        root = ET.fromstring(params["xml"])
+        nodes = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Page"]
+        stack = []
+        for order, node in enumerate(nodes):
+            item = next(value for value in state["items"] if value["id"] == node.attrib["ID"])
+            level = int(node.attrib["pageLevel"])
+            while stack and stack[-1]["page_level"] >= level:
+                stack.pop()
+            item.update(
+                order=order,
+                page_level=level,
+                parent_page_id=stack[-1]["id"] if stack else None,
+            )
+            if item["id"] == "parent":
+                item["modified"] = "after-promotion-clock"
+            stack.append(item)
+        state["xml_clock"] = "after-promotion"
+        advance_fake_mutation_epoch()
+        return {"updated": True}
+
+    monkeypatch.setattr(server.services.copying, "call", update_hierarchy)
+
+    def mutations_call(operation, **params):
+        dispatched.append(operation)
+        raise AssertionError(f"delete must remain blocked: {operation}")
+
+    monkeypatch.setattr(server.services.mutations, "call", mutations_call)
+    original_fresh = server.services.copying._fresh_hierarchy_snapshot
+    confirmations = {"count": 0}
+
+    def fresh_then_drift_modified_after_promotion(*, reason: str):
+        snapshot = original_fresh(reason=reason)
+        if reason == "delete_confirmation":
+            confirmations["count"] += 1
+            if confirmations["count"] >= 2:
+                for item in state["items"]:
+                    if item["id"] == "parent":
+                        item["modified"] = "external-drift-after-promotion"
+                return original_fresh(reason=reason)
+        return snapshot
+
+    monkeypatch.setattr(
+        server.services.copying,
+        "_fresh_hierarchy_snapshot",
+        fresh_then_drift_modified_after_promotion,
+    )
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.move_page(
+            "parent",
+            "destination-section",
+            "Parent",
+            "source-section",
+            destination_title="Moved Parent",
+            include_descendants=False,
+        )
+
+    assert dispatched.count("update_hierarchy") == 1
+    assert "delete_hierarchy" not in dispatched
+    assert caught.value.details["outcome"] == "source_delete_failed"
+    assert caught.value.details["source_deleted"] is False
+    assert caught.value.details["preserved_descendants"]["promoted"] is True
+    assert "source_root_modified" not in caught.value.details["preserved_descendants"]
+    assert "modified" not in caught.value.details["preserved_descendants"]
+    child = next(item for item in state["items"] if item["id"] == "child")
+    assert child["page_level"] == 1
+    assert child["parent_page_id"] is None

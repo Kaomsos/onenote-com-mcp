@@ -9,6 +9,8 @@ from typing import Any, Callable, Generic, TypeVar
 T = TypeVar("T")
 Identity = str | int | float | bool | None | tuple[Any, ...]
 
+UNSET = object()
+
 
 @dataclass(frozen=True)
 class ConvergenceConfig:
@@ -87,7 +89,7 @@ def converge(
     sleeper: Callable[[float], None] = time.sleep,
     identity_remap: dict[str, str] | None = None,
     transient: Callable[[Exception], bool] | None = None,
-    initial_value: T | None = None,
+    initial_value: T | object = UNSET,
 ) -> ConvergenceResult[T]:
     """Observe until the same accepted identity is seen consecutively.
 
@@ -122,7 +124,7 @@ def converge(
         history.append({"attempt": attempts, "accepted": accepted, "stable": stable})
         return accepted and stable >= config.required_stable_observations
 
-    if initial_value is not None and record_observation(initial_value):
+    if initial_value is not UNSET and record_observation(initial_value):
         return ConvergenceResult(
             True,
             initial_value,

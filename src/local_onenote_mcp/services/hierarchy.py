@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 import xml.etree.ElementTree as ET
 
 from ..bridge import OneNoteBridge
@@ -22,6 +24,7 @@ from ..hierarchy import (
     resolve_resource,
 )
 from ..onenote_errors import transient_read_error
+from .backend_operation_classification import current_mutation_epoch
 from .base import BaseService
 from .convergence import (
     DEFAULT_CONVERGENCE_RUNTIME,
@@ -85,6 +88,67 @@ def _parse_rfc3339(value: str, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _item_copy(item: dict[str, Any]) -> dict[str, Any]:
+    """Return a consumer-safe copy so callers cannot mutate snapshot internals."""
+
+    return deepcopy(item)
+
+
+@dataclass(frozen=True)
+class HierarchySnapshot:
+    """Immutable parsed hierarchy for one read-only evidence epoch."""
+
+    start_id: str
+    scope: str
+    epoch: int
+    _items: tuple[dict[str, Any], ...] = field(repr=False)
+
+    @classmethod
+    def from_items(
+        cls,
+        *,
+        start_id: str,
+        scope: str,
+        epoch: int,
+        items: Iterable[dict[str, Any]],
+    ) -> HierarchySnapshot:
+        return cls(
+            start_id=start_id,
+            scope=scope,
+            epoch=epoch,
+            _items=tuple(_item_copy(item) for item in items),
+        )
+
+    def resources(self, include_recycle_bin: bool = False) -> list[dict[str, Any]]:
+        items = [_item_copy(item) for item in self._items]
+        if not include_recycle_bin:
+            items = HierarchyService.without_recycle_bin(items)
+        return items
+
+    def resource(self, object_id: str, resource_type: str | None = None) -> dict[str, Any]:
+        if not object_id:
+            raise ValueError("An object ID is required.")
+        item = find_resource_by_id(list(self._items), object_id, resource_type)
+        if item is None:
+            label = resource_type or "object"
+            raise ValueError(f"No {label} found for ID '{object_id}'.")
+        return _item_copy(item)
+
+    def by_id(self, include_recycle_bin: bool = False) -> dict[str, dict[str, Any]]:
+        return {str(item["id"]): item for item in self.resources(include_recycle_bin)}
+
+
+def is_current_full_preflight(preflight: HierarchySnapshot | None) -> bool:
+    """Return True when a snapshot may authorize the current full-hierarchy epoch."""
+
+    return (
+        preflight is not None
+        and preflight.start_id == ""
+        and preflight.scope == "pages"
+        and preflight.epoch == current_mutation_epoch()
+    )
+
+
 class HierarchyService(BaseService):
     def __init__(
         self,
@@ -131,6 +195,20 @@ class HierarchyService(BaseService):
     def resources(self, include_recycle_bin: bool = False) -> list[dict[str, Any]]:
         items = parse_hierarchy(self.hierarchy_xml("", "pages"))
         return items if include_recycle_bin else self.without_recycle_bin(items)
+
+    def snapshot(self, *, start_id: str = "", scope: str = "pages") -> HierarchySnapshot:
+        """Capture one live hierarchy observation without consulting Copy cache."""
+
+        if start_id == "" and scope == "pages":
+            items = self.resources(include_recycle_bin=True)
+        else:
+            items = parse_hierarchy(self.hierarchy_xml(start_id, scope))
+        return HierarchySnapshot.from_items(
+            start_id=start_id,
+            scope=scope,
+            epoch=current_mutation_epoch(),
+            items=items,
+        )
 
     def resource(self, object_id: str, resource_type: str | None = None) -> dict[str, Any]:
         if not object_id:
@@ -1056,14 +1134,86 @@ class HierarchyService(BaseService):
             )
         return ET.tostring(root, encoding="unicode")
 
-    def page_order_xml(self, section: dict[str, Any], pages: list[dict[str, Any]]) -> str:
-        root = ET.fromstring(self.update_xml(section))
-        section_node = next(node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Section")
+    def page_order_xml(
+        self,
+        section: dict[str, Any],
+        pages: list[dict[str, Any]],
+        *,
+        catalog: list[dict[str, Any]] | None = None,
+    ) -> str:
+        if catalog is None:
+            root = ET.fromstring(self.update_xml(section))
+            section_node = next(
+                node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Section"
+            )
+            for page in pages:
+                ET.SubElement(
+                    section_node,
+                    f"{{{ONE_NS}}}Page",
+                    {
+                        "ID": page["id"],
+                        "name": display_name(page),
+                        "pageLevel": str(page["page_level"]),
+                    },
+                )
+            return ET.tostring(root, encoding="unicode")
+
+        catalog_ids = [str(item.get("id") or "") for item in catalog]
+        if any(not object_id for object_id in catalog_ids) or len(catalog_ids) != len(set(catalog_ids)):
+            raise ValueError("Page order catalog must contain unique object IDs.")
+        by_id = {str(item["id"]): item for item in catalog}
+        section_id = str(section["id"])
+        canonical_section = by_id.get(section_id)
+        if (
+            canonical_section is None
+            or canonical_section.get("resource_type") != "section"
+            or canonical_section.get("is_in_recycle_bin") is True
+        ):
+            raise ValueError("Page order catalog is missing the active Section.")
+        seen = {section_id}
+        parent_id = canonical_section.get("parent_id")
+        while parent_id:
+            parent = by_id.get(parent_id)
+            if parent is None:
+                raise RuntimeError(f"Cannot build hierarchy update: missing ancestor {parent_id}.")
+            if parent.get("is_in_recycle_bin") is True:
+                raise ValueError("Page order catalog ancestor is not active.")
+            if parent_id in seen:
+                raise ValueError("Hierarchy path contains an ancestor cycle.")
+            seen.add(parent_id)
+            parent_id = parent.get("parent_id")
+
+        page_ids = [str(page.get("id") or "") for page in pages]
+        if any(not page_id for page_id in page_ids) or len(page_ids) != len(set(page_ids)):
+            raise ValueError("Page order pages must have unique IDs.")
+        if any(str(page.get("section_id")) != section_id for page in pages):
+            raise ValueError("Page order pages must belong to the target Section.")
+        active_section_pages = {
+            str(item["id"])
+            for item in catalog
+            if item.get("resource_type") == "page"
+            and str(item.get("section_id")) == section_id
+            and item.get("is_in_recycle_bin") is not True
+        }
+        if set(page_ids) != active_section_pages:
+            raise ValueError("Page order pages must match the Section's complete active Page set.")
+
+        root = ET.fromstring(self.update_xml(canonical_section, catalog=catalog))
+        section_node = next(
+            node
+            for node in root.iter()
+            if node.tag.rsplit("}", 1)[-1] == "Section" and node.attrib.get("ID") == section_id
+        )
         for page in pages:
+            catalog_page = by_id[str(page["id"])]
             ET.SubElement(
                 section_node,
                 f"{{{ONE_NS}}}Page",
-                {"ID": page["id"], "name": display_name(page), "pageLevel": str(page["page_level"])},
+                {
+                    "ID": catalog_page["id"],
+                    "name": display_name(catalog_page),
+                    "pageLevel": str(page["page_level"]),
+                },
             )
         return ET.tostring(root, encoding="unicode")
 

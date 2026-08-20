@@ -50,11 +50,11 @@
 | 042 | [PyPI 发布准备与 uvx 调用入口](042_pypi_release_uvx_entrypoint.md)                                                      | 待办   | P1     | 准备包元数据（随 023 切换 GPL）、构建产物审计、TestPyPI 演练与 `uvx local-onenote-mcp` 双语安装文档；正式上传由用户执行并以 TODO 023 公开硬门为前置。                        |
 | 043 | [Copy/Move 目标创建与修改时间保真](043_copy_move_source_timestamp_fidelity.md)                                        | 待办   | P1     | 保留为未来开放方向，不是当前产品承诺；如重新启动，须先作产品决策并建立各资源类型 COM 时间字段可写能力矩阵。                                                               |
 | 044 | [MCP Runtime 本地 Debug Trace 与工具调用埋点](044_mcp_runtime_debug_tracing.md)                                        | 已完成 | P1     | env 控制、Runtime per-call Span、JSONL writer 与 content-free 事件埋点（`tool_call.*` + `operation` backend 行）已交付；用户已确认本地 smoke 与 local-only 边界。 |
-| 045 | [Copy/Move 回读 Snapshot 效率与快速验证模式](045_copy_move_readback_snapshot_efficiency.md)                           | 进行中 | P1     | strict 优化 + 审阅修复已落地：ContextVar task-local cache、精确 filesystem allowlist、typed preflight epoch 校验、全操作冻结 ledger。待 human-gated trace 对比。 |
+| 045 | [Copy/Move 回读 Snapshot 效率与快速验证模式](045_copy_move_readback_snapshot_efficiency.md)                           | 进行中 | P1     | 已实现单次调用内 `CopyReadCache`：单页 Copy 复用同 epoch 的 hierarchy/Page snapshot，mutation 立即失效；共享创建/删除重复回读已由 TODO 049 收窄实现，真实 trace 对比仍待确认。 |
 | 046 | [按资源作用域的 Mutation 协调与细粒度写锁](046_scoped_mutation_coordination.md)                                      | 待办   | P3     | 先冻结锁竞争与完整 mutation footprint；仅在 OneNote COM 平台证据允许时，以 canonical 多资源锁和全局 fallback 减少无冲突调用等待。 |
 | 047 | [并发只读 Tool 调度与共享读协调](047_concurrent_read_tool_execution.md)                                               | 待办   | P1     | 让 catalog 已声明安全的共享 read 经有界 dispatch 真正并发，保持 writer-preference、全程 mutation 独占、调用上下文隔离与 content-free trace。 |
-| 048 | [pywin32 进程内常驻 OneNote COM Bridge](048_pywin32_persistent_com_bridge.md)                                      | 待办   | P0     | 以单一 STA Python COM worker 取代每个 backend call 新开 PowerShell；保持串行 COM、无自动 mutation 重放、typed HRESULT 与既有收敛契约。 |
-| 049 | [Copy/Move backend readback 调用去重](049_copy_move_backend_readback_call_deduplication.md)                         | 待办   | P2     | 在严格证据和 epoch 失效不变前提下，向共享创建/删除服务传递 typed snapshot、复用删除 observation，并消除 Page 排序 XML 的重复 hierarchy call。 |
+| 048 | [pywin32 进程内常驻 OneNote COM Bridge](048_pywin32_persistent_com_bridge.md)                                      | 阻塞   | P0     | 当前环境的 OneNote `IDispatch` 名称解析返回 `TYPE_E_LIBNOTREGISTERED`；需先确定可兼容的 COM transport，再评估单一 STA Python worker。 |
+| 049 | [Copy/Move backend readback 调用去重](049_copy_move_backend_readback_call_deduplication.md)                         | 已完成 | P2     | 已实现中性 snapshot、集中 preflight、fresh 删除 confirmation、promotion 后仅重绑 `modified` 与三条组合 ledger；用户已确认 disposable 真实 trace，双页 Move 由 43 降至 33 个 backend call，且七个公开工具的 trace 全部完成。 |
 
 ## 文件命名
 

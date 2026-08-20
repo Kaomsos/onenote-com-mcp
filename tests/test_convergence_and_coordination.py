@@ -18,7 +18,7 @@ from local_onenote_mcp.onenote_errors import (
     idempotent_retry_allowed,
     transient_read_error,
 )
-from local_onenote_mcp.services.convergence import ConvergenceConfig, converge
+from local_onenote_mcp.services.convergence import UNSET, ConvergenceConfig, converge
 from local_onenote_mcp.services.coordination import ReadWriteCoordinator
 from local_onenote_mcp.services.reconciliation import (
     ReconciliationState,
@@ -36,6 +36,75 @@ class FakeClock:
 
     def sleep(self, seconds: float) -> None:
         self.now += seconds
+
+
+def test_convergence_omitted_initial_value_is_not_a_sample():
+    values = iter([None, None])
+    clock = FakeClock()
+    result = converge(
+        lambda: next(values),
+        lambda value: value is None,
+        lambda value: value,
+        config=ConvergenceConfig(
+            deadline_seconds=10,
+            interval_seconds=1,
+            required_stable_observations=2,
+            max_observations=4,
+        ),
+        clock=clock,
+        sleeper=clock.sleep,
+    )
+    assert result.converged is True
+    assert result.attempts == 2
+    assert result.stable_observations == 2
+
+
+def test_convergence_none_initial_value_counts_as_first_sample():
+    values = iter([None])
+    clock = FakeClock()
+    result = converge(
+        lambda: next(values),
+        lambda value: value is None,
+        lambda value: value,
+        config=ConvergenceConfig(
+            deadline_seconds=10,
+            interval_seconds=1,
+            required_stable_observations=2,
+            max_observations=4,
+        ),
+        clock=clock,
+        sleeper=clock.sleep,
+        initial_value=None,
+    )
+    assert result.converged is True
+    assert result.attempts == 2
+    assert result.stable_observations == 2
+    assert result.value is None
+
+
+def test_convergence_none_initial_value_reversion_requires_two_new_stable_reads():
+    values = iter(["visible", None, None])
+    clock = FakeClock()
+    result = converge(
+        lambda: next(values),
+        lambda value: value is None,
+        lambda value: value,
+        config=ConvergenceConfig(
+            deadline_seconds=10,
+            interval_seconds=1,
+            required_stable_observations=2,
+            max_observations=5,
+        ),
+        clock=clock,
+        sleeper=clock.sleep,
+        initial_value=None,
+    )
+    assert result.converged is True
+    assert result.attempts == 4
+    assert result.observation_history[0]["stable"] == 1
+    assert result.observation_history[1]["stable"] == 0
+    assert result.observation_history[3]["stable"] == 2
+    assert UNSET is not None
 
 
 def test_convergence_requires_two_matching_postconditions_after_a_reversion():

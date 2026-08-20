@@ -1,7 +1,7 @@
 # Operation Runtime 操作执行控制面
 
 > 状态：当前实现态
-> 更新日期：2026-08-19
+> 更新日期：2026-08-20
 > 相关契约：[当前架构](architecture.md) · [公开 Tool 契约](tool_contracts.md) · [Mutation readiness](mutation_readiness_and_call_design.md)
 
 ## 1. 定位与依赖方向
@@ -491,22 +491,35 @@ move_page, move_section, move_section_group
 - 未出现在 allowlist 中的 operation（含未知 `filesystem:...`）**fail-safe** 按可能 mutation 处理并在发出前推进 task-local mutation epoch；
 - `BaseService` 只负责分类与 epoch 通知，不保存 cache；Copy/Move 在 `_execute_copy` 完成（含 partial failure 路径）后也会显式 `advance_mutation_epoch()`，使规划期 snapshot 在写后阶段失效。
 
-**Hierarchy snapshot 合同**（[`copy_read_cache.py`](../../src/local_onenote_mcp/services/copy_read_cache.py)）：
+**Hierarchy snapshot 合同**（类型定义在 [`hierarchy.py`](../../src/local_onenote_mcp/services/hierarchy.py)，普通同 epoch 存储在 [`copy_read_cache.py`](../../src/local_onenote_mcp/services/copy_read_cache.py)）：
 
+- `HierarchySnapshot` 是中性、不可变的一次 hierarchy 观察；内部 item 存储为私有字段，`resources()` / `resource()` / `by_id()` 对外只返回 deep copy；
+- `HierarchyService.snapshot()` 是普通 live 捕获入口，不查询、不写回 `CopyReadCache`；
+- `CopyReadCache` 只保存普通 `(start_id, scope, epoch)` 条目，不提供 `force_refresh()`，也不承载删源安全证据；
 - cache 保存**完整解析 hierarchy**（含回收站），由 `HierarchySnapshot.resources(include_recycle_bin=...)` 派生活跃视图；条目 key 含 `(start_id, scope)`，不同视图不得互相污染；
-- `resources()` / `resource()` 对外返回条目**副本**，消费者无法改写 cache 内部 dict；
 - Page XML 以 `(page_id, scope)` 为 key，携带 epoch；不匹配即透明重新 live read；
-- confirm/plan/destination precondition 共享同一 epoch 的 hierarchy snapshot；reorder 每个 Section 的 `resource()`+`resources()` 双读合并为单次读；
-- 深层 helper（`mutations.confirm*` / `pages.confirm`）只接收类型化的 `HierarchySnapshot | None` preflight，并在消费前校验 `preflight.epoch == current_mutation_epoch()`；epoch 不匹配时透明回退 fresh live read，不接收整个 `CopyReadCache`。
+- confirm/plan/destination precondition 共享同一 epoch 的 hierarchy snapshot；创建服务用同一份 snapshot 同时完成 parent 类型校验和含回收站的 `before_ids`；`page_order_xml(..., catalog=...)` 可注入同 epoch catalog，不再为构造 ancestor XML 隐式重读；
+- 深层 helper 只接收类型化的 `HierarchySnapshot | None` preflight。`MutationService._resolve_full_preflight()` 集中校验 `start_id == ""`、`scope == "pages"` 且 `epoch == current_mutation_epoch()`；缺失、stale 或不完整时 fresh fallback，不接收或保存 `CopyReadCache`。
+
+**049 删除与收敛边界**：
+
+- `mutation_epoch` 只记录本 task 已知 backend mutation，**不能**证明 OneNote GUI 或其他进程没有外部写入；
+- 每次源拓扑 mutation 前的 `delete_confirmation` 必须是独立 fresh snapshot：不入 cache，也不用 source-drift snapshot 授权随后的 `update_hierarchy` / `delete_hierarchy`；
+- fresh confirmation 是尽力检查，不能消除 confirmation 与随后 dispatch 之间的 TOCTOU，也不提供跨进程原子性；
+- 非 promotion 路径：`source-drift live read → fresh delete_confirmation → delete → reconciliation 首样本 → 至少一次新的 live stable observation`；
+- root-only promotion 双门：`source drift → fresh confirmation（promotion 前）→ update_hierarchy → fresh confirmation（delete 前）→ delete`；两份 snapshot 不得跨门复用；promotion 收敛后只从该已验证 observation 重绑源 root 的 `modified`，标题与 Section 仍绑定 source-drift/plan 确认值，不得从第二次 fresh confirmation 重绑以免吞掉随后的外部 drift；
+- `converge(..., initial_value=UNSET)`：省略参数表示没有首样本；显式 `None` 是合法“对象已消失”首样本。仅 delete reconciliation 在 `applied` 且满足同一 postcondition 时传入该值；Page writer 只在实际取得非 `None` reconciliation value 时才传 `initial_value`；
+- Page scope final check 只可复用 MutationService 私有的最后一次 delete 后、已稳定且 object/epoch 匹配的 observation；公开 `delete_*` 返回结构不携带 snapshot，`CopyService` 不感知该 observation；
+- **不**复用最终 destination-position snapshot；CopyService 继续 fresh-read projection，不建立跨服务 handoff。
 
 **Read reason 归因**（[`read_reasons.py`](../../src/local_onenote_mcp/services/read_reasons.py)）：
 
 - 固定 11 类 allowlist：`source_confirmation`、`plan_capture`、`destination_precondition`、`post_create_convergence`、`pre_write_target_observation`、`post_write_reconciliation`、`post_write_convergence`、`topology_verification`、`source_drift_revalidation`、`delete_confirmation`、`delete_convergence`；
-- Debug Trace backend 行可选投影 `read_reason`（仅 allowlist 值）；确定性 fake ledger（`tests/test_copy_readback_ledger.py`）按全部公开 Copy/Move 操作 × 受支持形态冻结精确 `(operation, reason)` 预算。
+- Debug Trace backend 行可选投影 `read_reason`（仅 allowlist 值）；确定性 fake ledger（`tests/test_copy_readback_ledger.py`）按全部公开 Copy/Move 操作 × 受支持形态冻结精确 `(operation, reason)` 预算，并另有三条真实共享服务组合路径（普通 Page Move、root-only promotion、一个容器 Move）。
 
-**明确不复用**（跨 mutation 边界必须 live read）：`wait_for_created`/收敛轮询、写后 reconciliation（作为独立证据阶段）、Move 删源前 source drift、删源后验证；reconciliation 成功后可将该 observation 作为 convergence 的 `initial_value` 首样本，但不减少所需连续稳定观察数。
+**明确不复用**（跨 mutation 边界必须 live read）：`wait_for_created`/收敛轮询、写后 reconciliation（作为独立证据阶段）、Move 删源前 source drift、每次源拓扑 mutation 前的 fresh delete/promotion confirmation、删源后至少一次新的 live 稳定观察。reconciliation 成功后可将该 observation 作为 convergence 的 `initial_value` 首样本，但不减少所需连续稳定观察数。
 
-**本轮不含**：fast 验证模式（工作范围 F）与容器专属批量化（工作范围 D）；容器 Copy/Move 通过通用 `_build_plan` → `_execute_copy` 路径间接受益于 Page 与 hierarchy 优化。
+**本轮不含**：fast 验证模式（工作范围 F）与容器专属批量化（工作范围 D）；容器 Copy/Move 通过通用 `_build_plan` → `_execute_copy` 路径间接受益于 Page 与 hierarchy 优化。共享创建/删除重复 call 的去重见 [TODO 049](../todo/049_copy_move_backend_readback_call_deduplication.md)。
 
 ## 9. 验证边界
 

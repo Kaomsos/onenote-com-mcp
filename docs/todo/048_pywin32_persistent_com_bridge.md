@@ -1,7 +1,7 @@
 # 048：pywin32 进程内常驻 OneNote COM Bridge
 
 > ID：048
-> 状态：待办
+> 状态：阻塞
 > 优先级：P0
 > 类型：OneNote COM / Bridge Transport / 性能 / Mutation 安全
 > 更新日期：2026-08-19
@@ -13,6 +13,21 @@
 本项以 `pywin32` 的动态 IDispatch 客户端替代生产路径的 per-call PowerShell bridge：MCP Python 进程内只有一个专用 STA worker 线程拥有并在其生命周期内复用 `OneNote.Application`。所有 COM 调用仍先在该 worker 中串行执行；这是减少固定 transport 成本的 P0 性能与稳定性工作，不是把 OneNote COM 调用并行化的授权。
 
 现有 bridge 已表明 OneNote type library 在部分机器上可能未可靠注册。因此实现以动态 `win32com.client.Dispatch("OneNote.Application")` 为基线，不将 `makepy`、`EnsureDispatch` 或预生成的 typelib binding 作为运行前提。
+
+## 2026-08-19 阻塞证据：当前环境的 pywin32 名称解析不可用
+
+本项的首次实现已回滚。用户在 disposable 本地验证 run
+`run-2026-08-19-23-26-58` 和 `run-2026-08-19-23-27-14` 中稳定复现：
+
+- 两次都在 `create-source-notebook` 的第一个 lifecycle `get_hierarchy` 失败；尚未启动 scenario MCP、未创建 Notebook、未执行 mutation；
+- lifecycle bridge audit 将失败投影为 `OneNoteBridgeError`，其 leaf exception type 为 `AttributeError`；
+- 用户随后以相同 STA、只读 probe 分别测试 `win32com.client.Dispatch` 与 `win32com.client.dynamic.Dispatch`。两者均得到动态 `CDispatch`，且原始 `IDispatch.GetIDsOfNames(0, "GetHierarchy")` 均返回 `0x8002801D`（`TYPE_E_LIBNOTREGISTERED`）。
+
+因此失败发生在 pywin32 从固定方法名解析 DISP ID 的阶段，而不是 Notebook 路径、cache、worker 并发、BYREF out 参数、timeout 或业务 mutation。强制 `dynamic.Dispatch` 没有改变结果；`makepy`、`EnsureDispatch` 和预生成 binding 更依赖 type library，不能作为当前阻塞的规避方式。
+
+这只是当前 OneNote 安装/进程环境的兼容性结论，不宣称所有 OneNote 安装都不能使用 pywin32。现有 PowerShell transport 在该环境可用，故本项不能以“删除 PowerShell COM 路径且无 fallback”的形态继续推进。
+
+解除阻塞前必须先确定并由用户验证一个兼容策略：要么明确要求并可靠验证可用的 OneNote type library 注册条件，要么采用不依赖该名称解析路径且仍满足 23 个 operation、typed HRESULT、content-free audit、timeout 和不重放契约的 transport。不得仅凭 fake COM 测试恢复实施状态。
 
 ## 当前边界与缺口
 
