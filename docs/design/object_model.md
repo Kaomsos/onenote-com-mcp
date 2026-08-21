@@ -1,7 +1,7 @@
 # OneNote 对象模型
 
 > 状态：实现契约
-> 更新日期：2026-08-18
+> 更新日期：2026-08-20
 > 对应模型：`src/local_onenote_mcp/domain/`（由 `domain/__init__.py` 统一导出）
 > 唯一层级解析入口：`src/local_onenote_mcp/hierarchy.py`
 
@@ -107,7 +107,7 @@ OneNote“插入 → 录制音频”和“插入 → 录制视频”在当前实
 
 ## 4. 关系与树重建
 
-`path` 是面向显示和兼容只读发现的 friendly 字段，不是唯一键。Page title 可以原样包含 `/`、`\\`、`:`、`~`、`%`、重复空格和 Unicode；实现不得为了让 `path` 看似可拆分而使用 filesystem leaf 规则清洗 title。同一 Section 中多个 Page 可以拥有相同 title/path；mutation 目标必须使用 exact ID。`get_hierarchy_path.path_segments` 由 `ancestors + item` 直接投影，可按逐段 exact ID/name 无损消费，即使 legacy path 重复也能区分对象。
+`path` 是面向显示和兼容只读发现的 friendly 字段，不是唯一键。Page title 可以原样包含 `/`、`\\`、`:`、`~`、`%`、重复空格和 Unicode；实现不得为了让 `path` 看似可拆分而使用 filesystem leaf 规则清洗 title。同一 Section 中多个 Page 可以拥有相同 title/path；mutation 目标必须使用 exact ID。`copy_page` / `move_page` 遇到目标 Section 已有同标题一级 Page 时仍创建新 Page，不把同标题当作覆盖或路径冲突。`get_hierarchy_path.path_segments` 由 `ancestors + item` 直接投影，可按逐段 exact ID/name 无损消费，即使 legacy path 重复也能区分对象。
 
 Page 创建/Copy 回读首先要求 COM allocated ID 对应 active Page、exact Section ID 和 exact title。只有 allocated ID 不可见时，才允许在同一 exact Section 中按原始 title 找到本次新出现的唯一 fresh ID；旧对象、错误 parent/title、重复 fresh 候选或任何歧义都 fail closed。容器创建保留既有 exact-path 兼容回读，因为容器名称仍对应 filesystem-safe leaf。
 

@@ -244,6 +244,48 @@ def test_registered_named_case_round_trips_through_guarded_cli(
             "omitted",
             True,
         ]
+        assert [item["destination_title"] for item in cases] == [
+            "omitted",
+            "explicit",
+            "explicit-casefold",
+            "explicit",
+            "omitted",
+            "explicit-source-title",
+        ]
+        assert [item["collision_anchor_keys"] for item in cases] == [
+            ["parent_page", "semantic_page"],
+            ["parent_page", "semantic_page"],
+            [
+                "cross_section_anchor",
+                "cross_section_root_title_anchor",
+                "cross_section_root_title_casefold_anchor",
+            ],
+            [
+                "cross_section_anchor",
+                "cross_section_root_title_anchor",
+                "cross_section_root_title_casefold_anchor",
+            ],
+            ["cross_notebook_anchor", "cross_notebook_root_title_anchor"],
+            ["cross_notebook_anchor", "cross_notebook_root_title_anchor"],
+        ]
+    if case.scenario_name == "move-page":
+        cases = payload["scenario_spec"]["execution_contract"]["cases"]
+        assert [item["destination_title"] for item in cases] == [
+            "omitted",
+            "explicit-source-title",
+        ]
+        assert [item["collision_anchor_keys"] for item in cases] == [
+            [
+                "destination_root_title_anchor",
+                "destination_anchor_a",
+                "destination_anchor_b",
+            ],
+            [
+                "destination_subtree_title_anchor",
+                "destination_anchor_a",
+                "destination_anchor_b",
+            ],
+        ]
     assert not run_dir.exists()
 
 

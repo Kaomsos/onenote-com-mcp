@@ -132,9 +132,11 @@ def test_programmatic_display_equation_runs_three_verified_hops_and_restores(
                         },
                         "equivalence": {
                             "equivalent": True,
-                            "verification_tier": "semantic_display_equation",
-                            "display_equation_comparison": {"passed": True},
+                            "verification_tier": "visible_text_projection",
+                            "acceptance_checks": ["visible_text"],
+                            "checks": {"visible_text": True},
                         },
+                        "destination_title_update": {"operation": "rename_page"},
                     }
                 ],
             },

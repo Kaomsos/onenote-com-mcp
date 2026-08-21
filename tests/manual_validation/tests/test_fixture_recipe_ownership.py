@@ -13,6 +13,9 @@ import pytest
 from tests.manual_validation import test_utils
 from tests.manual_validation.runtime import InvariantFailure, RunnerFailure, RuntimeOptions
 from tests.manual_validation.scenarios.common.config import READ_TOOLS
+from tests.manual_validation.scenarios.common.fixture_builders import (
+    create_fresh_root_page_anchor,
+)
 from tests.manual_validation.scenarios.common.fixture_models import FixtureBuildResult, FixtureContext, FixtureRecorder
 from tests.manual_validation.scenarios.common.fixture_runtime import prepare_fixture
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
@@ -77,6 +80,7 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
     assert recipe.manifest_keys_for_role("destination") == {
         "cross_notebook_section",
         "cross_notebook_anchor",
+        "cross_notebook_root_title_anchor",
         "cross_notebook_position_anchor",
     }
     assert recipe.manifest_keys_for_role("source") == {
@@ -87,6 +91,8 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
         "semantic_page",
         "disposable_section",
         "cross_section_anchor",
+        "cross_section_root_title_anchor",
+        "cross_section_root_title_casefold_anchor",
         "cross_section_position_anchor",
     }
     assert (
@@ -94,6 +100,93 @@ def test_copy_page_recipe_partitions_one_manifest_across_two_notebook_roles() ->
         | recipe.manifest_keys_for_role("source")
         == recipe.manifest_keys
     )
+
+
+def test_fresh_root_page_anchor_creates_casefolded_titles_as_distinct_pages() -> None:
+    class Client:
+        def __init__(self) -> None:
+            self.pages: list[dict[str, str | None]] = []
+            self.create_titles: list[str] = []
+
+        async def call_tool(self, name, arguments):
+            if name == "expand_section":
+                return {
+                    "tree": {
+                        "item": {"id": arguments["section_id"], "resource_type": "section"},
+                        "children": [
+                            {"item": page, "children": []} for page in self.pages
+                        ],
+                    }
+                }
+            assert name == "create_page"
+            self.create_titles.append(arguments["title"])
+            page_id = f"page-{len(self.pages) + 1}"
+            page = {
+                "id": page_id,
+                "resource_type": "page",
+                "title": arguments["title"],
+                "section_id": arguments["section_id"],
+                "parent_page_id": None,
+            }
+            self.pages.append(page)
+            return {"allocated_id": page_id, "page": page}
+
+    client = Client()
+    first = asyncio.run(
+        create_fresh_root_page_anchor(client, "section", "Readback", "first")
+    )
+    second = asyncio.run(
+        create_fresh_root_page_anchor(
+            client,
+            "section",
+            "readback",
+            "second",
+            distinct_from_ids=(first["id"],),
+        )
+    )
+
+    assert client.create_titles == ["Readback", "readback"]
+    assert first["id"] != second["id"]
+    assert [page["id"] for page in client.pages] == [first["id"], second["id"]]
+
+
+def test_fresh_root_page_anchor_rejects_a_reused_id() -> None:
+    class Client:
+        async def call_tool(self, name, arguments):
+            if name == "expand_section":
+                return {
+                    "tree": {
+                        "item": {"id": "section", "resource_type": "section"},
+                        "children": [
+                            {
+                                "item": {
+                                    "id": "anchor",
+                                    "resource_type": "page",
+                                    "title": "Readback",
+                                    "section_id": "section",
+                                    "parent_page_id": None,
+                                },
+                                "children": [],
+                            }
+                        ],
+                    }
+                }
+            assert name == "create_page"
+            return {
+                "allocated_id": "anchor",
+                "page": {
+                    "id": "anchor",
+                    "resource_type": "page",
+                    "title": arguments["title"],
+                    "section_id": arguments["section_id"],
+                    "parent_page_id": None,
+                },
+            }
+
+    with pytest.raises(InvariantFailure, match="reused an existing or protected Page ID"):
+        asyncio.run(
+            create_fresh_root_page_anchor(Client(), "section", "readback", "second")
+        )
 
 
 @pytest.mark.parametrize(
@@ -211,6 +304,12 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
         calls.append("create_page")
         return item("page", section_id, title)
 
+    async def create_fresh_root_page_anchor(
+        _client, section_id, title, _content, **_kwargs
+    ):
+        calls.append("create_page")
+        return item("page", section_id, title)
+
     async def enforce(_client, section_id, _page_id, after_page_id, page_level):
         calls.append("reorder_page")
         page_position_requests.append((after_page_id, page_level))
@@ -273,6 +372,7 @@ def test_recording_fixture_build_never_exceeds_declared_tools(
             "ensure_group": ensure_group,
             "ensure_section": ensure_section,
             "ensure_page": ensure_page,
+            "create_fresh_root_page_anchor": create_fresh_root_page_anchor,
             "enforce_page_position": enforce,
             "ensure_copy_rich_fixture": rich,
             "ensure_reparent_page_rich_fixture": rich,

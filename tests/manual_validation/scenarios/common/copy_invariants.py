@@ -251,6 +251,39 @@ def assert_copy_mapping(
             raise InvariantFailure("Copied Page relative order differs from the source subtree.")
 
 
+def assert_page_copy_fresh_ids(before: dict[str, Any], copied: dict[str, Any]) -> None:
+    """Require Page Copy allocated and target IDs to be fresh versus the case-before tree."""
+
+    report = copied.get("copy_report")
+    if not isinstance(report, dict):
+        raise InvariantFailure("Page Copy response is missing copy_report.")
+    id_map = report.get("id_map")
+    allocated_ids = report.get("allocated_ids")
+    if not isinstance(id_map, dict) or not id_map:
+        raise InvariantFailure("Page Copy response does not contain a non-empty id_map.")
+    if not isinstance(allocated_ids, list) or not allocated_ids:
+        raise InvariantFailure("Page Copy response does not contain allocated_ids.")
+    if any(not isinstance(value, str) or not value for value in allocated_ids):
+        raise InvariantFailure("Page Copy allocated_ids must be non-empty strings.")
+    if len(allocated_ids) != len(id_map):
+        raise InvariantFailure("Page Copy allocated_ids count does not match id_map.")
+    copied_counts = report.get("copied_counts")
+    if isinstance(copied_counts, dict) and "resources" in copied_counts:
+        if len(allocated_ids) != int(copied_counts["resources"]):
+            raise InvariantFailure(
+                "Page Copy allocated_ids count does not match copied_counts.resources."
+            )
+    before_ids = {
+        str(item["id"])
+        for item in before.get("items", [])
+        if item.get("id") and item.get("is_in_recycle_bin") is not True
+    }
+    if set(id_map.values()) & before_ids:
+        raise InvariantFailure("Page Copy target IDs intersect active case-before IDs.")
+    if set(allocated_ids) & before_ids:
+        raise InvariantFailure("Page Copy allocated_ids intersect active case-before IDs.")
+
+
 def assert_copy_fixture_capabilities(
     planned: dict[str, Any],
     required_capabilities: set[str] | None = None,

@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from local_onenote_mcp.page.parser import local_name, parse_xml
 
 from ...runtime import InvariantFailure
+from ...test_utils import display_name
 from ..common.fixture_builders import enforce_page_position, ensure_page, ensure_section
 from ..common.fixture_models import (
     FixtureBuildResult,
@@ -31,7 +32,7 @@ from .recipe_base import (
 
 
 class MovePageFixtureRecipe(RecipeBase):
-    recipe_version = 7
+    recipe_version = 8
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "both Move targets belong only to the destination Notebook role",
@@ -49,6 +50,8 @@ class MovePageFixtureRecipe(RecipeBase):
         destination_keys = (
             "destination_section",
             "destination_anchor_a",
+            "destination_root_title_anchor",
+            "destination_subtree_title_anchor",
             "destination_anchor_b",
         )
         source_profile = replace(
@@ -66,7 +69,9 @@ class MovePageFixtureRecipe(RecipeBase):
         destination_profile = replace(
             profile,
             name="page-move-destination",
-            expected_structure=("Destination",),
+            expected_structure=(
+                "Destination/{00-Destination-Anchor-A,exact root title,03-Subtree,99-Destination-Anchor-B}",
+            ),
             manifest_keys=destination_keys,
             validation_conditions=(
                 "cross-Notebook destination is an active root Section",
@@ -103,6 +108,24 @@ class MovePageFixtureRecipe(RecipeBase):
                     destination["id"],
                     "00-Destination-Anchor-A",
                     f"Move destination anchor A: {context.token}",
+                ),
+            )
+            recorder.record_structure(
+                "destination_root_title_anchor",
+                await ensure_page(
+                    context.client,
+                    destination["id"],
+                    SPECIAL_PAGE_TITLE,
+                    f"Move destination root-title anchor: {context.token}",
+                ),
+            )
+            recorder.record_structure(
+                "destination_subtree_title_anchor",
+                await ensure_page(
+                    context.client,
+                    destination["id"],
+                    "03-Subtree",
+                    f"Move destination subtree-title anchor: {context.token}",
                 ),
             )
             recorder.record_structure(
@@ -163,23 +186,35 @@ class MovePageFixtureRecipe(RecipeBase):
         if set(build.structure) == {
             "destination_section",
             "destination_anchor_a",
+            "destination_root_title_anchor",
+            "destination_subtree_title_anchor",
             "destination_anchor_b",
         }:
             destination = resolved["destination_section"]
             anchors = [
                 resolved["destination_anchor_a"],
+                resolved["destination_root_title_anchor"],
+                resolved["destination_subtree_title_anchor"],
                 resolved["destination_anchor_b"],
             ]
+            expected_titles = {
+                resolved["destination_anchor_a"]["id"]: "00-Destination-Anchor-A",
+                resolved["destination_root_title_anchor"]["id"]: SPECIAL_PAGE_TITLE,
+                resolved["destination_subtree_title_anchor"]["id"]: "03-Subtree",
+                resolved["destination_anchor_b"]["id"]: "99-Destination-Anchor-B",
+            }
             checks.require(
                 destination.get("resource_type") == "section"
                 and all(
                     anchor.get("resource_type") == "page"
                     and anchor.get("section_id") == destination["id"]
+                    and anchor.get("parent_page_id") is None
+                    and display_name(anchor) == expected_titles[anchor["id"]]
                     for anchor in anchors
                 )
-                and len({anchor["id"] for anchor in anchors}) == 2,
+                and len({anchor["id"] for anchor in anchors}) == 4,
                 "Move destination is not an active Section.",
-                "destination role exposes one active root Section with two Page anchors",
+                "destination role exposes one active root Section with title and position anchors",
             )
             return tuple(checks.checks)
 
@@ -322,6 +357,8 @@ class MovePageFixtureRecipe(RecipeBase):
         destination_section = destination.build.structure["destination_section"]
         destination_anchors = [
             destination.build.structure["destination_anchor_a"],
+            destination.build.structure["destination_root_title_anchor"],
+            destination.build.structure["destination_subtree_title_anchor"],
             destination.build.structure["destination_anchor_b"],
         ]
         if str(source.notebook["id"]) == str(destination.notebook["id"]):
@@ -339,7 +376,7 @@ class MovePageFixtureRecipe(RecipeBase):
             bundle_checks=report.bundle_checks
             + (
                 "cross-Notebook destination is bound to the destination role",
-                "destination contains two distinct Page anchors",
+                "destination contains distinct title and position Page anchors",
             ),
         )
 

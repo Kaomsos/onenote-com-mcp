@@ -2772,3 +2772,87 @@ def page_equivalence(
     elif verification_tier == SEMANTIC_CONTENT_VERIFICATION:
         result["semantic_content_comparison"] = semantic_content
     return result
+
+
+def _visible_text_in_title_region(xml: str, *, inside_title: bool) -> str:
+    """Return visible text from one Page Title region without XML comparison."""
+
+    root = parse_xml(xml)
+    texts: list[str] = []
+
+    def collect(node: ET.Element, *, in_title: bool = False) -> None:
+        node_is_in_title = in_title or local_name(node.tag) == "Title"
+        if (
+            local_name(node.tag) == "T"
+            and node.text
+            and node_is_in_title == inside_title
+        ):
+            texts.append(html_fragment_to_text(node.text))
+        for child in list(node):
+            collect(child, in_title=node_is_in_title)
+
+    collect(root)
+    return "\n\n".join(text for text in texts if text).strip()
+
+
+def page_visible_text_equivalence(expected_xml: str, actual_xml: str) -> dict[str, Any]:
+    """Compare only the visible Page text after a destination-title rewrite.
+
+    A Copy whose root title is subsequently updated through ``rename_page`` has
+    no full XML/content-object equivalence contract. This intentionally accepts
+    only the text projection required for that narrowed path.
+    """
+
+    visible_text = text_from_page_xml(expected_xml) == text_from_page_xml(actual_xml)
+    expected_title = _visible_text_in_title_region(expected_xml, inside_title=True)
+    actual_title = _visible_text_in_title_region(actual_xml, inside_title=True)
+    failures: list[dict[str, Any]] = []
+
+    if not visible_text:
+        if expected_title != actual_title:
+            failures.append(
+                {
+                    "code": "page_title_mismatch",
+                    "content_object_type": "PageTitle",
+                    "path": "$.title",
+                    "content_exposed": False,
+                }
+            )
+        if _visible_text_in_title_region(
+            expected_xml, inside_title=False
+        ) != _visible_text_in_title_region(actual_xml, inside_title=False):
+            failures.append(
+                {
+                    "code": "rich_text_visible_text_mismatch",
+                    "content_object_type": "RichText",
+                    "path": "$.visible_text",
+                    "content_exposed": False,
+                }
+            )
+        if not failures:
+            failures.append(
+                {
+                    "code": "rich_text_visible_text_mismatch",
+                    "content_object_type": "RichText",
+                    "path": "$.visible_text",
+                    "content_exposed": False,
+                }
+            )
+
+    failed_types = sorted(
+        {str(failure["content_object_type"]) for failure in failures}
+    )
+    return {
+        "equivalent": visible_text,
+        "verification_tier": "visible_text_projection",
+        "acceptance_checks": ["visible_text"],
+        "checks": {"visible_text": visible_text},
+        "failed_content_object_types": failed_types,
+        "content_object_failures": failures,
+        "content_object_failure_summary": {
+            "limit": CONTENT_OBJECT_FAILURE_LIMIT,
+            "reported": len(failures),
+            "truncated": False,
+            "total": len(failures),
+        },
+    }

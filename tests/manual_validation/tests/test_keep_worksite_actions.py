@@ -18,6 +18,7 @@ from tests.manual_validation.scenarios.reorder_page import ReorderPageScenario
 from tests.manual_validation.scenarios.common.destination_position import (
     expected_destination_position,
 )
+from tests.manual_validation.scenarios.common.page_readback import SPECIAL_PAGE_TITLE
 
 
 class FakeClient:
@@ -905,6 +906,35 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         "name": "Destination",
         "parent_id": "destination-notebook",
     }
+    destination_anchor_a = {
+        "resource_type": "page",
+        "id": "destination-anchor-a",
+        "title": "00-Destination-Anchor-A",
+        "section_id": "destination-section",
+        "parent_id": "destination-section",
+        "parent_page_id": None,
+        "page_level": 1,
+        "order": 0,
+        "modified": "before",
+    }
+    destination_root_title_anchor = {
+        **destination_anchor_a,
+        "id": "destination-root-title",
+        "title": SPECIAL_PAGE_TITLE,
+        "order": 1,
+    }
+    destination_subtree_title_anchor = {
+        **destination_anchor_a,
+        "id": "destination-subtree-title",
+        "title": "03-Subtree",
+        "order": 2,
+    }
+    destination_anchor_b = {
+        **destination_anchor_a,
+        "id": "destination-anchor-b",
+        "title": "99-Destination-Anchor-B",
+        "order": 3,
+    }
     root_only = {
         "resource_type": "page",
         "id": "root-only",
@@ -941,12 +971,23 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
     }
     state = {
         "source": [source_notebook, source_section, root_only, root_child, subtree, subtree_child],
-        "destination": [destination_notebook, destination],
+        "destination": [
+            destination_notebook,
+            destination,
+            destination_anchor_a,
+            destination_root_title_anchor,
+            destination_subtree_title_anchor,
+            destination_anchor_b,
+        ],
         "hashes": {
             "root-only": "root-hash",
             "root-child": "root-child-hash",
             "subtree": "subtree-hash",
             "subtree-child": "subtree-child-hash",
+            "destination-anchor-a": "destination-anchor-a-hash",
+            "destination-root-title": "destination-root-title-hash",
+            "destination-subtree-title": "destination-subtree-title-hash",
+            "destination-anchor-b": "destination-anchor-b-hash",
         },
     }
 
@@ -1013,6 +1054,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                     "lossless": True,
                     "copy_contract_satisfied": True,
                     "id_map": dict(zip(source_ids, target_ids)),
+                    "allocated_ids": list(target_ids),
                     "page_results": [
                         {
                             "source_page_id": source_id,
@@ -1095,11 +1137,14 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
             "subtree_page": subtree,
             "subtree_child": subtree_child,
             "destination_section": destination,
+            "destination_anchor_a": destination_anchor_a,
+            "destination_root_title_anchor": destination_root_title_anchor,
+            "destination_subtree_title_anchor": destination_subtree_title_anchor,
+            "destination_anchor_b": destination_anchor_b,
         },
     }
     client = FakeMovePageClient()
     monkeypatch.setattr(move_page_scenario, "capture_snapshot", fake_snapshot)
-    monkeypatch.setattr(move_page_scenario, "run_safe_timestamp", lambda _args: "stamp")
     monkeypatch.setattr(move_page_scenario, "render_report", lambda _run_dir: None)
 
     result = asyncio.run(
@@ -1115,7 +1160,7 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
     assert client.calls == ["move_page", "move_page"]
     assert "destination_title" not in client.arguments[0]
     assert client.arguments[0]["expected_title"] == root_only["title"]
-    assert client.arguments[1]["destination_title"].startswith("02-Moved-Subtree-")
+    assert client.arguments[1]["destination_title"] == "03-Subtree"
     assert result["status"] == "passed"
     assert result["source_deleted_nonpermanently"] is True
     assert [case["effective_include_descendants"] for case in result["case_results"]] == [

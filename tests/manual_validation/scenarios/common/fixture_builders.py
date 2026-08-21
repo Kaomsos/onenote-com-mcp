@@ -6,7 +6,7 @@ import base64
 import binascii
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 import xml.etree.ElementTree as ET
 
 from local_onenote_mcp.page import page_content_capability_projection, text_from_page_xml
@@ -280,6 +280,62 @@ async def ensure_page(
             },
         )
     )["page"]
+
+
+async def create_fresh_root_page_anchor(
+    client: MCPStdioClient,
+    section_id: str,
+    title: str,
+    content: str,
+    *,
+    content_format: str = "plain",
+    distinct_from_ids: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Create one first-level Page anchor without case-insensitive fixture reuse.
+
+    Ordinary fixture pages use :func:`ensure_page`, which deliberately treats
+    case-folded names as one idempotent fixture identity. A collision fixture
+    instead needs two independently allocated Pages whose titles differ only by
+    case, so it must use the public Create path and prove a fresh returned ID.
+    """
+
+    expanded = await client.call_tool("expand_section", {"section_id": section_id})
+    before_ids = {
+        str(item["id"])
+        for item in _tree_items(expanded, "page")
+        if isinstance(item.get("id"), str) and item["id"]
+    }
+    protected_ids = {str(value) for value in distinct_from_ids if str(value)}
+    result = await client.call_tool(
+        "create_page",
+        {
+            "section_id": section_id,
+            "title": title,
+            "content": content,
+            "content_format": content_format,
+            "new_page_style": "blank_with_title",
+        },
+    )
+    page = result.get("page") if isinstance(result, dict) else None
+    allocated_id = str(result.get("allocated_id", "")) if isinstance(result, dict) else ""
+    page_id = str(page.get("id", "")) if isinstance(page, dict) else ""
+    if (
+        not allocated_id
+        or not page_id
+        or not isinstance(page, dict)
+        or page.get("resource_type") != "page"
+        or page.get("section_id") != section_id
+        or page.get("parent_page_id") is not None
+        or display_name(page) != title
+    ):
+        raise InvariantFailure(
+            "Fresh root Page anchor creation did not return the requested typed Page."
+        )
+    if page_id in before_ids or page_id in protected_ids:
+        raise InvariantFailure(
+            "Fresh root Page anchor creation reused an existing or protected Page ID."
+        )
+    return page
 
 
 async def ensure_group_with_query(

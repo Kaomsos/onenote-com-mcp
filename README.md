@@ -10,7 +10,7 @@ Your notes never leave your machine.
 
 - **53 typed tools** covering hierarchy browsing, metadata queries, full-text search, page content reading, creation, rename, reorder, reparent, page content mutation, recoverable delete, copy, reconstructive move, PDF export, UI navigation, and notebook lifecycle.
 - **Fail-closed by default.** All seven mutation authorization gates ship disabled; a read-only configuration cannot create, modify, or delete anything.
-- **Exact-ID mutations.** Write operations target exact OneNote object IDs with optimistic confirmation fields — never fuzzy name matching.
+- **Exact-ID mutations.** Write operations target exact OneNote object IDs with optimistic confirmation fields — never fuzzy name matching. Page copy/move still create a fresh page when the destination section already has a same-title first-level page.
 - **Non-permanent deletes only.** Public delete tools move objects to the OneNote recycle bin; permanent-delete tools are not published.
 - **Bounded work.** Search, copy, and batch mutations run against explicit budgets; exhaustion is an explicit failure, not silent unbounded work.
 - **Content-free audit.** Logs record operation names and timing, never notebook content, payloads, or raw tool arguments.

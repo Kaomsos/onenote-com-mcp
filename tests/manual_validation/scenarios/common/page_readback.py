@@ -8,6 +8,7 @@ from ...runtime import InvariantFailure
 
 
 SPECIAL_PAGE_TITLE = "01-Readback / Page\\:  %~界"
+SPECIAL_PAGE_TITLE_CASEFOLD = "01-readback / page\\:  %~界"
 THREE_COLUMN_TABLE_HTML = (
     "<p><strong>Automatic Page readback fixture</strong> "
     "<em>rich text</em> "
@@ -171,6 +172,7 @@ def assert_semantic_content_page_readback(
 
 __all__ = [
     "SPECIAL_PAGE_TITLE",
+    "SPECIAL_PAGE_TITLE_CASEFOLD",
     "THREE_COLUMN_TABLE_HTML",
     "PURE_RICH_TEXT_HTML",
     "assert_default_page_title_readback",

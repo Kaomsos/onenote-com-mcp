@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..hierarchy import parse_hierarchy
-from ..page import page_equivalence, title_from_page_xml
+from ..page import page_equivalence, page_visible_text_equivalence, title_from_page_xml
 from .backend_operation_classification import current_mutation_epoch
 from .hierarchy import HierarchyService, HierarchySnapshot
 from .pages import PageService, stable_page_content_digest
@@ -64,6 +64,12 @@ class PageContentDerivation:
             self.xml,
             verification_tier=verification_tier,
         )
+
+    def visible_text_equivalence_against(
+        self,
+        expected_xml: str,
+    ) -> dict[str, Any]:
+        return page_visible_text_equivalence(expected_xml, self.xml)
 
 
 class CopyReadCache:

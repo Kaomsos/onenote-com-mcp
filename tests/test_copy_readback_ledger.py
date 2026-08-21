@@ -84,6 +84,7 @@ _COPY_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
     ("get_hierarchy", "source_confirmation"): 1,
     ("get_hierarchy", "topology_verification"): 2,
     ("get_page_content", "plan_capture"): 1,
+    ("get_page_content", "post_write_convergence"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
     ("get_page_content", "pre_write_target_observation"): 1,
 }
@@ -94,11 +95,16 @@ _MOVE_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
     ("get_hierarchy", "source_drift_revalidation"): 1,
     ("get_hierarchy", "topology_verification"): 2,
     ("get_page_content", "plan_capture"): 1,
+    ("get_page_content", "post_write_convergence"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
     ("get_page_content", "pre_write_target_observation"): 1,
     ("get_page_content", "source_drift_revalidation"): 1,
 }
-_CONTAINER_COPY_BUDGET: dict[tuple[str, str | None], int] = dict(_COPY_PAGE_BUDGET)
+_CONTAINER_COPY_BUDGET: dict[tuple[str, str | None], int] = {
+    key: value
+    for key, value in _COPY_PAGE_BUDGET.items()
+    if key != ("get_page_content", "post_write_convergence")
+}
 _MOVE_CONTAINER_BUDGET: dict[tuple[str, str | None], int] = {
     ("get_hierarchy", "delete_confirmation"): 1,
     ("get_hierarchy", "delete_convergence"): 1,
@@ -547,7 +553,30 @@ def _scripted_bridge(state: list[dict[str, Any]], xml_store: dict[str, str]):
             title = title_from_page_xml(params["xml"]) or root.attrib.get("name") or next(
                 item.get("title", "") for item in state if item["id"] == page_id
             )
-            xml_store[page_id] = params["xml"]
+            update_children = list(root)
+            title_only_update = bool(update_children) and all(
+                child.tag.rsplit("}", 1)[-1] == "Title"
+                for child in update_children
+            )
+            if title_only_update:
+                existing = ET.fromstring(xml_store[page_id])
+                old_title = next(
+                    (
+                        child
+                        for child in list(existing)
+                        if child.tag.rsplit("}", 1)[-1] == "Title"
+                    ),
+                    None,
+                )
+                new_title = next(child for child in update_children if child.tag.rsplit("}", 1)[-1] == "Title")
+                if old_title is None:
+                    existing.insert(0, new_title)
+                else:
+                    existing.insert(list(existing).index(old_title), new_title)
+                    existing.remove(old_title)
+                xml_store[page_id] = ET.tostring(existing, encoding="unicode")
+            else:
+                xml_store[page_id] = params["xml"]
             for item in state:
                 if item["id"] == page_id:
                     item["title"] = title

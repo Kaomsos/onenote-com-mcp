@@ -8,6 +8,7 @@ from ...runtime import InvariantFailure
 from ...test_utils import display_name
 from ..common.fixture_builders import (
     capture_page_image_binary_evidence,
+    create_fresh_root_page_anchor,
     ensure_page,
     ensure_section,
 )
@@ -17,7 +18,7 @@ from ..common.fixture_models import (
     FixtureValidationContext,
     resolve_active_structure,
 )
-from ..common.page_readback import SPECIAL_PAGE_TITLE
+from ..common.page_readback import SPECIAL_PAGE_TITLE, SPECIAL_PAGE_TITLE_CASEFOLD
 from ..common.specs import get_scenario_spec
 from .layered_copy import LayeredCopyFixtureRecipe, LayeredFixtureConfig, LayeredFixtureKind
 from .recipe_base import (
@@ -36,15 +37,17 @@ DESCRIPTION = f"""Copy Page 人工验收说明
 原始状态：
 Source/{SPECIAL_PAGE_TITLE}：page_level=1，包含 Rich Text、行内公式、单行公式、Table 和 Image
   Source/02-Source-Child：page_level=2，缩进在 Parent 下，包含 List 和 Tag
-Source-Destination/02-Source-Child：同标题、不同正文的跨 Section anchor
-Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、不同正文的跨 Notebook anchor
+Source-Destination 另有与源根同标题、仅大小写不同的一级 Page，以及 02-Source-Child 跨 Section child-title anchor
+Destination Notebook/Cross-Notebook-Destination 另有与源根同标题的一级 Page 和 02-Source-Child child-title anchor
 
 每个目标范围的“不带子树” case 使用 include_subpages=false，只复制 Parent。
 每个目标范围的“带子树” case 使用 include_subpages=true，复制 Parent 与 Child。
 
-前四个目标与第六个目标使用 01/02-Same-Section、03/04-Cross-Section、
-06-Cross-Notebook 前缀；第 5 个 cross-Notebook root-only case 省略 destination_title，
+same-section root-only 与 cross-Notebook root-only 省略 destination_title，
 目标标题必须精确保留 source 的特殊字符标题；
+cross-section root-only 使用源标题的 casefold 作为显式 destination_title；
+cross-Notebook subtree 使用源标题作为显式 destination_title；
+其余 explicit 目标仍使用 02/04 唯一前缀；
 带子树目标中的 Child 必须是 fresh ID 并保持相对层级，不能复用源 Child 或同名 anchor；
 全部 case 后 Source 与两个 anchors 的 ID、顺序、层级和内容不变。
 
@@ -53,7 +56,7 @@ Destination Notebook/Cross-Notebook-Destination/02-Source-Child：同标题、�
 """
 
 class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
-    recipe_version = 14
+    recipe_version = 16
     bundle_invariants = (
         "source and destination Notebook IDs and resolved paths are unique",
         "the cross-Notebook destination Section belongs only to destination",
@@ -69,11 +72,14 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             "semantic_page",
             "disposable_section",
             "cross_section_anchor",
+            "cross_section_root_title_anchor",
+            "cross_section_root_title_casefold_anchor",
             "cross_section_position_anchor",
         )
         destination_keys = (
             "cross_notebook_section",
             "cross_notebook_anchor",
+            "cross_notebook_root_title_anchor",
             "cross_notebook_position_anchor",
         )
         profile = get_scenario_spec("copy-page").fixture
@@ -88,7 +94,7 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             profile,
             name="copy-page-destination",
             expected_structure=(
-                "Cross-Notebook-Destination/02-Source-Child[duplicate-title anchor]",
+                "Cross-Notebook-Destination/{exact root title, 02-Source-Child, 99-Position-Anchor}",
             ),
             content_capabilities=("plain_text",),
             manifest_keys=destination_keys,
@@ -128,6 +134,15 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
                     context.client,
                     context.notebook_id,
                     "Cross-Notebook-Destination",
+                ),
+            )
+            context.recorder.record_structure(
+                "cross_notebook_root_title_anchor",
+                await ensure_page(
+                    context.client,
+                    destination["id"],
+                    SPECIAL_PAGE_TITLE,
+                    f"Cross-Notebook root-title anchor token: {context.token}",
                 ),
             )
             context.recorder.record_structure(
@@ -193,6 +208,25 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             ),
         )
         disposable_section = build.structure["disposable_section"]
+        root_title_anchor = r.record_structure(
+            "cross_section_root_title_anchor",
+            await create_fresh_root_page_anchor(
+                context.client,
+                str(disposable_section["id"]),
+                SPECIAL_PAGE_TITLE,
+                f"Cross-Section root-title anchor token: {context.token}",
+            ),
+        )
+        r.record_structure(
+            "cross_section_root_title_casefold_anchor",
+            await create_fresh_root_page_anchor(
+                context.client,
+                str(disposable_section["id"]),
+                SPECIAL_PAGE_TITLE_CASEFOLD,
+                f"Cross-Section casefold root-title anchor token: {context.token}",
+                distinct_from_ids=(str(root_title_anchor["id"]),),
+            ),
+        )
         r.record_structure(
             "cross_section_anchor",
             await ensure_page(
@@ -221,6 +255,7 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
         if set(build.structure) == {
             "cross_notebook_section",
             "cross_notebook_anchor",
+            "cross_notebook_root_title_anchor",
             "cross_notebook_position_anchor",
         }:
             resolved, _by_id, state = resolve_active_structure(
@@ -232,11 +267,21 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
                 "Cross-Notebook destination is not an active Section.",
                 "destination role exposes one active cross-Notebook Section",
             )
+            root_title = resolved["cross_notebook_root_title_anchor"]
+            state.require(
+                root_title.get("resource_type") == "page"
+                and root_title.get("section_id") == destination["id"]
+                and display_name(root_title) == SPECIAL_PAGE_TITLE
+                and root_title.get("parent_page_id") is None,
+                "Cross-Notebook root-title anchor is missing or misplaced.",
+                "cross-Notebook destination contains a first-level exact root-title anchor",
+            )
             anchor = resolved["cross_notebook_anchor"]
             state.require(
                 anchor.get("resource_type") == "page"
                 and anchor.get("section_id") == destination["id"]
-                and display_name(anchor) == "02-Source-Child",
+                and display_name(anchor) == "02-Source-Child"
+                and anchor["id"] != root_title["id"],
                 "Cross-Notebook duplicate-title anchor is missing or misplaced.",
                 "cross-Notebook duplicate-title anchor belongs to its destination Section",
             )
@@ -244,9 +289,10 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             state.require(
                 position_anchor.get("resource_type") == "page"
                 and position_anchor.get("section_id") == destination["id"]
-                and position_anchor["id"] != anchor["id"],
+                and position_anchor["id"] != anchor["id"]
+                and position_anchor["id"] != root_title["id"],
                 "Cross-Notebook position anchor is missing or misplaced.",
-                "cross-Notebook destination contains two distinct Page anchors",
+                "cross-Notebook destination contains distinct Page anchors",
             )
             return tuple(state.checks)
         checks = list(super().validate(context, build))
@@ -299,35 +345,60 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             "Description Page states the three destination scopes, two subtree modes, and cleanup state"
         )
         anchor = resolved["cross_section_anchor"]
+        root_title = resolved["cross_section_root_title_anchor"]
+        casefold_title = resolved["cross_section_root_title_casefold_anchor"]
         position_anchor = resolved["cross_section_position_anchor"]
         semantic = resolved["semantic_page"]
+        parent = resolved["parent_page"]
+        disposable_id = resolved["disposable_section"]["id"]
         state.require(
             anchor.get("resource_type") == "page"
-            and anchor.get("section_id") == resolved["disposable_section"]["id"]
+            and anchor.get("section_id") == disposable_id
             and display_name(anchor) == display_name(semantic)
             and anchor["id"] != semantic["id"],
             "Cross-Section duplicate-title anchor is missing, misplaced, or aliases the source Child.",
             "cross-Section destination contains a distinct same-title anchor",
         )
         state.require(
+            root_title.get("resource_type") == "page"
+            and casefold_title.get("resource_type") == "page"
+            and root_title.get("section_id") == disposable_id
+            and casefold_title.get("section_id") == disposable_id
+            and display_name(root_title) == SPECIAL_PAGE_TITLE
+            and display_name(casefold_title) == SPECIAL_PAGE_TITLE_CASEFOLD
+            and root_title.get("parent_page_id") is None
+            and casefold_title.get("parent_page_id") is None
+            and root_title["id"] != parent["id"]
+            and casefold_title["id"] != parent["id"]
+            and root_title["id"] != casefold_title["id"],
+            "Cross-Section root-title anchors are missing, nested, or alias the source root.",
+            "cross-Section destination contains distinct first-level root-title anchors",
+        )
+        state.require(
             position_anchor.get("resource_type") == "page"
-            and position_anchor.get("section_id") == resolved["disposable_section"]["id"]
-            and position_anchor["id"] != anchor["id"],
+            and position_anchor.get("section_id") == disposable_id
+            and position_anchor["id"] != anchor["id"]
+            and position_anchor["id"] != root_title["id"],
             "Cross-Section position anchor is missing or misplaced.",
-            "cross-Section destination contains two distinct Page anchors",
+            "cross-Section destination contains distinct Page anchors",
         )
         hashes = context.snapshot.get("page_hashes", {})
         state.require(
             isinstance(hashes, dict)
             and hashes.get(anchor["id"])
-            and hashes.get(anchor["id"]) != hashes.get(semantic["id"]),
-            "Cross-Section duplicate-title anchor body is not independently observable.",
-            "cross-Section anchor body hash differs from the same-title source Child",
+            and hashes.get(anchor["id"]) != hashes.get(semantic["id"])
+            and hashes.get(root_title["id"])
+            and hashes.get(casefold_title["id"])
+            and hashes.get(root_title["id"]) != hashes.get(parent["id"])
+            and hashes.get(casefold_title["id"]) != hashes.get(parent["id"]),
+            "Cross-Section title anchors are not independently observable.",
+            "cross-Section anchor body hashes differ from the same-title source Pages",
         )
         checks.extend(
             (
                 "cross-Section destination contains a distinct same-title anchor",
-                "cross-Section anchor body hash differs from the same-title source Child",
+                "cross-Section destination contains distinct first-level root-title anchors",
+                "cross-Section anchor body hashes differ from the same-title source Pages",
             )
         )
         return tuple(checks)
@@ -341,6 +412,9 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
         destination = observation.roles["destination"]
         destination_section = destination.build.structure["cross_notebook_section"]
         destination_anchor = destination.build.structure["cross_notebook_anchor"]
+        destination_root_title = destination.build.structure[
+            "cross_notebook_root_title_anchor"
+        ]
         if str(destination_section.get("parent_id", "")) != str(
             destination.notebook["id"]
         ) or str(destination_section.get("notebook_id", "")) not in {
@@ -358,10 +432,23 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             raise InvariantFailure(
                 "Cross-Notebook duplicate-title anchor escaped its destination Section."
             )
+        if (
+            str(destination_root_title.get("section_id", ""))
+            != str(destination_section["id"])
+            or display_name(dict(destination_root_title)) != SPECIAL_PAGE_TITLE
+            or destination_root_title.get("parent_page_id") is not None
+            or str(destination_root_title.get("id", ""))
+            == str(source.build.structure["parent_page"]["id"])
+        ):
+            raise InvariantFailure(
+                "Cross-Notebook root-title anchor escaped its destination Section."
+            )
         source_hashes = source.snapshot.get("page_hashes", {})
         destination_hashes = destination.snapshot.get("page_hashes", {})
         source_child_id = str(source.build.structure["semantic_page"]["id"])
+        source_parent_id = str(source.build.structure["parent_page"]["id"])
         destination_anchor_id = str(destination_anchor["id"])
+        destination_root_id = str(destination_root_title["id"])
         if (
             not isinstance(source_hashes, dict)
             or not isinstance(destination_hashes, dict)
@@ -369,9 +456,13 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             or not destination_hashes.get(destination_anchor_id)
             or source_hashes[source_child_id]
             == destination_hashes[destination_anchor_id]
+            or not source_hashes.get(source_parent_id)
+            or not destination_hashes.get(destination_root_id)
+            or source_hashes[source_parent_id]
+            == destination_hashes[destination_root_id]
         ):
             raise InvariantFailure(
-                "Cross-Notebook same-title anchor body is not distinct from the source Child."
+                "Cross-Notebook same-title anchors are not distinct from the source Pages."
             )
         if str(source.notebook["id"]) == str(destination.notebook["id"]):
             raise InvariantFailure("Copy Page bundle roles resolved to the same Notebook ID.")
@@ -382,7 +473,8 @@ class CopyPageFixtureRecipe(LayeredCopyFixtureRecipe):
             + (
                 "cross-Notebook destination is bound to the destination role",
                 "cross-Notebook duplicate-title anchor is bound to that destination",
-                "cross-Notebook anchor body hash differs from the same-title source Child",
+                "cross-Notebook root-title anchor is bound to that destination",
+                "cross-Notebook anchor body hashes differ from the same-title source Pages",
             ),
         )
 

@@ -921,6 +921,32 @@ def install_recursive_execute_fakes(
             return {"updated": True}
         raise AssertionError(operation)
 
+    def update_page_title(
+        page_id,
+        title,
+        expected_title,
+        expected_section_id,
+        expected_modified=None,
+    ):
+        item = parent_item(page_id)
+        assert item["title"] == expected_title
+        assert item["section_id"] == expected_section_id
+        assert expected_modified is None
+        item["title"] = title
+        item["path"] = f"{parent_item(expected_section_id)['path']}/{title}"
+        root = ET.fromstring(xml_store[page_id])
+        title_text = next(
+            node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "T"
+        )
+        title_text.text = title
+        xml_store[page_id] = ET.tostring(root, encoding="unicode")
+        advance_fake_mutation_epoch()
+        return {
+            "item": item,
+            "convergence": {"state": "converged"},
+            "reconciliation": {"state": "applied"},
+        }
+
     monkeypatch.setattr(
         server.services.hierarchy,
         "hierarchy_xml",
@@ -931,6 +957,7 @@ def install_recursive_execute_fakes(
     monkeypatch.setattr(server.services.mutations, "create_section_group", create_group)
     monkeypatch.setattr(server.services.mutations, "create_section", create_section)
     monkeypatch.setattr(server.services.mutations, "create_page", create_page)
+    monkeypatch.setattr(server.services.mutations, "update_page_title", update_page_title)
     monkeypatch.setattr(server.services.copying, "call", call)
     return state
 
@@ -2127,10 +2154,200 @@ def test_inspect_copy_plan_explicitly_includes_complete_page_subtree_and_changes
 def test_inspect_copy_plan_rejects_case_insensitive_direct_name_conflict(monkeypatch):
     install_plan_fakes(monkeypatch)
 
-    result = asyncio.run(_inspect_copy_plan("parent", "source-section", "parent"))
+    section = asyncio.run(_inspect_copy_plan("source-section", "n", "Destination"))
+    folded = asyncio.run(_inspect_copy_plan("source-section", "n", "destination"))
 
-    assert result["ok"] is False
-    assert "never overwrites" in result["error"]
+    assert section["ok"] is False
+    assert folded["ok"] is False
+    assert "never overwrites" in section["error"]
+    assert "never overwrites" in folded["error"]
+
+    install_recursive_execute_fakes(monkeypatch)
+    group = asyncio.run(_inspect_copy_plan("inner-group", "source-group", "Inner Group"))
+
+    assert group["ok"] is False
+    assert "never overwrites" in group["error"]
+
+
+def _destination_root_page(page_id: str, title: str, section_id: str, order: int) -> dict[str, Any]:
+    return {
+        "resource_type": "page",
+        "id": page_id,
+        "title": title,
+        "path": f"Notebook/Destination/{title}",
+        "parent_id": section_id,
+        "notebook_id": "n",
+        "section_id": section_id,
+        "parent_page_id": None,
+        "page_level": 1,
+        "order": order,
+    }
+
+
+@pytest.mark.parametrize("destination_title", ["", "parent", "PARENT"])
+def test_inspect_copy_plan_allows_duplicate_page_titles(monkeypatch, destination_title):
+    state = install_plan_fakes(monkeypatch)
+    state["items"].extend(
+        [
+            _destination_root_page("dest-exact", "Parent", "destination-section", 0),
+            _destination_root_page("dest-casefold", "parent", "destination-section", 1),
+        ]
+    )
+
+    result = asyncio.run(
+        _inspect_copy_plan("parent", "destination-section", destination_title)
+    )
+
+    assert result["ok"] is True
+    child_ids = [item["id"] for item in result["destination"]["existing_children"]]
+    assert "dest-exact" in child_ids
+    assert "dest-casefold" in child_ids
+
+
+def test_inspect_copy_plan_same_section_omitted_title_keeps_source_as_diagnostic_child(
+    monkeypatch,
+):
+    install_plan_fakes(monkeypatch)
+
+    result = asyncio.run(_inspect_copy_plan("parent", "source-section"))
+
+    assert result["ok"] is True
+    child_ids = [item["id"] for item in result["destination"]["existing_children"]]
+    assert child_ids == ["parent", "sibling"]
+
+
+def _install_tracked_page_copy_execute(monkeypatch, *, extra_items: list[dict[str, Any]] | None = None):
+    state = install_plan_fakes(monkeypatch, body="Body")
+    if extra_items:
+        state["items"].extend(extra_items)
+    xml_store = {
+        item["id"]: page_xml(item["id"], item.get("title") or item.get("name", ""), "Body")
+        for item in state["items"]
+        if item["resource_type"] == "page"
+    }
+    created: list[dict[str, Any]] = []
+    preflights: list[Any] = []
+
+    def create_page(section_id, title, *args, preflight=None, **kwargs):
+        preflights.append(preflight)
+        page_id = f"new-{len(created) + 1}"
+        item = {
+            "resource_type": "page",
+            "id": page_id,
+            "title": title,
+            "path": f"Notebook/Destination/{title}",
+            "parent_id": section_id,
+            "notebook_id": "n",
+            "section_id": section_id,
+            "parent_page_id": None,
+            "page_level": 1,
+            "order": len(
+                [entry for entry in state["items"] if entry.get("section_id") == section_id]
+            ),
+            "modified": "new",
+        }
+        state["items"].append(item)
+        created.append(item)
+        xml_store[page_id] = page_xml(page_id, title, "Body")
+        advance_fake_mutation_epoch()
+        return {"page": item, "allocated_id": page_id}
+
+    monkeypatch.setattr(
+        server.services.hierarchy,
+        "resources",
+        lambda include_recycle_bin=False: [
+            item
+            for item in state["items"]
+            if include_recycle_bin or item.get("is_in_recycle_bin") is not True
+        ],
+    )
+
+    def fake_call(operation, **params):
+        if operation == "update_page_content":
+            root = ET.fromstring(params["xml"])
+            xml_store[root.attrib["ID"]] = params["xml"]
+            return {"updated": True}
+        if operation == "update_hierarchy":
+            root = ET.fromstring(params["xml"])
+            pages = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Page"]
+            for order, node in enumerate(pages):
+                item = next(value for value in state["items"] if value["id"] == node.attrib["ID"])
+                item["order"] = order
+                item["page_level"] = int(node.attrib["pageLevel"])
+            advance_fake_mutation_epoch()
+            return {"updated": True}
+        raise AssertionError(operation)
+
+    def update_page_title(
+        page_id,
+        title,
+        expected_title,
+        expected_section_id,
+        expected_modified=None,
+    ):
+        item = next(value for value in state["items"] if value["id"] == page_id)
+        assert item["title"] == expected_title
+        assert item["section_id"] == expected_section_id
+        assert expected_modified is None
+        item["title"] = title
+        item["path"] = f"Notebook/Destination/{title}"
+        root = ET.fromstring(xml_store[page_id])
+        next(node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "T").text = title
+        xml_store[page_id] = ET.tostring(root, encoding="unicode")
+        advance_fake_mutation_epoch()
+        return {
+            "item": item,
+            "convergence": {"state": "converged"},
+            "reconciliation": {"state": "applied"},
+        }
+
+    monkeypatch.setattr(server.services.pages, "xml", lambda page_id, page_info="basic": xml_store[page_id])
+    monkeypatch.setattr(server.services.mutations, "create_page", create_page)
+    monkeypatch.setattr(server.services.mutations, "update_page_title", update_page_title)
+    monkeypatch.setattr(server.services.copying, "call", fake_call)
+    return state, created, preflights
+
+
+@pytest.mark.write_contract
+@pytest.mark.parametrize("include_descendants", [False, True])
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_page_copy_execute_allows_duplicate_root_titles(
+    monkeypatch, include_descendants, use_cache
+):
+    anchors = [
+        _destination_root_page("dest-exact", "Parent", "destination-section", 0),
+        _destination_root_page("dest-casefold", "parent", "destination-section", 1),
+    ]
+    state, created, preflights = _install_tracked_page_copy_execute(
+        monkeypatch, extra_items=anchors
+    )
+    before_anchor_ids = {"dest-exact", "dest-casefold"}
+
+    def run():
+        plan = server.services.copying._build_plan(
+            "parent",
+            "destination-section",
+            include_descendants=include_descendants,
+        )
+        return server.services.copying._execute_copy(plan)
+
+    if use_cache:
+        with server.services.copying._copy_read_session():
+            result = run()
+    else:
+        result = run()
+
+    assert result["copy_report"]["verified"] is True
+    created_ids = [item["id"] for item in created]
+    assert created_ids == (["new-1", "new-2"] if include_descendants else ["new-1"])
+    assert before_anchor_ids.isdisjoint(created_ids)
+    assert before_anchor_ids.isdisjoint(result["copy_report"]["id_map"].values())
+    assert {item["id"] for item in state["items"] if item["id"] in before_anchor_ids} == before_anchor_ids
+    assert preflights
+    if use_cache:
+        assert all(snapshot is not None for snapshot in preflights)
+    else:
+        assert preflights == [None] * len(preflights)
 
 
 @pytest.mark.parametrize("planner", ["_inspect_copy_plan", "_inspect_move_page_plan"])
@@ -2653,7 +2870,7 @@ def test_copy_rejects_create_readback_that_aliases_a_source_page(monkeypatch):
             {
                 "resource_type": "page",
                 "id": "new-target",
-                "title": "Copied Parent",
+                "title": "Parent",
                 "section_id": "wrong-section",
                 "parent_id": "wrong-section",
             },
@@ -2663,7 +2880,7 @@ def test_copy_rejects_create_readback_that_aliases_a_source_page(monkeypatch):
             {
                 "resource_type": "page",
                 "id": "new-target",
-                "title": "Copied Parent",
+                "title": "Parent",
                 "section_id": "destination-section",
                 "parent_id": "destination-section",
                 "is_in_recycle_bin": True,
@@ -2910,10 +3127,12 @@ def test_title_readback_stages_apply_to_non_semantic_content_tier(monkeypatch):
         ("Renamed / Page\\:  %~文", True),
     ],
 )
-def test_page_copy_executes_exact_special_title_through_semantic_readback(
+@pytest.mark.parametrize("use_cache", [False, True])
+def test_page_copy_executes_destination_title_rewrite_through_rename_flow(
     monkeypatch,
     destination_title,
     override_requested,
+    use_cache,
 ):
     source_title = "Topic / Subtopic\\:  %~界"
     state = install_recursive_execute_fakes(
@@ -2927,31 +3146,67 @@ def test_page_copy_executes_exact_special_title_through_semantic_readback(
         "destination-section",
         destination_title,
     )
+    if override_requested:
+        rename_page = server.services.mutations.update_page_title
 
-    result = server.services.copying._execute_copy(plan)
+        def rename_without_copy_id_check(*args, **kwargs):
+            result = rename_page(*args, **kwargs)
+            return {**result, "item": {"id": "rename-response-not-used"}}
+
+        monkeypatch.setattr(
+            server.services.mutations,
+            "update_page_title",
+            rename_without_copy_id_check,
+        )
+
+    if use_cache:
+        with server.services.copying._copy_read_session():
+            result = server.services.copying._execute_copy(plan)
+    else:
+        result = server.services.copying._execute_copy(plan)
 
     expected_title = destination_title or source_title
     target = next(item for item in state if item["id"] == result["item"]["id"])
-    stages = result["copy_report"]["page_results"][0][
-        "semantic_content_stages"
-    ]
-    title_stages = result["copy_report"]["page_results"][0][
-        "title_readback_stages"
-    ]
+    page_result = result["copy_report"]["page_results"][0]
+    stages = page_result.get("semantic_content_stages")
+    title_stages = page_result["title_readback_stages"]
     assert plan["destination"]["name"] == expected_title
     assert result["item"]["title"] == expected_title
     assert target["title"] == expected_title
-    assert stages["title_override_requested"] is override_requested
-    assert stages["source_to_transformed"]["checks"]["title"] is (
-        not override_requested
-    )
-    assert stages["transformed_to_target"]["checks"]["title"] is True
-    assert stages["transformed_to_target"]["passed"] is True
     assert title_stages["title_override_requested"] is override_requested
+    assert title_stages["title_rewrite_requested"] is override_requested
     assert title_stages["source_to_transformed"]["checks"]["title"] is True
     assert title_stages["transformed_to_target"]["checks"]["title"] is True
     assert title_stages["source_to_transformed"]["passed"] is True
     assert title_stages["transformed_to_target"]["passed"] is True
+    if override_requested:
+        assert stages is None
+        assert page_result["equivalence"] == {
+            "equivalent": True,
+            "verification_tier": "visible_text_projection",
+            "acceptance_checks": ["visible_text"],
+            "checks": {"visible_text": True},
+            "failed_content_object_types": [],
+            "content_object_failures": [],
+            "content_object_failure_summary": {
+                "limit": 24,
+                "reported": 0,
+                "truncated": False,
+                "total": 0,
+            },
+        }
+        assert page_result["destination_title_update"] == {
+            "operation": "rename_page",
+            "convergence": {"state": "converged"},
+            "reconciliation": {"state": "applied"},
+            "content_exposed": False,
+        }
+    else:
+        assert stages is not None
+        assert stages["title_override_requested"] is False
+        assert stages["source_to_transformed"]["checks"]["title"] is True
+        assert stages["transformed_to_target"]["checks"]["title"] is True
+        assert "destination_title_update" not in page_result
     assert result["copy_report"]["copy_contract_satisfied"] is True
 
 
@@ -3069,7 +3324,7 @@ def test_copy_rejects_reused_previous_target_before_content_or_reorder(monkeypat
     with pytest.raises(PartialFailure, match="same target ID") as caught:
         server.services.copying._execute_copy(plan)
 
-    assert calls == ["Copied Parent", "Child"]
+    assert calls == ["Parent", "Child"]
     assert caught.value.details["resolved_target_ids"] == ["new-parent"]
     assert caught.value.details["allocated_ids"] == ["new-parent", "new-parent"]
     assert caught.value.details["source_touched"] is False
@@ -3162,7 +3417,30 @@ def test_page_copy_scope_creates_only_selected_ids_and_verifies(monkeypatch, inc
             return {"updated": True}
         raise AssertionError(operation)
 
+    def update_page_title(
+        page_id,
+        title,
+        expected_title,
+        expected_section_id,
+        expected_modified=None,
+    ):
+        item = next(value for value in state if value["id"] == page_id)
+        assert item["title"] == expected_title
+        assert item["section_id"] == expected_section_id
+        assert expected_modified is None
+        item["title"] = title
+        item["path"] = f"Notebook/Destination/{title}"
+        root = ET.fromstring(xml_store[page_id])
+        next(node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "T").text = title
+        xml_store[page_id] = ET.tostring(root, encoding="unicode")
+        return {
+            "item": item,
+            "convergence": {"state": "converged"},
+            "reconciliation": {"state": "applied"},
+        }
+
     monkeypatch.setattr(server.services.mutations, "create_page", create_page)
+    monkeypatch.setattr(server.services.mutations, "update_page_title", update_page_title)
     monkeypatch.setattr(server.services.copying, "call", fake_call)
 
     result = server.services.copying._execute_copy(plan)
@@ -3197,6 +3475,9 @@ def test_video_preview_player_marker_loss_fails_strict_copy_readback(monkeypatch
         for item in hierarchy_items()
         if item.get("id") != "child"
     ]
+    source = next(item for item in state if item["id"] == "parent")
+    source["title"] = "Preview"
+    source["path"] = "Notebook/Source/Preview"
     source_xml = page_xml("parent", "Preview").replace(
         "</one:Page>",
         (
@@ -3221,7 +3502,7 @@ def test_video_preview_player_marker_loss_fails_strict_copy_readback(monkeypatch
     plan = server.services.copying._build_plan(
         "parent",
         "destination-section",
-        "Copied Preview",
+        "Preview",
         include_descendants=False,
     )
 
@@ -4016,15 +4297,104 @@ def test_move_page_blocks_delete_when_source_changes_after_copy(monkeypatch):
 
 
 @pytest.mark.write_contract
-def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
-    state = install_plan_fakes(monkeypatch, body="")
+@pytest.mark.parametrize(
+    (
+        "destination_section_id",
+        "destination_title",
+        "anchor_id",
+        "anchor_title",
+        "anchor_order",
+    ),
+    [
+        ("source-section", "", "same-section-anchor", "Parent", 3),
+        ("destination-section", "PARENT", "destination-casefold-anchor", "PARENT", 0),
+    ],
+)
+def test_move_page_executes_copy_verify_delete_with_same_title_anchor(
+    monkeypatch,
+    destination_section_id,
+    destination_title,
+    anchor_id,
+    anchor_title,
+    anchor_order,
+):
+    anchor = _destination_root_page(
+        anchor_id, anchor_title, destination_section_id, anchor_order
+    )
+    state, created, _preflights = _install_tracked_page_copy_execute(
+        monkeypatch,
+        extra_items=[anchor],
+    )
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
     monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
     monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
-    plan = server.services.copying._inspect_move_page_plan(
+    anchor_before = next(item.copy() for item in state["items"] if item["id"] == anchor_id)
+    deleted: list[str] = []
+
+    def delete_page(
+        page_id,
+        expected_title,
+        expected_section_id,
+        expected_modified,
+        permanently,
+        **_kwargs,
+    ):
+        assert permanently is False
+        source = next(item for item in state["items"] if item["id"] == page_id)
+        assert source["title"] == expected_title
+        assert source["section_id"] == expected_section_id
+        assert source["modified"] == expected_modified
+        deleted.append(page_id)
+        remove_fake_items(state, page_id)
+        advance_fake_mutation_epoch()
+        return {"deleted": True, "final_state": {"id": page_id, "is_in_recycle_bin": True}}
+
+    monkeypatch.setattr(server.services.mutations, "delete_page", delete_page)
+
+    result = server.services.copying.move_page(
+        "parent",
+        destination_section_id,
+        "Parent",
+        "source-section",
+        destination_title=destination_title,
+        include_descendants=True,
+    )
+
+    target_ids = result["copy_report"]["id_map"]
+    before_ids = {"parent", "child", anchor_id, "sibling"}
+    assert result["outcome"] == "moved"
+    assert result["copy_report"]["verified"] is True
+    assert result["copy_report"]["copy_contract_satisfied"] is True
+    assert set(target_ids) == {"parent", "child"}
+    assert set(target_ids.values()).isdisjoint(before_ids)
+    assert [item["id"] for item in created] == [target_ids["parent"], target_ids["child"]]
+    assert deleted == ["child", "parent"]
+    assert result["source_deleted_nonpermanently"] is True
+    assert next(item for item in state["items"] if item["id"] == anchor_id) == anchor_before
+    target_root = next(item for item in state["items"] if item["id"] == target_ids["parent"])
+    assert target_root["section_id"] == destination_section_id
+    assert target_root["title"] == (destination_title or "Parent")
+
+
+@pytest.mark.write_contract
+def test_move_page_recycles_source_pages_leaf_to_root(monkeypatch):
+    state = install_plan_fakes(monkeypatch, body="")
+    state["items"].append(
+        _destination_root_page("dest-title-anchor", "Moved Parent", "destination-section", 0)
+    )
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
+    monkeypatch.setattr(server.services.copying, "_confirm_source", lambda *args, **kwargs: None)
+    planned = server.services.copying._inspect_move_page_plan(
         "parent", "destination-section", "Moved Parent", True
     )
+    assert any(
+        child["id"] == "dest-title-anchor"
+        for child in planned["destination"]["existing_children"]
+    )
+
     def execute_copy(_value):
         for item in state["items"]:
             if item.get("id") in {"parent", "child"}:

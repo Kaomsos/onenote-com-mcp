@@ -15,6 +15,7 @@ from tests.manual_validation.scenarios.common.copy_runtime import (
 from tests.manual_validation.scenarios.common.page_readback import (
     PURE_RICH_TEXT_HTML,
     SPECIAL_PAGE_TITLE,
+    SPECIAL_PAGE_TITLE_CASEFOLD,
     THREE_COLUMN_TABLE_HTML,
     assert_default_page_title_readback,
     assert_semantic_content_page_readback,
@@ -171,6 +172,18 @@ def test_copy_page_cross_notebook_case_omits_destination_title() -> None:
             "cross_section_anchor": item(
                 "cross-anchor", "page", title="Child", section_id="other-section"
             ),
+            "cross_section_root_title_anchor": item(
+                "cross-root-title",
+                "page",
+                title=SPECIAL_PAGE_TITLE,
+                section_id="other-section",
+            ),
+            "cross_section_root_title_casefold_anchor": item(
+                "cross-root-title-casefold",
+                "page",
+                title=SPECIAL_PAGE_TITLE_CASEFOLD,
+                section_id="other-section",
+            ),
             "cross_notebook_section": item(
                 "destination-section", "section", name="Destination"
             ),
@@ -178,6 +191,12 @@ def test_copy_page_cross_notebook_case_omits_destination_title() -> None:
                 "notebook-anchor",
                 "page",
                 title="Child",
+                section_id="destination-section",
+            ),
+            "cross_notebook_root_title_anchor": item(
+                "notebook-root-title",
+                "page",
+                title=SPECIAL_PAGE_TITLE,
                 section_id="destination-section",
             ),
         },
@@ -207,7 +226,7 @@ def test_copy_page_cross_notebook_case_omits_destination_title() -> None:
     assert sum(
         case["destination_title_parameter"] == "omitted"
         for case in spec["cases"]
-    ) == 1
+    ) == 2
 
 
 def test_move_page_recipe_owns_exact_three_column_special_title_fixture() -> None:

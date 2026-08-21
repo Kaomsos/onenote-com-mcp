@@ -547,8 +547,8 @@ SCENARIO_SPECS = {
                 "source:00-Description/00-Copy-Page-Description[3 scopes x 2 subtree modes]",
                 "Source/[exact special-character parent][strict rich text+inline/display equations+table+image]",
                 "Source/[exact special-character parent]/02-Source-Child[semantic list+tag]",
-                "source:Destination/02-Source-Child[duplicate-title anchor]",
-                "destination:Cross-Notebook-Destination/02-Source-Child[duplicate-title anchor]",
+                "source:Destination/{exact root title, casefold root title, 02-Source-Child, 99-Position-Anchor}",
+                "destination:Cross-Notebook-Destination/{exact root title, 02-Source-Child, 99-Position-Anchor}",
             ),
             (
                 "description_section",
@@ -558,9 +558,12 @@ SCENARIO_SPECS = {
                 "semantic_page",
                 "disposable_section",
                 "cross_section_anchor",
+                "cross_section_root_title_anchor",
+                "cross_section_root_title_casefold_anchor",
                 "cross_section_position_anchor",
                 "cross_notebook_section",
                 "cross_notebook_anchor",
+                "cross_notebook_root_title_anchor",
                 "cross_notebook_position_anchor",
             ),
             {
@@ -584,9 +587,11 @@ SCENARIO_SPECS = {
                 "every omitted scope maps only the strict parent",
                 "every explicit true scope maps the complete parent/child subtree",
                 "source parent and child remain unchanged after all six copies",
-                "same-title destination anchors remain unchanged after all six copies",
+                "same-title destination root and child anchors remain unchanged after all six copies",
                 "cross-Notebook targets appear only in the destination role",
-                "one cross-Notebook root-only Copy omits destination_title and preserves the exact source title",
+                "same-section root-only and cross-Notebook root-only omit destination_title and preserve the exact source title",
+                "cross-section root-only uses the casefold source title as an explicit destination_title",
+                "cross-Notebook subtree uses the exact source title as an explicit destination_title",
                 "default-title Copy passes source-to-transformed-to-target title readback",
                 "the rich source Image binary is read by exact PageContentObject ID without persisting Base64",
             ),
@@ -610,6 +615,8 @@ SCENARIO_SPECS = {
                     "destination_key": "source_section",
                     "destination_scope": "same-section",
                     "include_descendants": "omitted",
+                    "destination_title": "omitted",
+                    "collision_anchor_keys": ["parent_page", "semantic_page"],
                     "expected_page_count": 1,
                 },
                 {
@@ -618,6 +625,8 @@ SCENARIO_SPECS = {
                     "destination_key": "source_section",
                     "destination_scope": "same-section",
                     "include_descendants": True,
+                    "destination_title": "explicit",
+                    "collision_anchor_keys": ["parent_page", "semantic_page"],
                     "expected_page_count": 2,
                 },
                 {
@@ -626,6 +635,12 @@ SCENARIO_SPECS = {
                     "destination_key": "disposable_section",
                     "destination_scope": "cross-section",
                     "include_descendants": "omitted",
+                    "destination_title": "explicit-casefold",
+                    "collision_anchor_keys": [
+                        "cross_section_anchor",
+                        "cross_section_root_title_anchor",
+                        "cross_section_root_title_casefold_anchor",
+                    ],
                     "expected_page_count": 1,
                 },
                 {
@@ -634,6 +649,12 @@ SCENARIO_SPECS = {
                     "destination_key": "disposable_section",
                     "destination_scope": "cross-section",
                     "include_descendants": True,
+                    "destination_title": "explicit",
+                    "collision_anchor_keys": [
+                        "cross_section_anchor",
+                        "cross_section_root_title_anchor",
+                        "cross_section_root_title_casefold_anchor",
+                    ],
                     "expected_page_count": 2,
                 },
                 {
@@ -643,6 +664,10 @@ SCENARIO_SPECS = {
                     "destination_scope": "cross-notebook",
                     "include_descendants": "omitted",
                     "destination_title": "omitted",
+                    "collision_anchor_keys": [
+                        "cross_notebook_anchor",
+                        "cross_notebook_root_title_anchor",
+                    ],
                     "expected_page_count": 1,
                 },
                 {
@@ -651,6 +676,11 @@ SCENARIO_SPECS = {
                     "destination_key": "cross_notebook_section",
                     "destination_scope": "cross-notebook",
                     "include_descendants": True,
+                    "destination_title": "explicit-source-title",
+                    "collision_anchor_keys": [
+                        "cross_notebook_anchor",
+                        "cross_notebook_root_title_anchor",
+                    ],
                     "expected_page_count": 2,
                 },
             ]
@@ -808,7 +838,7 @@ SCENARIO_SPECS = {
             (
                 "source:Source/[exact special-character RichText/Table root]/02-Root-Only-Child",
                 "source:Source/03-Subtree/04-Subtree-Child[pure RichText]",
-                "destination:Destination/{00-Destination-Anchor-A,99-Destination-Anchor-B}",
+                "destination:Destination/{00-Destination-Anchor-A,exact root title,03-Subtree,99-Destination-Anchor-B}",
             ),
             (
                 "source_section",
@@ -818,6 +848,8 @@ SCENARIO_SPECS = {
                 "subtree_child",
                 "destination_section",
                 "destination_anchor_a",
+                "destination_root_title_anchor",
+                "destination_subtree_title_anchor",
                 "destination_anchor_b",
             ),
             {"create_section", "create_page", "reorder_page"},
@@ -829,6 +861,7 @@ SCENARIO_SPECS = {
                 "root-only source contains one three-column RichText/Table fixture",
                 "subtree Move copies and removes exactly the two selected Pages",
                 "subtree source and child both use complete semantic_content_v1 pure RichText readback",
+                "destination root-title and subtree-title anchors remain unchanged",
                 "both cases use cross-Notebook destination and non-permanent source deletion",
             ),
         ),
@@ -845,6 +878,11 @@ SCENARIO_SPECS = {
                     "child_key": "root_only_child",
                     "include_descendants": "omitted",
                     "destination_title": "omitted",
+                    "collision_anchor_keys": [
+                        "destination_root_title_anchor",
+                        "destination_anchor_a",
+                        "destination_anchor_b",
+                    ],
                     "expected_page_count": 1,
                 },
                 {
@@ -852,6 +890,12 @@ SCENARIO_SPECS = {
                     "source_key": "subtree_page",
                     "child_key": "subtree_child",
                     "include_descendants": True,
+                    "destination_title": "explicit-source-title",
+                    "collision_anchor_keys": [
+                        "destination_subtree_title_anchor",
+                        "destination_anchor_a",
+                        "destination_anchor_b",
+                    ],
                     "expected_page_count": 2,
                 },
             ]

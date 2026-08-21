@@ -44,16 +44,90 @@ from .copy_invariants import (
     assert_copy_fixture_capabilities,
     assert_copy_mapping,
     assert_copy_page_restored,
+    assert_page_copy_fresh_ids,
     assert_pages_unchanged,
 )
+from .page_readback import SPECIAL_PAGE_TITLE_CASEFOLD, assert_default_page_title_readback
 from .page_text_evidence import (
     assert_page_text_pair_equivalent,
     capture_full_page_text_evidence,
     capture_page_text_pair,
 )
-from .page_readback import assert_default_page_title_readback
 from .report import render_report
 from .specs import get_scenario_spec
+
+_PAGE_DESTINATION_TITLE_MODES = {
+    "omitted",
+    "explicit",
+    "explicit-source-title",
+    "explicit-casefold",
+}
+_COLLISION_ANCHOR_FIELDS = (
+    "resource_type",
+    "name",
+    "title",
+    "parent_id",
+    "section_id",
+    "parent_page_id",
+    "page_level",
+    "order",
+)
+
+
+def _copy_page_destination_name(
+    source: dict[str, Any],
+    case: Mapping[str, Any],
+    index: int,
+    suffix: str,
+) -> tuple[str, str]:
+    mode = str(case.get("destination_title", "explicit"))
+    if mode not in _PAGE_DESTINATION_TITLE_MODES:
+        raise RunnerFailure(
+            "Copy Page destination_title contract must be omitted, explicit, "
+            "explicit-source-title, or explicit-casefold."
+        )
+    destination_scope = str(case["destination_scope"])
+    scope_label = {
+        "same-section": "Same-Section",
+        "cross-section": "Cross-Section",
+        "cross-notebook": "Cross-Notebook",
+    }.get(destination_scope)
+    if scope_label is None:
+        raise RunnerFailure(f"Unknown Copy Page destination scope: {destination_scope}")
+    declared_scope = case.get("include_descendants")
+    if mode == "explicit-casefold":
+        return SPECIAL_PAGE_TITLE_CASEFOLD, mode
+    if mode in {"omitted", "explicit-source-title"}:
+        return display_name(source), mode
+    return (
+        f"{index:02d}-{scope_label}-"
+        + ("Root-Only" if declared_scope == "omitted" else "Subtree")
+        + f"-Copy-{suffix}",
+        mode,
+    )
+
+
+def _resolve_collision_anchors(
+    manifest: dict[str, Any],
+    case: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    keys = case.get("collision_anchor_keys")
+    if not isinstance(keys, list) or not keys or any(not str(key) for key in keys):
+        raise RunnerFailure(
+            f"Copy Page case '{case.get('name')}' must declare collision_anchor_keys."
+        )
+    return [resolve_manifest_item(manifest, str(key)) for key in keys]
+
+
+def _case_collision_anchors(case: Mapping[str, Any]) -> list[dict[str, Any]]:
+    anchors = case.get("collision_anchors")
+    if isinstance(anchors, list) and anchors:
+        return [dict(item) for item in anchors]
+    if isinstance(case.get("collision_anchor"), dict):
+        return [dict(case["collision_anchor"])]
+    raise RunnerFailure(
+        f"Copy Page case '{case.get('name')}' is missing collision anchors."
+    )
 
 
 def copy_spec(
@@ -73,27 +147,18 @@ def copy_spec(
         page_tools = (
             COPY_PAGE_PRESERVE_TOOLS if keep_worksite else COPY_PAGE_TOOLS
         ) | {"get_page_text"}
-        anchor_keys = {
-            "same-section": "semantic_page",
-            "cross-section": "cross_section_anchor",
-            "cross-notebook": "cross_notebook_anchor",
-        }
         cases = []
+        protected_keys: list[str] = []
         for index, case in enumerate(execution_contract.get("cases", []), start=1):
             declared_scope = case.get("include_descendants")
-            title_parameter = str(case.get("destination_title", "explicit"))
-            if title_parameter not in {"explicit", "omitted"}:
-                raise RunnerFailure(
-                    "Copy Page destination_title contract must be explicit or omitted."
-                )
-            destination_scope = str(case["destination_scope"])
-            scope_label = {
-                "same-section": "Same-Section",
-                "cross-section": "Cross-Section",
-                "cross-notebook": "Cross-Notebook",
-            }.get(destination_scope)
-            if scope_label is None:
-                raise RunnerFailure(f"Unknown Copy Page destination scope: {destination_scope}")
+            destination_name, title_parameter = _copy_page_destination_name(
+                source, case, index, suffix
+            )
+            collision_anchors = _resolve_collision_anchors(manifest, case)
+            for key in case["collision_anchor_keys"]:
+                text = str(key)
+                if text not in protected_keys:
+                    protected_keys.append(text)
             cases.append(
                 {
                     "name": str(case["name"]),
@@ -101,17 +166,9 @@ def copy_spec(
                         manifest, str(case["destination_key"])
                     ),
                     "destination_role": str(case["destination_role"]),
-                    "destination_scope": destination_scope,
-                    "collision_anchor": resolve_manifest_item(
-                        manifest, anchor_keys[destination_scope]
-                    ),
-                    "destination_name": (
-                        display_name(source)
-                        if title_parameter == "omitted"
-                        else f"{index:02d}-{scope_label}-"
-                        + ("Root-Only" if declared_scope == "omitted" else "Subtree")
-                        + f"-Copy-{suffix}"
-                    ),
+                    "destination_scope": str(case["destination_scope"]),
+                    "collision_anchors": collision_anchors,
+                    "destination_name": destination_name,
                     "destination_title_parameter": title_parameter,
                     "include_descendants": (
                         None if declared_scope == "omitted" else bool(declared_scope)
@@ -125,12 +182,7 @@ def copy_spec(
             "source": source,
             "protected_page_ids": [
                 str(resolve_manifest_item(manifest, key)["id"])
-                for key in (
-                    "parent_page",
-                    "semantic_page",
-                    "cross_section_anchor",
-                    "cross_notebook_anchor",
-                )
+                for key in protected_keys
             ],
             "notebooks": dict(manifest.get("notebooks", {"source": manifest["notebook"]})),
             "tool": "copy_page",
@@ -637,9 +689,13 @@ async def execute_copy_page(
     if not isinstance(notebooks, dict) or set(notebooks) != {"destination", "source"}:
         raise RunnerFailure("Copy Page requires exact source/destination Notebook roles.")
     protected_page_ids = spec.get("protected_page_ids")
-    if not isinstance(protected_page_ids, list) or len(set(protected_page_ids)) != 4:
+    if (
+        not isinstance(protected_page_ids, list)
+        or not protected_page_ids
+        or len(set(protected_page_ids)) != len(protected_page_ids)
+    ):
         raise RunnerFailure(
-            "Copy Page requires exact source Parent/Child and two collision-anchor IDs."
+            "Copy Page requires unique protected source and collision-anchor IDs."
         )
 
     out = scenario_dir(options.run_dir, "copy-page")
@@ -682,19 +738,22 @@ async def execute_copy_page(
                 "destination_title_parameter": str(
                     case.get("destination_title_parameter", "explicit")
                 ),
-                "collision_anchor": dict(case["collision_anchor"]),
+                "collision_anchors": _case_collision_anchors(case),
                 "include_descendants": include_descendants,
             }
             case_before = current_snapshot
             write_json(out / f"before-{case_name}.json", case_before)
-            collision_anchor = dict(case_spec["collision_anchor"])
-            anchor_before = find_snapshot_item(
-                case_before, str(collision_anchor["id"])
-            )
-            if anchor_before is None:
-                raise InvariantFailure(
-                    f"Copy case '{case_name}' is missing its same-title collision anchor."
+            collision_anchors = list(case_spec["collision_anchors"])
+            anchors_before = []
+            for collision_anchor in collision_anchors:
+                anchor_before = find_snapshot_item(
+                    case_before, str(collision_anchor["id"])
                 )
+                if anchor_before is None:
+                    raise InvariantFailure(
+                        f"Copy case '{case_name}' is missing a same-title collision anchor."
+                    )
+                anchors_before.append(anchor_before)
             current_source = dict(pre_plan_source)
             copied = await call_with_result_evidence(
                 client,
@@ -763,6 +822,7 @@ async def execute_copy_page(
                 copied,
                 include_descendants=effective_scope,
             )
+            assert_page_copy_fresh_ids(case_before, copied)
             position_evidence = assert_destination_position(
                 copied,
                 case_after,
@@ -772,32 +832,35 @@ async def execute_copy_page(
                 out / f"destination-position-evidence-{case_name}.json",
                 position_evidence,
             )
-            anchor_after = find_snapshot_item(
-                case_after, str(collision_anchor["id"])
-            )
-            stable_fields = (
-                "resource_type",
-                "name",
-                "title",
-                "parent_id",
-                "section_id",
-                "parent_page_id",
-                "page_level",
-                "order",
-            )
-            if anchor_after is None or any(
-                anchor_after.get(field) != anchor_before.get(field)
-                for field in stable_fields
+            before_hashes = case_before.get("page_hashes")
+            after_hashes = case_after.get("page_hashes")
+            target_ids_for_case = {str(value) for value in id_map.values()}
+            for collision_anchor, anchor_before in zip(
+                collision_anchors, anchors_before, strict=True
             ):
-                raise InvariantFailure(
-                    f"Copy case '{case_name}' changed or reordered its collision anchor."
+                anchor_after = find_snapshot_item(
+                    case_after, str(collision_anchor["id"])
                 )
-            if str(collision_anchor["id"]) in {
-                str(value) for value in id_map.values()
-            }:
-                raise InvariantFailure(
-                    f"Copy case '{case_name}' reused its collision anchor as a target."
-                )
+                if anchor_after is None or any(
+                    anchor_after.get(field) != anchor_before.get(field)
+                    for field in _COLLISION_ANCHOR_FIELDS
+                ):
+                    raise InvariantFailure(
+                        f"Copy case '{case_name}' changed or reordered a collision anchor."
+                    )
+                if str(collision_anchor["id"]) in target_ids_for_case:
+                    raise InvariantFailure(
+                        f"Copy case '{case_name}' reused a collision anchor as a target."
+                    )
+                if not isinstance(before_hashes, dict) or not isinstance(after_hashes, dict):
+                    raise InvariantFailure(
+                        f"Copy case '{case_name}' is missing collision-anchor hash evidence."
+                    )
+                anchor_id = str(collision_anchor["id"])
+                if before_hashes.get(anchor_id) != after_hashes.get(anchor_id):
+                    raise InvariantFailure(
+                        f"Copy case '{case_name}' changed a collision-anchor content hash."
+                    )
             assert_pages_unchanged(
                 case_before,
                 case_after,
@@ -820,8 +883,10 @@ async def execute_copy_page(
                 "destination_section_id": case_spec["destination"]["id"],
                 "target_id": copied.get("item", {}).get("id"),
                 "mapped_page_count": len(id_map),
-                "collision_anchor_id": collision_anchor["id"],
-                "collision_anchor_unchanged": True,
+                "collision_anchor_ids": [
+                    str(anchor["id"]) for anchor in collision_anchors
+                ],
+                "collision_anchors_unchanged": True,
                 "copy_report": report,
                 "destination_position": position_evidence,
             }
@@ -978,8 +1043,10 @@ async def execute_copy_display_equation(
                 if isinstance(page_result, dict)
                 else {}
             )
-            display_comparison = equivalence.get(
-                "display_equation_comparison", {}
+            destination_title_update = (
+                page_result.get("destination_title_update", {})
+                if isinstance(page_result, dict)
+                else {}
             )
             normalizations = (
                 page_result.get("normalizations", {})
@@ -992,8 +1059,10 @@ async def execute_copy_display_equation(
                 and report.get("copy_contract_satisfied") is True
                 and equivalence.get("equivalent") is True
                 and equivalence.get("verification_tier")
-                == "semantic_display_equation"
-                and display_comparison.get("passed") is True
+                == "visible_text_projection"
+                and equivalence.get("acceptance_checks") == ["visible_text"]
+                and equivalence.get("checks", {}).get("visible_text") is True
+                and destination_title_update.get("operation") == "rename_page"
                 and int(
                     normalizations.get(
                         "display_equation_empty_spans_removed", 0

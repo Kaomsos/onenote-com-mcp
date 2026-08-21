@@ -8,7 +8,6 @@ from typing import Any
 
 from ..mcp_stdio_client import MCPStdioClient, MOVE_PAGE_POLICY, scenario_client
 from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
-from ..run_identity import run_safe_timestamp
 from ..test_utils import (
     capture_snapshot,
     display_name,
@@ -20,7 +19,11 @@ from ..test_utils import (
 )
 from .base import Scenario
 from .common.config import MOVE_PAGE_TOOLS
-from .common.copy_invariants import expected_copy_source_items
+from .common.copy_invariants import (
+    assert_copy_mapping,
+    assert_page_copy_fresh_ids,
+    expected_copy_source_items,
+)
 from .common.copy_runtime import call_with_result_evidence
 from .common.destination_position import assert_destination_position
 from .common.page_readback import (
@@ -97,17 +100,23 @@ async def _execute_move_page(
             )
             expected_source_ids = [str(item["id"]) for item in selected]
             title_parameter = str(case.get("destination_title", "explicit"))
-            if title_parameter not in {"explicit", "omitted"}:
+            if title_parameter not in {"omitted", "explicit-source-title"}:
                 raise RunnerFailure(
-                    "Move Page destination_title contract must be explicit or omitted."
+                    "Move Page destination_title contract must be omitted or explicit-source-title."
                 )
-            destination_title = (
-                display_name(current_source)
-                if title_parameter == "omitted"
-                else f"{index:02d}-Moved-"
-                f"{'Subtree' if include_descendants else 'Root-Only'}-"
-                f"{run_safe_timestamp(args)}"
-            )
+            destination_title = display_name(current_source)
+            collision_keys = case.get("collision_anchor_keys")
+            if (
+                not isinstance(collision_keys, list)
+                or not collision_keys
+                or any(not str(key) for key in collision_keys)
+            ):
+                raise RunnerFailure(
+                    f"Move Page case '{case_name}' must declare collision_anchor_keys."
+                )
+            collision_anchors = [
+                resolve_manifest_item(manifest, str(key)) for key in collision_keys
+            ]
             before = current_snapshot
             write_json(out / f"before-{case_name}.json", before)
             move_arguments = {
@@ -132,6 +141,24 @@ async def _execute_move_page(
                 raise InvariantFailure(f"Move Copy gate failed for case '{case_name}'.")
             if moved.get("source_deleted_nonpermanently") is not True:
                 raise InvariantFailure(f"Move did not report non-permanent deletion for '{case_name}'.")
+            recycle_status = moved.get("recycle_bin_verification")
+            recycled_source_ids = moved.get("recycled_source_ids")
+            recycle_unverified_source_ids = moved.get("recycle_unverified_source_ids")
+            expected_deleted = list(reversed(expected_source_ids))
+            if recycle_status == "verified":
+                if recycled_source_ids != expected_deleted or recycle_unverified_source_ids:
+                    raise InvariantFailure(
+                        f"Move recycle-bin verified evidence is inconsistent for '{case_name}'."
+                    )
+            elif recycle_status == "not_required_com_unavailable":
+                if recycle_unverified_source_ids != expected_deleted or recycled_source_ids:
+                    raise InvariantFailure(
+                        f"Move recycle-bin unavailable evidence is inconsistent for '{case_name}'."
+                    )
+            else:
+                raise InvariantFailure(
+                    f"Move recycle-bin verification is not a known closed value for '{case_name}'."
+                )
             if moved.get("include_descendants") is not include_descendants:
                 raise InvariantFailure(f"Move result scope differs for case '{case_name}'.")
             semantic_readback = assert_semantic_content_page_readback(
@@ -174,6 +201,52 @@ async def _execute_move_page(
                 raise InvariantFailure(f"Move target escaped the destination Notebook for '{case_name}'.")
             if display_name(after_by_id[target_ids[0]]) != destination_title:
                 raise InvariantFailure(f"Move target title differs for case '{case_name}'.")
+            if include_descendants:
+                assert_copy_mapping(
+                    before,
+                    after,
+                    str(current_source["id"]),
+                    str(destination["id"]),
+                    destination_title,
+                    moved,
+                    include_descendants=True,
+                )
+            assert_page_copy_fresh_ids(before, moved)
+            before_hashes = before.get("page_hashes")
+            after_hashes = after.get("page_hashes")
+            stable_fields = (
+                "resource_type",
+                "name",
+                "title",
+                "parent_id",
+                "section_id",
+                "parent_page_id",
+                "page_level",
+                "order",
+            )
+            for collision_anchor in collision_anchors:
+                anchor_id = str(collision_anchor["id"])
+                anchor_before = find_snapshot_item(before, anchor_id)
+                anchor_after = after_by_id.get(anchor_id)
+                if anchor_before is None or anchor_after is None or any(
+                    anchor_after.get(field) != anchor_before.get(field)
+                    for field in stable_fields
+                ):
+                    raise InvariantFailure(
+                        f"Move case '{case_name}' changed or reordered a collision anchor."
+                    )
+                if not isinstance(before_hashes, dict) or not isinstance(after_hashes, dict):
+                    raise InvariantFailure(
+                        f"Move case '{case_name}' is missing collision-anchor hash evidence."
+                    )
+                if before_hashes.get(anchor_id) != after_hashes.get(anchor_id):
+                    raise InvariantFailure(
+                        f"Move case '{case_name}' changed a collision-anchor content hash."
+                    )
+                if anchor_id in set(target_ids):
+                    raise InvariantFailure(
+                        f"Move case '{case_name}' reused a collision anchor as a target."
+                    )
             position_evidence = assert_destination_position(
                 moved,
                 after,

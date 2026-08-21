@@ -33,7 +33,7 @@ CASES = required_recipe_contract_cases(SCENARIO_REGISTRY)
 PINNED_RECIPE_VERSIONS = {
     "cache-invalidation": 1,
     "copy-display-equation": 1,
-    "copy-page": 14,
+    "copy-page": 16,
     "create": 5,
     "interactive-copy-ink-drawing": 3,
     "interactive-copy-inline-equation": 2,
@@ -43,7 +43,7 @@ PINNED_RECIPE_VERSIONS = {
     "interactive-move-page": 3,
     "interactive-move-page-content": 11,
     "interactive-user-authored-fixture": 4,
-    "move-page": 7,
+    "move-page": 8,
     "move-section": 2,
     "reorder-page": 2,
     "reparent-page": 3,

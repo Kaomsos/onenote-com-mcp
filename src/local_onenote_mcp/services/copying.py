@@ -19,6 +19,7 @@ from ..page import (
     collect_page_objects,
     copy_verification_tier,
     page_equivalence,
+    page_visible_text_equivalence,
     semantic_content_comparison,
     title_from_page_xml,
     transform_page_for_copy,
@@ -83,7 +84,6 @@ MOVE_EXECUTE_TOOLS = {
     "move_section": "move_section",
     "move_section_group": "move_section_group",
 }
-
 
 @dataclass(frozen=True)
 class _MovePromotionResult:
@@ -261,7 +261,7 @@ class CopyService(BaseService):
 
     @classmethod
     def _protected_destination(cls, destination: dict[str, Any]) -> dict[str, Any]:
-        """Project an explicit Copy destination without volatile COM clocks."""
+        """Project an explicit Copy destination as a diagnostic plan snapshot."""
 
         return {
             "resource_type": destination.get("resource_type"),
@@ -508,7 +508,9 @@ class CopyService(BaseService):
             ]
         else:
             children = [item for item in items if item.get("parent_id") == destination_parent_id]
-        if any(display_name(item).casefold() == name.casefold() for item in children):
+        if resource_type != "page" and any(
+            display_name(item).casefold() == name.casefold() for item in children
+        ):
             raise ValueError(
                 f"Destination already has a direct {resource_type} child named '{name}'. "
                 "Copy never overwrites, merges, or automatically renames objects."
@@ -926,7 +928,19 @@ class CopyService(BaseService):
                 check_deadline()
                 kind = item["resource_type"]
                 is_root = item["id"] == source["id"]
-                target_name = destination["name"] if is_root else display_name(item)
+                page_title_rewrite_requested = (
+                    kind == "page"
+                    and is_root
+                    and plan["page_title_override_requested"] is True
+                    and destination["name"] != item["title"]
+                )
+                target_name = (
+                    item["title"]
+                    if page_title_rewrite_requested
+                    else destination["name"]
+                    if is_root
+                    else display_name(item)
+                )
                 preflight = self._preflight_snapshot(reason=DESTINATION_PRECONDITION)
                 if kind == "notebook":
                     result = self.mutations.create_notebook(
@@ -1024,12 +1038,27 @@ class CopyService(BaseService):
                     item["id"] == source["id"]
                     and plan["page_title_override_requested"] is True
                 )
+                title_rewrite_requested = (
+                    title_override_requested and target_title != item["title"]
+                )
                 source_xml = plan["page_xml"][item["id"]]
                 transformed = transform_page_for_copy(
                     source_xml,
                     target["id"],
                     id_map,
-                    title=(target_title if target_title != item["title"] else None),
+                )
+                title_rewrite_expected_xml = (
+                    transform_page_for_copy(
+                        source_xml,
+                        target["id"],
+                        id_map,
+                        title=target_title,
+                    )["xml"]
+                    if title_rewrite_requested
+                    else transformed["xml"]
+                )
+                expected_target_page_title = title_from_page_xml(
+                    title_rewrite_expected_xml
                 )
                 page_issues = [
                     {"source_page_id": item["id"], "target_page_id": target["id"], **issue}
@@ -1047,24 +1076,16 @@ class CopyService(BaseService):
                         source_page_title is not None
                         and transformed_page_title is not None
                         and source_page_title == item["title"]
-                        and transformed_page_title == target_title
-                        and (
-                            title_override_requested
-                            or source_page_title == transformed_page_title
-                        )
+                        and transformed_page_title == item["title"]
                     ),
                     "source_matches_metadata": source_page_title == item["title"],
-                    "transformed_matches_expected": (
-                        transformed_page_title == target_title
-                    ),
-                    "default_title_preserved": (
-                        title_override_requested
-                        or source_page_title == transformed_page_title
-                    ),
+                    "transformed_matches_expected": transformed_page_title == item["title"],
+                    "default_title_preserved": source_page_title == transformed_page_title,
                 }
                 title_readback_stages = {
                     "schema_version": 1,
                     "title_override_requested": title_override_requested,
+                    "title_rewrite_requested": title_rewrite_requested,
                     "source_to_transformed": {
                         "checks": source_title_checks,
                         "passed": all(source_title_checks.values()),
@@ -1073,7 +1094,10 @@ class CopyService(BaseService):
                     "content_exposed": False,
                 }
                 semantic_content_stages = None
-                if verification_tier == SEMANTIC_CONTENT_VERIFICATION:
+                if (
+                    verification_tier == SEMANTIC_CONTENT_VERIFICATION
+                    and not title_rewrite_requested
+                ):
                     semantic_content_stages = {
                         "schema_version": 1,
                         "title_override_requested": title_override_requested,
@@ -1105,7 +1129,11 @@ class CopyService(BaseService):
                     )
                 )
 
-                def observe_page(*, reason: str = POST_WRITE_RECONCILIATION):
+                def observe_page(
+                    expected_xml: str,
+                    *,
+                    reason: str = POST_WRITE_RECONCILIATION,
+                ):
                     read_cache = current_copy_read_cache()
                     if read_cache is not None:
                         derivation = read_cache.get_page_derivation(
@@ -1115,9 +1143,13 @@ class CopyService(BaseService):
                         )
                         actual_xml = derivation.xml
                         actual_digest = derivation.digest
-                        equivalence = derivation.equivalence_against(
-                            transformed["xml"],
-                            verification_tier=verification_tier,
+                        equivalence = (
+                            derivation.visible_text_equivalence_against(expected_xml)
+                            if title_rewrite_requested
+                            else derivation.equivalence_against(
+                                expected_xml,
+                                verification_tier=verification_tier,
+                            )
                         )
                     else:
                         actual_xml = self._page_xml(
@@ -1126,25 +1158,29 @@ class CopyService(BaseService):
                             reason=reason,
                         )
                         actual_digest = self.pages.digest(actual_xml)
-                        equivalence = page_equivalence(
-                            transformed["xml"],
-                            actual_xml,
-                            verification_tier=verification_tier,
+                        equivalence = (
+                            page_visible_text_equivalence(expected_xml, actual_xml)
+                            if title_rewrite_requested
+                            else page_equivalence(
+                                expected_xml,
+                                actual_xml,
+                                verification_tier=verification_tier,
+                            )
                         )
                     actual_page_title = title_from_page_xml(actual_xml)
                     target_title_checks = {
                         "title": (
                             actual_page_title is not None
-                            and transformed_page_title is not None
-                            and transformed_page_title == target_title
-                            and actual_page_title == transformed_page_title
+                            and expected_target_page_title is not None
+                            and expected_target_page_title == target_title
+                            and actual_page_title == target_title
                         ),
                         "target_title_available": actual_page_title is not None,
                         "transformed_matches_expected": (
-                            transformed_page_title == target_title
+                            expected_target_page_title == target_title
                         ),
                         "target_matches_transformed": (
-                            actual_page_title == transformed_page_title
+                            actual_page_title == expected_target_page_title
                         ),
                     }
                     return {
@@ -1165,7 +1201,10 @@ class CopyService(BaseService):
                         schema=XML_SCHEMA_2013,
                         force=False,
                     ),
-                    observe=lambda: observe_page(reason=POST_WRITE_RECONCILIATION),
+                    observe=lambda: observe_page(
+                        transformed["xml"],
+                        reason=POST_WRITE_RECONCILIATION,
+                    ),
                     is_pre_state=lambda value: value["digest"] == before_target_digest,
                     is_post_state=lambda value: value["equivalence"]["equivalent"],
                 )
@@ -1177,7 +1216,10 @@ class CopyService(BaseService):
                 ):
                     stable_kwargs["initial_value"] = reconciliation.value
                 stable_page = converge(
-                    lambda: observe_page(reason=POST_WRITE_CONVERGENCE),
+                    lambda: observe_page(
+                        transformed["xml"],
+                        reason=POST_WRITE_CONVERGENCE,
+                    ),
                     lambda value: value["equivalence"]["equivalent"],
                     lambda value: value["digest"],
                     config=DEFAULT_CONVERGENCE,
@@ -1187,6 +1229,41 @@ class CopyService(BaseService):
                     **stable_kwargs,
                 )
                 assert stable_page.value is not None
+                destination_title_update = None
+                if title_rewrite_requested:
+                    failed_step = "rename_destination_title"
+                    title_update = self.mutations.update_page_title(
+                        target["id"],
+                        target_title,
+                        item["title"],
+                        target["section_id"],
+                    )
+                    destination_title_update = {
+                        "operation": "rename_page",
+                        "convergence": title_update.get("convergence"),
+                        "reconciliation": title_update.get("reconciliation"),
+                        "content_exposed": False,
+                    }
+                    completed_steps.append(
+                        {
+                            "operation": "rename_destination_title",
+                            "source_id": item["id"],
+                            "target_id": target["id"],
+                        }
+                    )
+                    stable_page = converge(
+                        lambda: observe_page(
+                            title_rewrite_expected_xml,
+                            reason=POST_WRITE_CONVERGENCE,
+                        ),
+                        lambda value: value["equivalence"]["equivalent"],
+                        lambda value: value["digest"],
+                        config=DEFAULT_CONVERGENCE,
+                        clock=self.convergence_runtime.clock,
+                        sleeper=self.convergence_runtime.sleeper,
+                        transient=transient_read_error,
+                    )
+                    assert stable_page.value is not None
                 equivalence = stable_page.value["equivalence"]
                 title_readback_stages["transformed_to_target"] = stable_page.value[
                     "title_readback"
@@ -1209,6 +1286,11 @@ class CopyService(BaseService):
                         "normalizations": transformed["normalizations"],
                         "equivalence": equivalence,
                         "title_readback_stages": title_readback_stages,
+                        **(
+                            {"destination_title_update": destination_title_update}
+                            if destination_title_update is not None
+                            else {}
+                        ),
                         **(
                             {"semantic_content_stages": semantic_content_stages}
                             if semantic_content_stages is not None

@@ -50,7 +50,7 @@
 - **Page 范围**由布尔 `include_subpages`（默认 `false`）控制：`false` 只选目标 Page，并在需要时保护/提升被排除的后代；`true` 选择完整缩进子树。
 - **有界批量。** `create_*`、`rename_*`、`reparent_*` 和可恢复 `delete_*` 接受原单项字段或有界 `items` 批量（1–20）。批量作为整体预检，按输入顺序执行，在第一个失败或不确定的 item 处停止，绝不做大范围回滚或重放。部分结果保留 `applied` / `failed` / `not_attempted` 状态。
 - **`sort_children`** 按 `name`、`created` 或 `modified` 对已确认父级的完整直接子序列做稳定排序。子类型由父类型推断：Notebook/SectionGroup 排序 Section；Section/Page 排序 Page。分级 Page 作为完整缩进块移动；SectionGroup 永不参与排序。
-- **Copy 和 Move 都是单次重建式调用。** Planning 留在操作内部。Page Copy/Move 精确保留逻辑 Page 标题——包括 `/`、`\`、`:`、重复空格、`%`、`~` 和 Unicode——除非显式传入 `destination_title`。Copy 结果包含逐 Page 验证阶段和类型化失败分类。source revision/authorship marker 以及原始创建/修改时间不会被继承；OneNote 可以生成目标自己的值。`verified`、`lossless` 和 `copy_contract_satisfied` 不承诺这些元数据保真。
+- **Copy 和 Move 都是单次重建式调用。** Planning 留在操作内部。Page Copy/Move 精确保留逻辑 Page 标题——包括 `/`、`\`、`:`、重复空格、`%`、`~` 和 Unicode——除非显式传入 `destination_title`。目标 Section 已有同标题或仅大小写不同的一级 Page 不是冲突；新目标始终是本次 allocated 的 fresh Page ID。Copy 结果包含逐 Page 验证阶段和类型化失败分类。source revision/authorship marker 以及原始创建/修改时间不会被继承；OneNote 可以生成目标自己的值。`verified`、`lossless` 和 `copy_contract_satisfied` 不承诺这些元数据保真。
 - **Move 是重建式的**：先验证 Copy，再非永久删除源。它会产生新 ID，且可能返回不得盲目重试的部分或不确定结果。
 - **`export_object_to_pdf`** 只写新 PDF，绝不覆盖已存在的路径。
 - **`request_notebook_sync`** 证明请求被接受，不证明同步已完成。

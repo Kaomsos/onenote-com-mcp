@@ -21,7 +21,10 @@ from tests.manual_validation.scenarios.common.fixture_models import FixtureBuild
 from tests.manual_validation.scenarios.base import Scenario
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
 from tests.manual_validation.scenarios.common.specs import SCENARIO_SPECS
-from tests.manual_validation.scenarios.common.page_readback import SPECIAL_PAGE_TITLE
+from tests.manual_validation.scenarios.common.page_readback import (
+    SPECIAL_PAGE_TITLE,
+    SPECIAL_PAGE_TITLE_CASEFOLD,
+)
 from tests.manual_validation.scenarios.fixture_recipes import delete as delete_fixture
 from tests.manual_validation.scenarios.fixture_recipes.copy_page import DESCRIPTION as COPY_PAGE_DESCRIPTION
 from tests.manual_validation.scenarios.fixture_recipes.reorder_page import DESCRIPTION as REORDER_PAGE_DESCRIPTION
@@ -307,6 +310,10 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
         "semantic_page": {"id": "child-page"},
         "disposable_section": {"id": "destination-section"},
         "cross_section_anchor": {"id": "cross-section-anchor"},
+        "cross_section_root_title_anchor": {"id": "cross-section-root-title"},
+        "cross_section_root_title_casefold_anchor": {
+            "id": "cross-section-root-title-casefold"
+        },
         "cross_section_position_anchor": {"id": "cross-section-position-anchor"},
     }
     items = [
@@ -343,6 +350,24 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
             "title": SPECIAL_PAGE_TITLE,
             "section_id": "source-section",
             "parent_id": "source-section",
+            "page_level": 1,
+            "parent_page_id": None,
+        },
+        {
+            "id": "cross-section-root-title",
+            "resource_type": "page",
+            "title": SPECIAL_PAGE_TITLE,
+            "section_id": "destination-section",
+            "parent_id": "destination-section",
+            "page_level": 1,
+            "parent_page_id": None,
+        },
+        {
+            "id": "cross-section-root-title-casefold",
+            "resource_type": "page",
+            "title": SPECIAL_PAGE_TITLE_CASEFOLD,
+            "section_id": "destination-section",
+            "parent_id": "destination-section",
             "page_level": 1,
             "parent_page_id": None,
         },
@@ -405,8 +430,13 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
     snapshot = {
         "items": items,
         "page_hashes": {
+            "parent-page": "source-parent-hash",
             "child-page": "source-child-hash",
             "cross-section-anchor": "cross-section-anchor-hash",
+            "cross-section-root-title": "cross-section-root-title-hash",
+            "cross-section-root-title-casefold": (
+                "cross-section-root-title-casefold-hash"
+            ),
             "cross-section-position-anchor": "cross-section-position-anchor-hash",
         },
         "page_capability_projections": {
@@ -440,7 +470,11 @@ def test_copy_page_fixture_validator_proves_description_and_numbered_source_tree
     )
     assert "cross-Section destination contains a distinct same-title anchor" in checks
     assert (
-        "cross-Section anchor body hash differs from the same-title source Child"
+        "cross-Section destination contains distinct first-level root-title anchors"
+        in checks
+    )
+    assert (
+        "cross-Section anchor body hashes differ from the same-title source Pages"
         in checks
     )
 

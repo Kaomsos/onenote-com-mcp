@@ -599,8 +599,13 @@ def test_keep_worksite_copy_spec_removes_cleanup_permissions(tmp_path) -> None:
             "source_section": {"id": "source-section-id"},
             "disposable_section": {"id": "section-id"},
             "cross_section_anchor": {"id": "cross-section-anchor-id"},
+            "cross_section_root_title_anchor": {"id": "cross-section-root-title-id"},
+            "cross_section_root_title_casefold_anchor": {
+                "id": "cross-section-root-title-casefold-id"
+            },
             "cross_notebook_section": {"id": "cross-notebook-section-id"},
             "cross_notebook_anchor": {"id": "cross-notebook-anchor-id"},
+            "cross_notebook_root_title_anchor": {"id": "cross-notebook-root-title-id"},
         },
     }
 
@@ -623,19 +628,41 @@ def test_keep_worksite_copy_spec_removes_cleanup_permissions(tmp_path) -> None:
         "cross-notebook",
         "cross-notebook",
     ]
-    assert [case["collision_anchor"]["id"] for case in spec["cases"]] == [
-        "source-child-id",
-        "source-child-id",
-        "cross-section-anchor-id",
-        "cross-section-anchor-id",
-        "cross-notebook-anchor-id",
-        "cross-notebook-anchor-id",
+    assert [
+        [anchor["id"] for anchor in case["collision_anchors"]]
+        for case in spec["cases"]
+    ] == [
+        ["page-id", "source-child-id"],
+        ["page-id", "source-child-id"],
+        [
+            "cross-section-anchor-id",
+            "cross-section-root-title-id",
+            "cross-section-root-title-casefold-id",
+        ],
+        [
+            "cross-section-anchor-id",
+            "cross-section-root-title-id",
+            "cross-section-root-title-casefold-id",
+        ],
+        ["cross-notebook-anchor-id", "cross-notebook-root-title-id"],
+        ["cross-notebook-anchor-id", "cross-notebook-root-title-id"],
     ]
     assert spec["protected_page_ids"] == [
         "page-id",
         "source-child-id",
         "cross-section-anchor-id",
+        "cross-section-root-title-id",
+        "cross-section-root-title-casefold-id",
         "cross-notebook-anchor-id",
+        "cross-notebook-root-title-id",
+    ]
+    assert [case["destination_title_parameter"] for case in spec["cases"]] == [
+        "omitted",
+        "explicit",
+        "explicit-casefold",
+        "explicit",
+        "omitted",
+        "explicit-source-title",
     ]
     assert spec["policy"].deletes_enabled is False
     assert not {"delete_page", "delete_section", "delete_section_group"} & spec["tools"]
@@ -790,13 +817,17 @@ def _keep_worksite_copy_page_two_case_fixture(
             "cases": [
                 {
                     "name": "root-only-default",
+                    "destination": destination,
                     "destination_name": "01-Root-Only-Copy",
+                    "collision_anchors": [source],
                     "include_descendants": None,
                     "expected_page_count": 1,
                 },
                 {
                     "name": "full-subtree",
+                    "destination": destination,
                     "destination_name": "02-Full-Subtree-Copy",
+                    "collision_anchors": [source],
                     "include_descendants": True,
                     "expected_page_count": 2,
                 },
@@ -825,6 +856,7 @@ def _keep_worksite_copy_page_two_case_fixture(
             "verified": True,
             "lossless": False,
             "id_map": {"source-page": "root-target"},
+            "allocated_ids": ["root-target"],
         },
     }
     subtree_copied = {
@@ -849,6 +881,7 @@ def _keep_worksite_copy_page_two_case_fixture(
                 "source-page": "subtree-target",
                 "source-child": "subtree-child",
             },
+            "allocated_ids": ["subtree-target", "subtree-child"],
         },
     }
 
@@ -1133,6 +1166,7 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                     },
                     "verified": True,
                     "id_map": id_map,
+                    "allocated_ids": list(id_map.values()),
                 },
             }
 

@@ -6,6 +6,23 @@
 
 本文解释这条工程经验，不定义当前工具的完整响应或错误结构。公开 Create/Copy/Move 合同以 [`tool_contracts.md`](../design/tool_contracts.md) 为准，对象身份模型以 [`object_model.md`](../design/object_model.md) 为准，人工验证流程以 [`isolated_mutation_validation.md`](../dev/isolated_mutation_validation.md) 和 [`manual_validation/README.md`](../../tests/manual_validation/README.md) 为准。
 
+## Page 标题与容器名称的不同重名边界
+
+### 2026-08-21 工程推断与当前设计决策
+
+在本项目覆盖的本地 OneNote Desktop 文件系统投影中，Page title 是逻辑显示标题，不是独占的 filesystem leaf；同一 Section 的多个一级 Page 可以具有完全相同或仅大小写不同的标题。因而 Page Copy/Move 不得把同标题当作目标冲突：它必须创建 fresh Page，并以 allocated exact ID 及后续回读验证目标身份。
+
+容器不能沿用这条规则。Section 的持久化实体是 `.one` 文件；SectionGroup 和 folder-backed Notebook 通常对应目录。同一父级中的同名或仅大小写不同的容器会映射到相同的 Windows filesystem leaf，带来目标路径歧义或覆盖风险。当前 Copy/Move 设计因此在写入前拒绝 Section、SectionGroup 和 Notebook 的直接同名容器；不会覆盖、合并或自动改名。
+
+| 对象 | 名称的角色 | 当前 Copy/Move 重名策略 |
+| --- | --- | --- |
+| Page | 逻辑显示标题 | 允许；用 fresh allocated exact ID 区分目标与同标题 anchor。 |
+| Section | `.one` 文件 leaf | 拒绝同一父级的同名/仅大小写不同名称。 |
+| SectionGroup | 通常为目录 leaf | 拒绝同一父级的同名/仅大小写不同名称。 |
+| Notebook | folder-backed 时通常为目录 leaf | 拒绝目标目录已存在的同名/仅大小写不同名称。 |
+
+这是 local-first Windows 文件系统边界下的工程推断和当前安全决策，不是关于所有 OneNote 版本、远程/online-backed Notebook 或所有存储后端的普遍断言。它也不替代当前实现契约；容器冲突的准确 preflight 规则以 [`tool_contracts.md`](../design/tool_contracts.md) 为准。
+
 ## 2026-08-11 真实观察
 
 一次由用户显式启动的隔离 Page Copy 六 case 验证中，root-only case 成功创建并回读了新 Page；随后 subtree case 为复制根分配了新 ID，却把源子页识别成了复制子页。源子页与计划创建的子页标题相同，旧实现又在 hierarchy 顺序中接受第一个相同 friendly path，因此后续正文写入与层级调整触及了源对象。严格 Copy verifier 返回 partial failure 并阻止了后续 case，working bundle 按失败语义保留，immutable template 未被回写。

@@ -5,9 +5,16 @@ from local_onenote_mcp.page import (
     copy_verification_tier,
     page_content_capability_projection,
     page_equivalence,
+    page_visible_text_equivalence,
     semantic_display_equation_comparison,
     semantic_mathml_comparison,
     transform_page_for_copy,
+)
+from local_onenote_mcp.services import (
+    PageMixedContentReadbackMismatch,
+    PageRichTextReadbackMismatch,
+    PageTitleReadbackMismatch,
+    page_readback_mismatch_error,
 )
 
 
@@ -199,6 +206,127 @@ def test_display_equation_copy_rejects_title_oe_com_style_attribute_set_change()
         "page_title_structure_mismatch"
     )
     assert equivalence["content_object_failures"][0]["content_exposed"] is False
+
+
+def test_destination_title_rewrite_uses_only_visible_text_projection() -> None:
+    expected = equation_page_xml("expected")
+    actual = equation_page_xml("actual").replace(
+        "<one:T>Equations</one:T>",
+        '<one:T><![CDATA[<span style="font-family:Calibri"></span>Equations]]></one:T>',
+        1,
+    )
+
+    strict = page_equivalence(
+        expected,
+        actual,
+        verification_tier="semantic_display_equation",
+    )
+    rewritten = page_visible_text_equivalence(expected, actual)
+
+    assert strict["equivalent"] is False
+    assert strict["failed_content_object_types"] == ["PageTitle"]
+    assert rewritten == {
+        "equivalent": True,
+        "verification_tier": "visible_text_projection",
+        "acceptance_checks": ["visible_text"],
+        "checks": {"visible_text": True},
+        "failed_content_object_types": [],
+        "content_object_failures": [],
+        "content_object_failure_summary": {
+            "limit": 24,
+            "reported": 0,
+            "truncated": False,
+            "total": 0,
+        },
+    }
+
+
+def test_destination_title_rewrite_rejects_only_visible_text_change() -> None:
+    expected = equation_page_xml("expected")
+    actual = (
+        equation_page_xml("actual")
+        .replace(
+            "<one:T>Equations</one:T>",
+            '<one:T><![CDATA[<span style="font-family:Calibri"></span>Equations]]></one:T>',
+            1,
+        )
+        .replace("before <math", "changed <math", 1)
+    )
+    result = page_visible_text_equivalence(expected, actual)
+
+    assert result["equivalent"] is False
+    assert result["verification_tier"] == "visible_text_projection"
+    assert result["acceptance_checks"] == ["visible_text"]
+    assert result["checks"] == {"visible_text": False}
+    assert result["failed_content_object_types"] == ["RichText"]
+    assert result["content_object_failures"] == [
+        {
+            "code": "rich_text_visible_text_mismatch",
+            "content_object_type": "RichText",
+            "path": "$.visible_text",
+            "content_exposed": False,
+        }
+    ]
+    assert isinstance(
+        page_readback_mismatch_error(
+            "visible text mismatch",
+            result["failed_content_object_types"],
+        ),
+        PageRichTextReadbackMismatch,
+    )
+
+
+def test_destination_title_rewrite_keeps_title_mismatch_typed() -> None:
+    expected = equation_page_xml("expected")
+    actual = equation_page_xml("actual").replace(
+        "<one:T>Equations</one:T>",
+        "<one:T>Renamed equations</one:T>",
+        1,
+    )
+
+    result = page_visible_text_equivalence(expected, actual)
+
+    assert result["equivalent"] is False
+    assert result["failed_content_object_types"] == ["PageTitle"]
+    assert result["content_object_failures"] == [
+        {
+            "code": "page_title_mismatch",
+            "content_object_type": "PageTitle",
+            "path": "$.title",
+            "content_exposed": False,
+        }
+    ]
+    assert isinstance(
+        page_readback_mismatch_error(
+            "visible text mismatch",
+            result["failed_content_object_types"],
+        ),
+        PageTitleReadbackMismatch,
+    )
+
+
+def test_destination_title_rewrite_types_title_and_body_mismatches_as_mixed() -> None:
+    expected = equation_page_xml("expected")
+    actual = (
+        equation_page_xml("actual")
+        .replace(
+            "<one:T>Equations</one:T>",
+            "<one:T>Renamed equations</one:T>",
+            1,
+        )
+        .replace("before <math", "changed <math", 1)
+    )
+
+    result = page_visible_text_equivalence(expected, actual)
+
+    assert result["failed_content_object_types"] == ["PageTitle", "RichText"]
+    assert isinstance(
+        page_readback_mismatch_error(
+            "visible text mismatch",
+            result["failed_content_object_types"],
+        ),
+        PageMixedContentReadbackMismatch,
+    )
 
 
 def test_display_equation_copy_keeps_body_oe_style_values_strict() -> None:
