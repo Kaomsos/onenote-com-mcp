@@ -59,6 +59,7 @@
 | 051 | [常驻 COM Client 在 OneNote 重启后的代理刷新](051_persistent_com_client_restart_refresh.md)                    | 待办   | P1     | 记录 persistent PowerShell host 在 OneNote 意外退出并经内部启动恢复后仍持有 stale COM proxy 的问题；先比较 host 内刷新与 Python 重建路径，再确定最小恢复契约。 |
 | 052 | [Manual Validation 嵌套 Section Cache 崩溃排查与生产隔离](052_nested_section_cache_crash_investigation.md)       | 待办   | P2     | 调查 opaque cache working copy 中 Group 子 Section 激活导致 OneNote 崩溃或 Page 不收敛的原因；维持 shape-based fail-fast，并审计生产 OpenHierarchy 可达性。 |
 | 053 | [Copy Create identity failure 证据收敛](053_copy_create_identity_failure_evidence.md)                           | 进行中 | P2     | 将跨类型 Create 的 allocation/read-back/PartialFailure evidence 与 TODO 050 的 Page 同标题修复分离；明确已存在、未确认 allocation 与 backend 尝试证据。 |
+| 054 | [Manual Validation fixture 创建与验证 backend 调用去重](054_manual_validation_fixture_validation_call_deduplication.md) | 待办 | P2 | 参照 049，为单次人工验证的 fixture 创建、materialization/live validation 与 scenario 验证冻结调用基线，并仅复用可证明等价的阶段内 readback，以缩短等待时间且不降低 fresh evidence 或安全门。 |
 
 ## 文件命名
 
