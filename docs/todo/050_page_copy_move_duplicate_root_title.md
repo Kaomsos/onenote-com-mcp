@@ -1,10 +1,10 @@
 # 050：Page Copy/Move 目标同标题根 Page 回归
 
 > ID：050
-> 状态：待办
+> 状态：已完成
 > 优先级：P0
 > 类型：Bug / Page Copy / Page Move / 精确身份
-> 更新日期：2026-08-20
+> 更新日期：2026-08-21
 
 ## 问题
 
@@ -24,7 +24,7 @@
 
 ## 实施范围
 
-- 将 Page 与容器的 destination collision 规则分离：保留 Page 目标父级及其 existing children 的稳定快照/漂移保护，但不以同标题 Page 作为 Page Copy/Move 的计划拒绝条件；
+- 将 Page 与容器的 destination collision 规则分离：Page 目标父级及其 existing children 只进入 plan digest / 诊断快照，执行前不比较、也不构成漂移拒绝；仍不以同标题 Page 作为 Page Copy/Move 的计划拒绝条件；
 - 保持 `destination_title` 的原始逻辑标题语义，包括大小写、Unicode 和已由 [TODO 040](040_move_readback_validation_followups.md) 覆盖的路径分隔字符；
 - 审查 Page target 创建、`wait_for_created()` remap 和 Copy target validator，确保任何回退均不通过 display path 或标题从多个同名对象中任选一个；
 - 更新公开 tool 描述、当前设计契约和用户文档，明确 Page 允许重名但 Copy/Move 按 exact ID 创建与验证；
@@ -45,14 +45,20 @@
 
 真实 OneNote 执行只能由用户在交互式前台显式启动。pytest、CI、Agent、hook、import、timer、watcher 与 dry-run 不得触发真实 mutation；失败必须保留现场和证据。
 
+## 进度
+
+2026-08-21：生产实现、自动化合同、`copy-page` recipe v16、`move-page` recipe v8、公开契约与文档已落地。实现仅分离 Page 与容器的 collision 规则；跨 Create 类型的 failure-identity 加固已拆分到 [TODO 053](053_copy_create_identity_failure_evidence.md)，避免扩大本项影响面。用户在 2026-08-21 的两次 fresh `copy-page` run 都在 v15 fixture 阶段发现 casefold root-title anchor 被通用 `ensure_page()` 复用，因而在任何 Copy 前 fail closed；v16 改为显式创建并验证两个 fresh anchor ID。
+
+用户随后明确确认 disposable `copy-page` 与 `move-page` 的同标题根 Page 手动验收通过；destination title 的 Copy→rename 两阶段修复与仅文字投影诊断也已纳入本项实现。完整 pytest 已通过 `1571 passed`，`copy-page --dry-run --json` 通过。真实验收结论来自用户确认，而非 Agent、pytest 或 dry-run；至此完成定义全部满足。
+
 ## 完成定义
 
-- [ ] Page Copy/Move 不再因目标 Section 的同标题一级 Page 被计划阶段误拒绝；
-- [ ] 新 target 的 allocated/read-back ID、exact Section、标题和 fresh identity 均被验证，且不复用同标题 anchor；
-- [ ] Copy/Move 的正向、歧义/别名负向和容器冲突保留测试通过；
-- [ ] 相关公开契约、README/用户文档、设计文档及 manual-validation 场景同步；
-- [ ] 聚焦测试与完整 pytest 通过；
-- [ ] 用户确认 disposable `copy-page` 与 `move-page` 的真实同标题根 Page 回归通过，且 Move 未误删 anchor 或源外对象。
+- [x] Page Copy/Move 不再因目标 Section 的同标题一级 Page 被计划阶段误拒绝；
+- [x] 新 target 的 allocated/read-back ID、exact Section、标题和 fresh identity 均被验证，且不复用同标题 anchor；
+- [x] Copy/Move 的正向、歧义/别名负向和容器冲突保留测试通过；
+- [x] 相关公开契约、README/用户文档、设计文档及 manual-validation 场景同步；
+- [x] 聚焦测试与完整 pytest 通过；
+- [x] 用户确认 disposable `copy-page` 与 `move-page` 的真实同标题根 Page 回归通过，且 Move 未误删 anchor 或源外对象。
 
 ## 关联
 

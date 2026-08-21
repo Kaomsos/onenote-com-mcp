@@ -55,9 +55,10 @@
 | 047 | [并发只读 Tool 调度与共享读协调](047_concurrent_read_tool_execution.md)                                               | 待办   | P1     | 让 catalog 已声明安全的共享 read 经有界 dispatch 真正并发，保持 writer-preference、全程 mutation 独占、调用上下文隔离与 content-free trace。 |
 | 048 | [常驻 OneNote COM Client Bridge](048_persistent_com_client_bridge.md)                                             | 已完成 | P0     | 客户端无关契约、默认 `persistent_powershell` STA host、显式 one-shot fallback 与真实核心回归已验收；restart stale proxy 和嵌套 Section cache 闪退分别由 051/052 跟踪。 |
 | 049 | [Copy/Move backend readback 调用去重](049_copy_move_backend_readback_call_deduplication.md)                         | 已完成 | P2     | 已实现中性 snapshot、集中 preflight、fresh 删除 confirmation、promotion 后仅重绑 `modified` 与三条组合 ledger；用户已确认 disposable 真实 trace，双页 Move 由 43 降至 33 个 backend call，且七个公开工具的 trace 全部完成。 |
-| 050 | [Page Copy/Move 目标同标题根 Page 回归](050_page_copy_move_duplicate_root_title.md)                              | 待办   | P0     | 修复 Page Copy/Move 将目标 Section 的同标题一级 Page 误判为冲突的问题；保持 exact-ID 创建验证、Copy-before-delete 与容器路径冲突拒绝。 |
+| 050 | [Page Copy/Move 目标同标题根 Page 回归](050_page_copy_move_duplicate_root_title.md)                              | 已完成 | P0     | Page 目标只保留 plan digest / 诊断快照、执行前不比较；用户确认 disposable Copy/Move 同标题根 Page 验收通过，保持 exact-ID 创建验证、Copy-before-delete 与容器路径冲突拒绝。 |
 | 051 | [常驻 COM Client 在 OneNote 重启后的代理刷新](051_persistent_com_client_restart_refresh.md)                    | 待办   | P1     | 记录 persistent PowerShell host 在 OneNote 意外退出并经内部启动恢复后仍持有 stale COM proxy 的问题；先比较 host 内刷新与 Python 重建路径，再确定最小恢复契约。 |
 | 052 | [Manual Validation 嵌套 Section Cache 崩溃排查与生产隔离](052_nested_section_cache_crash_investigation.md)       | 待办   | P2     | 调查 opaque cache working copy 中 Group 子 Section 激活导致 OneNote 崩溃或 Page 不收敛的原因；维持 shape-based fail-fast，并审计生产 OpenHierarchy 可达性。 |
+| 053 | [Copy Create identity failure 证据收敛](053_copy_create_identity_failure_evidence.md)                           | 进行中 | P2     | 将跨类型 Create 的 allocation/read-back/PartialFailure evidence 与 TODO 050 的 Page 同标题修复分离；明确已存在、未确认 allocation 与 backend 尝试证据。 |
 
 ## 文件命名
 
