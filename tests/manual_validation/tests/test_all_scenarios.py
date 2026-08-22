@@ -67,6 +67,7 @@ SCENARIO_MODULES = {
     "interactive_move_page_content": "InteractiveMovePageContentScenario",
     "interactive_user_authored_fixture": "InteractiveUserAuthoredFixtureScenario",
     "cache_invalidation": "CacheInvalidationScenario",
+    "timestamp_fidelity": "TimestampFidelityProbeScenario",
 }
 SCENARIO_INFRASTRUCTURE_MODULES = {
     "__init__",

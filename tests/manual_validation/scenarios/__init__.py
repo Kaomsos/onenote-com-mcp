@@ -28,6 +28,7 @@ from ..run_identity import new_run_identity, validation_notebook_names
 # common/registry.py contains no scenario imports or parallel construction list.
 from .create import CreateScenario
 from .rename import RenameScenario
+from .timestamp_fidelity import TimestampFidelityProbeScenario
 from .reorder_page import ReorderPageScenario
 from .reorder_section import ReorderSectionScenario
 from .reparent_section import ReparentSectionScenario
@@ -210,6 +211,7 @@ async def dispatch_command(args: argparse.Namespace) -> dict[str, Any]:
 __all__ = [
     "CreateScenario",
     "RenameScenario",
+    "TimestampFidelityProbeScenario",
     "ReorderPageScenario",
     "ReorderSectionScenario",
     "ReparentSectionScenario",

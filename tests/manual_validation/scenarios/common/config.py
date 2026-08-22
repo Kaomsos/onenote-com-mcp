@@ -106,3 +106,9 @@ MOVE_SECTION_TOOLS = READ_TOOLS | {
 MOVE_SECTION_GROUP_TOOLS = READ_TOOLS | {
     "move_section_group",
 }
+TIMESTAMP_FIDELITY_TOOLS = READ_TOOLS | {
+    "read_verified_page_datetime",
+    "create_section",
+    "create_page",
+    "set_verified_page_datetime",
+}

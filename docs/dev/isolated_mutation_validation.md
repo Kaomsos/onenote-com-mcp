@@ -316,3 +316,5 @@ Section/SectionGroup Move 使用不同的删除策略：只允许跨 Notebook，
 真实 COM mutation 永远不能进入默认 CI、pre-commit 或 smoke test。`write_contract` 仅是 mock 合同测试；真实隔离验证必须由用户在终端明确启动。
 
 本地程序化 Runner 不是默认自动化：只有用户本人手动运行具体 `run.py <scenario>` 才构成授权；Agent 只能修改 runner、运行不接触 OneNote 的合同测试或把命令交给用户，不能代为执行。Runner 为该场景唯一的 MCP 子进程开启完整闭环所需的静态最小权限，不要求额外权限开关或二次确认，也不跨场景合并权限。永久 OneNote Delete 在所有场景中始终关闭；四个具名 Reparent 场景全部使用 typed 工具且保持 Raw XML 关闭。所有 scenario suite 都不删除本地 Notebook 文件。
+
+`timestamp-fidelity-probe` 是一个例外明确、仍受 human gate 约束的已验证能力 smoke：它只在两个 exact disposable Page 上设置 `dateTime`，分别走 `UpdateHierarchy` 与 `UpdatePageContent`。通用安全 snapshot 为避免将易变字段并入内容/拓扑比较而不保留 `created`；所以每次 mutation 前后及最终稳定性检查均由内部 `read_verified_page_datetime` 从写入的同一 COM 来源读取 exact Page root `dateTime`。输入固定为真实 run 已证明可保存的整秒 RFC 3339 值；写入前仍以 exact Notebook/Page ID、父级、hierarchy 修改时间和同源 `dateTime` 做 precondition。`set_verified_page_datetime` 只在 bridge 内为两条写入路径生成最小 XML，不注册生产 MCP Tool、不接收 caller-provided XML，也不启用 generic Raw XML。它不再探测或写入 `lastModifiedTime`、容器、`createdTime`/`creationTime`，也不做正文或 `dateExpectedLastModified` 实验；那些不是已验证能力。任一路径失败或不稳定均非零退出并保留 evidence/worksite，不改变 Copy/Move 合同。

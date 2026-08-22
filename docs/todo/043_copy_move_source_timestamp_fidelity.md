@@ -4,7 +4,7 @@
 > 状态：待办
 > 优先级：P1
 > 类型：开放方向 / Copy / Move / 元数据保真 / OneNote COM
-> 更新日期：2026-08-19
+> 更新日期：2026-08-22
 
 ## 决策摘要
 
@@ -20,6 +20,15 @@
 - 当前 Page Copy 的 canonical/lossless 比较把 `creationTime`、`dateTime` 和 `lastModifiedTime` 视为 OneNote-owned volatile attributes，因此新目标可以使用当前时间，仍被报告为 `lossless=true`；
 - Copy 后得到的新资源丢失 source 的时间轴语义；Move 又建立在 Copy-before-delete 之上，若随后删除 source，用户最终只剩带新建时间和新修改时间的目标；
 - 内容写入、子树创建、重排或标题修正都可能再次推进目标的修改时间，因此不能只在创建时复制一次时间字段。
+
+## 已验证字段、方法与限制（2026-08-22）
+
+用户显式运行的 `.local-validation/run-2026-08-22-21-12-25` 对 fresh disposable Page 给出了以下边界；它是能力证据，不是 Copy/Move 产品合同：
+
+- **可写字段：**仅验证了 Page 根属性 `dateTime`。用 exact Page ID 经 `UpdateHierarchy` 和 `UpdatePageContent` 各写入一次后，都从同一来源读回并在最终双读中保持同一时刻。OneNote 把请求的 `2020-02-03T04:05:06.123456+08:00` 规范化为 `2020-02-02T20:05:06.000Z`：时刻保持，分秒以下精度被截断。因此当前 smoke 只接受整秒、带 offset 的 RFC 3339 输入。
+- **修改方法：**`UpdateHierarchy` 使用 exact Notebook→…→Page ancestor chain，并携带必要的 identity/name/page-level；目标 Page 唯一可变的时间 attribute 是 `dateTime`。`UpdatePageContent` 使用只含 exact Page ID 与 `dateTime` 的 Page root。通用安全 snapshot 不保存易变 `created`，故由 internal-only `read_verified_page_datetime` 从相同 COM 来源读取 exact Page root `dateTime`，用于写前 precondition、写后回读和最终双读。两条写入均在 internal validation bridge 内生成最小 XML，调用方不能传入 raw XML；写前还必须匹配 exact parent 与 hierarchy `lastModifiedTime`。
+- **未验证或不可用：**测试过的 Page `lastModifiedTime`（两个 API）以及 Section、SectionGroup、Notebook 的 `lastModifiedTime`（`UpdateHierarchy`）均未持久化请求值。`createdTime`、`creationTime` 在该 run 的来源中未暴露，不能视为可写；`dateExpectedLastModified` 的匹配和不匹配调用均返回 `0x80042001`，并发保护语义尚未得到验证。
+- **场景范围：**`timestamp-fidelity-probe` 已收敛为上述两条 Page `dateTime` smoke 路径；不再执行字段盘点、容器写入、`lastModifiedTime` 写入、正文对照或并发 probe。它仍不调用 Copy/Move、不进入 `all`，也不改变公开 MCP tool 或当前产品合同。
 
 ## 工作范围
 
@@ -60,6 +69,7 @@
 
 ### Human-gated 真实验证
 
+- 保留 fresh-only 的 `timestamp-fidelity-probe` 作为已验证 Page `dateTime` 能力的两路径 smoke：以 `UpdateHierarchy` 和 `UpdatePageContent` 分别写入整秒值，严格同源 readback 与最终稳定性检查。真实执行仍只允许用户本人显式启动；它不调用 Copy/Move、不进入 `all`、不改变公开 MCP tool 或当前产品合同；
 - 在 `tests/manual_validation/` 为受影响的具名 Copy/Move scenario 增加时间 before/after 证据；真实运行仍只由用户本人显式启动；
 - 至少验证 Page、Section、SectionGroup、Notebook 各自的创建/修改时间可写性与稳定回读，并覆盖一个带子树的叶到根恢复顺序；
 - 至少构造一次时间回写或回读不一致的负向路径，证明 Move 保留 source、保存 exact target 诊断且不执行删除；

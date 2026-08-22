@@ -23,6 +23,10 @@ SCENARIO_TOOL_POLICY_REQUIREMENTS: dict[str, frozenset[str]] = {
     "expand_hierarchy": frozenset(),
     "get_hierarchy_path": frozenset(),
     "get_page_xml": frozenset(),
+    "set_verified_page_datetime": frozenset(
+        {"writes_enabled", "timestamp_fidelity_probe_enabled"}
+    ),
+    "read_verified_page_datetime": frozenset({"timestamp_fidelity_probe_enabled"}),
     "get_page_text": frozenset(),
     "get_page_content_objects": frozenset(),
     "get_page_content_object_binary": frozenset(),

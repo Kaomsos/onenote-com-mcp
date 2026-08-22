@@ -13,16 +13,31 @@ import os
 from pathlib import Path
 import sys
 from typing import Any
+import xml.etree.ElementTree as ET
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 from local_onenote_mcp.bridge import OneNoteBridge
-from local_onenote_mcp.constants import PAGE_INFO, XML_SCHEMA_2013
+from local_onenote_mcp.constants import HIERARCHY_SCOPES, PAGE_INFO, XML_SCHEMA_2013
+from local_onenote_mcp.hierarchy import parse_hierarchy
 from local_onenote_mcp.tool_surface import INTERNAL_CAPABILITY_NAMES
 
 from .bridge_adapter import VALIDATION_BRIDGE_ADAPTER
 from .progress import RunProgressReporter
+from .timestamp_fidelity import (
+    build_hierarchy_page_datetime_xml,
+    build_page_datetime_xml,
+    validate_second_precision_timestamp,
+)
+
+
+# These helpers live only in the human-gated validation harness.  They are not
+# a production MCP profile and therefore do not belong to the public/internal
+# capability catalog exported by ``local_onenote_mcp``.
+VALIDATION_ONLY_CAPABILITY_NAMES = frozenset(
+    {"read_verified_page_datetime", "set_verified_page_datetime"}
+)
 
 
 POLICY_ENV_NAMES = {
@@ -83,7 +98,7 @@ MUTATION_TOOL_PREFIXES = (
 
 
 def is_mutation_tool(name: str) -> bool:
-    return name.startswith(MUTATION_TOOL_PREFIXES)
+    return name.startswith(MUTATION_TOOL_PREFIXES) or name == "set_verified_page_datetime"
 
 
 @dataclass(frozen=True)
@@ -95,6 +110,7 @@ class ScenarioPolicy:
     local_file_io_enabled: bool = False
     ui_control_enabled: bool = False
     notebook_lifecycle_enabled: bool = False
+    timestamp_fidelity_probe_enabled: bool = False
 
     def as_dict(self) -> dict[str, bool]:
         return {
@@ -164,6 +180,11 @@ MOVE_CONTAINERS_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
     create_enabled=True,
+)
+TIMESTAMP_FIDELITY_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    create_enabled=True,
+    timestamp_fidelity_probe_enabled=True,
 )
 
 
@@ -392,7 +413,10 @@ class MCPStdioClient:
             listed = await asyncio.wait_for(self._session.list_tools(), timeout=self.timeout_seconds)
             self.available_tools = {tool.name for tool in listed.tools}
             missing = sorted(
-                self.allowed_tools - self.available_tools - INTERNAL_CAPABILITY_NAMES
+                self.allowed_tools
+                - self.available_tools
+                - INTERNAL_CAPABILITY_NAMES
+                - VALIDATION_ONLY_CAPABILITY_NAMES
             )
             if missing:
                 raise ClientFailure(f"Server is missing required tools: {', '.join(missing)}")
@@ -546,6 +570,10 @@ class MCPStdioClient:
         arguments = arguments or {}
         if name == "get_page_xml":
             return await self._call_internal_page_xml(arguments)
+        if name == "read_verified_page_datetime":
+            return await self._call_internal_verified_page_datetime_read(arguments)
+        if name == "set_verified_page_datetime":
+            return await self._call_internal_verified_page_datetime(arguments)
         mutation = is_mutation_tool(name)
         if mutation and self._scenario_before_snapshots:
             pending_count = len(self._scenario_before_snapshots)
@@ -646,6 +674,275 @@ class MCPStdioClient:
                 if attempt == attempts:
                     break
         raise ClientFailure(f"{name} transport failed after {attempts} attempt(s): {last_error}")
+
+    @staticmethod
+    def _find_xml_node(xml: str, object_id: str) -> ET.Element | None:
+        root = ET.fromstring(xml)
+        return next(
+            (node for node in root.iter() if node.attrib.get("ID") == object_id),
+            None,
+        )
+
+    def _run_internal_verified_page_datetime_read(
+        self,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Read the exact Page ``dateTime`` from its intended COM source."""
+
+        notebook_id = str(arguments.get("notebook_id", "")).strip()
+        page_id = str(arguments.get("page_id", "")).strip()
+        route = str(arguments.get("route", "")).strip()
+        if not notebook_id or not page_id:
+            raise ClientFailure("Verified Page dateTime read requires exact Notebook and Page IDs.")
+        if route not in {"update_hierarchy", "update_page_content"}:
+            raise ClientFailure("Verified Page dateTime read route is invalid.")
+        hierarchy_result = self._internal_bridge.call(
+            "get_hierarchy",
+            start_id=notebook_id,
+            scope=HIERARCHY_SCOPES["pages"],
+            schema=XML_SCHEMA_2013,
+        )
+        hierarchy_xml = str(hierarchy_result.get("xml", ""))
+        catalog = parse_hierarchy(hierarchy_xml)
+        page = next(
+            (
+                item
+                for item in catalog
+                if str(item.get("id", "")) == page_id
+                and item.get("resource_type") == "page"
+            ),
+            None,
+        )
+        if page is None:
+            return {
+                "status": "state_uncertain",
+                "source": "hierarchy",
+                "attribute_name": "dateTime",
+                "reason": "exact_page_missing_or_type_changed",
+            }
+        source_xml = hierarchy_xml
+        source_name = "hierarchy"
+        if route == "update_page_content":
+            page_result = self._internal_bridge.call(
+                "get_page_content",
+                page_id=page_id,
+                page_info=PAGE_INFO["all"],
+                schema=XML_SCHEMA_2013,
+            )
+            source_xml = str(page_result.get("xml", ""))
+            source_name = "page_content"
+        source_node = self._find_xml_node(source_xml, page_id)
+        date_time = source_node.attrib.get("dateTime") if source_node is not None else None
+        if date_time is None:
+            return {
+                "status": "source_missing",
+                "source": source_name,
+                "attribute_name": "dateTime",
+            }
+        return {
+            "status": "observed",
+            "source": source_name,
+            "attribute_name": "dateTime",
+            "date_time": date_time,
+        }
+
+    async def _call_internal_verified_page_datetime_read(
+        self,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run the gated, content-free read used by the Page ``dateTime`` smoke check."""
+
+        if not self.policy.timestamp_fidelity_probe_enabled:
+            raise ClientFailure("Verified Page dateTime read requires its dedicated validation gate.")
+        started = asyncio.get_running_loop().time()
+        record: dict[str, Any] = {
+            "tool": "read_verified_page_datetime",
+            "surface": "internal_validation_capability",
+            "attempt": 1,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "arguments": summarize(arguments),
+        }
+        self.progress.tool_started("read_verified_page_datetime", 1, mutation=False)
+        try:
+            payload = await asyncio.to_thread(
+                self._run_internal_verified_page_datetime_read,
+                arguments,
+            )
+            record["completed_at"] = datetime.now(timezone.utc).isoformat()
+            record["elapsed_seconds"] = round(asyncio.get_running_loop().time() - started, 6)
+            record["result"] = summarize(payload)
+            self._append_audit(record)
+            self.progress.tool_completed(
+                "read_verified_page_datetime",
+                1,
+                mutation=False,
+                elapsed_seconds=float(record["elapsed_seconds"]),
+                envelope={"ok": True, "result": payload},
+            )
+            return payload
+        except Exception as exc:
+            record["completed_at"] = datetime.now(timezone.utc).isoformat()
+            record["elapsed_seconds"] = round(asyncio.get_running_loop().time() - started, 6)
+            record["internal_error"] = f"{type(exc).__name__}: {exc}"
+            self._append_audit(record)
+            self.progress.tool_failed(
+                "read_verified_page_datetime",
+                1,
+                mutation=False,
+                elapsed_seconds=float(record["elapsed_seconds"]),
+                error_type=type(exc).__name__,
+            )
+            raise ClientFailure(f"Verified Page dateTime read failed: {exc}") from exc
+
+    def _run_internal_verified_page_datetime(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Set the one Page timestamp field and precision proven by the real run."""
+
+        notebook_id = str(arguments.get("notebook_id", "")).strip()
+        page_id = str(arguments.get("page_id", "")).strip()
+        route = str(arguments.get("route", "")).strip()
+        date_time = str(arguments.get("date_time", "")).strip()
+        if not notebook_id or not page_id:
+            raise ClientFailure("Verified Page dateTime update requires exact Notebook and Page IDs.")
+        if route not in {"update_hierarchy", "update_page_content"}:
+            raise ClientFailure("Verified Page dateTime update route is invalid.")
+        try:
+            validate_second_precision_timestamp(date_time)
+        except ValueError as exc:
+            raise ClientFailure(str(exc)) from exc
+        hierarchy_result = self._internal_bridge.call(
+            "get_hierarchy",
+            start_id=notebook_id,
+            scope=HIERARCHY_SCOPES["pages"],
+            schema=XML_SCHEMA_2013,
+        )
+        hierarchy_xml = str(hierarchy_result.get("xml", ""))
+        catalog = parse_hierarchy(hierarchy_xml)
+        page = next(
+            (
+                item
+                for item in catalog
+                if str(item.get("id", "")) == page_id
+                and item.get("resource_type") == "page"
+            ),
+            None,
+        )
+        if page is None:
+            return {
+                "status": "state_uncertain",
+                "mutation_dispatched": False,
+                "reason": "exact_page_missing_or_type_changed",
+            }
+        if page.get("parent_id") != arguments.get("expected_parent_id") or page.get(
+            "modified"
+        ) != arguments.get("expected_hierarchy_modified"):
+            return {
+                "status": "precondition_drifted",
+                "mutation_dispatched": False,
+                "reason": "exact_parent_or_modified_confirmation_changed",
+            }
+        source_xml = hierarchy_xml
+        source_name = "hierarchy"
+        if route == "update_page_content":
+            page_result = self._internal_bridge.call(
+                "get_page_content",
+                page_id=page_id,
+                page_info=PAGE_INFO["all"],
+                schema=XML_SCHEMA_2013,
+            )
+            source_xml = str(page_result.get("xml", ""))
+            source_name = "page_content"
+        source_node = self._find_xml_node(source_xml, page_id)
+        if source_node is None or source_node.attrib.get("dateTime") is None:
+            return {
+                "status": "source_missing",
+                "mutation_dispatched": False,
+                "source": source_name,
+                "attribute_name": "dateTime",
+            }
+        if source_node.attrib.get("dateTime") != arguments.get("expected_date_time"):
+            return {
+                "status": "precondition_drifted",
+                "mutation_dispatched": False,
+                "source": source_name,
+                "attribute_name": "dateTime",
+                "reason": "exact_source_date_time_changed",
+            }
+        if route == "update_hierarchy":
+            payload = build_hierarchy_page_datetime_xml(
+                catalog,
+                page_id=page_id,
+                date_time=date_time,
+            )
+            operation = "update_hierarchy"
+            parameters = {"xml": payload, "schema": XML_SCHEMA_2013}
+        else:
+            payload = build_page_datetime_xml(page_id=page_id, date_time=date_time)
+            operation = "update_page_content"
+            parameters = {"xml": payload, "schema": XML_SCHEMA_2013, "force": False}
+        try:
+            self._internal_bridge.call(operation, **parameters)
+        except Exception as exc:
+            return {
+                "status": "write_failed",
+                "mutation_dispatched": True,
+                "source": source_name,
+                "attribute_name": "dateTime",
+                "error_type": type(exc).__name__,
+                "hresult": getattr(exc, "hresult", None),
+            }
+        return {
+            "status": "dispatched",
+            "mutation_dispatched": True,
+            "source": source_name,
+            "attribute_name": "dateTime",
+            "bridge_operation": operation,
+            "mutation_attempts": 1,
+            "mutation_replayed": False,
+        }
+
+    async def _call_internal_verified_page_datetime(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Run the gated, one-field Page ``dateTime`` smoke mutation once."""
+
+        if not self.policy.writes_enabled or not self.policy.timestamp_fidelity_probe_enabled:
+            raise ClientFailure(
+                "Verified Page dateTime update requires both Writes and its dedicated validation gate."
+            )
+        started = asyncio.get_running_loop().time()
+        record: dict[str, Any] = {
+            "tool": "set_verified_page_datetime",
+            "surface": "internal_validation_capability",
+            "attempt": 1,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "arguments": summarize(arguments),
+        }
+        self.progress.tool_started("set_verified_page_datetime", 1, mutation=True)
+        try:
+            payload = await asyncio.to_thread(self._run_internal_verified_page_datetime, arguments)
+            record["completed_at"] = datetime.now(timezone.utc).isoformat()
+            record["elapsed_seconds"] = round(asyncio.get_running_loop().time() - started, 6)
+            record["result"] = summarize(payload)
+            self._append_audit(record)
+            self.progress.tool_completed(
+                "set_verified_page_datetime",
+                1,
+                mutation=True,
+                elapsed_seconds=float(record["elapsed_seconds"]),
+                envelope={"ok": True, "result": payload},
+            )
+            return payload
+        except Exception as exc:
+            record["completed_at"] = datetime.now(timezone.utc).isoformat()
+            record["elapsed_seconds"] = round(asyncio.get_running_loop().time() - started, 6)
+            record["internal_error"] = f"{type(exc).__name__}: {exc}"
+            self._append_audit(record)
+            self.progress.tool_failed(
+                "set_verified_page_datetime",
+                1,
+                mutation=True,
+                elapsed_seconds=float(record["elapsed_seconds"]),
+                error_type=type(exc).__name__,
+            )
+            raise ClientFailure(f"Verified Page dateTime update failed: {exc}") from exc
 
     async def _call_internal_page_xml(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Read raw Page XML solely for isolated validation evidence.
@@ -849,6 +1146,8 @@ async def scenario_client(
         expected = policy.as_dict()
         actual = existing.policy.as_dict()
         expanded = sorted(name for name, required in expected.items() if required and not actual[name])
+        if policy.timestamp_fidelity_probe_enabled and not existing.policy.timestamp_fidelity_probe_enabled:
+            expanded.append("timestamp_fidelity_probe_enabled")
         if expanded:
             raise ClientFailure(
                 "Existing scenario client policy cannot satisfy required permissions: "

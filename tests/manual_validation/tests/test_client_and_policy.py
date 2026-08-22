@@ -29,6 +29,7 @@ from tests.manual_validation.mcp_stdio_client import (
     REORDER_SECTION_POLICY,
     MOVE_PAGE_POLICY,
     MOVE_CONTAINERS_POLICY,
+    TIMESTAMP_FIDELITY_POLICY,
     WRITE_POLICY,
     MCPStdioClient,
     build_server_env,
@@ -86,6 +87,29 @@ def test_scenario_client_rejects_runtime_permission_expansion(tmp_path) -> None:
 
     with pytest.raises(ClientFailure, match="cannot satisfy required permissions"):
         asyncio.run(exercise())
+
+
+def test_scenario_client_rejects_timestamp_probe_gate_expansion(tmp_path) -> None:
+    existing = MCPStdioClient(
+        policy=WRITE_POLICY,
+        allowed_tools={"set_verified_page_datetime", "health_check"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+    )
+
+    async def exercise():
+        async with scenario_client(
+            existing,
+            policy=TIMESTAMP_FIDELITY_POLICY,
+            allowed_tools={"set_verified_page_datetime"},
+            run_dir=tmp_path,
+            timeout_seconds=10,
+        ):
+            pass
+
+    with pytest.raises(ClientFailure, match="timestamp_fidelity_probe_enabled"):
+        asyncio.run(exercise())
+
 
 def test_static_policy_matrix_is_minimal() -> None:
     assert READ_ONLY_POLICY.as_dict() == {

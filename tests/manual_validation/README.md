@@ -423,6 +423,11 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 .venv\Scripts\python.exe tests\manual_validation\run.py rename --dry-run --json
 ```
 
+<!-- dry-run-case: timestamp-fidelity-probe.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py timestamp-fidelity-probe --dry-run --json
+```
+
 <!-- dry-run-case: reorder-page.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py reorder-page --dry-run --json
@@ -664,6 +669,7 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 | `create` | 完整预设 fixture 加空 `Duplicate-Title-Target`；连续两次单项 `create_page` 验证同标题 fresh allocated/read-back IDs；默认先验证规范化重名 Section batch 在 mutation 前拒绝且 snapshot 不变，再以原 `create_section_group/create_section/create_page` 各提交两个 `items`，验证 batch allocated/read-back IDs，并由静态最小 allowlist 中对应的 `delete_page/delete_section/delete_section_group` 逐一非永久清理；不暴露 `create_notebook`，永久删除关闭；`--keep-worksite` 保留两个单项目标 Page |
 | `onenote-convergence` | fresh-only 的两 anchor 最小 fixture；验证 `request_notebook_sync` accepted-not-completed、公开 Notebook Create+Close、精确 run-scoped `export_object_to_pdf`、typed `navigate_to` action accepted，再对生产 `create_page`、`rename_page`、`replace_page_body`、`append_page_content`、`delete_page_content_object`、`reorder_page`、可恢复 `delete_page` 和 source `close_notebook` 逐项取证；source Close 是最后一个 scenario MCP mutation，其完整双稳定单次执行证据由 lifecycle wrapper 精确封存为 pre-closed lease且不二次 Close；不进入 `all`，永久删除/Raw XML/Copy/Move 均关闭 |
 | `rename` | canonical fixture 包含 Page、Section 与 SectionGroup target；单次运行以原 `rename_page/rename_section/rename_section_group` 的 `items` 模式执行 Rename/read-back，再逆序恢复，三种生产 Tool 均有独立 evidence。Page 正向证据以剔除 Title 后的 canonical body hash 严格保护正文，并保持拓扑和 content-object identity；恢复要求标题及完整 canonical Page 语义回到 before，避免把 OneNote 对同一标题 XML 的重序列化误报为内容损坏；没有 `--target`；`--keep-worksite` 保留新名称并记录精确恢复说明 |
+| `timestamp-fidelity-probe` | **验证后的 smoke，未进入 `all`**。fresh-only disposable Notebook 内创建一个直接 Section 与两个 root Page；每个 Page 只写 `dateTime` 一次，分别通过 `UpdateHierarchy` 与 `UpdatePageContent`，且只提交用户真实 run 已证明可稳定保存的整秒 RFC 3339 值。通用安全快照不保存易变时间字段；因此 `read_verified_page_datetime` 在 bridge 内从写入的同一 COM 来源读取 exact Page root `dateTime`，在写前、写后和最终双读中生成 content-free 时间证据。`set_verified_page_datetime` 不新增生产 MCP Tool、不接收 caller XML，也不启用 generic Raw XML；它在 bridge 内生成所需的 exact identity/ancestor XML，唯一可变时间 attribute 是 `dateTime`。`lastModifiedTime`、容器、`createdTime`/`creationTime`、正文对照和 `dateExpectedLastModified` 并发实验均不再运行；这些均不是已验证能力。任一路径失败或不稳定都会非零退出并保留 evidence/worksite；这不改变 Copy/Move 当前合同。 |
 | `reorder-page` | `Description/00-Reorder-Description` 明示操作前 `01,02,03`、正向操作后 `01,03,02`、恢复后 `01,02,03`；既有 `reorder_page` 取证后，默认再由 `sort_children` 对 leveled Page parent 的直属 Page blocks 按名称排序并验证块内缩进/内容不变；随后以冲突 `child_type=section` 验证 typed preflight 拒绝、零 mutation bridge call 与 unchanged snapshot；`--keep-worksite` 保留单项 Reorder 现场并跳过 Sort/拒绝探针 |
 | `reorder-section` | **已注册到 `all`**。`00-Description/00-Reorder-Section-Description` 分别说明 Notebook 父级和 SectionGroup 父级的 before/after/restore；两组 Section 及其 Page 均使用 `01/02/03` 编号；既有 `reorder_section` 取证后默认分别调用 `sort_children`，验证两个父类型均推断 Section、保持 SectionGroup 槽位与 Page 内容；公开授权只开启 Writes。 |
 | `reparent-section` | `00-Description/00-Reparent-Section-Description` 说明三种 before/after/restore：`01-Notebook-To-Group-Section` 从 Notebook 根换父级到 `01-Destination-Group`，`02-Group-To-Notebook-Section` 从 `02-Source-Group` 换父级到 Notebook 根，`03-Group-To-Group-Section` 从 `03-Source-Group` 换父级到 `03-Destination-Group`。每个 destination 预置两个可区分的直属 Section anchors；每次 Reparent 后刷新快照，验证 ID、父级、Page 拓扑、内容和独立位置证据，默认逆序恢复，`--keep-worksite` 保留三项目标父级。只允许同一 Notebook。 |

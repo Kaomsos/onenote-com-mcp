@@ -13,6 +13,7 @@ from ...mcp_stdio_client import (
     RICH_COPY_POLICY,
     RICH_REPARENT_POLICY,
     RICH_WRITE_POLICY,
+    TIMESTAMP_FIDELITY_POLICY,
     MOVE_PAGE_POLICY,
     MOVE_CONTAINERS_POLICY,
     REPARENT_POLICY,
@@ -37,6 +38,7 @@ from .config import (
     REORDER_PAGE_TOOLS,
     REORDER_SECTION_GROUP_TOOLS,
     REORDER_SECTION_TOOLS,
+    TIMESTAMP_FIDELITY_TOOLS,
 )
 
 
@@ -231,6 +233,46 @@ SCENARIO_SPECS = {
         ),
         WRITE_POLICY,
         frozenset(RENAME_TOOLS | {"create_section_group", "create_section", "create_page"}),
+    ),
+    "timestamp-fidelity-probe": ScenarioSpec(
+        "timestamp-fidelity-probe",
+        _profile(
+            "timestamp-fidelity-probe",
+            (
+                "Timestamp-Section/{Hierarchy-Page,PageContent-Page}",
+            ),
+            (
+                "section_target",
+                "page_hierarchy_target",
+                "page_content_target",
+            ),
+            {"create_section", "create_page"},
+            content=("plain_text", "verified_page_datetime_targets"),
+            checks=(
+                "one exact Notebook Section and two distinct root Page targets resolve",
+                "Page dateTime is written through UpdateHierarchy and UpdatePageContent",
+                "same-source readback proves an exact whole-second instant and final stability",
+            ),
+        ),
+        TIMESTAMP_FIDELITY_POLICY,
+        frozenset(TIMESTAMP_FIDELITY_TOOLS),
+        {
+            "fresh_only": True,
+            "included_in_all": False,
+            "internal_validation_capability": "set_verified_page_datetime",
+            "internal_validation_gates": [
+                "writes_enabled",
+                "timestamp_fidelity_probe_enabled",
+            ],
+            "routes": [
+                "page:update_hierarchy",
+                "page:update_page_content",
+            ],
+            "attribute": "dateTime",
+            "supported_precision": "whole_seconds",
+            "mutation_retries": 0,
+            "public_contract_changed": False,
+        },
     ),
     "reorder-page": ScenarioSpec(
         "reorder-page",
