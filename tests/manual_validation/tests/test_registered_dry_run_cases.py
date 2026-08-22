@@ -76,7 +76,8 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "onenote-convergence",
         "hierarchy-navigation",
         "com-refresh-mutation",
-        "timestamp-fidelity-probe",
+        "prob-timestamp-fidelity",
+        "negative-move-page-datetime-drift",
     }
     assert excluded <= covered
 
@@ -270,24 +271,50 @@ def test_registered_named_case_round_trips_through_guarded_cli(
             ["cross_notebook_anchor", "cross_notebook_root_title_anchor"],
             ["cross_notebook_anchor", "cross_notebook_root_title_anchor"],
         ]
-    if case.scenario_name == "move-page":
+    if case.scenario_name in {"move-page", "negative-move-page-datetime-drift"}:
         cases = payload["scenario_spec"]["execution_contract"]["cases"]
-        assert [item["destination_title"] for item in cases] == [
-            "omitted",
-            "explicit-source-title",
-        ]
-        assert [item["collision_anchor_keys"] for item in cases] == [
-            [
-                "destination_root_title_anchor",
-                "destination_anchor_a",
-                "destination_anchor_b",
-            ],
-            [
-                "destination_subtree_title_anchor",
-                "destination_anchor_a",
-                "destination_anchor_b",
-            ],
-        ]
+        if case.scenario_name == "negative-move-page-datetime-drift":
+            assert [item["name"] for item in cases] == ["cross-notebook-subtree"]
+            assert [item["destination_title"] for item in cases] == [
+                "explicit-source-title"
+            ]
+            assert payload["datetime_drift_negative"] is True
+            assert payload["expected_outcome"] == "copy_only"
+            assert payload["real_exit"] == "nonzero"
+            assert payload["result_json_passed"] is False
+            assert payload["failure_site_preserved"] is True
+            assert payload["sleep_performed"] is False
+            assert payload["directory_created"] is False
+            assert payload["mcp_started"] is False
+            expected_steps = [
+                "create-notebook-bundle",
+                "negative-move-page-datetime-drift",
+                "observe-debug-trace-trigger",
+                "write-source-datetime-plus-one-utc-second",
+                "expect-copy-only-and-nonzero-exit",
+                "report",
+            ]
+            if "--keep-worksite" not in case.scenario_args:
+                expected_steps.append("close-notebook-bundle")
+            assert [step["step"] for step in payload["ordered_steps"]] == expected_steps
+        else:
+            assert [item["destination_title"] for item in cases] == [
+                "omitted",
+                "explicit-source-title",
+            ]
+            assert [item["collision_anchor_keys"] for item in cases] == [
+                [
+                    "destination_root_title_anchor",
+                    "destination_anchor_a",
+                    "destination_anchor_b",
+                ],
+                [
+                    "destination_subtree_title_anchor",
+                    "destination_anchor_a",
+                    "destination_anchor_b",
+                ],
+            ]
+            assert "datetime_drift_negative" not in payload
     assert not run_dir.exists()
 
 

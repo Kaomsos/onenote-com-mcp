@@ -153,7 +153,7 @@ async def _execute_timestamp_fidelity_probe(
 ) -> dict[str, Any]:
     keep_worksite = bool(getattr(args, "keep_worksite", False))
     notebook_id = str(manifest["notebook"]["id"])
-    out = scenario_dir(options.run_dir, "timestamp-fidelity-probe")
+    out = scenario_dir(options.run_dir, "prob-timestamp-fidelity")
     declared = {
         key: resolve_manifest_item(manifest, key)
         for _label, key, _route, _source in _PROBE_SPECS
@@ -261,7 +261,7 @@ async def _execute_timestamp_fidelity_probe(
         all_routes_verified = all(case["status"] == "verified" for case in cases)
         matrix = {
             "schema_version": 3,
-            "scenario": "timestamp-fidelity-probe",
+            "scenario": "prob-timestamp-fidelity",
             "content_exposed": False,
             "verified_capability": {
                 "resource_type": "page",
@@ -302,7 +302,7 @@ async def _execute_timestamp_fidelity_probe(
         if keep_worksite:
             write_json(out / "worksite.json", worksite)
         result = {
-            "scenario": "timestamp-fidelity-probe",
+            "scenario": "prob-timestamp-fidelity",
             "status": "passed" if all_routes_verified else "failed",
             "target_ids": sorted(target_ids),
             "restored": False,
@@ -321,7 +321,7 @@ async def _execute_timestamp_fidelity_probe(
 
 @SCENARIO_REGISTRY.register
 class TimestampFidelityProbeScenario(Scenario):
-    name = "timestamp-fidelity-probe"
+    name = "prob-timestamp-fidelity"
     fixture_recipe = RECIPE
     help_text = (
         "GATED: verify the proven seconds-precision Page dateTime write/read-back "

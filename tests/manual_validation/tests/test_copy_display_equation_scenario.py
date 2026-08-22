@@ -126,6 +126,7 @@ def test_programmatic_display_equation_runs_three_verified_hops_and_restores(
                 "copy_contract_satisfied": True,
                 "page_results": [
                     {
+                        "date_time": {"status": "verified"},
                         "normalizations": {
                             "display_equation_empty_spans_removed": 1,
                             "redundant_breaks_before_display_mathml_removed": 1,

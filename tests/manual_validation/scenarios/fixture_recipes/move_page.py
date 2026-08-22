@@ -38,8 +38,13 @@ class MovePageFixtureRecipe(RecipeBase):
         "both Move targets belong only to the destination Notebook role",
     )
 
-    def __init__(self) -> None:
-        profile = get_scenario_spec("move-page").fixture
+    def __init__(
+        self,
+        *,
+        scenario_name: str = "move-page",
+        supports_cache: bool = True,
+    ) -> None:
+        profile = get_scenario_spec(scenario_name).fixture
         source_keys = (
             "source_section",
             "root_only_page",
@@ -78,7 +83,7 @@ class MovePageFixtureRecipe(RecipeBase):
             ),
         )
         super().__init__(
-            "move-page",
+            scenario_name,
             notebook_roles=(
                 NotebookRoleSpec(
                     "destination",
@@ -92,6 +97,7 @@ class MovePageFixtureRecipe(RecipeBase):
                 ),
             ),
         )
+        self.supports_cache = supports_cache
         self._root_table_observations: list[dict[str, Any]] = []
 
     async def build(self, context: FixtureContext) -> FixtureBuildResult:
@@ -382,4 +388,9 @@ class MovePageFixtureRecipe(RecipeBase):
 
 
 RECIPE = MovePageFixtureRecipe()
-__all__ = ["MovePageFixtureRecipe", "RECIPE"]
+NEGATIVE_RECIPE = MovePageFixtureRecipe(
+    scenario_name="negative-move-page-datetime-drift",
+    supports_cache=False,
+)
+
+__all__ = ["MovePageFixtureRecipe", "NEGATIVE_RECIPE", "RECIPE"]

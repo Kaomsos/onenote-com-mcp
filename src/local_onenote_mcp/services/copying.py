@@ -24,6 +24,12 @@ from ..page import (
     title_from_page_xml,
     transform_page_for_copy,
 )
+from ..page.datetime_compare import (
+    build_page_root_datetime_xml,
+    page_root_datetime,
+    same_utc_second,
+    utc_second,
+)
 from ..policy import CopyBudget, MutationPolicy
 from .backend_operation_classification import (
     advance_mutation_epoch,
@@ -56,6 +62,8 @@ from .read_reasons import (
     DESTINATION_PRECONDITION,
     PLAN_CAPTURE,
     POST_CREATE_CONVERGENCE,
+    FINAL_SOURCE_REVALIDATION,
+    FINAL_TARGET_READBACK,
     POST_WRITE_CONVERGENCE,
     POST_WRITE_RECONCILIATION,
     PRE_WRITE_TARGET_OBSERVATION,
@@ -285,6 +293,30 @@ class CopyService(BaseService):
         return sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod
+    def _page_datetime_seconds(page_xml: dict[str, str]) -> dict[str, str]:
+        seconds: dict[str, str] = {}
+        for page_id, xml in page_xml.items():
+            normalized = utc_second(page_root_datetime(xml))
+            if normalized is not None:
+                seconds[str(page_id)] = normalized
+        return seconds
+
+    @staticmethod
+    def _require_page_datetime_seconds(
+        resources: list[dict[str, Any]],
+        page_datetime_seconds: Any,
+    ) -> None:
+        pages = [item for item in resources if item["resource_type"] == "page"]
+        if not pages:
+            return
+        if not isinstance(page_datetime_seconds, dict):
+            raise ValueError("Copy source Page dateTime is missing or invalid.")
+        for item in pages:
+            value = page_datetime_seconds.get(item["id"])
+            if not isinstance(value, str) or utc_second(value) is None:
+                raise ValueError("Copy source Page dateTime is missing or invalid.")
+
+    @staticmethod
     def _is_descendant(item: dict[str, Any], root_id: str, by_id: dict[str, dict[str, Any]]) -> bool:
         parent_id = item.get("parent_id")
         while parent_id:
@@ -411,24 +443,29 @@ class CopyService(BaseService):
             capabilities.update(preview["content_types"])
             preview_issues.extend({"source_page_id": page["id"], **issue} for issue in preview["issues"])
 
+        page_datetime_seconds = self._page_datetime_seconds(page_xml)
         resource_snapshot = [self._stable_resource(item) for item in resources]
         source_snapshot = {
             "resources": resource_snapshot,
             "page_hashes": page_hashes,
             "page_xml_hashes": page_xml_hashes,
+            "page_datetime_seconds": page_datetime_seconds,
         }
         source_digest_snapshot = {
             "resources": resource_snapshot,
             "page_hashes": page_hashes,
+            "page_datetime_seconds": page_datetime_seconds,
         }
         protected_digest_snapshot = {
             "resources": [self._protected_resource(item) for item in resources],
             "page_hashes": page_hashes,
+            "page_datetime_seconds": page_datetime_seconds,
         }
         return {
             "source": source,
             "resources": resources,
             "page_xml": page_xml,
+            "page_datetime_seconds": page_datetime_seconds,
             "source_snapshot": source_snapshot,
             "source_digest": self._digest(source_digest_snapshot),
             "protected_digest": self._digest(protected_digest_snapshot),
@@ -628,7 +665,7 @@ class CopyService(BaseService):
             bundle["source"]["resource_type"] == "page" and bool(destination_name)
         )
         digest_payload = {
-            "schema_version": 5,
+            "schema_version": 6,
             "operation": operation,
             "options": {
                 "include_descendants": effective_include_descendants,
@@ -639,6 +676,7 @@ class CopyService(BaseService):
                     self._protected_resource(item) for item in bundle["resources"]
                 ],
                 "page_hashes": bundle["source_snapshot"]["page_hashes"],
+                "page_datetime_seconds": bundle["page_datetime_seconds"],
             },
             "destination": self._protected_destination(destination),
             "copyability": {
@@ -653,6 +691,7 @@ class CopyService(BaseService):
                     for item in move_source_bundle["resources"]
                 ],
                 "page_hashes": move_source_bundle["source_snapshot"]["page_hashes"],
+                "page_datetime_seconds": move_source_bundle["page_datetime_seconds"],
             }
         if move_notebooks is not None:
             digest_payload["move_notebooks"] = move_notebooks
@@ -662,8 +701,12 @@ class CopyService(BaseService):
             {"operation": "create_resources", "count": bundle["estimated"]["resources"]},
             {"operation": "write_page_content", "count": pages},
             {"operation": "reorder_pages", "count": pages},
-            {"operation": "verify_copy", "count": bundle["estimated"]["resources"]},
         ]
+        if pages:
+            steps.append({"operation": "write_page_datetime", "count": pages})
+        steps.append(
+            {"operation": "verify_copy", "count": bundle["estimated"]["resources"]}
+        )
         if operation == "move_page":
             preserved_count = max(
                 0,
@@ -918,12 +961,14 @@ class CopyService(BaseService):
         page_targets: dict[str, dict[str, Any]] = {}
         notebook_destination_path = ""
         failed_step = "create_resources"
+        page_datetime_seconds = plan.get("page_datetime_seconds") or {}
 
         def check_deadline() -> None:
             if time.monotonic() - started > budget.max_execute_seconds:
                 raise RuntimeError(f"Copy execution exceeded {budget.max_execute_seconds} seconds.")
 
         try:
+            self._require_page_datetime_seconds(resources, page_datetime_seconds)
             for item in resources:
                 check_deadline()
                 kind = item["resource_type"]
@@ -1029,6 +1074,7 @@ class CopyService(BaseService):
 
             failed_step = "write_page_content"
             page_results: list[dict[str, Any]] = []
+            page_final_inputs: list[dict[str, Any]] = []
             issues: list[dict[str, Any]] = []
             for item in (resource for resource in resources if resource["resource_type"] == "page"):
                 check_deadline()
@@ -1300,6 +1346,20 @@ class CopyService(BaseService):
                         "reconciliation": reconciliation.summary(),
                     }
                 )
+                page_final_inputs.append(
+                    {
+                        "source_id": item["id"],
+                        "target_id": target["id"],
+                        "result_index": len(page_results) - 1,
+                        "expected_xml": title_rewrite_expected_xml,
+                        "verification_tier": verification_tier,
+                        "title_rewrite_requested": title_rewrite_requested,
+                        "target_title": target_title,
+                        "expected_target_page_title": expected_target_page_title,
+                        "lossless_candidate": transformed["lossless_candidate"],
+                        "frozen_second": page_datetime_seconds[item["id"]],
+                    }
+                )
                 completed_steps.append(
                     {"operation": "write_page_content", "source_id": item["id"], "target_id": target["id"]}
                 )
@@ -1367,6 +1427,171 @@ class CopyService(BaseService):
                 completed_steps.append(
                     {"operation": "reorder_pages", "section_id": section_id, "page_ids": sorted(target_ids)}
                 )
+
+            if page_final_inputs:
+                failed_step = "verify_copy"
+                datetime_write_failed: dict[str, bool] = {}
+                for spec in page_final_inputs:
+                    check_deadline()
+                    try:
+                        self.call(
+                            "update_page_content",
+                            xml=build_page_root_datetime_xml(
+                                spec["target_id"],
+                                spec["frozen_second"],
+                            ),
+                            schema=XML_SCHEMA_2013,
+                            force=False,
+                        )
+                        datetime_write_failed[spec["source_id"]] = False
+                        completed_steps.append(
+                            {
+                                "operation": "write_page_datetime",
+                                "source_id": spec["source_id"],
+                                "target_id": spec["target_id"],
+                            }
+                        )
+                    except Exception:
+                        datetime_write_failed[spec["source_id"]] = True
+
+                def observe_final_target(spec: dict[str, Any]) -> dict[str, Any]:
+                    read_cache = current_copy_read_cache()
+                    if read_cache is not None:
+                        derivation = read_cache.get_page_derivation(
+                            spec["target_id"],
+                            "all",
+                            reason=FINAL_TARGET_READBACK,
+                        )
+                        actual_xml = derivation.xml
+                        equivalence = (
+                            derivation.visible_text_equivalence_against(
+                                spec["expected_xml"]
+                            )
+                            if spec["title_rewrite_requested"]
+                            else derivation.equivalence_against(
+                                spec["expected_xml"],
+                                verification_tier=spec["verification_tier"],
+                            )
+                        )
+                    else:
+                        actual_xml = self._page_xml(
+                            spec["target_id"],
+                            "all",
+                            reason=FINAL_TARGET_READBACK,
+                        )
+                        equivalence = (
+                            page_visible_text_equivalence(
+                                spec["expected_xml"],
+                                actual_xml,
+                            )
+                            if spec["title_rewrite_requested"]
+                            else page_equivalence(
+                                spec["expected_xml"],
+                                actual_xml,
+                                verification_tier=spec["verification_tier"],
+                            )
+                        )
+                    actual_page_title = title_from_page_xml(actual_xml)
+                    target_title_checks = {
+                        "title": (
+                            actual_page_title is not None
+                            and spec["expected_target_page_title"] is not None
+                            and spec["expected_target_page_title"] == spec["target_title"]
+                            and actual_page_title == spec["target_title"]
+                        ),
+                        "target_title_available": actual_page_title is not None,
+                        "transformed_matches_expected": (
+                            spec["expected_target_page_title"] == spec["target_title"]
+                        ),
+                        "target_matches_transformed": (
+                            actual_page_title == spec["expected_target_page_title"]
+                        ),
+                    }
+                    return {
+                        "xml": actual_xml,
+                        "equivalence": equivalence,
+                        "title_readback": {
+                            "checks": target_title_checks,
+                            "passed": all(target_title_checks.values()),
+                            "content_exposed": False,
+                        },
+                    }
+
+                def final_read_failure(message: str, exc: Exception) -> PartialFailure:
+                    return PartialFailure(
+                        message,
+                        partial=True,
+                        outcome="copy_unverified",
+                        source_untouched=True,
+                        source_touched=False,
+                        topology_touched=True,
+                        manual_recovery_required=True,
+                        source_deleted=False,
+                        created_ids=[item["target_id"] for item in created],
+                        allocated_ids=list(allocated_ids),
+                        resolved_target_ids=list(resolved_target_ids),
+                        failed_step=failed_step,
+                    )
+
+                for spec in page_final_inputs:
+                    check_deadline()
+                    try:
+                        observed = observe_final_target(spec)
+                    except PartialFailure:
+                        raise
+                    except Exception as exc:
+                        raise final_read_failure(
+                            "Copy created the target, but the final Page read-back failed.",
+                            exc,
+                        ) from exc
+                    try:
+                        source_xml = self._page_xml(
+                            spec["source_id"],
+                            "all",
+                            reason=FINAL_SOURCE_REVALIDATION,
+                        )
+                    except PartialFailure:
+                        raise
+                    except Exception as exc:
+                        raise final_read_failure(
+                            "Copy created the target, but the source Page could not be revalidated.",
+                            exc,
+                        ) from exc
+                    source_current = utc_second(page_root_datetime(source_xml))
+                    target_current = utc_second(page_root_datetime(observed["xml"]))
+                    if datetime_write_failed[spec["source_id"]]:
+                        date_time_status = "write_failed"
+                    elif source_current is None or not same_utc_second(
+                        spec["frozen_second"],
+                        source_current,
+                    ):
+                        date_time_status = "source_drifted"
+                    elif target_current is None or not same_utc_second(
+                        spec["frozen_second"],
+                        target_current,
+                    ):
+                        date_time_status = "readback_mismatch"
+                    else:
+                        date_time_status = "verified"
+                    result = page_results[spec["result_index"]]
+                    result["equivalence"] = observed["equivalence"]
+                    result["title_readback_stages"]["transformed_to_target"] = observed[
+                        "title_readback"
+                    ]
+                    if "semantic_content_stages" in result:
+                        result["semantic_content_stages"]["transformed_to_target"] = (
+                            observed["equivalence"].get("semantic_content_comparison")
+                        )
+                    result["date_time"] = {"status": date_time_status}
+                    result["lossless"] = (
+                        spec["lossless_candidate"]
+                        and observed["equivalence"]["equivalent"]
+                        and result["title_readback_stages"]["source_to_transformed"][
+                            "passed"
+                        ]
+                        and observed["title_readback"]["passed"]
+                        and date_time_status == "verified"
+                    )
 
             failed_step = "verify_copy"
             check_deadline()
@@ -1448,7 +1673,11 @@ class CopyService(BaseService):
             refreshed = topology_convergence.value["items"]
             refreshed_by_id = topology_convergence.value["by_id"]
             topology_verified = topology_convergence.value["verified"]
-            pages_verified = all(result["equivalence"]["equivalent"] for result in page_results)
+            pages_verified = all(
+                result["equivalence"]["equivalent"]
+                and result.get("date_time", {}).get("status") == "verified"
+                for result in page_results
+            )
             lossless = topology_verified and all(result["lossless"] for result in page_results)
             blocking_copy_issues = [
                 issue

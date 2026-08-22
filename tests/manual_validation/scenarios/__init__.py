@@ -42,6 +42,7 @@ from .copy_section_group import CopySectionGroupScenario
 from .copy_notebook import CopyNotebookScenario
 from .copy_display_equation import CopyDisplayEquationScenario
 from .move_page import MovePageScenario
+from .negative_move_page_datetime_drift import NegativeMovePageDatetimeDriftScenario
 from .move_section import MoveSectionScenario
 from .move_section_group import MoveSectionGroupScenario
 from .onenote_convergence import OneNoteConvergenceScenario
@@ -225,6 +226,7 @@ __all__ = [
     "CopyNotebookScenario",
     "CopyDisplayEquationScenario",
     "MovePageScenario",
+    "NegativeMovePageDatetimeDriftScenario",
     "MoveSectionScenario",
     "MoveSectionGroupScenario",
     "OneNoteConvergenceScenario",

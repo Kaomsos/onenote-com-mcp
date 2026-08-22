@@ -782,14 +782,24 @@ def _keep_worksite_copy_page_two_case_fixture(
             "subtree-child": [],
         },
     }
-    snapshots = iter(
+    frozen_second = "2026-01-01T00:00:00Z"
+    for snapshot in (before, after_root, after_both):
+        snapshot["page_datetime_seconds"] = {
+            page_id: frozen_second for page_id in snapshot["page_hashes"]
+        }
+    phases = iter(
         [before, after_root, after_both]
         if keep_worksite
         else [before, after_root, after_both, before]
     )
+    pending_phase: dict[str, object] = {"snapshot": None, "left": 0}
 
-    async def fake_snapshot(_client, _notebook_id):
-        return next(snapshots)
+    async def fake_snapshot(_client, _notebook_id, **_kwargs):
+        if int(pending_phase["left"]) <= 0:
+            pending_phase["snapshot"] = next(phases)
+            pending_phase["left"] = 2
+        pending_phase["left"] = int(pending_phase["left"]) - 1
+        return pending_phase["snapshot"]
 
     cleanup_calls: list[str] = []
 
@@ -820,6 +830,8 @@ def _keep_worksite_copy_page_two_case_fixture(
                     "destination": destination,
                     "destination_name": "01-Root-Only-Copy",
                     "collision_anchors": [source],
+                    "destination_role": "source",
+                    "destination_scope": "same-section",
                     "include_descendants": None,
                     "expected_page_count": 1,
                 },
@@ -828,10 +840,20 @@ def _keep_worksite_copy_page_two_case_fixture(
                     "destination": destination,
                     "destination_name": "02-Full-Subtree-Copy",
                     "collision_anchors": [source],
+                    "destination_role": "source",
+                    "destination_scope": "same-section",
                     "include_descendants": True,
                     "expected_page_count": 2,
                 },
             ],
+            "notebooks": {
+                "source": notebook,
+                "destination": {
+                    "resource_type": "notebook",
+                    "id": "destination-notebook",
+                    "name": "Destination",
+                },
+            },
             "policy": copy_runtime.COPY_POLICY,
             "tools": copy_runtime.COPY_TOOLS,
         },
@@ -857,6 +879,13 @@ def _keep_worksite_copy_page_two_case_fixture(
             "lossless": False,
             "id_map": {"source-page": "root-target"},
             "allocated_ids": ["root-target"],
+            "page_results": [
+                {
+                    "source_page_id": "source-page",
+                    "target_page_id": "root-target",
+                    "date_time": {"status": "verified"},
+                }
+            ],
         },
     }
     subtree_copied = {
@@ -882,6 +911,18 @@ def _keep_worksite_copy_page_two_case_fixture(
                 "source-child": "subtree-child",
             },
             "allocated_ids": ["subtree-target", "subtree-child"],
+            "page_results": [
+                {
+                    "source_page_id": "source-page",
+                    "target_page_id": "subtree-target",
+                    "date_time": {"status": "verified"},
+                },
+                {
+                    "source_page_id": "source-child",
+                    "target_page_id": "subtree-child",
+                    "date_time": {"status": "verified"},
+                },
+            ],
         },
     }
 
@@ -1066,7 +1107,7 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
 
     created_pages: list[dict] = []
 
-    async def fake_snapshot(_client, notebook_id):
+    async def fake_snapshot(_client, notebook_id, **_kwargs):
         if notebook_id == "source-notebook":
             items = [
                 source_notebook,
@@ -1094,11 +1135,20 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                 for item in created_pages
                 if item["section_id"] == "cross-notebook-section"
             )
+        page_ids = {
+            str(item["id"])
+            for item in items
+            if item.get("resource_type") == "page" or item.get("id") in hashes
+        }
+        page_ids.update(hashes)
         return {
             "notebook_id": notebook_id,
             "items": items,
             "page_hashes": hashes,
             "page_objects": {page_id: [{"id": f"object-{page_id}"}] for page_id in hashes},
+            "page_datetime_seconds": {
+                page_id: "2026-01-01T00:00:00Z" for page_id in page_ids
+            },
         }
 
     copy_arguments: list[dict] = []
@@ -1167,6 +1217,14 @@ def test_copy_page_executes_three_destination_scopes_by_two_subtree_modes(
                     "verified": True,
                     "id_map": id_map,
                     "allocated_ids": list(id_map.values()),
+                    "page_results": [
+                        {
+                            "source_page_id": source_id,
+                            "target_page_id": target_id,
+                            "date_time": {"status": "verified"},
+                        }
+                        for source_id, target_id in id_map.items()
+                    ],
                 },
             }
 

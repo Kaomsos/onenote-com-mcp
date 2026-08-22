@@ -20,7 +20,7 @@ class TimestampFidelityFixtureRecipe(RecipeBase):
 
     def __init__(self) -> None:
         super().__init__(
-            "timestamp-fidelity-probe",
+            "prob-timestamp-fidelity",
             frozenset(
                 {
                     "section_target",

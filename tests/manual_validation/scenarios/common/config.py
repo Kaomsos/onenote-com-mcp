@@ -100,6 +100,10 @@ COPY_NOTEBOOK_PRESERVE_TOOLS = COPY_NOTEBOOK_TOOLS - {"close_notebook"}
 MOVE_PAGE_TOOLS = READ_TOOLS | {
     "move_page",
 }
+MOVE_PAGE_DATETIME_DRIFT_NEGATIVE_TOOLS = MOVE_PAGE_TOOLS | {
+    "read_verified_page_datetime",
+    "set_verified_page_datetime",
+}
 MOVE_SECTION_TOOLS = READ_TOOLS | {
     "move_section",
 }

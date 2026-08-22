@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from ...mcp_stdio_client import (
     COPY_NO_DELETE_POLICY,
@@ -72,6 +72,110 @@ _COLLISION_ANCHOR_FIELDS = (
     "page_level",
     "order",
 )
+_PAGE_DATETIME_VERIFIED = "verified"
+
+
+def _page_datetime_observer() -> tuple[Callable[[Mapping[str, Any], str], None], dict[str, str]]:
+    from local_onenote_mcp.page.datetime_compare import page_root_datetime, utc_second
+
+    collected: dict[str, str] = {}
+
+    def observer(page: Mapping[str, Any], xml: str) -> None:
+        page_id = str(page.get("id") or "")
+        if not page_id:
+            return
+        normalized = utc_second(page_root_datetime(xml))
+        if normalized is not None:
+            collected[page_id] = normalized
+
+    return observer, collected
+
+
+def _page_datetime_seconds_from_snapshots(
+    collected: Mapping[str, str],
+    snapshots: Mapping[str, Mapping[str, Any]],
+) -> dict[str, str]:
+    if collected:
+        return dict(collected)
+    merged: dict[str, str] = {}
+    for snapshot in snapshots.values():
+        extra = snapshot.get("page_datetime_seconds")
+        if not isinstance(extra, dict):
+            continue
+        for key, value in extra.items():
+            if isinstance(key, str) and isinstance(value, str) and value:
+                merged[key] = value
+    return merged
+
+
+def write_page_datetime_evidence(
+    out: Path,
+    case_name: str,
+    before: Mapping[str, Any],
+    after: Mapping[str, Any],
+    report: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write independent Page dateTime seconds evidence for copy-page/move-page."""
+
+    id_map = report.get("id_map")
+    if not isinstance(id_map, Mapping) or not id_map:
+        raise InvariantFailure(
+            f"Copy case '{case_name}' is missing id_map for page-datetime evidence."
+        )
+    page_results = [
+        value
+        for value in report.get("page_results", ())
+        if isinstance(value, Mapping)
+    ]
+    before_seconds = before.get("page_datetime_seconds")
+    after_seconds = after.get("page_datetime_seconds")
+    if not isinstance(before_seconds, dict) or not isinstance(after_seconds, dict):
+        raise InvariantFailure(
+            f"Copy case '{case_name}' is missing page-datetime projection evidence."
+        )
+    pages: list[dict[str, Any]] = []
+    seen_sources: set[str] = set()
+    for result in page_results:
+        source_id = str(result.get("source_page_id") or "")
+        mapped_target = id_map.get(source_id)
+        target_id = str(result.get("target_page_id") or mapped_target or "")
+        date_time = result.get("date_time")
+        status = date_time.get("status") if isinstance(date_time, Mapping) else None
+        if status != _PAGE_DATETIME_VERIFIED:
+            raise InvariantFailure(
+                f"Copy case '{case_name}' did not report verified page dateTime."
+            )
+        source_second = before_seconds.get(source_id)
+        target_second = after_seconds.get(target_id)
+        if (
+            not isinstance(source_second, str)
+            or not isinstance(target_second, str)
+            or source_second != target_second
+        ):
+            raise InvariantFailure(
+                f"Copy case '{case_name}' source/target page dateTime seconds differ."
+            )
+        if not source_id or source_id in seen_sources:
+            raise InvariantFailure(
+                f"Copy case '{case_name}' has a missing or duplicate page-datetime source ID."
+            )
+        seen_sources.add(source_id)
+        pages.append(
+            {
+                "source_page_id": source_id,
+                "target_page_id": target_id,
+                "source_utc_second": source_second,
+                "target_utc_second": target_second,
+                "same_utc_second": True,
+            }
+        )
+    if seen_sources != {str(key) for key in id_map}:
+        raise InvariantFailure(
+            f"Copy case '{case_name}' page-datetime evidence scope differs from id_map."
+        )
+    evidence = {"content_exposed": False, "pages": pages}
+    write_json(out / f"page-datetime-{case_name}.json", evidence)
+    return evidence
 
 
 def _copy_page_destination_name(
@@ -627,10 +731,20 @@ async def _verify_and_finalize_notebook_copy(
 async def _capture_notebook_bundle(
     client: MCPStdioClient,
     notebooks: dict[str, dict[str, Any]],
+    *,
+    collect_page_datetimes: bool = False,
 ) -> dict[str, Any]:
     role_order = tuple(sorted(notebooks))
+    observer = None
+    collected: dict[str, str] = {}
+    if collect_page_datetimes:
+        observer, collected = _page_datetime_observer()
     role_snapshots = {
-        role: await capture_snapshot(client, str(notebooks[role]["id"]))
+        role: await capture_snapshot(
+            client,
+            str(notebooks[role]["id"]),
+            page_xml_observer=observer,
+        )
         for role in role_order
     }
     merged: dict[str, Any] = {
@@ -661,6 +775,11 @@ async def _capture_notebook_bundle(
             value = snapshot.get(field, {})
             if isinstance(value, dict):
                 merged[field].update(value)
+    if collect_page_datetimes:
+        merged["page_datetime_seconds"] = _page_datetime_seconds_from_snapshots(
+            collected,
+            role_snapshots,
+        )
     return merged
 
 
@@ -707,7 +826,11 @@ async def execute_copy_page(
         timeout_seconds=options.timeout,
         client_factory=MCPStdioClient,
     ) as client:
-        original_before = await _capture_notebook_bundle(client, notebooks)
+        original_before = await _capture_notebook_bundle(
+            client,
+            notebooks,
+            collect_page_datetimes=True,
+        )
         write_json(out / "before.json", original_before)
         page_text_evidence = await capture_full_page_text_evidence(
             client,
@@ -811,8 +934,19 @@ async def execute_copy_page(
                     f"expected {case['expected_page_count']}."
                 )
 
-            case_after = await _capture_notebook_bundle(client, notebooks)
+            case_after = await _capture_notebook_bundle(
+                client,
+                notebooks,
+                collect_page_datetimes=True,
+            )
             write_json(out / f"after-{case_name}.json", case_after)
+            write_page_datetime_evidence(
+                out,
+                case_name,
+                case_before,
+                case_after,
+                report,
+            )
             assert_copy_mapping(
                 case_before,
                 case_after,
@@ -947,7 +1081,11 @@ async def execute_copy_page(
         deleted_ids: list[str] = []
         for copied in reversed(copied_results):
             deleted_ids.extend(await cleanup_copy(client, current_snapshot, copied))
-        restored = await _capture_notebook_bundle(client, notebooks)
+        restored = await _capture_notebook_bundle(
+            client,
+            notebooks,
+            collect_page_datetimes=True,
+        )
         write_json(out / "restored.json", restored)
         assert_copy_page_restored(
             original_before,
@@ -1630,4 +1768,5 @@ __all__ = [
     "execute_copy",
     "execute_copy_container",
     "execute_copy_page",
+    "write_page_datetime_evidence",
 ]

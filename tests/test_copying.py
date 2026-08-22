@@ -65,6 +65,9 @@ async def _inspect_copy_plan(
         }
 
 
+DEFAULT_PAGE_DATETIME = "2026-01-01T00:00:00.000Z"
+
+
 def page_xml(page_id: str, title: str, body: str = "") -> str:
     outline = ""
     if body:
@@ -74,9 +77,30 @@ def page_xml(page_id: str, title: str, body: str = "") -> str:
         )
     return (
         '<one:Page xmlns:one="http://schemas.microsoft.com/office/onenote/2013/onenote" '
-        f'ID="{page_id}" lastModifiedTime="clock"><one:Title><one:OE><one:T>{title}</one:T>'
+        f'ID="{page_id}" lastModifiedTime="clock" dateTime="{DEFAULT_PAGE_DATETIME}">'
+        f"<one:Title><one:OE><one:T>{title}</one:T>"
         f"</one:OE></one:Title>{outline}</one:Page>"
     )
+
+
+def apply_page_content_update(xml_store: dict[str, str], payload: str) -> None:
+    """Apply a full Page rewrite or a dateTime-only attribute merge."""
+
+    root = ET.fromstring(payload)
+    page_id = root.attrib["ID"]
+    keys = set(root.attrib)
+    datetime_only = (
+        root.tag.rsplit("}", 1)[-1] == "Page"
+        and len(list(root)) == 0
+        and "dateTime" in keys
+        and keys <= {"ID", "dateTime"}
+    )
+    if datetime_only and page_id in xml_store:
+        existing = ET.fromstring(xml_store[page_id])
+        existing.attrib["dateTime"] = root.attrib["dateTime"]
+        xml_store[page_id] = ET.tostring(existing, encoding="unicode")
+        return
+    xml_store[page_id] = payload
 
 
 def test_canonical_page_digest_ignores_only_empty_selection_text_placeholders():
@@ -908,8 +932,7 @@ def install_recursive_execute_fakes(
 
         notify_backend_operation(operation)
         if operation == "update_page_content":
-            root = ET.fromstring(params["xml"])
-            xml_store[root.attrib["ID"]] = params["xml"]
+            apply_page_content_update(xml_store, params["xml"])
             return {"updated": True}
         if operation == "update_hierarchy":
             root = ET.fromstring(params["xml"])
@@ -2035,6 +2058,13 @@ def test_inspect_copy_plan_defaults_to_only_the_selected_page(monkeypatch):
     assert first["estimated"]["pages"] == 1
     assert first["execute_tool"] == "copy_page"
     assert first["copyability"]["lossless_candidate"] is True
+    assert [step["operation"] for step in first["steps"]] == [
+        "create_resources",
+        "write_page_content",
+        "reorder_pages",
+        "write_page_datetime",
+        "verify_copy",
+    ]
 
 
 def test_inspect_copy_plan_ignores_volatile_raw_page_xml_but_exposes_its_digest(monkeypatch):
@@ -2264,8 +2294,7 @@ def _install_tracked_page_copy_execute(monkeypatch, *, extra_items: list[dict[st
 
     def fake_call(operation, **params):
         if operation == "update_page_content":
-            root = ET.fromstring(params["xml"])
-            xml_store[root.attrib["ID"]] = params["xml"]
+            apply_page_content_update(xml_store, params["xml"])
             return {"updated": True}
         if operation == "update_hierarchy":
             root = ET.fromstring(params["xml"])
@@ -2810,6 +2839,10 @@ def test_partial_create_reports_created_ids_without_rollback(monkeypatch):
     assert caught.value.details["created_ids"] == ["new-parent", "new-child"]
     assert caught.value.details["id_map"] == {"parent": "new-parent"}
     assert caught.value.details["failed_step"] == "initialize_created_page"
+    assert caught.value.details["completed_steps"] == [
+        {"operation": "create", "source_id": "parent", "target_id": "new-parent"},
+        {"operation": "create_new_page", "object_id": "new-child"},
+    ]
 
 
 def test_copy_rejects_create_readback_that_aliases_a_source_page(monkeypatch):
@@ -2965,6 +2998,7 @@ def test_recursive_section_group_copy_executes_depth_first_and_verifies(monkeypa
     assert result["copy_report"]["fidelity"] == "lossless"
     assert result["copy_report"]["copy_contract_satisfied"] is True
     assert result["copy_report"]["copied_counts"] == {"resources": 4, "pages": 1}
+    assert result["copy_report"]["page_results"][0]["date_time"] == {"status": "verified"}
     assert_destination_position_contract(result, state, result["item"]["id"])
 
 
@@ -3404,8 +3438,7 @@ def test_page_copy_scope_creates_only_selected_ids_and_verifies(monkeypatch, inc
 
     def fake_call(operation, **params):
         if operation == "update_page_content":
-            root = ET.fromstring(params["xml"])
-            xml_store[root.attrib["ID"]] = params["xml"]
+            apply_page_content_update(xml_store, params["xml"])
             return {"updated": True}
         if operation == "update_hierarchy":
             root = ET.fromstring(params["xml"])
@@ -3527,9 +3560,7 @@ def test_video_preview_player_marker_loss_fails_strict_copy_readback(monkeypatch
     def fake_call(operation, **params):
         root = ET.fromstring(params["xml"])
         if operation == "update_page_content":
-            xml_store[root.attrib["ID"]] = params["xml"].replace(
-                ' v="video"', ""
-            )
+            apply_page_content_update(xml_store, params["xml"].replace(' v="video"', ""))
             return {"updated": True}
         if operation == "update_hierarchy":
             pages = [
@@ -5406,3 +5437,366 @@ def test_gui_modified_drift_after_promotion_keeps_update_and_blocks_delete(monke
     child = next(item for item in state["items"] if item["id"] == "child")
     assert child["page_level"] == 1
     assert child["parent_page_id"] is None
+
+
+def _enable_copy_move_policy(monkeypatch, *, deletes: bool = False) -> None:
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_CREATE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_WRITES", "true")
+    if deletes:
+        monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_DELETES", "true")
+
+
+def _copy_source_page():
+    return server.services.copying.copy_resource(
+        "source-page",
+        "page",
+        "destination-section",
+        "Copied Page",
+        "",
+        "Page",
+        "source-section",
+        None,
+        include_descendants=False,
+    )
+
+
+@pytest.mark.write_contract
+def test_copy_rejects_missing_or_invalid_datetime_before_any_mutation(monkeypatch):
+    _enable_copy_move_policy(monkeypatch)
+    state = install_recursive_execute_fakes(monkeypatch, include_destination_section=True)
+    xml_store = {
+        item["id"]: server.services.pages.xml(item["id"], "all")
+        for item in state
+        if item.get("resource_type") == "page"
+    }
+    created = []
+    original_create = server.services.mutations.create_page
+
+    def create_page(*args, **kwargs):
+        created.append(args)
+        return original_create(*args, **kwargs)
+
+    monkeypatch.setattr(server.services.mutations, "create_page", create_page)
+
+    def without_datetime(page_id, page_info="basic"):
+        root = ET.fromstring(xml_store[page_id] if page_id in xml_store else page_xml(page_id, "Page"))
+        root.attrib.pop("dateTime", None)
+        return ET.tostring(root, encoding="unicode")
+
+    monkeypatch.setattr(server.services.pages, "xml", without_datetime)
+    with pytest.raises(ValueError, match="dateTime is missing or invalid"):
+        _copy_source_page()
+    assert created == []
+
+    def illegal_datetime(page_id, page_info="basic"):
+        root = ET.fromstring(page_xml(page_id, "Page", "first body"))
+        root.attrib["dateTime"] = "old"
+        return ET.tostring(root, encoding="unicode")
+
+    monkeypatch.setattr(server.services.pages, "xml", illegal_datetime)
+    with pytest.raises(ValueError, match="dateTime is missing or invalid"):
+        _copy_source_page()
+    assert created == []
+
+
+@pytest.mark.write_contract
+def test_copy_datetime_write_preserves_body_and_title_and_records_order(monkeypatch):
+    _enable_copy_move_policy(monkeypatch)
+    install_recursive_execute_fakes(monkeypatch, include_destination_section=True)
+    sequence: list[str] = []
+    original_call = server.services.copying.call
+    original_xml = server.services.pages.xml
+    original_hierarchy = server.services.hierarchy.hierarchy_xml
+
+    def tracking_call(operation, **params):
+        if operation == "update_hierarchy":
+            sequence.append("reorder")
+        elif operation == "update_page_content":
+            root = ET.fromstring(params["xml"])
+            if len(list(root)) == 0 and "dateTime" in root.attrib:
+                sequence.append("datetime_write")
+            else:
+                sequence.append("content_write")
+        return original_call(operation, **params)
+
+    def tracking_xml(page_id, page_info="basic"):
+        from local_onenote_mcp.services.read_reasons import current_read_reason
+
+        reason = current_read_reason()
+        if reason == "final_target_readback":
+            sequence.append("final_target_read")
+        elif reason == "final_source_revalidation":
+            sequence.append("final_source_read")
+        return original_xml(page_id, page_info)
+
+    def tracking_hierarchy(start_id="", scope="pages"):
+        from local_onenote_mcp.services.read_reasons import current_read_reason
+
+        if current_read_reason() == "topology_verification":
+            sequence.append("topology")
+        return original_hierarchy(start_id, scope)
+
+    monkeypatch.setattr(server.services.copying, "call", tracking_call)
+    monkeypatch.setattr(server.services.pages, "xml", tracking_xml)
+    monkeypatch.setattr(server.services.hierarchy, "hierarchy_xml", tracking_hierarchy)
+
+    result = _copy_source_page()
+    report = result["copy_report"]
+    page_result = report["page_results"][0]
+    assert page_result["date_time"] == {"status": "verified"}
+    assert page_result["equivalence"]["equivalent"] is True
+    assert page_result["title_readback_stages"]["transformed_to_target"]["passed"] is True
+    assert sequence.index("reorder") < sequence.index("datetime_write")
+    assert sequence.index("datetime_write") < sequence.index("final_target_read")
+    assert sequence.index("final_target_read") < sequence.index("final_source_read")
+    last_topology = max(
+        index for index, name in enumerate(sequence) if name == "topology"
+    )
+    assert sequence.index("final_source_read") < last_topology
+    assert report["verified"] is True
+
+
+@pytest.mark.write_contract
+def test_copy_equivalent_timezone_datetime_still_verifies(monkeypatch):
+    _enable_copy_move_policy(monkeypatch)
+    install_recursive_execute_fakes(monkeypatch, include_destination_section=True)
+    original_xml = server.services.pages.xml
+
+    def offset_source(page_id, page_info="basic"):
+        xml = original_xml(page_id, page_info)
+        if page_id != "source-page":
+            return xml
+        root = ET.fromstring(xml)
+        root.attrib["dateTime"] = "2026-01-01T08:00:00.123+08:00"
+        return ET.tostring(root, encoding="unicode")
+
+    monkeypatch.setattr(server.services.pages, "xml", offset_source)
+    result = _copy_source_page()
+    assert result["copy_report"]["page_results"][0]["date_time"]["status"] == "verified"
+    assert result["copy_report"]["copy_contract_satisfied"] is True
+
+
+@pytest.mark.write_contract
+def test_copy_reports_source_drifted_when_source_second_changes(monkeypatch):
+    _enable_copy_move_policy(monkeypatch)
+    install_recursive_execute_fakes(monkeypatch, include_destination_section=True)
+    original_xml = server.services.pages.xml
+
+    def drift_after_write(page_id, page_info="basic"):
+        from local_onenote_mcp.services.read_reasons import current_read_reason
+
+        xml = original_xml(page_id, page_info)
+        if current_read_reason() == "final_source_revalidation":
+            root = ET.fromstring(xml)
+            root.attrib["dateTime"] = "2026-01-01T00:00:01.000Z"
+            return ET.tostring(root, encoding="unicode")
+        return xml
+
+    monkeypatch.setattr(server.services.pages, "xml", drift_after_write)
+    with pytest.raises(PartialFailure) as caught:
+        _copy_source_page()
+    report = caught.value.details["copy_report"]
+    assert report["page_results"][0]["date_time"]["status"] == "source_drifted"
+    assert report["copy_contract_satisfied"] is False
+    assert caught.value.details["source_deleted"] is False
+
+
+@pytest.mark.write_contract
+def test_copy_reports_readback_mismatch_for_adjacent_target_second(monkeypatch):
+    _enable_copy_move_policy(monkeypatch)
+    install_recursive_execute_fakes(monkeypatch, include_destination_section=True)
+    original_xml = server.services.pages.xml
+
+    def adjacent_target(page_id, page_info="basic"):
+        from local_onenote_mcp.services.read_reasons import current_read_reason
+
+        xml = original_xml(page_id, page_info)
+        if current_read_reason() == "final_target_readback":
+            root = ET.fromstring(xml)
+            root.attrib["dateTime"] = "2026-01-01T00:00:01.000Z"
+            return ET.tostring(root, encoding="unicode")
+        return xml
+
+    monkeypatch.setattr(server.services.pages, "xml", adjacent_target)
+    with pytest.raises(PartialFailure) as caught:
+        _copy_source_page()
+    assert (
+        caught.value.details["copy_report"]["page_results"][0]["date_time"]["status"]
+        == "readback_mismatch"
+    )
+
+
+@pytest.mark.write_contract
+def test_copy_reports_write_failed_and_blocks_move_delete(monkeypatch):
+    _enable_copy_move_policy(monkeypatch, deletes=True)
+    install_recursive_execute_fakes(monkeypatch, include_destination_section=True)
+    original_call = server.services.copying.call
+    deleted = []
+
+    def failing_datetime_write(operation, **params):
+        if operation == "update_page_content":
+            root = ET.fromstring(params["xml"])
+            if len(list(root)) == 0 and "dateTime" in root.attrib:
+                raise RuntimeError("dateTime write blocked")
+        return original_call(operation, **params)
+
+    monkeypatch.setattr(server.services.copying, "call", failing_datetime_write)
+    monkeypatch.setattr(
+        server.services.mutations,
+        "delete_page",
+        lambda *args, **kwargs: deleted.append(args) or {"deleted": True},
+    )
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.move_page(
+            "source-page",
+            "destination-section",
+            "Page",
+            "source-section",
+            None,
+            destination_title="Moved Page",
+            include_descendants=False,
+        )
+    assert caught.value.details["outcome"] == "copy_only"
+    assert caught.value.details["source_deleted"] is False
+    assert deleted == []
+    assert (
+        caught.value.details["copy_report"]["page_results"][0]["date_time"]["status"]
+        == "write_failed"
+    )
+    assert "write_page_datetime" not in {
+        step.get("operation")
+        for step in caught.value.details.get("completed_steps", ())
+    }
+    assert "2026" not in str(caught.value)
+    assert "2026" not in str(caught.value.details["copy_report"]["page_results"][0]["date_time"])
+
+
+@pytest.mark.write_contract
+def test_move_keeps_verified_copy_report_when_source_datetime_drifts_after_copy(
+    monkeypatch,
+):
+    _enable_copy_move_policy(monkeypatch, deletes=True)
+    install_recursive_execute_fakes(monkeypatch, include_destination_section=True)
+    created: list[object] = []
+    deleted: list[object] = []
+    original_create = server.services.mutations.create_page
+    original_xml = server.services.pages.xml
+
+    def create_page(*args, **kwargs):
+        created.append(args)
+        return original_create(*args, **kwargs)
+
+    def drift_source_after_copy(page_id, page_info="basic"):
+        from local_onenote_mcp.services.read_reasons import current_read_reason
+
+        xml = original_xml(page_id, page_info)
+        if (
+            page_id == "source-page"
+            and current_read_reason() == "source_drift_revalidation"
+        ):
+            root = ET.fromstring(xml)
+            root.attrib["dateTime"] = "2026-01-01T00:00:01.000Z"
+            return ET.tostring(root, encoding="unicode")
+        return xml
+
+    monkeypatch.setattr(server.services.mutations, "create_page", create_page)
+    monkeypatch.setattr(server.services.pages, "xml", drift_source_after_copy)
+    monkeypatch.setattr(
+        server.services.mutations,
+        "delete_page",
+        lambda *args, **kwargs: deleted.append(args) or {"deleted": True},
+    )
+
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.move_page(
+            "source-page",
+            "destination-section",
+            "Page",
+            "source-section",
+            None,
+            destination_title="Moved Page",
+            include_descendants=False,
+        )
+
+    details = caught.value.details
+    report = details["copy_report"]
+    assert details["outcome"] == "copy_only"
+    assert details["source_deleted"] is False
+    assert deleted == []
+    assert len(created) == 1
+    assert details["created_ids"] == list(report["id_map"].values())
+    assert report["page_results"][0]["date_time"] == {"status": "verified"}
+    assert report["copy_contract_satisfied"] is True
+    assert report["verified"] is True
+    assert "source_drifted" not in str(report)
+
+
+@pytest.mark.write_contract
+def test_copy_final_read_failure_does_not_duplicate_completed_steps(monkeypatch):
+    _enable_copy_move_policy(monkeypatch)
+    install_recursive_execute_fakes(monkeypatch, include_destination_section=True)
+    original_xml = server.services.pages.xml
+
+    def fail_final_target(page_id, page_info="basic"):
+        from local_onenote_mcp.services.read_reasons import current_read_reason
+
+        if current_read_reason() == "final_target_readback":
+            raise RuntimeError("final target read failed")
+        return original_xml(page_id, page_info)
+
+    monkeypatch.setattr(server.services.pages, "xml", fail_final_target)
+    with pytest.raises(PartialFailure) as caught:
+        _copy_source_page()
+    operations = [
+        step.get("operation")
+        for step in caught.value.details.get("completed_steps", ())
+    ]
+    assert operations.count("create") == 1
+    assert operations.count("write_page_content") == 1
+    assert operations.count("reorder_pages") == 1
+    assert operations.count("write_page_datetime") == 1
+    assert operations == list(dict.fromkeys(operations))
+
+
+@pytest.mark.write_contract
+def test_copy_subtree_datetime_mismatch_fails_the_aggregate(monkeypatch):
+    _enable_copy_move_policy(monkeypatch)
+    install_recursive_execute_fakes(
+        monkeypatch,
+        include_destination_section=True,
+        duplicate_page_titles=True,
+    )
+    original_xml = server.services.pages.xml
+    seen_targets: list[str] = []
+
+    def mismatch_second_target(page_id, page_info="basic"):
+        from local_onenote_mcp.services.read_reasons import current_read_reason
+
+        xml = original_xml(page_id, page_info)
+        if current_read_reason() == "final_target_readback":
+            seen_targets.append(page_id)
+            if len(seen_targets) == 2:
+                root = ET.fromstring(xml)
+                root.attrib["dateTime"] = "2026-01-01T00:00:01.000Z"
+                return ET.tostring(root, encoding="unicode")
+        return xml
+
+    monkeypatch.setattr(server.services.pages, "xml", mismatch_second_target)
+    with pytest.raises(PartialFailure) as caught:
+        server.services.copying.copy_resource(
+            "source-section",
+            "section",
+            "destination-notebook",
+            "Copied Section",
+            "",
+            "Notes",
+            "inner-group",
+            None,
+        )
+    statuses = [
+        result["date_time"]["status"]
+        for result in caught.value.details["copy_report"]["page_results"]
+    ]
+    assert "readback_mismatch" in statuses
+    assert "verified" in statuses
+    assert caught.value.details["copy_report"]["copy_contract_satisfied"] is False

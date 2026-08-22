@@ -23,6 +23,7 @@ from local_onenote_mcp.services.read_reasons import (
 )
 from tests.test_copying import (
     advance_fake_mutation_epoch,
+    apply_page_content_update,
     install_recursive_execute_fakes,
 )
 
@@ -83,6 +84,8 @@ def _planning_hierarchy_reads(ledger: list[tuple[str, str | None]]) -> int:
 _COPY_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
     ("get_hierarchy", "source_confirmation"): 1,
     ("get_hierarchy", "topology_verification"): 2,
+    ("get_page_content", "final_source_revalidation"): 1,
+    ("get_page_content", "final_target_readback"): 1,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_convergence"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
@@ -94,6 +97,8 @@ _MOVE_PAGE_BUDGET: dict[tuple[str, str | None], int] = {
     ("get_hierarchy", "source_confirmation"): 1,
     ("get_hierarchy", "source_drift_revalidation"): 1,
     ("get_hierarchy", "topology_verification"): 2,
+    ("get_page_content", "final_source_revalidation"): 1,
+    ("get_page_content", "final_target_readback"): 1,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_convergence"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
@@ -112,6 +117,8 @@ _MOVE_CONTAINER_BUDGET: dict[tuple[str, str | None], int] = {
     ("get_hierarchy", "source_drift_revalidation"): 1,
     ("get_hierarchy", "topology_verification"): 2,
     ("get_page_content", "delete_convergence"): 1,
+    ("get_page_content", "final_source_revalidation"): 1,
+    ("get_page_content", "final_target_readback"): 1,
     ("get_page_content", "plan_capture"): 1,
     ("get_page_content", "post_write_reconciliation"): 1,
     ("get_page_content", "pre_write_target_observation"): 1,
@@ -461,6 +468,8 @@ def test_container_copy_pages_share_operation_local_cache(
     assert _count(ledger, "get_page_content", "plan_capture") == source_page_count
     assert _count(ledger, "get_page_content", "pre_write_target_observation") == source_page_count
     assert _count(ledger, "get_page_content", "post_write_reconciliation") == source_page_count
+    assert _count(ledger, "get_page_content", "final_target_readback") == source_page_count
+    assert _count(ledger, "get_page_content", "final_source_revalidation") == source_page_count
 
 
 def test_reorder_phase_uses_single_hierarchy_read_per_section(
@@ -558,7 +567,14 @@ def _scripted_bridge(state: list[dict[str, Any]], xml_store: dict[str, str]):
                 child.tag.rsplit("}", 1)[-1] == "Title"
                 for child in update_children
             )
-            if title_only_update:
+            datetime_only = (
+                not update_children
+                and "dateTime" in root.attrib
+                and set(root.attrib) <= {"ID", "dateTime"}
+            )
+            if datetime_only:
+                apply_page_content_update(xml_store, params["xml"])
+            elif title_only_update:
                 existing = ET.fromstring(xml_store[page_id])
                 old_title = next(
                     (

@@ -37,6 +37,7 @@ def _semantic_report(*, override: bool = False) -> dict:
         "page_results": [
             {
                 "source_page_id": "source-page",
+                "date_time": {"status": "verified"},
                 "lossless": True,
                 "equivalence": {
                     "verification_tier": "semantic_content_v1",

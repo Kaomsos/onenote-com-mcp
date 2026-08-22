@@ -245,6 +245,17 @@ class RunProgressReporter:
             f"FAIL phase={phase} error={_safe_text(safe_error_text(error))}{suffix}"
         )
 
+    def expected_negative(self, summary: str, *, run_dir: Path | None) -> None:
+        """Report a verified negative case without relabelling it as scenario success."""
+
+        self.flush_reads()
+        phase = self._active_phase or "preflight"
+        suffix = "" if run_dir is None else f" artifacts={run_dir.resolve()}"
+        self._write(
+            "EXPECTED NEGATIVE VERIFIED "
+            f"phase={phase} outcome={_safe_text(safe_error_text(summary))}{suffix}"
+        )
+
     def terminal_stats(self) -> dict[str, Any]:
         return {
             "enabled_policies": list(self._enabled_policies),

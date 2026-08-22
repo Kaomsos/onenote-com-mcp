@@ -69,6 +69,7 @@ def _copy_report(
         ),
         "page_results": [
             {
+                "date_time": {"status": "verified"},
                 "equivalence": {
                     "equivalent": True,
                     "verification_tier": "strict_canonical",
@@ -251,6 +252,7 @@ def _diagnostic_partial_result(*, source_touched: bool = False) -> dict:
             {"operation": "create"},
             {"operation": "write_page_content"},
             {"operation": "reorder_pages"},
+            {"operation": "write_page_datetime"},
         ],
         "copy_report": copy_report,
         "destination": {"id": target_id},
@@ -981,6 +983,7 @@ def _display_equation_copy_chain_keeps_one_known_com_span_break_bounded(
                 {
                     "source_page_id": source_id,
                     "target_page_id": target_id,
+                    "date_time": {"status": "verified"},
                     "equivalence": {
                         "equivalent": True,
                         "checks": {

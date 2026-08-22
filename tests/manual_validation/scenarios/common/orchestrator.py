@@ -737,6 +737,13 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
             f"This Scenario is fresh-only: {scenario.fixture_recipe.fresh_only_reason}; "
             "remove --use-cache."
         )
+    if options.use_cache:
+        runtime_contract = scenario.runtime_spec(args).execution_contract
+        if runtime_contract.get("fresh_only"):
+            raise RunnerFailure(
+                "This Scenario mode is fresh-only: "
+                f"{runtime_contract.get('fresh_only_reason')}; remove --use-cache."
+            )
     if (
         options.use_cache
         and getattr(scenario.fixture_recipe, "representation_discovery_only", False)
@@ -944,6 +951,10 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
     if spec.batch_mutation_budget:
         client_options["batch_mutation_budget"] = dict(
             spec.batch_mutation_budget
+        )
+    if spec.execution_contract.get("debug_trace"):
+        client_options["debug_trace_dir"] = (
+            options.run_dir / "scenario-mcp" / "debug-trace"
         )
     client_handle = MCPStdioClient(**client_options)
     client_handle.progress = progress

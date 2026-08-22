@@ -250,7 +250,7 @@ def test_timestamp_smoke_verifies_both_proven_page_routes(monkeypatch, tmp_path)
     ]
     assert [case["status"] for case in result["matrix"]["cases"]] == ["verified", "verified"]
     matrix = test_utils.read_json(
-        tmp_path / "scenarios" / "timestamp-fidelity-probe" / "timestamp-capability-matrix.json"
+        tmp_path / "scenarios" / "prob-timestamp-fidelity" / "timestamp-capability-matrix.json"
     )
     assert matrix["verified_capability"]["supported_precision"] == "whole_seconds"
 

@@ -186,7 +186,7 @@ def assess_diagnostic_partial_copy(
             and page_result.get("target_page_id") == target_id
         ),
         "copy_write_and_reorder_completed": completed_operations
-        == ["create", "write_page_content", "reorder_pages"],
+        == ["create", "write_page_content", "reorder_pages", "write_page_datetime"],
         "only_expected_unverified_issue_or_known_com_normalization": (
             expected_issues
             or (temporary_known_com_normalization and not issues)

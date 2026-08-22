@@ -199,6 +199,8 @@ def test_child_env_overrides_hostile_parent_values(monkeypatch, tmp_path) -> Non
     assert env["LOCAL_ONENOTE_MCP_TIMEOUT"] == "1800"
     assert env["LOCAL_ONENOTE_BRIDGE_ADAPTER"] == "persistent_powershell"
     assert env["LOCAL_ONENOTE_BRIDGE_AUDIT_PATH"] == str(audit_path.resolve())
+    assert env["LOCAL_ONENOTE_MCP_DEBUG_TRACE"] == "false"
+    assert "LOCAL_ONENOTE_MCP_DEBUG_DIR" not in env
     for env_name, value in COPY_BUDGET_ENV.values():
         assert env[env_name] == str(value)
     for env_name, value in SEARCH_BUDGET_ENV.values():
@@ -230,6 +232,24 @@ def test_child_env_applies_static_batch_mutation_budget_override(tmp_path) -> No
 
     assert env["LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_PAGES"] == "3"
     assert env["LOCAL_ONENOTE_MAX_BATCH_EFFECTIVE_RESOURCES"] == "1000"
+
+
+def test_child_env_isolates_debug_trace_from_hostile_parent(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("LOCAL_ONENOTE_MCP_DEBUG_TRACE", "true")
+    monkeypatch.setenv("LOCAL_ONENOTE_MCP_DEBUG_DIR", str(tmp_path / "leaked-trace"))
+    env = build_server_env(READ_ONLY_POLICY, tmp_path / "temp")
+    assert env["LOCAL_ONENOTE_MCP_DEBUG_TRACE"] == "false"
+    assert "LOCAL_ONENOTE_MCP_DEBUG_DIR" not in env
+
+    configured = tmp_path / "owned-trace"
+    enabled = build_server_env(
+        READ_ONLY_POLICY,
+        tmp_path / "temp-enabled",
+        debug_trace_dir=configured,
+    )
+    assert enabled["LOCAL_ONENOTE_MCP_DEBUG_TRACE"] == "true"
+    assert enabled["LOCAL_ONENOTE_MCP_DEBUG_DIR"] == str(configured.resolve())
+    assert not configured.exists()
 
 
 def test_bridge_audit_path_cannot_leak_from_parent_environment(monkeypatch, tmp_path) -> None:

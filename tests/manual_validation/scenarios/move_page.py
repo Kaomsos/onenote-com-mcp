@@ -9,7 +9,6 @@ from typing import Any
 from ..mcp_stdio_client import MCPStdioClient, MOVE_PAGE_POLICY, scenario_client
 from ..runtime import InvariantFailure, RunnerFailure, RuntimeOptions
 from ..test_utils import (
-    capture_snapshot,
     display_name,
     find_snapshot_item,
     resolve_manifest_item,
@@ -24,8 +23,12 @@ from .common.copy_invariants import (
     assert_page_copy_fresh_ids,
     expected_copy_source_items,
 )
-from .common.copy_runtime import call_with_result_evidence
+from .common.copy_runtime import (
+    call_with_result_evidence,
+    write_page_datetime_evidence,
+)
 from .common.destination_position import assert_destination_position
+from .common.move_page_snapshot import capture_move_page_bundle
 from .common.page_readback import (
     assert_default_page_title_readback,
     assert_semantic_content_page_readback,
@@ -53,21 +56,7 @@ async def _execute_move_page(
         raise RunnerFailure("Move Page requires its two declared cross-Notebook cases.")
 
     async def capture_bundle(active_client: MCPStdioClient) -> dict[str, Any]:
-        roles = {
-            role: await capture_snapshot(active_client, str(notebooks[role]["id"]))
-            for role in ("source", "destination")
-        }
-        merged: dict[str, Any] = {
-            "notebook_id": str(notebooks["source"]["id"]),
-            "notebook_ids": {role: str(notebooks[role]["id"]) for role in roles},
-            "roles": roles,
-            "items": [],
-            "page_hashes": {},
-        }
-        for role in ("source", "destination"):
-            merged["items"].extend(roles[role].get("items", []))
-            merged["page_hashes"].update(roles[role].get("page_hashes", {}))
-        return merged
+        return await capture_move_page_bundle(active_client, notebooks)
 
     out = scenario_dir(options.run_dir, "move-page")
     async with scenario_client(
@@ -190,6 +179,7 @@ async def _execute_move_page(
 
             after = await capture_bundle(client)
             write_json(out / f"after-{case_name}.json", after)
+            write_page_datetime_evidence(out, case_name, before, after, report)
             after_by_id = {str(item["id"]): item for item in after.get("items", [])}
             if set(expected_source_ids) & set(after_by_id):
                 raise InvariantFailure(f"Moved source remains active for case '{case_name}'.")

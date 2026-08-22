@@ -139,6 +139,40 @@ class RestoreFailure(RunnerFailure):
         super().__init__(message, EXIT_RESTORE)
 
 
+class ExpectedNegativeOutcome(RunnerFailure):
+    """A machine-verified negative validation result that must still be nonzero."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        evidence_path: Path,
+        summary: str,
+        original_error: BaseException,
+    ) -> None:
+        super().__init__(message, EXIT_MCP)
+        self.evidence_path = Path(evidence_path)
+        self.summary = summary
+        self.original_error = original_error
+
+    def as_error_dict(self) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": str(self),
+            "exit_code": self.exit_code,
+            "expected_negative_verified": True,
+            "evidence_path": str(self.evidence_path),
+        }
+
+    def terminal_lines(self) -> tuple[str, ...]:
+        return (
+            f"EXPECTED NEGATIVE VERIFIED: {self.summary}",
+            "Nonzero exit is intentional: the validation observed its expected "
+            "fail-closed result.",
+            f"Scenario evidence: {self.evidence_path}",
+        )
+
+
 @dataclass(frozen=True)
 class RuntimeOptions:
     run_dir: Path
@@ -161,6 +195,7 @@ __all__ = [
     "EXIT_INVARIANT",
     "EXIT_MCP",
     "EXIT_RESTORE",
+    "ExpectedNegativeOutcome",
     "InvariantFailure",
     "PathBudgetFailure",
     "RestoreFailure",

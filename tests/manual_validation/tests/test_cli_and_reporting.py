@@ -12,7 +12,12 @@ import pytest
 from tests.manual_validation import test_utils
 from tests.manual_validation import runner as runner_module
 from tests.manual_validation.runner import build_parser, main
-from tests.manual_validation.runtime import EXIT_MCP, EXIT_RESTORE
+from tests.manual_validation.progress import RunProgressReporter
+from tests.manual_validation.runtime import (
+    EXIT_MCP,
+    EXIT_RESTORE,
+    ExpectedNegativeOutcome,
+)
 from tests.manual_validation.scenarios.common.report import run_report
 from tests.manual_validation.scenarios.common.orchestrator import record_failure
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
@@ -332,6 +337,7 @@ def test_internal_report_renders_scenario_evidence_without_collecting_environmen
                     {
                         "source_page_id": "page-id",
                         "target_page_id": "strict-target",
+                        "date_time": {"status": "verified"},
                         "equivalence": {
                             "verification_tier": "strict_canonical",
                             "equivalent": True,
@@ -340,6 +346,7 @@ def test_internal_report_renders_scenario_evidence_without_collecting_environmen
                     {
                         "source_page_id": "semantic-page-id",
                         "target_page_id": "semantic-target",
+                        "date_time": {"status": "verified"},
                         "equivalence": {
                             "verification_tier": "semantic_list_tag",
                             "equivalent": True,
@@ -509,3 +516,51 @@ def test_main_converts_unexpected_bridge_error_to_structured_failure(
     assert failure["failed_step"] == "close-source-notebook"
     assert "0x800706BA" in failure["error"]
     assert "failure_finalization" in failure
+
+
+def test_main_labels_verified_negative_without_relabelling_its_nonzero_exit(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    run_dir = tmp_path / "run-expected-negative"
+    run_dir.mkdir()
+    test_utils.write_json(
+        run_dir / "run-state.json",
+        {
+            "status": "running",
+            "current_step": "scenario",
+            "finalization_started": True,
+        },
+    )
+    evidence_path = (
+        run_dir
+        / "scenarios"
+        / "negative-move-page-datetime-drift"
+        / "datetime-drift-negative.json"
+    )
+
+    async def expected_negative(args):
+        args.progress = RunProgressReporter()
+        args.progress.phase_started("scenario", 3, 5)
+        raise ExpectedNegativeOutcome(
+            "move_page failed (partial_failure): source deletion was blocked",
+            evidence_path=evidence_path,
+            summary=(
+                "Move source dateTime drift returned copy_only and blocked source deletion."
+            ),
+            original_error=RuntimeError("copy_only"),
+        )
+
+    monkeypatch.setattr(runner_module, "dispatch", expected_negative)
+
+    code = main(["negative-move-page-datetime-drift", "--run-dir", str(run_dir)])
+
+    captured = capsys.readouterr()
+    assert code == EXIT_MCP
+    assert "EXPECTED NEGATIVE VERIFIED phase=scenario" in captured.out
+    assert "EXPECTED NEGATIVE VERIFIED: Move source dateTime drift" in captured.out
+    assert "Nonzero exit is intentional" in captured.out
+    assert "FAIL phase=" not in captured.out
+    assert "ERROR:" not in captured.out
+    failure = test_utils.read_json(run_dir / "run-failure.json")
+    assert failure["exit_code"] == EXIT_MCP
+    assert "partial_failure" in failure["error"]

@@ -13,6 +13,10 @@ from ...onenote_exit_wait import dry_run_bounded_wait_projection
 from ...page_stability import dry_run_page_stability_projection
 from ...path_budget import fingerprint_disk_key, instance_location_from_id
 from ...runtime import RunnerFailure, RuntimeOptions
+from .datetime_drift_negative import (
+    dry_run_datetime_drift_projection,
+    dry_run_datetime_drift_steps,
+)
 
 if TYPE_CHECKING:
     from .specs import ScenarioSpec
@@ -185,7 +189,9 @@ def build_isolated_dry_run_plan(
         interactive_fresh and getattr(recipe, "representation_discovery_only", False)
     )
     discovery_cache_rejected = representation_discovery and use_cache
-    fresh_only_cache_rejected = use_cache and not getattr(recipe, "supports_cache", True)
+    recipe_fresh_only = use_cache and not getattr(recipe, "supports_cache", True)
+    mode_fresh_only = use_cache and spec.execution_contract.get("fresh_only") is True
+    fresh_only_cache_rejected = recipe_fresh_only or mode_fresh_only
     if (
         getattr(args, "scenario", "") == "search-all-open-notebooks"
         and not use_cache
@@ -325,10 +331,17 @@ def build_isolated_dry_run_plan(
         steps = [
             {
                 "step": "preflight-fresh-only-rejects-cache",
-                "trust_boundary": "static fresh-only Recipe contract",
+                "trust_boundary": (
+                    "static fresh-only mode contract"
+                    if mode_fresh_only
+                    else "static fresh-only Recipe contract"
+                ),
                 "allowed_operations": [],
                 "target": "reject before lifecycle, MCP, cache, or mutation",
-                "reason": recipe.fresh_only_reason,
+                "reason": (
+                    spec.execution_contract.get("fresh_only_reason")
+                    or recipe.fresh_only_reason
+                ),
             }
         ]
     if getattr(args, "template_instance_id", None) and interactive_fresh:
@@ -457,6 +470,14 @@ def build_isolated_dry_run_plan(
                 step["target"] = (
                     "accept durable pre-closed lease without a second COM close"
                 )
+    if spec.execution_contract.get("datetime_drift_negative") and not fresh_only_cache_rejected:
+        extras = dry_run_datetime_drift_steps()
+        for index, step in enumerate(steps):
+            if step.get("step") == args.scenario:
+                after = index + 1
+                for offset, extra in enumerate(extras):
+                    steps.insert(after + offset, extra)
+                break
     fresh_names = getattr(args, "fresh_notebook_names", None)
     cached_names = getattr(args, "cached_notebook_names", None)
     if not isinstance(fresh_names, dict):
@@ -622,6 +643,8 @@ def build_isolated_dry_run_plan(
             "preserved": bool(args.keep_worksite),
             "target_cleanup": worksite_action if args.keep_worksite else "default-scenario-finalization",
         }
+    if spec.execution_contract.get("datetime_drift_negative") and not fresh_only_cache_rejected:
+        result.update(dry_run_datetime_drift_projection(run_dir=run_dir))
     return result
 
 

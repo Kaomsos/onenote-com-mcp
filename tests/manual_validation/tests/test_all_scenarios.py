@@ -51,6 +51,7 @@ SCENARIO_MODULES = {
     "copy_notebook": "CopyNotebookScenario",
     "copy_display_equation": "CopyDisplayEquationScenario",
     "move_page": "MovePageScenario",
+    "negative_move_page_datetime_drift": "NegativeMovePageDatetimeDriftScenario",
     "move_section": "MoveSectionScenario",
     "move_section_group": "MoveSectionGroupScenario",
     "onenote_convergence": "OneNoteConvergenceScenario",

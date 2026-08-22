@@ -13,6 +13,8 @@ POST_CREATE_CONVERGENCE = "post_create_convergence"
 PRE_WRITE_TARGET_OBSERVATION = "pre_write_target_observation"
 POST_WRITE_RECONCILIATION = "post_write_reconciliation"
 POST_WRITE_CONVERGENCE = "post_write_convergence"
+FINAL_TARGET_READBACK = "final_target_readback"
+FINAL_SOURCE_REVALIDATION = "final_source_revalidation"
 TOPOLOGY_VERIFICATION = "topology_verification"
 SOURCE_DRIFT_REVALIDATION = "source_drift_revalidation"
 DELETE_CONFIRMATION = "delete_confirmation"
@@ -27,6 +29,8 @@ READ_REASONS: frozenset[str] = frozenset(
         PRE_WRITE_TARGET_OBSERVATION,
         POST_WRITE_RECONCILIATION,
         POST_WRITE_CONVERGENCE,
+        FINAL_TARGET_READBACK,
+        FINAL_SOURCE_REVALIDATION,
         TOPOLOGY_VERIFICATION,
         SOURCE_DRIFT_REVALIDATION,
         DELETE_CONFIRMATION,

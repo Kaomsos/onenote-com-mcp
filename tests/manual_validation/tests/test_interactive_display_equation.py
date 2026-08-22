@@ -198,6 +198,7 @@ def test_display_equation_copy_readback_uses_semantic_mathml_and_structure_gates
     copy_report = {
         "page_results": [
             {
+                "date_time": {"status": "verified"},
                 "equivalence": {
                     "equivalent": True,
                     "checks": {
@@ -238,6 +239,7 @@ def test_display_equation_comparator_accepts_one_recorded_span_break() -> None:
     copy_report = {
         "page_results": [
             {
+                "date_time": {"status": "verified"},
                 "equivalence": {
                     "equivalent": True,
                     "checks": {
@@ -428,6 +430,7 @@ def test_inline_equation_copy_readback_rejects_added_break() -> None:
     copy_report = {
         "page_results": [
             {
+                "date_time": {"status": "verified"},
                 "equivalence": {
                     "equivalent": True,
                     "checks": {

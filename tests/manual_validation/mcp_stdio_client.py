@@ -176,6 +176,12 @@ MOVE_PAGE_POLICY = ScenarioPolicy(
     deletes_enabled=True,
     create_enabled=True,
 )
+MOVE_PAGE_DATETIME_DRIFT_NEGATIVE_POLICY = ScenarioPolicy(
+    writes_enabled=True,
+    deletes_enabled=True,
+    create_enabled=True,
+    timestamp_fidelity_probe_enabled=True,
+)
 MOVE_CONTAINERS_POLICY = ScenarioPolicy(
     writes_enabled=True,
     deletes_enabled=True,
@@ -224,6 +230,7 @@ def build_server_env(
     bridge_audit_path: Path | None = None,
     search_budget: dict[str, int] | None = None,
     batch_mutation_budget: dict[str, int] | None = None,
+    debug_trace_dir: Path | None = None,
 ) -> dict[str, str]:
     """Build a complete child env, overriding every mutation switch exactly."""
 
@@ -258,6 +265,12 @@ def build_server_env(
         env["LOCAL_ONENOTE_BRIDGE_AUDIT_PATH"] = str(bridge_audit_path.resolve())
     else:
         env.pop("LOCAL_ONENOTE_BRIDGE_AUDIT_PATH", None)
+    if debug_trace_dir is not None:
+        env["LOCAL_ONENOTE_MCP_DEBUG_TRACE"] = "true"
+        env["LOCAL_ONENOTE_MCP_DEBUG_DIR"] = str(debug_trace_dir.resolve())
+    else:
+        env["LOCAL_ONENOTE_MCP_DEBUG_TRACE"] = "false"
+        env.pop("LOCAL_ONENOTE_MCP_DEBUG_DIR", None)
     return env
 
 
@@ -340,6 +353,7 @@ class MCPStdioClient:
         progress: RunProgressReporter | None = None,
         require_desktop_ready: bool = True,
         persist_runtime_logs: bool = True,
+        debug_trace_dir: Path | None = None,
     ) -> None:
         self.policy = policy
         self.allowed_tools = set(allowed_tools) | {"health_check"}
@@ -356,6 +370,9 @@ class MCPStdioClient:
         self.progress = progress or RunProgressReporter.disabled()
         self.require_desktop_ready = require_desktop_ready
         self.persist_runtime_logs = persist_runtime_logs
+        self.debug_trace_dir = (
+            debug_trace_dir.resolve() if debug_trace_dir is not None else None
+        )
         self._stack = AsyncExitStack()
         self._session: ClientSession | None = None
         self.process_started = False
@@ -400,6 +417,7 @@ class MCPStdioClient:
                     ),
                     self.search_budget,
                     self.batch_mutation_budget,
+                    self.debug_trace_dir,
                 ),
                 encoding="utf-8",
                 encoding_error_handler="replace",
@@ -1133,6 +1151,7 @@ async def scenario_client(
     timeout_seconds: int,
     batch_mutation_budget: dict[str, int] | None = None,
     client_factory: type[MCPStdioClient] = MCPStdioClient,
+    debug_trace_dir: Path | None = None,
 ):
     """Reuse the one scenario process without allowing policy/tool expansion."""
 
@@ -1172,5 +1191,6 @@ async def scenario_client(
         run_dir=run_dir,
         timeout_seconds=timeout_seconds,
         batch_mutation_budget=batch_mutation_budget,
+        debug_trace_dir=debug_trace_dir,
     ) as created:
         yield created

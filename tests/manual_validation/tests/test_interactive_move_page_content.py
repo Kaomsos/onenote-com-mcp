@@ -338,6 +338,7 @@ def _copy_report(*, passed: bool) -> dict:
             {
                 "source_page_id": SOURCE_ID,
                 "target_page_id": TARGET_ID,
+                "date_time": {"status": "verified" if passed else "readback_mismatch"},
                 "lossless": passed,
                 "normalizations": {},
                 "equivalence": {

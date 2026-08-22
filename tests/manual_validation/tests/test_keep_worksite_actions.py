@@ -991,13 +991,16 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         },
     }
 
-    async def fake_snapshot(_client, notebook_id):
+    async def fake_snapshot(_client, notebook_id, **_kwargs):
         role = "source" if notebook_id == "source-notebook" else "destination"
         ids = {item["id"] for item in state[role] if item.get("resource_type") == "page"}
         return {
             "notebook_id": notebook_id,
             "items": [dict(item) for item in state[role]],
             "page_hashes": {key: value for key, value in state["hashes"].items() if key in ids},
+            "page_datetime_seconds": {
+                page_id: "2026-01-01T00:00:00Z" for page_id in ids
+            },
         }
 
     class FakeMovePageClient:
@@ -1058,6 +1061,8 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
                     "page_results": [
                         {
                             "source_page_id": source_id,
+                            "target_page_id": target_ids[source_ids.index(source_id)],
+                            "date_time": {"status": "verified"},
                             "lossless": True,
                             "equivalence": {
                                 "verification_tier": "semantic_content_v1",
@@ -1144,7 +1149,10 @@ def test_move_page_accepts_active_absence_without_recycle_lookup(
         },
     }
     client = FakeMovePageClient()
-    monkeypatch.setattr(move_page_scenario, "capture_snapshot", fake_snapshot)
+    monkeypatch.setattr(
+        "tests.manual_validation.scenarios.common.move_page_snapshot.capture_snapshot",
+        fake_snapshot,
+    )
     monkeypatch.setattr(move_page_scenario, "render_report", lambda _run_dir: None)
 
     result = asyncio.run(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ...mcp_stdio_client import (
@@ -15,6 +15,7 @@ from ...mcp_stdio_client import (
     RICH_WRITE_POLICY,
     TIMESTAMP_FIDELITY_POLICY,
     MOVE_PAGE_POLICY,
+    MOVE_PAGE_DATETIME_DRIFT_NEGATIVE_POLICY,
     MOVE_CONTAINERS_POLICY,
     REPARENT_POLICY,
     REORDER_SECTION_GROUP_POLICY,
@@ -28,6 +29,7 @@ from .config import (
     COPY_TOOLS,
     DELETE_TOOLS,
     MOVE_PAGE_TOOLS,
+    MOVE_PAGE_DATETIME_DRIFT_NEGATIVE_TOOLS,
     MOVE_SECTION_GROUP_TOOLS,
     MOVE_SECTION_TOOLS,
     REPARENT_PAGE_TOOLS,
@@ -234,10 +236,10 @@ SCENARIO_SPECS = {
         WRITE_POLICY,
         frozenset(RENAME_TOOLS | {"create_section_group", "create_section", "create_page"}),
     ),
-    "timestamp-fidelity-probe": ScenarioSpec(
-        "timestamp-fidelity-probe",
+    "prob-timestamp-fidelity": ScenarioSpec(
+        "prob-timestamp-fidelity",
         _profile(
-            "timestamp-fidelity-probe",
+            "prob-timestamp-fidelity",
             (
                 "Timestamp-Section/{Hierarchy-Page,PageContent-Page}",
             ),
@@ -1477,6 +1479,53 @@ SCENARIO_SPECS["cache-invalidation"] = ScenarioSpec(
     frozenset(_INTERACTIVE_TOOLS),
     {"cache_invalidation_probe": True, "included_in_all": False},
 )
+
+_move_page_spec = SCENARIO_SPECS["move-page"]
+_move_page_subtree_case = next(
+    case
+    for case in _move_page_spec.execution_contract["cases"]
+    if case["name"] == "cross-notebook-subtree"
+)
+SCENARIO_SPECS["negative-move-page-datetime-drift"] = ScenarioSpec(
+    "negative-move-page-datetime-drift",
+    replace(
+        _move_page_spec.fixture,
+        name="negative-move-page-datetime-drift",
+    ),
+    MOVE_PAGE_DATETIME_DRIFT_NEGATIVE_POLICY,
+    frozenset(
+        set(_move_page_spec.tool_allowlist) | MOVE_PAGE_DATETIME_DRIFT_NEGATIVE_TOOLS
+    ),
+    {
+        **_move_page_spec.execution_contract,
+        "cases": [dict(_move_page_subtree_case)],
+        "fresh_only": True,
+        "fresh_only_reason": (
+            "Negative Move Page dateTime-drift validation is fresh-only so the "
+            "source subtree is not pre-copied from cache."
+        ),
+        "included_in_all": False,
+        "datetime_drift_negative": True,
+        "debug_trace": True,
+        "internal_validation_capability": "set_verified_page_datetime",
+        "internal_validation_gates": [
+            "writes_enabled",
+            "timestamp_fidelity_probe_enabled",
+        ],
+        "drift_target_key": "subtree_child",
+        "trigger": {
+            "tool": "move_page",
+            "read_reason": "topology_verification",
+            "operation": "get_hierarchy",
+        },
+        "expected_outcome": "copy_only",
+        "real_exit": "nonzero",
+        "result_json_passed": False,
+        "failure_site_preserved": True,
+        "mutation_retries": 0,
+    },
+)
+
 
 def get_scenario_spec(name: str) -> ScenarioSpec:
     try:

@@ -21,6 +21,7 @@ from .runtime import (
     ALL_CHILD_ISOLATION_PREFIX,
     EXIT_ARGUMENT,
     EXIT_MCP,
+    ExpectedNegativeOutcome,
     RestoreFailure,
     RunnerFailure,
 )
@@ -208,7 +209,10 @@ def main(argv: list[str] | None = None) -> int:
         _emit_all_child_isolation(args, failure_finalization)
         progress = getattr(args, "progress", None)
         if isinstance(progress, RunProgressReporter):
-            progress.failure(str(exc), run_dir=getattr(args, "run_dir", None))
+            if isinstance(exc, ExpectedNegativeOutcome):
+                progress.expected_negative(exc.summary, run_dir=getattr(args, "run_dir", None))
+            else:
+                progress.failure(str(exc), run_dir=getattr(args, "run_dir", None))
         print_failure(
             exc,
             json_output=bool(getattr(args, "json_output", False)),
