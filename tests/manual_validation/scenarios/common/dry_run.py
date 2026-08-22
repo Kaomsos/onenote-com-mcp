@@ -9,6 +9,8 @@ import re
 from typing import Any, Mapping, TYPE_CHECKING
 
 from ...bridge_adapter import VALIDATION_BRIDGE_ADAPTER
+from ...onenote_exit_wait import dry_run_bounded_wait_projection
+from ...page_stability import dry_run_page_stability_projection
 from ...path_budget import fingerprint_disk_key, instance_location_from_id
 from ...runtime import RunnerFailure, RuntimeOptions
 
@@ -339,6 +341,122 @@ def build_isolated_dry_run_plan(
                 "reason": "Fresh interactive runs must not pass --template-instance-id",
             }
         ]
+    if spec.execution_contract.get("human_gated_onenote_close"):
+        close_step = {
+            "step": "human-onenote-close-and-native-stopped-health",
+            "trust_boundary": "run-bound user confirmation plus native health preflight",
+            "target": (
+                "bounded native fully-stopped wait before same-MCP launch and mutation"
+            ),
+            **dry_run_bounded_wait_projection(),
+        }
+        extra_before = [close_step]
+        extra_after: list[dict[str, Any]] = []
+        if spec.execution_contract.get("refresh_internal_validation_com"):
+            extra_before.append(
+                {
+                    "step": "refresh-internal-validation-com-and-page-xml-probe",
+                    "trust_boundary": (
+                        "harness-owned validation COM independent of MCP child"
+                    ),
+                    "target": (
+                        "refresh harness-owned internal COM then exact page XML "
+                        "probe before mutation"
+                    ),
+                    "allowed_operations": ["get_page_xml"],
+                    "stdin_read_performed": False,
+                    "sleep_performed": False,
+                    "gui_state_read": False,
+                    "mcp_child_refresh_is_not_sufficient": True,
+                }
+            )
+        if spec.execution_contract.get("refresh_lifecycle_validation_com"):
+            extra_before.append(
+                {
+                    "step": "refresh-lifecycle-validation-com-and-exact-notebook-probe",
+                    "trust_boundary": (
+                        "run-scoped NotebookLifecycleWrapper COM independent of "
+                        "MCP child and internal bridge"
+                    ),
+                    "target": (
+                        "refresh harness-owned lifecycle COM then exact Notebook "
+                        "probe before mutation"
+                    ),
+                    "allowed_operations": ["get_exact_notebook"],
+                    "stdin_read_performed": False,
+                    "sleep_performed": False,
+                    "gui_state_read": False,
+                    "mcp_child_refresh_is_not_sufficient": True,
+                    "internal_bridge_refresh_is_not_sufficient": True,
+                }
+            )
+        if spec.execution_contract.get("stabilize_target_page_baseline"):
+            extra_before.append(
+                {
+                    "step": "stabilize-target-page-baseline-before-mutation",
+                    "trust_boundary": (
+                        "post-refresh owned Page identity before the unique rename"
+                    ),
+                    "target": (
+                        "bounded expand_page title/id/parent/modified stability "
+                        "before rename"
+                    ),
+                    **dry_run_page_stability_projection(phase="baseline"),
+                }
+            )
+        if spec.execution_contract.get("observe_forward_rename_durability"):
+            extra_after.append(
+                {
+                    "step": "observe-forward-rename-durability",
+                    "trust_boundary": (
+                        "post-rename owned Page identity; revert skips restore"
+                    ),
+                    "target": (
+                        "bounded expand_page durability after the unique forward "
+                        "rename; revert to original is forward_not_durable"
+                    ),
+                    **dry_run_page_stability_projection(phase="forward_durability"),
+                }
+            )
+        if (
+            spec.execution_contract.get("close_source_before_mcp_exit")
+            and not _keep_source_notebook(args)
+        ):
+            extra_after.append(
+                {
+                    "step": "close-source-notebook-before-mcp-exit",
+                    "trust_boundary": (
+                        "run-scoped lifecycle COM while the scenario MCP is alive"
+                    ),
+                    "target": (
+                        "exact Notebook close before MCP/internal COM teardown"
+                    ),
+                    "allowed_operations": ["close_exact_notebook"],
+                    "stdin_read_performed": False,
+                    "sleep_performed": False,
+                    "gui_state_read": False,
+                    "mcp_client_still_active": True,
+                }
+            )
+        for index, step in enumerate(steps):
+            if step.get("step") == args.scenario:
+                for offset, extra in enumerate(extra_before):
+                    steps.insert(index + offset, extra)
+                after_index = index + len(extra_before) + 1
+                for offset, extra in enumerate(extra_after):
+                    steps.insert(after_index + offset, extra)
+                break
+    if (
+        spec.execution_contract.get("close_source_before_mcp_exit")
+        and not _keep_source_notebook(args)
+    ):
+        for step in steps:
+            if step.get("step") in {"close-source-notebook", "close-notebook-bundle"}:
+                step["allowed_operations"] = []
+                step["preclosed_lease_only"] = True
+                step["target"] = (
+                    "accept durable pre-closed lease without a second COM close"
+                )
     fresh_names = getattr(args, "fresh_notebook_names", None)
     cached_names = getattr(args, "cached_notebook_names", None)
     if not isinstance(fresh_names, dict):

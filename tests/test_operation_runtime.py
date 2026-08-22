@@ -4,10 +4,18 @@ import ast
 import asyncio
 from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from local_onenote_mcp import operation_catalog, server
+from local_onenote_mcp.bridge import OneNoteBridge
+from local_onenote_mcp.com_client import (
+    REFRESH_HOST_DISCARD_UNCONFIRMED,
+    REFRESH_HOST_DISCARDED,
+    REFRESH_NOT_ATTEMPTED,
+    ComRefreshResult,
+)
 from local_onenote_mcp.desktop import OneNoteDesktopState
 from local_onenote_mcp.onenote_errors import OneNoteDesktopNotRunningError
 from local_onenote_mcp.services.base import BaseService
@@ -474,10 +482,10 @@ def test_every_non_read_operation_has_a_named_black_box_manual_scenario() -> Non
         for tool in scenario.spec.tool_allowlist
     }
 
-    # GUI launch has a separate human acceptance flow because the standard
-    # runner must prove OneNote is already running before any Scenario starts.
-    assert non_read - covered == {"launch_onenote_gui"}
-    assert "launch_onenote_gui" not in covered
+    # GUI launch also has a standalone acceptance flow, but the disposable
+    # com-refresh-mutation scenario now covers the tool as a named black box.
+    assert non_read <= covered
+    assert "launch_onenote_gui" in covered
 
 
 def test_manual_validation_never_imports_the_operation_control_plane() -> None:
@@ -593,6 +601,71 @@ def test_launch_authorization_rejects_before_any_process_side_effect(monkeypatch
     assert outcome.stage is OperationStage.AUTHORIZATION
     assert outcome.backend_calls == 0
     assert outcome.generation_before == outcome.generation_after == generation
+
+
+def test_launch_authorization_does_not_call_refresh_hook(monkeypatch) -> None:
+    monkeypatch.setenv("LOCAL_ONENOTE_ENABLE_UI_CONTROL", "false")
+    calls = {"refresh": 0, "launch": 0}
+
+    def launch_spy(*_args, **_kwargs):
+        calls["launch"] += 1
+        raise AssertionError("launch_onenote_gui must not run after authorization rejection")
+
+    def refresh_spy(self, *_args, **_kwargs):
+        calls["refresh"] += 1
+        raise AssertionError("refresh hook must not run after authorization rejection")
+
+    monkeypatch.setattr(operation_catalog, "launch_desktop_gui", launch_spy)
+    monkeypatch.setattr(OneNoteBridge, "refresh_com_client", refresh_spy)
+    outcome = get_runtime().execute("launch_onenote_gui", {})
+    assert outcome.success is False
+    assert isinstance(outcome.error, PermissionError)
+    assert outcome.stage is OperationStage.AUTHORIZATION
+    assert calls == {"refresh": 0, "launch": 0}
+
+
+@pytest.mark.parametrize(
+    "refresh",
+    (
+        ComRefreshResult(outcome=REFRESH_HOST_DISCARDED, discarded_generation=1),
+        ComRefreshResult(outcome=REFRESH_HOST_DISCARD_UNCONFIRMED),
+        ComRefreshResult(
+            outcome=REFRESH_NOT_ATTEMPTED,
+            reason="dispatch_lock_timeout",
+        ),
+    ),
+)
+def test_launch_success_projects_failed_refresh_without_rewriting_ready(
+    monkeypatch, refresh
+) -> None:
+    set_public_authorization_environment(monkeypatch, ("ui_control",))
+    monkeypatch.setattr(
+        operation_catalog,
+        "launch_desktop_gui",
+        lambda: {
+            "status": "started",
+            "launch_attempted": True,
+            "launch_attempts": 1,
+            "ready": True,
+        },
+    )
+
+    class _Bridge:
+        def refresh_com_client(self):
+            return refresh
+
+    runtime = mock_production_operation_runtime(
+        "launch_onenote_gui",
+        lambda _a: operation_catalog._launch_onenote_gui(
+            SimpleNamespace(hierarchy=SimpleNamespace(bridge=_Bridge()))
+        ),
+    )
+    outcome = runtime.execute("launch_onenote_gui", {})
+    assert outcome.success is True
+    assert outcome.data is not None
+    assert outcome.data["ready"] is True
+    assert outcome.data["status"] == "started"
+    assert outcome.data["com_client_refresh"] == refresh.content_free_projection()
 
 
 def test_registry_rejects_duplicate_operations_and_incomplete_profile() -> None:

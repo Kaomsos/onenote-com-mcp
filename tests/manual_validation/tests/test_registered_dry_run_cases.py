@@ -75,6 +75,7 @@ def test_catalog_has_stable_unique_coverage_independent_from_all() -> None:
         "interactive-move-page-content",
         "onenote-convergence",
         "hierarchy-navigation",
+        "com-refresh-mutation",
     }
     assert excluded <= covered
 

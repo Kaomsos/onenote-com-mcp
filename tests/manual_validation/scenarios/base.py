@@ -29,6 +29,7 @@ class Scenario:
     cache_invalidation_probe = False
     requires_lifecycle_wrappers = False
     production_close_handoff = False
+    close_source_before_mcp_exit = False
     requires_index_activation_checkpoint = False
 
     @property

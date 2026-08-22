@@ -427,7 +427,7 @@ Mutation 使用 ID 作为主键；`expected_name/expected_title`、父 ID 和可
 
 当前生产代码已实现 check-only 的 OneNote GUI preflight：`health_check` 在首次 hierarchy/COM 读取前，用原生 Windows 进程枚举与顶层窗口枚举要求 `ONENOTE.EXE` 和可见、无 owner 的 GUI 同时存在。相同 native probe 由 Registry 中独立的 `platform_preflight_policy` 绑定到所有需公开 gate 的 effect，并在 authorization 后、协调和首个 backend call 前执行；纯 read 不绑定，恢复入口 `launch_onenote_gui` 明确豁免。进程缺失、process-only、窗口不可见或无法证明时 fail closed，且不通过 COM、PowerShell 或 subprocess 隐式启动 OneNote。失败 envelope 给出 `health_check → launch_onenote_gui → health_check → retry original operation`，并在 UI Control 关闭时提示开启最小 gate 或手动启动。冷启动 OneNote 时的已观察平台限制见 [OneNote COM 冷启动 Fixture hierarchy 丢失](../lesson/onenote_com_cold_start_fixture_hierarchy_loss.md)；测试 runner 如何复用该门限由独立的 [Manual Validation 架构](manual_validation_scenario_fixture_architecture.md)定义。
 
-生产 MCP 已提供显式、无参数、UI Control 授权的 `launch_onenote_gui`；它在进程完全不存在时最多请求一次受信任 `ONENOTE.EXE` launch，再有界观察可见 GUI，不实现 scenario-scoped COM keeper。标准 manual-validation runner 仍要求启动前已有可见 GUI，避免 fixture 场景隐式改变 session；scenario-scoped Desktop COM keeper 暂不采用。默认 persistent host 只拥有 MCP 进程内的 COM client lifecycle。
+生产 MCP 已提供显式、无参数、UI Control 授权的 `launch_onenote_gui`；它在进程完全不存在时最多请求一次受信任 `ONENOTE.EXE` launch，再有界观察可见 GUI，不实现 scenario-scoped COM keeper。GUI ready 后向已 `READY` 的 persistent host 发送 `refresh_com` 控制帧，在同一 STA host 内重建 `$onenote` 并以浅层 COM probe 提交新 `com_epoch`；这不要求 COM backend 与 GUI 同 PID，也不淘汰健康 host。标准 manual-validation runner 仍要求启动前已有可见 GUI，避免 fixture 场景隐式改变 session；scenario-scoped Desktop COM keeper 暂不采用。默认 persistent host 只拥有 MCP 进程内的 COM client lifecycle。
 
 ## 7. 测试与写入隔离
 

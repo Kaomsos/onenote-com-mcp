@@ -2,7 +2,7 @@
 
 > 状态：当前实现合同<br>
 > 实施跟踪：[TODO 048](../todo/048_persistent_com_client_bridge.md)<br>
-> 更新日期：2026-08-20
+> 更新日期：2026-08-22
 
 ## 1. 适用范围与当前边界
 
@@ -36,7 +36,9 @@ stateDiagram-v2
     READY --> BROKEN: transport or protocol failure
     BROKEN --> NEW: old generation fully reaped
     READY --> CLOSING: close
-    CLOSING --> CLOSED: host/process/reader joined
+    BROKEN --> CLOSING: close
+    CLOSING --> CLOSED: confirmed reap
+    CLOSING --> CLOSING: unconfirmed close retry
     NEW --> CLOSED: close before start
 ```
 
@@ -49,11 +51,11 @@ stateDiagram-v2
 | `NEW` | 尚未启动或已完成旧 generation 清理 | 首个调用开始启动；未写入 host 前的失败为 `not_submitted` | `STARTING`、`CLOSED` |
 | `STARTING` | 正在启动 host、验证 STA 并等待 ready | 同一调用的 timeout 预算覆盖启动；尚未写 request | `READY`、`BROKEN`、`CLOSING` |
 | `READY` | host 已 ready，持有一个 generation 的 COM client | 接收一个串行请求；创建单槽 pending | `BROKEN`、`CLOSING` |
-| `BROKEN` | 当前 generation 已 poisoned，不能再接受请求 | 必须 kill/reap host 与 reader；不得复用 proxy 或输出 | `NEW` |
-| `CLOSING` | 已拒绝新 admission，正在收尾 | 新调用为 `not_submitted`；在途调用按规则结束 | `CLOSED` |
+| `BROKEN` | 当前 generation 已 poisoned，不能再接受请求 | 必须 kill/reap host 与 reader；不得复用 proxy 或输出 | `NEW`、`CLOSING` |
+| `CLOSING` | 已拒绝新 admission，正在收尾 | 新调用为 `not_submitted`；在途调用按规则结束 | `CLOSED`、`CLOSING`（未确认时可重试） |
 | `CLOSED` | owner 已显式关闭 | 所有 `execute()` 稳定失败；不得 lazy restart | 无 |
 
-`close()` 是幂等的。若 host idle，adapter 可以发送 shutdown 后等待 graceful exit；若存在 pending COM 调用，shutdown frame 可能永远排不到 host 的串行 loop 前面，adapter 必须直接 poison/kill host，并将该 pending 请求按 `possibly_dispatched` 收尾。
+`close()` 在确认 process 已退出且 reader 已结束后才进入 `CLOSED`。未确认时停在 `CLOSING`，保留 handle，后续 `close()` 以 kill 路径重试，不得声明完成并失去收敛路径。若 host idle，adapter 可以发送 shutdown 后等待 graceful exit；若存在 pending COM 调用或本次是重试，必须直接 poison/kill host，并将该 pending 请求按 `possibly_dispatched` 收尾。
 
 ## 5. 请求状态与投递判定
 
@@ -123,18 +125,61 @@ host script 的 `-EncodedCommand` 本体使用 UTF-16LE Base64；request/respons
 
 ## 7. generation poison 与重建
 
-v1 不根据结构化 COM `{ok:false}` 的 HRESULT 推测 proxy 是否可用。只有本地可观察的 transport 或 protocol 故障会 poison generation：timeout、EOF、非法/非协议 frame、generation/sequence 不匹配、response 截断/超限、host 非零退出或 in-flight close。
+v1 不根据结构化 COM `{ok:false}` 的 HRESULT 推测 proxy 是否可用，也不根据 HRESULT 自动 refresh。只有本地可观察的 transport 或 protocol 故障会 poison generation：timeout、EOF、非法/非协议 frame、generation/sequence 不匹配、response 截断/超限、host 非零退出或 in-flight close。
 
 poison 的顺序固定为：
 
 1. 阻止新 admission；
 2. 将 pending 请求以 `possibly_dispatched` 结束；
-3. kill host，关闭管道并 join reader/process；
-4. 仅在旧 generation 已完整回收后，才允许下一次 `execute()` 从 `NEW` 创建新 generation。
+3. 由 **caller 线程** kill host、关闭管道并 join reader/process。reader 线程只把状态标为 `BROKEN`，不承担物理回收，也不得把自己仍在运行视为 `reader_done`；
+4. 物理回收由 `_cleanup_lock` 串行化：refresh failure 与 `close()` 不得并行 reap。报告归属按 state lock 线性化，并在提交时同时确定 cleanup owner：refresh 先提交 `BROKEN` 时必须声明 refresh owner，`close()` 观察到该 owner 时必须等待其收敛后再进入 `CLOSING/CLOSED`，不得把已提交的 `BROKEN` 改写成 `CLOSING` 并改写 refresh 的对外结果；close 先提交 `CLOSING` 则 close 负责 cleanup，refresh 返回 `rejected_closed`；
+5. 仅在旧 generation 已 **confirmed reap**（process 已退出且 reader 线程已真正结束）后，才进入 `NEW`、清空 process/reader handle，并允许下一次 `execute()` 创建新 generation。
 
-因此“新 generation 已可用”绝不构成前一个 mutation 未发生的证据。
+kill 后仍无法确认退出时，client 停留在拒绝 admission 的 `BROKEN`（或 `close()` 路径上的 `CLOSING`），保留 handle，不得启动下一 generation。因此“新 generation 已可用”绝不构成前一个 mutation 未发生的证据。
 
-## 8. one-shot fallback adapter 的对应规则
+## 8. COM epoch 刷新
+
+有效活动状态是 `READY(generation=n, com_epoch=k)`。`com_epoch` 嵌套于某个 host generation，只在该 generation 处于 `READY` 时有效。GUI/OneNote 进程与 COM backend **没有** PID identity 一致性要求；GUI readiness 是业务稳定性前提，不是 generation 或 epoch identity 的组成部分。
+
+不采纳“GUI ready 后淘汰整个健康 host”。`launch_onenote_gui` 在 GUI ready（`started` 或 `already_running`）后调用非公开的 `OneNoteBridge.refresh_com_client()`：
+
+```text
+GUI readiness
+→ 允许执行 refresh
+→ 原 COM owner 在同一 STA host 内重建 OneNote.Application
+→ 浅层 COM probe 成功
+→ 提交新 com_epoch
+```
+
+这里验证的是新 COM proxy 此刻可完成浅层调用，不是它与 GUI 进程具有相同 identity。控制帧 `kind=refresh_com` 与 `shutdown` 同级，不进 operation allowlist，不携带 params 或对象 ID。one-shot adapter 与尚未启动的 persistent client 返回 `not_needed`，不为 refresh 启动 host。
+
+两层 probe：
+
+- Windows GUI probe：证明存在 `ONENOTE.EXE` 与可见顶层窗口，只作为是否允许尝试 refresh 的门限。
+- COM probe：`$onenote.Windows` 与 `[uint64]$windows.Count` 两次只读调用必须成功。不要求 `Count > 0`，不证明 hierarchy 已加载、后续业务 API 必然成功或写操作必然收敛。`$windows` child RCW 必须在 `finally` 中 `FinalReleaseComObject`；这是长期 host 的资源卫生，不是可调用性证明。
+
+`READY(g,k) → READY(g,k+1)` 是外部逻辑转移。host 内部实际经历 `release epoch k → $onenote = $null → activation → 浅层 probe → commit epoch k+1`。`READY(g,k)` 表示最后提交的逻辑状态；refresh 期间不保证旧 `$onenote` 仍存在；释放后不能回滚到 epoch k；activation、probe 或提交失败后只能 discard 该 generation。dispatch lock 阻止业务请求观察中间阶段，因此不新增公开 `REFRESHING` 状态。
+
+refresh 与业务请求共用单飞约束和完整两段 admission。所有 **已发送** refresh 帧的结果经同一个 state lock 终态提交：
+
+| 线性化胜出方 | 结果 |
+| --- | --- |
+| refresh 先提交 `com_epoch=k+1` | `refreshed`；随后的 close 正常进入 `CLOSING/CLOSED` |
+| close 先提交 `CLOSING` | `rejected_closed`；close 负责 host cleanup |
+| refresh 失败先提交 `BROKEN` 且 confirmed reap | `host_discarded`（投影 `discarded_generation`）；随后的 close 必须等待该 refresh owner 收敛，不得改写该结果 |
+| refresh 失败但 kill 后无法确认退出 | `host_discard_unconfirmed`；停留 `BROKEN`，close 等待后再接管未确认 cleanup |
+
+未发送帧的结果不得 poison host：
+
+| 条件 | 结果 |
+| --- | --- |
+| dispatch-lock 等待超时或 pre-submit 失败 | `not_attempted`；状态与活动 epoch 不变 |
+| 二次检查见并发 `BROKEN/NEW` 且帧未发送 | `not_attempted(reason=host_transition)` |
+| 首次检查即为 `NEW`/`BROKEN` | `not_needed` |
+
+`refreshed` 只投影活动 `generation + com_epoch`。`host_discarded` 只投影已完成 reap 的 `discarded_generation`，不得用历史 `client.generation` 暗示仍有活动 host。`not_attempted` 只投影 `reason`。refresh 成败不改写 GUI launch 成功，也不重放任何业务请求。
+
+## 9. one-shot fallback adapter 的对应规则
 
 one-shot adapter 没有跨调用常驻的 COM client，也没有可重用 generation；但它必须提供相同的 delivery state：
 
@@ -146,7 +191,7 @@ one-shot adapter 没有跨调用常驻的 COM client，也没有可重用 genera
 
 `one_shot_powershell.close()` 是 no-op。它只能由显式 adapter 选择启用，不能在 persistent adapter 初始化或运行失败时静默接管请求。
 
-## 9. Audit、错误与验证边界
+## 10. Audit、错误与验证边界
 
 adapter 不直接写 audit。`OneNoteBridge` 为每个 `call()` 写且只写一条 content-free 终态 audit，增加：
 
@@ -154,15 +199,18 @@ adapter 不直接写 audit。`OneNoteBridge` 为每个 `call()` 写且只写一�
 - `client_generation`（one-shot 可为空）；
 - `delivery_state`。
 
+`refresh_com_client()` 另写一条 content-free refresh audit：`operation=refresh_com`、`refresh_outcome`，以及按上节投影边界附带的 `generation`/`com_epoch`、`discarded_generation` 或 `reason`。它不写泛化 `ok`（`not_needed` 是冷启动的正常完成，不能标成失败），也不写 `delivery_state`，更不记录 params、XML、路径或 OneNote ID。
+
 同 workload 双 adapter 对比必须同时收集 debug trace 与这条 audit：trace 只提供 backend call 数与耗时，上述三字段以 audit 为准。
 
 Audit、debug trace、host stderr 或 protocol diagnostic 均不得记录 operation params、XML、Page 内容、binary、OneNote ID、路径或完整 response。协议 stdout 只接受受控 frame；stderr 必须丢弃或有界 drain，不能因未读取而阻塞 host。
 
 自动化验证必须覆盖三种 delivery state、generation/sequence 匹配、in-flight timeout 后不重发、CLOSED 后稳定拒绝、one-shot 三态、frame limits，以及 `MutationAttemptExecutor` 不因 `possibly_dispatched` timeout 执行第二次 mutation。所有此类自动化测试使用 fake host 或 PowerShell fake client，绝不连接真实 OneNote；真实 read/mutation/restart evidence 仍由用户通过 TODO 048 的 human-gated 流程提供。
 
-## 10. 关联
+## 11. 关联
 
 - [TODO 048](../todo/048_persistent_com_client_bridge.md)：范围、验收命令与完成定义。
+- [TODO 051](../todo/051_persistent_com_client_restart_refresh.md)：OneNote 重启后的 COM epoch 刷新与 confirmed reap。
 - [Operation Runtime](operation_runtime.md)：当前 Runtime、backend-call accounting、Outcome 与 audit 契约。
 - [Mutation Readiness and Call Design](mutation_readiness_and_call_design.md)：当前 mutation reconciliation 与 bounded attempt 模型。
 - [OneNote COM Bridge 运行依赖](../dev/onenote_com_bridge_runtime.md)：当前默认常驻 host、fallback 环境变量与运行环境约束。

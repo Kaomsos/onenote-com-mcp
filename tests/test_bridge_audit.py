@@ -9,7 +9,16 @@ import pytest
 
 from local_onenote_mcp import com_client as com_client_module
 from local_onenote_mcp.bridge import OneNoteBridge, POWERSHELL_BRIDGE
-from local_onenote_mcp.com_client import OneShotPowerShellClient
+from local_onenote_mcp.com_client import (
+    REFRESH_HOST_DISCARD_UNCONFIRMED,
+    REFRESH_HOST_DISCARDED,
+    REFRESH_NOT_ATTEMPTED,
+    REFRESH_NOT_NEEDED,
+    REFRESH_REFRESHED,
+    REFRESH_REJECTED_CLOSED,
+    ComRefreshResult,
+    OneShotPowerShellClient,
+)
 from local_onenote_mcp.execution_context import reset_correlation_id, set_correlation_id
 from local_onenote_mcp.onenote_errors import OneNoteModalUIBlockedError
 
@@ -178,3 +187,39 @@ def test_bridge_audit_includes_optional_correlation_id(monkeypatch, tmp_path) ->
 
     record = json.loads(audit_path.read_text(encoding="utf-8"))
     assert record["correlation_id"] == "corr-123"
+
+
+@pytest.mark.parametrize(
+    "refresh",
+    (
+        ComRefreshResult(outcome=REFRESH_NOT_NEEDED),
+        ComRefreshResult(outcome=REFRESH_REJECTED_CLOSED),
+        ComRefreshResult(
+            outcome=REFRESH_NOT_ATTEMPTED,
+            reason="dispatch_lock_timeout",
+        ),
+        ComRefreshResult(outcome=REFRESH_HOST_DISCARDED, discarded_generation=3),
+        ComRefreshResult(outcome=REFRESH_HOST_DISCARD_UNCONFIRMED),
+        ComRefreshResult(outcome=REFRESH_REFRESHED, generation=1, com_epoch=2),
+    ),
+)
+def test_refresh_audit_records_outcome_without_ok(tmp_path, refresh) -> None:
+    class _Client:
+        adapter_id = "persistent_powershell"
+        generation = 1
+
+        def refresh_com(self, *, timeout_seconds: float):
+            return refresh
+
+    audit_path = tmp_path / "bridge-calls.jsonl"
+    result = OneNoteBridge(audit_path=audit_path, client=_Client()).refresh_com_client()
+    assert result.outcome == refresh.outcome
+    record = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert record["operation"] == "refresh_com"
+    assert record["refresh_outcome"] == refresh.outcome
+    assert "ok" not in record
+    for key, value in refresh.content_free_projection().items():
+        assert record[key] == value
+    rendered = json.dumps(record)
+    assert "xml" not in rendered
+    assert "secret" not in rendered

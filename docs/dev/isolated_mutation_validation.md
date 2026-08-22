@@ -75,7 +75,7 @@ __LOCAL_ONENOTE_MCP_ISOLATED__
    └─ Disposable-Section
 ```
 
-不得复用真实 Notebook，也不得在测试结构中放置唯一副本。开始前先启动并保留一个可见的 OneNote Desktop GUI，再等待 OneNote 完成同步，并保留 UI 截图或导出副本供人工比对。`health_check` 与标准 Runner 都只执行 fail-closed readiness 检查，不会隐式启动 OneNote；显式启动使用独立的 HUMAN-GATED `tests/manual_validation/launch_onenote_gui_check.py` 验收入口。该入口不属于 Scenario Registry 或 `all`，通过两个顺序冻结的 MCP policy 验证未授权拒绝、单次启动、重复调用幂等、health readiness、只读 hierarchy COM 和人工单窗口 verdict；它只把 MCP runtime progress/stderr 流向前台终端，结构化证据照常落盘，OneNote/Office 自管的隔离 TEMP diagnostics/cache 不在此承诺内。Agent 只可运行其 `--dry-run`。
+不得复用真实 Notebook，也不得在测试结构中放置唯一副本。开始前先启动并保留一个可见的 OneNote Desktop GUI，再等待 OneNote 完成同步，并保留 UI 截图或导出副本供人工比对。`health_check` 与标准 Runner 都只执行 fail-closed readiness 检查，不会隐式启动 OneNote；显式启动使用独立的 HUMAN-GATED `tests/manual_validation/launch_onenote_gui_check.py` 验收入口。该入口不属于 Scenario Registry 或 `all`，通过两个顺序冻结的 MCP policy 验证未授权拒绝、从停止状态单次启动、hierarchy read 建立 persistent host、already-running `refreshed`、同一 MCP 进程内人工关闭 OneNote 后用 bounded native fully-stopped wait 证明完全退出再恢复、health/hierarchy 再读、repeated epoch 递增，以及 enabled MCP 仍存活时的 ready health 与人工单窗口 verdict（teardown 后 OneNote 状态不作断言）；它只把 MCP runtime progress/stderr 流向前台终端，结构化证据照常落盘，OneNote/Office 自管的隔离 TEMP diagnostics/cache 不在此承诺内。可恢复 mutation 由独立具名 scenario `com-refresh-mutation` 承担：同一 MCP 必须先做 bounded native fully-stopped wait，再 launch 恢复，分别刷新 harness `_internal_bridge` 与 `NotebookLifecycleWrapper` 并对 owned Page / leased Notebook 做精确 probe，然后做恰好一次可恢复 rename。Agent 只可运行其 `--dry-run`。
 
 ## 3. 独立进程配置
 

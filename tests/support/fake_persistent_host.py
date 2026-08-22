@@ -108,12 +108,59 @@ def main() -> int:
         time.sleep(30)
         return 1
     ready()
+    com_epoch = 1
     while True:
         request = read_frame()
         if request is None:
             return 0
         if request.get("kind") == "shutdown":
             return 0
+        if request.get("kind") == "refresh_com":
+            if args.mode == "refresh-hang":
+                time.sleep(30)
+                return 0
+            if args.mode == "refresh-activation-failure":
+                respond(
+                    request,
+                    ok=False,
+                    data=None,
+                    error={
+                        "message": "activation failed",
+                        "hresult": -2147221164,
+                        "wrapper_hresult": -2147221164,
+                        "exception_depth": 0,
+                        "leaf_exception_type": "System.Runtime.InteropServices.COMException",
+                        "category": "InvalidOperation",
+                    },
+                )
+                continue
+            if args.mode == "refresh-probe-failure":
+                respond(
+                    request,
+                    ok=False,
+                    data=None,
+                    error={
+                        "message": "probe failed",
+                        "hresult": -2147023174,
+                        "wrapper_hresult": -2147023174,
+                        "exception_depth": 0,
+                        "leaf_exception_type": "System.Runtime.InteropServices.COMException",
+                        "category": "OperationStopped",
+                    },
+                )
+                continue
+            if args.mode == "refresh-malformed-epoch":
+                respond(request, data={"com_epoch": "2"})
+                continue
+            if args.mode == "refresh-missing-epoch":
+                respond(request, data={})
+                continue
+            if args.mode == "refresh-wrong-epoch":
+                respond(request, data={"com_epoch": com_epoch + 2})
+                continue
+            com_epoch += 1
+            respond(request, data={"com_epoch": com_epoch})
+            continue
         if request.get("kind") == "noise":
             sys.stdout.write("not-a-frame\n")
             sys.stdout.flush()
@@ -135,7 +182,7 @@ def main() -> int:
                 path.write_text("1", encoding="ascii")
                 time.sleep(30)
                 return 0
-            respond(request)
+            respond(request, data={"xml": "<one:Notebooks/>", "com_epoch": com_epoch})
             continue
         if args.mode == "response-missing-data":
             write_frame(
@@ -227,13 +274,13 @@ def main() -> int:
         if args.mode == "non-ascii":
             respond(
                 request,
-                data={"xml": "<one:Notebooks>测</one:Notebooks>"},
+                data={"xml": "<one:Notebooks>测</one:Notebooks>", "com_epoch": com_epoch},
             )
             continue
         if request.get("operation") == "create_new_page":
-            respond(request, data={"page_id": "page-1"})
+            respond(request, data={"page_id": "page-1", "com_epoch": com_epoch})
             continue
-        respond(request)
+        respond(request, data={"xml": "<one:Notebooks/>", "com_epoch": com_epoch})
     return 0
 
 

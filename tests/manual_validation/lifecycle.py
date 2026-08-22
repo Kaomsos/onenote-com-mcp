@@ -70,6 +70,22 @@ class NotebookLifecycleWrapper:
         if self._owns_bridge:
             self._bridge.close()
 
+    def refresh_com_client(self) -> dict[str, Any]:
+        """Refresh this wrapper's COM independently of MCP and internal bridges.
+
+        ``launch_onenote_gui`` only refreshes the child-process persistent client.
+        Isolated Page XML uses the harness ``_internal_bridge``. Exact Notebook
+        create/get/close uses this third owner and must be refreshed on its own
+        after OneNote exits. The same wrapper instance must remain alive until
+        exact close finishes.
+        """
+
+        try:
+            result = self._bridge.refresh_com_client()
+        except Exception as exc:
+            raise RestoreFailure(f"Lifecycle COM refresh failed: {exc}") from exc
+        return result.content_free_projection()
+
     def create_fresh_notebook(self, name: str) -> tuple[dict[str, Any], dict[str, Any]]:
         self.progress.unit_started("lifecycle", f"{self.role} create", 1, 1)
         validate_working_name(name)
@@ -135,12 +151,17 @@ class NotebookLifecycleWrapper:
         return notebook, lease
 
     def _reported_notebook_directory(self, notebook_id: str) -> Path:
-        result = self._bridge.call(
-            "get_hierarchy",
-            start_id=notebook_id,
-            scope=HIERARCHY_SCOPES["self"],
-            schema=XML_SCHEMA_2013,
-        )
+        try:
+            result = self._bridge.call(
+                "get_hierarchy",
+                start_id=notebook_id,
+                scope=HIERARCHY_SCOPES["self"],
+                schema=XML_SCHEMA_2013,
+            )
+        except OneNoteBridgeError as exc:
+            raise RestoreFailure(
+                f"Lifecycle could not read the opened Notebook's COM path: {exc}"
+            ) from exc
         try:
             root = ET.fromstring(str(result["xml"]))
         except (KeyError, ET.ParseError) as exc:
@@ -699,6 +720,26 @@ class NotebookLifecycleWrapper:
             raise RestoreFailure("Unsupported lifecycle lease schema.")
         return lease
 
+    def _record_close_not_submitted(
+        self,
+        lease: dict[str, Any],
+        exc: BaseException,
+        *,
+        phase: str,
+    ) -> None:
+        lease.update(
+            state="active",
+            close_not_submitted={
+                "status": "close_not_submitted",
+                "phase": phase,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+                "close_submitted": False,
+                "recorded_at": utc_now(),
+            },
+        )
+        write_json(self.lease_path, lease)
+
     def get_exact_notebook(self, lease: dict[str, Any] | None = None) -> dict[str, Any]:
         lease = lease or self._read_lease()
         if lease.get("role", self.role) != self.role:
@@ -718,6 +759,10 @@ class NotebookLifecycleWrapper:
             current = self._hierarchy.resource(notebook_id, "notebook")
         except ValueError as exc:
             raise RestoreFailure("Lifecycle lease Notebook ID is no longer active.") from exc
+        except OneNoteBridgeError as exc:
+            raise RestoreFailure(
+                f"Lifecycle could not read the leased Notebook: {exc}"
+            ) from exc
         if str(current.get("id")) != notebook_id or display_name(current) != expected_name:
             raise RestoreFailure("Lifecycle lease ID/name binding no longer matches OneNote state.")
         if self._reported_notebook_directory(notebook_id) != expected_path:
@@ -793,12 +838,19 @@ class NotebookLifecycleWrapper:
         lease = self._read_lease()
         if lease.get("state") != "active":
             raise RestoreFailure("Lifecycle lease is not active; refusing source Notebook close.")
-        current = self.get_exact_notebook(lease)
         persistence_sync = {
             "requested": sync_to_disk,
             "accepted": False,
             "completion_proof": "CloseNotebook(force=false)" if sync_to_disk else None,
         }
+        started = time.perf_counter()
+        try:
+            current = self.get_exact_notebook(lease)
+        except Exception as exc:
+            self._record_close_not_submitted(lease, exc, phase="identity_read")
+            if isinstance(exc, RestoreFailure):
+                raise
+            raise RestoreFailure(f"Exact source Notebook close failed: {exc}") from exc
         if sync_to_disk:
             try:
                 self._bridge.call(
@@ -816,7 +868,6 @@ class NotebookLifecycleWrapper:
                     "Exact Notebook cache-publish persistence sync failed before close; "
                     "the active lease was preserved for normal failure finalization."
                 ) from exc
-        started = time.perf_counter()
         try:
             self._bridge.call("close_notebook", notebook_id=str(current["id"]), force=False)
             def observe_close():
@@ -872,7 +923,12 @@ class NotebookLifecycleWrapper:
             )
             return result
         except Exception as exc:
-            lease.update(state="close_failed", close_failed_at=utc_now(), close_error=str(exc))
+            lease.update(
+                state="close_failed",
+                close_failed_at=utc_now(),
+                close_error=str(exc),
+                close_submitted=True,
+            )
             write_json(self.lease_path, lease)
             if isinstance(exc, RestoreFailure):
                 raise

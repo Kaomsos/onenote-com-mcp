@@ -33,7 +33,7 @@ Authorization 与平台前置条件是两个独立 Registry policy。所有需�
 | Tool | 参数 | 合同 |
 | --- | --- | --- |
 | `health_check` | 无 | 每个 MCP session 开始时调用；check-only，验证现有 `ONENOTE.EXE` 进程和可见窗口，绝不启动 GUI。成功时返回 53 项分类计数、7 个公开授权状态及运行时预算；执行授权 effect 前必须 ready。`debug_trace` 节投影本地 trace 开关（`enabled`、`output_configured`、`writable`），不含完整输出路径，也不含 schema version。 |
-| `launch_onenote_gui` | 无 | GUI 未 ready 时的显式恢复入口并豁免 readiness 前置条件。UI Control；已就绪时不启动。进程完全不存在时只解析受信任的注册目标并发出一次启动请求，再有界观察 GUI readiness；随后调用者必须再次 `health_check`，再重试原 effect。process-only、解析失败、启动异常与超时均 typed fail closed。 |
+| `launch_onenote_gui` | 无 | GUI 未 ready 时的显式恢复入口并豁免 readiness 前置条件。UI Control；已就绪时不启动。进程完全不存在时只解析受信任的注册目标并发出一次启动请求，再有界观察 GUI readiness；随后调用者必须再次 `health_check`，再重试原 effect。process-only、解析失败、启动异常与超时均 typed fail closed。GUI ready（`started` 或 `already_running`）后附加 content-free `com_client_refresh`：`refreshed` 含活动 `generation`/`com_epoch`；`host_discarded` 含 `discarded_generation`；`not_attempted` 含 `reason`；其余仅 `outcome`。刷新失败不推翻 launch 成功，也不重放业务请求。 |
 
 readiness 失败 envelope 的 `error.details.failed_precondition` 为 `onenote_gui_ready`，并给出 `health_check → launch_onenote_gui → health_check → retry_original_operation` 恢复顺序。若 `ui_control_enabled=false`，调用者需开启 `LOCAL_ONENOTE_ENABLE_UI_CONTROL=true` 后重启 MCP server，或由用户手动启动可见 OneNote Desktop GUI；Runtime 不会把 launch 隐藏进 read、effect、初始化或 `tools/list`。
 

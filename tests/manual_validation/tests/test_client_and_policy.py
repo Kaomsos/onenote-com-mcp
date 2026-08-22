@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from local_onenote_mcp.com_client import ComRefreshResult
 from tests.manual_validation.mcp_stdio_client import (
     BATCH_MUTATION_BUDGET_ENV,
     ClientFailure,
@@ -653,3 +654,123 @@ def test_protocol_level_tool_error_is_audited_once(tmp_path) -> None:
     records = (tmp_path / "calls.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(records) == 1
     assert '"client_error"' in records[0]
+
+
+class _StaleUntilRefreshInternalBridge:
+    def __init__(self) -> None:
+        self.refresh_calls = 0
+        self.page_calls = 0
+        self.refreshed = False
+        self.adapter_id = "persistent_powershell"
+        self.audit_path = None
+        self.generation = 1
+
+    def refresh_com_client(self, **_: object) -> ComRefreshResult:
+        self.refresh_calls += 1
+        self.refreshed = True
+        return ComRefreshResult(outcome="refreshed", generation=1, com_epoch=2)
+
+    def call(self, operation: str, **_kwargs):
+        self.page_calls += 1
+        if operation == "get_page_content" and not self.refreshed:
+            raise RuntimeError("RPC server unavailable (0x800706BA)")
+        return {"xml": "<one:Page/>"}
+
+    def close(self) -> None:
+        return None
+
+
+class _LaunchSession:
+    def __init__(self) -> None:
+        self.names: list[str] = []
+
+    async def call_tool(self, name: str, _arguments, **_kwargs):
+        self.names.append(name)
+        return SimpleNamespace(
+            isError=False,
+            structuredContent={
+                "result": {
+                    "ok": True,
+                    "result": {
+                        "status": "started",
+                        "launch_attempted": True,
+                        "launch_attempts": 1,
+                        "ready": True,
+                        "com_client_refresh": {
+                            "outcome": "refreshed",
+                            "generation": 1,
+                            "com_epoch": 2,
+                        },
+                    },
+                    "warnings": [],
+                    "execution": {},
+                }
+            },
+            content=[],
+        )
+
+
+def test_mcp_launch_and_internal_bridge_lifecycles_are_independent(tmp_path) -> None:
+    session = _LaunchSession()
+    internal = _StaleUntilRefreshInternalBridge()
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"launch_onenote_gui", "get_page_xml"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+        persist_runtime_logs=False,
+    )
+    client._session = session
+    client._internal_bridge = internal
+
+    launched = asyncio.run(client.call_tool("launch_onenote_gui", {}, retry_read=False))
+
+    assert launched["com_client_refresh"]["outcome"] == "refreshed"
+    assert session.names == ["launch_onenote_gui"]
+    assert internal.refresh_calls == 0
+    assert internal.page_calls == 0
+    with pytest.raises(ClientFailure, match="0x800706BA"):
+        asyncio.run(
+            client.call_tool("get_page_xml", {"page_id": "page-id"}, retry_read=False)
+        )
+    assert internal.refresh_calls == 0
+    assert internal.page_calls == 1
+
+    projection = client.refresh_internal_com_client()
+    assert projection == {"outcome": "refreshed", "generation": 1, "com_epoch": 2}
+    assert internal.refresh_calls == 1
+    assert session.names == ["launch_onenote_gui"]
+
+    xml = asyncio.run(
+        client.call_tool("get_page_xml", {"page_id": "page-id"}, retry_read=False)
+    )
+    assert xml == {"xml": "<one:Page/>"}
+    assert internal.page_calls == 2
+    assert internal.refresh_calls == 1
+
+
+def test_stale_internal_proxy_requires_explicit_refresh_before_xml_read(tmp_path) -> None:
+    internal = _StaleUntilRefreshInternalBridge()
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"get_page_xml"},
+        run_dir=tmp_path,
+        timeout_seconds=10,
+        persist_runtime_logs=False,
+    )
+    client._session = SimpleNamespace()
+    client._internal_bridge = internal
+
+    with pytest.raises(ClientFailure, match="0x800706BA"):
+        asyncio.run(
+            client.call_tool("get_page_xml", {"page_id": "page-id"}, retry_read=False)
+        )
+    assert internal.refresh_calls == 0
+
+    client.refresh_internal_com_client()
+    xml = asyncio.run(
+        client.call_tool("get_page_xml", {"page_id": "page-id"}, retry_read=False)
+    )
+    assert xml["xml"] == "<one:Page/>"
+    assert internal.refresh_calls == 1
+    assert internal.page_calls == 2

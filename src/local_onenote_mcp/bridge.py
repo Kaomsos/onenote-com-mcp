@@ -16,8 +16,12 @@ from typing import Any
 from .com_client import (
     DELIVERY_NOT_SUBMITTED,
     DELIVERY_RESPONDED,
+    NOT_ATTEMPTED_PRE_SUBMIT_FAILURE,
+    REFRESH_NOT_ATTEMPTED,
+    REFRESH_NOT_NEEDED,
     ComClient,
     ComClientError,
+    ComRefreshResult,
     create_com_client,
 )
 from .execution_context import current_correlation_id
@@ -124,6 +128,47 @@ class OneNoteBridge:
                 delivery_state=delivery_state,
             )
 
+    def refresh_com_client(
+        self,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> ComRefreshResult:
+        """Refresh the host-owned COM object after a controlled GUI recovery.
+
+        Never raises into the launch path. Failures fold to a content-free
+        refresh outcome and do not rewrite GUI launch success.
+        """
+
+        started = time.perf_counter()
+        result: ComRefreshResult
+        try:
+            refresher = getattr(self._client, "refresh_com", None)
+            if not callable(refresher):
+                result = ComRefreshResult(outcome=REFRESH_NOT_NEEDED)
+            else:
+                effective_timeout = float(self.timeout_seconds)
+                if timeout_seconds is not None:
+                    if timeout_seconds <= 0:
+                        result = ComRefreshResult(
+                            outcome=REFRESH_NOT_ATTEMPTED,
+                            reason=NOT_ATTEMPTED_PRE_SUBMIT_FAILURE,
+                        )
+                    else:
+                        effective_timeout = min(effective_timeout, float(timeout_seconds))
+                        result = refresher(timeout_seconds=effective_timeout)
+                else:
+                    result = refresher(timeout_seconds=effective_timeout)
+        except Exception:
+            result = ComRefreshResult(
+                outcome=REFRESH_NOT_ATTEMPTED,
+                reason=NOT_ATTEMPTED_PRE_SUBMIT_FAILURE,
+            )
+        self._append_refresh_audit(
+            result,
+            elapsed_seconds=round(time.perf_counter() - started, 6),
+        )
+        return result
+
     def close(self) -> None:
         closer = getattr(self._client, "close", None)
         if callable(closer):
@@ -173,6 +218,34 @@ class OneNoteBridge:
                         "retryability": failure.retryability,
                     }
                 )
+            with path.open("a", encoding="utf-8", newline="\n") as stream:
+                stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+        except OSError:
+            pass
+
+    def _append_refresh_audit(
+        self,
+        result: ComRefreshResult,
+        *,
+        elapsed_seconds: float,
+    ) -> None:
+        configured = self.audit_path or os.environ.get("LOCAL_ONENOTE_BRIDGE_AUDIT_PATH")
+        if not configured:
+            return
+        try:
+            path = Path(configured)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record: dict[str, Any] = {
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "elapsed_seconds": elapsed_seconds,
+                "operation": "refresh_com",
+                "adapter": self._client.adapter_id,
+                "refresh_outcome": result.outcome,
+            }
+            record.update(result.content_free_projection())
+            correlation_id = current_correlation_id()
+            if correlation_id is not None:
+                record["correlation_id"] = correlation_id
             with path.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
         except OSError:

@@ -10,8 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from tests.manual_validation import test_utils
+from tests.manual_validation import runner as runner_module
 from tests.manual_validation.runner import build_parser, main
-from tests.manual_validation.runtime import EXIT_MCP
+from tests.manual_validation.runtime import EXIT_MCP, EXIT_RESTORE
 from tests.manual_validation.scenarios.common.report import run_report
 from tests.manual_validation.scenarios.common.orchestrator import record_failure
 from tests.manual_validation.scenarios.common.registry import SCENARIO_REGISTRY
@@ -464,3 +465,47 @@ def test_internal_report_renders_interactive_copy_and_discovery_evidence(tmp_pat
     assert "Template published: `False`" in report
     assert "Mutation eligible: `False`" in report
     assert "Move source deletion allowed: `False`" in report
+
+
+def test_main_converts_unexpected_bridge_error_to_structured_failure(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from local_onenote_mcp.onenote_errors import OneNoteBridgeError
+
+    run_dir = tmp_path / "run-structured"
+    run_dir.mkdir()
+    test_utils.write_json(
+        run_dir / "run-state.json",
+        {
+            "status": "running",
+            "current_step": "close-source-notebook",
+            "finalization_started": True,
+            "completed_steps": [{"step": "com-refresh-mutation"}],
+        },
+    )
+
+    async def boom(_args):
+        raise OneNoteBridgeError(
+            "RPC server unavailable (0x800706BA)",
+            operation="get_hierarchy",
+            hresult=0x800706BA,
+        )
+
+    monkeypatch.setattr(runner_module, "dispatch", boom)
+    code = main(
+        [
+            "com-refresh-mutation",
+            "--run-dir",
+            str(run_dir),
+            "--json",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert code == EXIT_RESTORE
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+    failure = test_utils.read_json(run_dir / "run-failure.json")
+    assert failure["exit_code"] == EXIT_RESTORE
+    assert failure["failed_step"] == "close-source-notebook"
+    assert "0x800706BA" in failure["error"]
+    assert "failure_finalization" in failure

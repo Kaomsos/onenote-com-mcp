@@ -1,7 +1,7 @@
 # OneNote COM Bridge 运行依赖
 
 > 状态：当前生产行为与开发排障基线
-> 更新日期：2026-08-20
+> 更新日期：2026-08-22
 
 ## Windows PowerShell host
 
@@ -58,7 +58,7 @@ $onenote.GetHierarchy("", 2, [ref]$xml, 2)
 | `one_shot_powershell` | 显式 fallback。每次 backend call 启动新的 `powershell.exe` 并使用临时 JSON 文件。 |
 | 其他 | 启动期失败，不静默降级。 |
 
-`import`、`health_check` 与 `launch_onenote_gui` 不 spawn host。manual-validation 的 scenario MCP child 与 lifecycle wrapper 固定写入同一显式 adapter，不继承父进程环境变量；dry-run 计划输出 `bridge_adapter`。
+`import`、`health_check` 与 `launch_onenote_gui` 不 spawn host。`launch_onenote_gui` 在 GUI ready 后可向**已经** `READY` 的 persistent host 发送 `refresh_com` 控制帧，以在同一 STA host 内重建 `$onenote`；未启动的 persistent client 与 one-shot adapter 对该 hook 返回 `not_needed`。GUI readiness 不要求退休健康 host，也不要求 COM backend 与 GUI 属于同一 PID。manual-validation 的 scenario MCP child 与 lifecycle wrapper 固定写入同一显式 adapter，不继承父进程环境变量；dry-run 计划输出 `bridge_adapter`。
 
 ## 同 workload 双 adapter 对比（content-free）
 
@@ -87,9 +87,15 @@ Agent、pytest、CI 与后台任务只能运行带 `--dry-run` 的命令。下�
 # 默认 adapter：成功 mutation
 .venv\Scripts\python.exe tests\manual_validation\run.py rename
 
-# policy 拒绝 + shutdown/restart smoke（独立 GUI 入口；不要由 Agent 启动）
+# policy 拒绝 + stale COM / epoch 恢复（独立 GUI 入口；不要由 Agent 启动）
 .venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --dry-run --json
 .venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --verbosity verbose
+
+# 可恢复 mutation（独立具名 scenario；不要由 Agent 启动）
+# 同一 MCP：用户关闭 → bounded native fully-stopped wait → launch 恢复 →
+# 刷新 harness internal/lifecycle COM 并精确 probe → 唯一 rename
+.venv\Scripts\python.exe tests\manual_validation\run.py com-refresh-mutation --dry-run --json
+.venv\Scripts\python.exe tests\manual_validation\run.py com-refresh-mutation
 ```
 
 显式 fallback 不走 `run.py`（validation child 固定 `persistent_powershell`）。在交互式 MCP 中设置 `LOCAL_ONENOTE_BRIDGE_ADAPTER=one_shot_powershell`，确认 bridge audit 的 `adapter` 字段，以及非法值使服务器启动 fail-closed。debug trace 不含 `adapter`。

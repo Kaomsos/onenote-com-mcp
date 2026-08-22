@@ -30,6 +30,22 @@ def test_one_shot_and_persistent_embed_the_same_switch() -> None:
     assert "New-Object -ComObject OneNote.Application" in POWERSHELL_ONE_SHOT_SCRIPT
     assert "New-Object -ComObject OneNote.Application" in POWERSHELL_PERSISTENT_HOST_SCRIPT
     assert "New-Object -ComObject OneNote.Application" not in POWERSHELL_FAKE_PERSISTENT_HOST_SCRIPT
+    assert 'if($kind-eq"refresh_com")' in POWERSHELL_PERSISTENT_HOST_SCRIPT
+    assert "Invoke-RefreshComClient" in POWERSHELL_PERSISTENT_HOST_SCRIPT
+    assert "$script:onenote.Windows" in POWERSHELL_PERSISTENT_HOST_SCRIPT
+    assert "[uint64]$windows.Count" in POWERSHELL_PERSISTENT_HOST_SCRIPT
+    assert "FinalReleaseComObject($windows)" in POWERSHELL_PERSISTENT_HOST_SCRIPT
+    assert "$script:ComEpoch += 1" in POWERSHELL_PERSISTENT_HOST_SCRIPT
+    refresh = POWERSHELL_PERSISTENT_HOST_SCRIPT.split("function Invoke-RefreshComClient", 1)[1]
+    activation_at = refresh.find("New-Object -ComObject OneNote.Application")
+    probe_at = refresh.find("$script:onenote.Windows")
+    finally_at = refresh.find("finally")
+    release_at = refresh.find("FinalReleaseComObject($windows)")
+    epoch_at = refresh.find("$script:ComEpoch += 1")
+    assert 0 <= activation_at < probe_at < finally_at < release_at < epoch_at
+    assert refresh.find("[uint64]$windows.Count") < finally_at
+    assert "$script:onenote.Windows" not in POWERSHELL_FAKE_PERSISTENT_HOST_SCRIPT
+    assert "Invoke-RefreshComClient" in POWERSHELL_FAKE_PERSISTENT_HOST_SCRIPT
 
 
 def test_production_host_has_no_test_switch() -> None:

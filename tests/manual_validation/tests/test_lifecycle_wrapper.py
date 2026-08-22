@@ -22,6 +22,13 @@ class FakeBridge:
         self.calls: list[tuple[str, dict]] = []
         self.hierarchy = None
         self.opened_paths: dict[Path, str] = {}
+        self.refresh_calls = 0
+
+    def refresh_com_client(self, **_kwargs):
+        from local_onenote_mcp.com_client import ComRefreshResult
+
+        self.refresh_calls += 1
+        return ComRefreshResult(outcome="refreshed", generation=1, com_epoch=2)
 
     def call(self, name: str, **kwargs):
         self.calls.append((name, kwargs))
@@ -934,6 +941,7 @@ def test_wrapper_exposes_only_bounded_lifecycle_operations() -> None:
         "snapshot_open_notebooks",
         "working_notebook_open_lock",
         "close_transport",
+        "refresh_com_client",
     }
 
 
@@ -954,3 +962,133 @@ def test_role_wrappers_use_independent_leases_and_materialization_evidence(tmp_p
         == "materialized-hierarchy-open-destination.json"
     )
     assert source.lease_path != destination.lease_path
+
+
+def test_lifecycle_refresh_is_independent_of_injected_bridge_calls(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+    assert bridge.refresh_calls == 0
+
+    projection = wrapper.refresh_com_client()
+
+    assert projection == {"outcome": "refreshed", "generation": 1, "com_epoch": 2}
+    assert bridge.refresh_calls == 1
+    assert [name for name, _kwargs in bridge.calls] == ["open_hierarchy"]
+
+
+def test_get_exact_notebook_maps_stale_proxy_to_restore_failure(tmp_path) -> None:
+    from local_onenote_mcp.onenote_errors import OneNoteBridgeError
+
+    wrapper, _bridge, hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+
+    def boom(_object_id: str, _resource_type: str):
+        raise OneNoteBridgeError(
+            "RPC server unavailable (0x800706BA)",
+            operation="get_hierarchy",
+            hresult=0x800706BA,
+        )
+
+    hierarchy.resource = boom
+    with pytest.raises(RestoreFailure, match="0x800706BA"):
+        wrapper.get_exact_notebook()
+
+
+def test_close_exact_notebook_maps_stale_proxy_without_retry_or_refresh(tmp_path) -> None:
+    from local_onenote_mcp.onenote_errors import OneNoteBridgeError
+
+    wrapper, bridge, hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+    calls = {"count": 0}
+    original_resource = hierarchy.resource
+
+    def boom(_object_id: str, _resource_type: str):
+        calls["count"] += 1
+        raise OneNoteBridgeError(
+            "RPC server unavailable (0x800706BA)",
+            operation="get_hierarchy",
+            hresult=0x800706BA,
+        )
+
+    hierarchy.resource = boom
+    with pytest.raises(RestoreFailure, match="0x800706BA"):
+        wrapper.close_exact_notebook()
+
+    lease = read_json(wrapper.lease_path)
+    assert lease["state"] == "active"
+    assert lease["close_not_submitted"]["status"] == "close_not_submitted"
+    assert lease["close_not_submitted"]["phase"] == "identity_read"
+    assert lease["close_not_submitted"]["close_submitted"] is False
+    assert calls["count"] == 1
+    assert bridge.refresh_calls == 0
+    assert "close_notebook" not in [name for name, _kwargs in bridge.calls]
+
+    hierarchy.resource = original_resource
+    result = wrapper.close_exact_notebook()
+    assert result["closed"] is True
+    assert read_json(wrapper.lease_path)["state"] == "closed"
+
+
+def test_close_submitted_failure_forbids_retry(tmp_path) -> None:
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+    original = bridge.call
+
+    def boom(name: str, **kwargs):
+        if name == "close_notebook":
+            bridge.calls.append((name, kwargs))
+            raise RuntimeError("close submitted then failed")
+        return original(name, **kwargs)
+
+    bridge.call = boom
+    with pytest.raises(RestoreFailure, match="close submitted then failed"):
+        wrapper.close_exact_notebook()
+
+    lease = read_json(wrapper.lease_path)
+    assert lease["state"] == "close_failed"
+    assert lease["close_submitted"] is True
+    assert "close_notebook" in [name for name, _kwargs in bridge.calls]
+    with pytest.raises(RestoreFailure, match="not active"):
+        wrapper.close_exact_notebook()
+
+
+def test_lifecycle_wrapper_still_closes_after_independent_mcp_client_exit(tmp_path) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from tests.manual_validation.mcp_stdio_client import MCPStdioClient, READ_ONLY_POLICY
+
+    wrapper, bridge, _hierarchy = _wrapper(tmp_path)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+    client = MCPStdioClient(
+        policy=READ_ONLY_POLICY,
+        allowed_tools={"health_check"},
+        run_dir=tmp_path / "scenario-mcp",
+        timeout_seconds=10,
+        persist_runtime_logs=False,
+    )
+    closed = {"internal": False}
+
+    class Internal:
+        adapter_id = "persistent_powershell"
+        audit_path = None
+
+        def close(self) -> None:
+            closed["internal"] = True
+
+        def refresh_com_client(self):
+            raise AssertionError("MCP client exit must not refresh lifecycle COM")
+
+        def call(self, *_args, **_kwargs):
+            raise AssertionError("MCP client must not use the lifecycle bridge")
+
+    client._internal_bridge = Internal()
+    client._session = SimpleNamespace()
+    asyncio.run(client.__aexit__(None, None, None))
+
+    assert closed["internal"] is True
+    projection = wrapper.refresh_com_client()
+    assert projection["outcome"] == "refreshed"
+    result = wrapper.close_exact_notebook()
+    assert result["closed"] is True
+    assert [name for name, _kwargs in bridge.calls][-1] == "close_notebook"

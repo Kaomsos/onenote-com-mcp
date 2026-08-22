@@ -1111,6 +1111,8 @@ class FakeLifecycle:
         self.closed = False
         self.preserved = False
         self.open_count = 0
+        self.close_calls = 0
+        self.closed_while_mcp_active = False
         self.__class__.instances.append(self)
 
     def create_fresh_notebook(self, name: str):
@@ -1121,6 +1123,7 @@ class FakeLifecycle:
             "notebook_id": notebook_id,
             "expected_name": name,
             "expected_local_path": str(path),
+            "state": "active",
         }
         test_utils.write_json(self.lease_path, {"schema_version": 1, **lease})
         return {"id": notebook_id, "name": name}, lease
@@ -1129,8 +1132,10 @@ class FakeLifecycle:
         lease = lease or test_utils.read_json(self.lease_path)
         return {"id": lease["notebook_id"], "name": lease["expected_name"]}
 
-    def close_exact_notebook(self):
+    def close_exact_notebook(self, *, sync_to_disk: bool = False):
+        self.close_calls += 1
         self.closed = True
+        self.closed_while_mcp_active = FakeMCP.active is not None
         if self.open_count == 0:
             notebook_id = (
                 "notebook-id" if self.role == "source" else f"{self.role}-notebook-id"
@@ -1141,11 +1146,19 @@ class FakeLifecycle:
                 if self.role == "source"
                 else f"reopened-{self.open_count}-{self.role}-notebook-id"
             )
-        return {
+        result = {
             "closed": True,
             "source_notebook_id": notebook_id,
             "close_before": {"id": notebook_id},
         }
+        lease = (
+            test_utils.read_json(self.lease_path)
+            if self.lease_path.exists()
+            else {"schema_version": 1}
+        )
+        lease.update(state="closed", close_result=result)
+        test_utils.write_json(self.lease_path, lease)
+        return result
 
     def working_notebook_open_lock(self):
         from contextlib import nullcontext
@@ -1442,6 +1455,146 @@ def test_scenario_execution_defers_close_to_top_level_failure_finalization(
     assert state["finalization_started"] is False
 
 
+def test_com_refresh_closes_lease_once_before_mcp_exit_and_finalizer_accepts_preclosed(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[str] = []
+    order: list[str] = []
+    _install_orchestration_fakes(monkeypatch, calls)
+
+    original_exit = FakeMCP.__aexit__
+
+    async def tracking_exit(self, *args):
+        order.append("mcp_exit")
+        return await original_exit(self, *args)
+
+    monkeypatch.setattr(FakeMCP, "__aexit__", tracking_exit)
+
+    async def fake_execute(*_args, **_kwargs):
+        assert FakeMCP.active is not None
+        order.append("scenario")
+        return {"scenario": "com-refresh-mutation", "status": "passed"}
+
+    monkeypatch.setattr(
+        SCENARIO_REGISTRY.get("com-refresh-mutation"),
+        "execute_with_lifecycle",
+        fake_execute,
+    )
+    original_close = FakeLifecycle.close_exact_notebook
+
+    def tracking_close(self, *, sync_to_disk: bool = False):
+        order.append("lifecycle_close")
+        assert FakeMCP.active is not None
+        return original_close(self, sync_to_disk=sync_to_disk)
+
+    monkeypatch.setattr(FakeLifecycle, "close_exact_notebook", tracking_close)
+
+    result = asyncio.run(
+        validation.run_validate(
+            _args(tmp_path / "run-com-refresh-close", "com-refresh-mutation"),
+            RuntimeOptions(tmp_path / "run-com-refresh-close", 180, False, False),
+        )
+    )
+
+    wrapper = FakeLifecycle.instances[0]
+    assert order == ["scenario", "lifecycle_close", "mcp_exit"]
+    assert wrapper.close_calls == 1
+    assert wrapper.closed is True
+    assert wrapper.closed_while_mcp_active is True
+    assert test_utils.read_json(wrapper.lease_path)["state"] == "closed"
+    assert result["lifecycle"]["status"] == "closed_preserved"
+    assert result["lifecycle"]["closed"] is True
+    in_mcp = test_utils.read_json(
+        (tmp_path / "run-com-refresh-close") / "in-mcp-lifecycle-close.json"
+    )
+    assert in_mcp["closed_before_mcp_exit"] is True
+    assert in_mcp["roles"]["source"]["status"] == "closed"
+
+
+def test_com_refresh_failure_still_closes_once_before_mcp_exit(monkeypatch, tmp_path) -> None:
+    calls: list[str] = []
+    order: list[str] = []
+    _install_orchestration_fakes(monkeypatch, calls)
+
+    original_exit = FakeMCP.__aexit__
+
+    async def tracking_exit(self, *args):
+        order.append("mcp_exit")
+        return await original_exit(self, *args)
+
+    monkeypatch.setattr(FakeMCP, "__aexit__", tracking_exit)
+
+    async def failing(*_args, **_kwargs):
+        order.append("scenario")
+        raise runtime.InvariantFailure("forward_not_durable")
+
+    monkeypatch.setattr(
+        SCENARIO_REGISTRY.get("com-refresh-mutation"),
+        "execute_with_lifecycle",
+        failing,
+    )
+    original_close = FakeLifecycle.close_exact_notebook
+
+    def tracking_close(self, *, sync_to_disk: bool = False):
+        order.append("lifecycle_close")
+        assert FakeMCP.active is not None
+        return original_close(self, sync_to_disk=sync_to_disk)
+
+    monkeypatch.setattr(FakeLifecycle, "close_exact_notebook", tracking_close)
+
+    args = _args(tmp_path / "run-com-refresh-fail-close", "com-refresh-mutation")
+    with pytest.raises(runtime.InvariantFailure, match="forward_not_durable"):
+        asyncio.run(
+            validation.run_validate(
+                args,
+                RuntimeOptions(args.run_dir, 180, False, False),
+            )
+        )
+
+    wrapper = FakeLifecycle.instances[0]
+    assert order == ["scenario", "lifecycle_close", "mcp_exit"]
+    assert wrapper.close_calls == 1
+    assert wrapper.closed_while_mcp_active is True
+    finalization = validation.record_failure(
+        args, "forward_not_durable", runtime.EXIT_INVARIANT
+    )
+    assert wrapper.close_calls == 1
+    assert finalization["roles"]["source"]["status"] == "already_closed"
+    assert finalization["closed"] is True
+
+
+def test_failure_finalizer_does_not_retry_submitted_close_failed_lease(
+    monkeypatch, tmp_path
+) -> None:
+    calls: list[str] = []
+    _install_orchestration_fakes(monkeypatch, calls)
+    args = _args(tmp_path / "run-close-failed-lease", "rename")
+    args.run_dir.mkdir()
+    test_utils.write_json(args.run_dir / "run-state.json", {"current_step": "rename"})
+    test_utils.write_json(
+        args.run_dir / "lifecycle-lease.json",
+        {
+            "schema_version": 1,
+            "notebook_id": "notebook-id",
+            "expected_name": "__ISOLATED__",
+            "expected_local_path": str(args.run_dir / "notebooks" / "__ISOLATED__"),
+            "state": "close_failed",
+            "close_submitted": True,
+            "close_error": "RPC server unavailable (0x800706BA)",
+        },
+    )
+    before = len(FakeLifecycle.instances)
+    finalization = validation.record_failure(
+        args, "Exact Notebook lifecycle failed", runtime.EXIT_RESTORE
+    )
+    created = FakeLifecycle.instances[before:]
+    assert created
+    assert all(wrapper.close_calls == 0 for wrapper in created)
+    assert finalization["roles"]["source"]["status"] == "close_retry_forbidden"
+    assert finalization["roles"]["source"]["closed"] is False
+    assert finalization["closed"] is False
+
+
 def test_interactive_detection_failure_defers_close_and_does_not_initialize_cache(
     monkeypatch, tmp_path
 ) -> None:
@@ -1688,6 +1841,39 @@ def test_finalize_uses_lifecycle_lease_and_never_starts_mcp(tmp_path) -> None:
     assert wrapper.closed is True
     assert result["status"] == "closed_preserved"
     assert Path(manifest["disposable_targets"]["source_notebook_path"]).exists()
+
+
+def test_finalize_notebook_converts_bridge_error_to_structured_restore_failure(
+    tmp_path,
+) -> None:
+    from local_onenote_mcp.onenote_errors import OneNoteBridgeError
+
+    run_dir = tmp_path / "run"
+    wrapper = FakeLifecycle(run_dir, timeout_seconds=180)
+    wrapper.create_fresh_notebook("__ISOLATED__")
+    manifest = _manifest(run_dir)
+
+    def boom():
+        raise OneNoteBridgeError(
+            "RPC server unavailable (0x800706BA)",
+            operation="get_hierarchy",
+            hresult=0x800706BA,
+        )
+
+    wrapper.close_exact_notebook = boom
+    with pytest.raises(runtime.RestoreFailure, match="Exact Notebook lifecycle failed"):
+        asyncio.run(
+            validation.finalize_notebook(
+                _args(run_dir, "com-refresh-mutation"),
+                RuntimeOptions(run_dir, 180, False, False),
+                manifest,
+                wrapper=wrapper,
+            )
+        )
+    lifecycle = test_utils.read_json(run_dir / "lifecycle.json")
+    assert lifecycle["status"] == "close_failed"
+    assert lifecycle["closed"] is False
+    assert "0x800706BA" in lifecycle["error"]
 
 
 def test_finalize_accepts_only_exact_durable_preclosed_lifecycle_evidence(tmp_path) -> None:

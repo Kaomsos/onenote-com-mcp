@@ -114,6 +114,17 @@ CONVERGENCE_SCENARIO_POLICY = ScenarioPolicy(
     ui_control_enabled=True,
     notebook_lifecycle_enabled=True,
 )
+COM_REFRESH_MUTATION_POLICY = ScenarioPolicy(
+    create_enabled=True,
+    writes_enabled=True,
+    ui_control_enabled=True,
+)
+COM_REFRESH_MUTATION_TOOLS = READ_TOOLS | {
+    "create_section",
+    "create_page",
+    "launch_onenote_gui",
+    "rename_page",
+}
 CREATE_SCENARIO_TOOLS = READ_TOOLS | {
     "create_section_group", "create_section", "create_page",
 }
@@ -1377,6 +1388,33 @@ SCENARIO_SPECS["interactive-move-page-content"] = ScenarioSpec(
         "verified_copy_before_delete": True,
         "notebook_roles": ["destination", "source"],
         "included_in_all": False,
+    },
+)
+
+SCENARIO_SPECS["com-refresh-mutation"] = ScenarioSpec(
+    "com-refresh-mutation",
+    _profile(
+        "com-refresh-mutation-page",
+        ("00-COM-Refresh/00-Owned-Page",),
+        ("probe_section", "page_target"),
+        {"create_section", "create_page"},
+        content=("plain_text",),
+        checks=(
+            "owned Page remains the only rename target",
+            "unique refresh mutation marker appears once and is restored",
+        ),
+    ),
+    COM_REFRESH_MUTATION_POLICY,
+    frozenset(COM_REFRESH_MUTATION_TOOLS),
+    {
+        "included_in_all": False,
+        "com_refresh_mutation": True,
+        "human_gated_onenote_close": True,
+        "refresh_internal_validation_com": True,
+        "refresh_lifecycle_validation_com": True,
+        "stabilize_target_page_baseline": True,
+        "observe_forward_rename_durability": True,
+        "close_source_before_mcp_exit": True,
     },
 )
 

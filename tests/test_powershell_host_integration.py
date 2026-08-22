@@ -10,6 +10,7 @@ import pytest
 
 from local_onenote_mcp.com_client import (
     DELIVERY_POSSIBLY_DISPATCHED,
+    REFRESH_REFRESHED,
     ComClientError,
     PersistentPowerShellClient,
     decode_protocol_frame,
@@ -48,7 +49,11 @@ def test_encoded_sta_host_ready_framing_and_shutdown() -> None:
     )
     assert first["ok"] is True
     assert "测" in str(first["data"]["xml"])
-    assert second == {"ok": True, "data": {"page_id": "page-1"}, "error": None}
+    assert second == {
+        "ok": True,
+        "data": {"page_id": "page-1", "com_epoch": 1},
+        "error": None,
+    }
     assert client.generation == 1
     client.close()
     assert client.state == "CLOSED"
@@ -74,6 +79,33 @@ def test_encoded_sta_host_com_error_response_keeps_host() -> None:
     )
     assert failed["ok"] is False
     assert ok["ok"] is True
+    assert client.generation == 1
+    client.close()
+
+
+def test_encoded_sta_host_refresh_com_increments_epoch() -> None:
+    client = PersistentPowerShellClient(
+        host_script=POWERSHELL_FAKE_PERSISTENT_HOST_SCRIPT,
+        close_wait_seconds=3,
+    )
+    first = client.execute(
+        "get_hierarchy",
+        {"start_id": "", "scope": 2, "schema": 2},
+        timeout_seconds=15,
+    )
+    result = client.refresh_com(timeout_seconds=15)
+    second = client.execute(
+        "get_hierarchy",
+        {"start_id": "", "scope": 2, "schema": 2},
+        timeout_seconds=15,
+    )
+    assert first["ok"] is True
+    assert first["data"]["com_epoch"] == 1
+    assert result.outcome == REFRESH_REFRESHED
+    assert result.generation == 1
+    assert result.com_epoch == 2
+    assert second["ok"] is True
+    assert second["data"]["com_epoch"] == 2
     assert client.generation == 1
     client.close()
 

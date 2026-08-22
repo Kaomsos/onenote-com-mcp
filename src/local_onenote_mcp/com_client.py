@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -51,6 +52,25 @@ STATE_BROKEN = "BROKEN"
 STATE_CLOSING = "CLOSING"
 STATE_CLOSED = "CLOSED"
 
+KIND_REQUEST = "request"
+KIND_REFRESH_COM = "refresh_com"
+KIND_SHUTDOWN = "shutdown"
+
+REFRESH_REFRESHED = "refreshed"
+REFRESH_NOT_NEEDED = "not_needed"
+REFRESH_REJECTED_CLOSED = "rejected_closed"
+REFRESH_NOT_ATTEMPTED = "not_attempted"
+REFRESH_HOST_DISCARDED = "host_discarded"
+REFRESH_HOST_DISCARD_UNCONFIRMED = "host_discard_unconfirmed"
+
+CLEANUP_OWNER_REFRESH = "refresh"
+CLEANUP_OWNER_CLOSE = "close"
+CLEANUP_OWNER_POISON = "poison"
+
+NOT_ATTEMPTED_DISPATCH_LOCK_TIMEOUT = "dispatch_lock_timeout"
+NOT_ATTEMPTED_PRE_SUBMIT_FAILURE = "pre_submit_failure"
+NOT_ATTEMPTED_HOST_TRANSITION = "host_transition"
+
 
 class ComClientError(Exception):
     """Transport-level failure with a required delivery state."""
@@ -71,6 +91,33 @@ class ComClientError(Exception):
         self.generation = generation
 
 
+@dataclass(frozen=True)
+class ComRefreshResult:
+    """Content-free outcome of an in-host COM epoch refresh attempt."""
+
+    outcome: str
+    generation: int | None = None
+    com_epoch: int | None = None
+    discarded_generation: int | None = None
+    reason: str | None = None
+
+    def content_free_projection(self) -> dict[str, Any]:
+        if self.outcome == REFRESH_REFRESHED:
+            return {
+                "outcome": self.outcome,
+                "generation": self.generation,
+                "com_epoch": self.com_epoch,
+            }
+        if self.outcome == REFRESH_HOST_DISCARDED:
+            return {
+                "outcome": self.outcome,
+                "discarded_generation": self.discarded_generation,
+            }
+        if self.outcome == REFRESH_NOT_ATTEMPTED:
+            return {"outcome": self.outcome, "reason": self.reason}
+        return {"outcome": self.outcome}
+
+
 class ComClient(Protocol):
     adapter_id: str
     generation: int | None
@@ -82,6 +129,8 @@ class ComClient(Protocol):
         *,
         timeout_seconds: float,
     ) -> dict[str, Any]: ...
+
+    def refresh_com(self, *, timeout_seconds: float) -> ComRefreshResult: ...
 
     def close(self) -> None: ...
 
@@ -223,6 +272,19 @@ def validate_response_payload(
     return {"ok": ok, "data": data, "error": error}
 
 
+def validate_success_epoch(data: Any, *, expected: int) -> int:
+    """Require a successful refresh payload to carry the next COM epoch."""
+
+    if not isinstance(data, dict):
+        raise ValueError("invalid refresh data")
+    epoch = data.get("com_epoch")
+    if type(epoch) is not int:
+        raise ValueError("invalid com_epoch")
+    if epoch != expected:
+        raise ValueError("unexpected com_epoch")
+    return epoch
+
+
 def encode_protocol_frame(payload: dict[str, Any], *, max_decoded: int, max_encoded: int) -> bytes:
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(raw) > max_decoded:
@@ -320,6 +382,9 @@ class OneShotPowerShellClient:
             self._remove_quietly(req_path)
             self._remove_quietly(resp_path)
 
+    def refresh_com(self, *, timeout_seconds: float) -> ComRefreshResult:
+        return ComRefreshResult(outcome=REFRESH_NOT_NEEDED)
+
     def close(self) -> None:
         return None
 
@@ -398,12 +463,14 @@ class PersistentPowerShellClient:
         close_wait_seconds: float = DEFAULT_CLOSE_WAIT_SECONDS,
         max_encoded_frame_bytes: int = MAX_ENCODED_FRAME_BYTES,
         max_decoded_frame_bytes: int = MAX_DECODED_FRAME_BYTES,
+        admission_hook: Any | None = None,
     ) -> None:
         """Create a persistent STA host client.
 
-        ``host_command``, ``host_script``, and non-default ``max_*_frame_bytes``
-        are test injection. Production uses the module defaults so Python and
-        the host script share one encoded/decoded frame budget.
+        ``host_command``, ``host_script``, non-default ``max_*_frame_bytes``,
+        and ``admission_hook`` are test injection. Production uses the module
+        defaults so Python and the host script share one encoded/decoded frame
+        budget.
         """
 
         self.generation: int | None = None
@@ -427,6 +494,7 @@ class PersistentPowerShellClient:
         self._state = STATE_NEW
         self._state_lock = threading.Lock()
         self._dispatch_lock = threading.Lock()
+        self._cleanup_lock = threading.RLock()
         self._generation = 0
         self._sequence = 0
         self._process: subprocess.Popen[bytes] | None = None
@@ -436,11 +504,26 @@ class PersistentPowerShellClient:
         self._ready_error: BaseException | None = None
         self._pending: _Pending | None = None
         self._closed = threading.Event()
+        self._com_epoch: int | None = None
+        self._admission_hook = admission_hook
+        self._commit_refresh_hook = None
+        self._broken_submitted_hook = None
+        self._cleanup_hook = None
+        self._cleanup_owner: str | None = None
+        self._cleanup_done = threading.Event()
+        self._cleanup_done.set()
 
     @property
     def state(self) -> str:
         with self._state_lock:
             return self._state
+
+    @property
+    def com_epoch(self) -> int | None:
+        with self._state_lock:
+            if self._state != STATE_READY:
+                return None
+            return self._com_epoch
 
     def execute(
         self,
@@ -473,7 +556,7 @@ class PersistentPowerShellClient:
                         "protocol_version": PROTOCOL_VERSION,
                         "generation": self._generation,
                         "sequence": self._sequence + 1,
-                        "kind": "request",
+                        "kind": KIND_REQUEST,
                         "operation": operation,
                         "params": params,
                     },
@@ -487,57 +570,24 @@ class PersistentPowerShellClient:
                     operation=operation,
                     generation=self._generation,
                 ) from exc
-            pending = _Pending(self._generation, self._sequence + 1)
-            with self._state_lock:
-                if self._state != STATE_READY:
-                    raise ComClientError(
-                        "OneNote COM operation failed.",
-                        delivery_state=DELIVERY_NOT_SUBMITTED,
-                        operation=operation,
-                        generation=self._generation,
-                    )
-                self._sequence += 1
-                self._pending = pending
-            process = self._process
-            if process is None or process.stdin is None:
-                self._fail_pending(
-                    pending,
-                    ComClientError(
-                        "OneNote COM operation failed.",
-                        delivery_state=DELIVERY_POSSIBLY_DISPATCHED,
-                        operation=operation,
-                        generation=self._generation,
-                    ),
-                )
-                self._poison(kill=True)
-                raise pending.error  # type: ignore[misc]
-            try:
-                write_started = True
-                process.stdin.write(frame)
-                process.stdin.flush()
-            except OSError as exc:
-                error = ComClientError(
+            pending = self._admit_pending()
+            if pending is None:
+                raise ComClientError(
                     "OneNote COM operation failed.",
-                    delivery_state=DELIVERY_POSSIBLY_DISPATCHED,
+                    delivery_state=DELIVERY_NOT_SUBMITTED,
                     operation=operation,
                     generation=self._generation,
                 )
-                self._fail_pending(pending, error)
-                self._poison(kill=True)
-                raise error from exc
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 or not pending.event.wait(timeout=remaining):
-                error = ComClientError(
-                    f"OneNote COM operation timed out after {timeout_seconds:g} seconds.",
-                    delivery_state=DELIVERY_POSSIBLY_DISPATCHED,
-                    operation=operation,
-                    timed_out=True,
-                    generation=self._generation,
-                )
-                self._fail_pending(pending, error)
-                self._poison(kill=True)
-                raise error
+            write_started = True
+            self._write_and_await_pending(
+                pending,
+                frame,
+                operation=operation,
+                timeout_seconds=timeout_seconds,
+                deadline=deadline,
+            )
             if pending.error is not None:
+                self._converge_broken_host()
                 raise pending.error
             assert pending.response is not None
             return pending.response
@@ -559,15 +609,85 @@ class PersistentPowerShellClient:
                     self._pending = None
             self._dispatch_lock.release()
 
+    def refresh_com(self, *, timeout_seconds: float) -> ComRefreshResult:
+        deadline = time.monotonic() + float(timeout_seconds)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self._dispatch_lock.acquire(timeout=max(0.0, remaining)):
+            return ComRefreshResult(
+                outcome=REFRESH_NOT_ATTEMPTED,
+                reason=NOT_ATTEMPTED_DISPATCH_LOCK_TIMEOUT,
+            )
+        published = False
+        pending: _Pending | None = None
+        try:
+            with self._state_lock:
+                if self._state in {STATE_CLOSING, STATE_CLOSED}:
+                    return ComRefreshResult(outcome=REFRESH_REJECTED_CLOSED)
+                if self._state in {STATE_NEW, STATE_BROKEN}:
+                    return ComRefreshResult(outcome=REFRESH_NOT_NEEDED)
+            if self._admission_hook is not None:
+                self._admission_hook()
+            try:
+                frame = encode_protocol_frame(
+                    {
+                        "protocol_version": PROTOCOL_VERSION,
+                        "generation": self._generation,
+                        "sequence": self._sequence + 1,
+                        "kind": KIND_REFRESH_COM,
+                    },
+                    max_decoded=self._max_decoded,
+                    max_encoded=self._max_encoded,
+                )
+            except ValueError:
+                return ComRefreshResult(
+                    outcome=REFRESH_NOT_ATTEMPTED,
+                    reason=NOT_ATTEMPTED_PRE_SUBMIT_FAILURE,
+                )
+            pending, expected_epoch = self._admit_refresh_pending()
+            if pending is None:
+                return self._refresh_second_admission_outcome()
+            published = True
+            self._write_and_await_pending(
+                pending,
+                frame,
+                operation=KIND_REFRESH_COM,
+                timeout_seconds=timeout_seconds,
+                deadline=deadline,
+            )
+            return self._finalize_refresh(pending, expected_epoch)
+        except Exception:
+            if published and pending is not None:
+                return self._finalize_refresh(pending, None)
+            return ComRefreshResult(
+                outcome=REFRESH_NOT_ATTEMPTED,
+                reason=NOT_ATTEMPTED_PRE_SUBMIT_FAILURE,
+            )
+        finally:
+            with self._state_lock:
+                if self._pending is not None and self._pending.event.is_set():
+                    self._pending = None
+            self._dispatch_lock.release()
+
     def close(self) -> None:
-        with self._state_lock:
-            if self._state == STATE_CLOSED:
-                return
-            if self._state == STATE_CLOSING:
-                in_flight = self._pending
-            else:
-                self._state = STATE_CLOSING
-                in_flight = self._pending
+        while True:
+            wait_foreign = False
+            with self._state_lock:
+                if self._state == STATE_CLOSED:
+                    return
+                owner = self._cleanup_owner
+                if self._state == STATE_BROKEN and owner not in {
+                    None,
+                    CLEANUP_OWNER_CLOSE,
+                }:
+                    wait_foreign = True
+                else:
+                    retry = self._state == STATE_CLOSING
+                    self._state = STATE_CLOSING
+                    self._claim_cleanup_owner_locked(CLEANUP_OWNER_CLOSE)
+                    in_flight = self._pending
+                    break
+            if wait_foreign:
+                self._cleanup_done.wait()
         if in_flight is not None:
             self._fail_pending(
                 in_flight,
@@ -578,24 +698,53 @@ class PersistentPowerShellClient:
                     generation=self._generation,
                 ),
             )
+        confirmed = (
             self._reap(kill=True)
-        else:
-            self._shutdown_idle()
+            if (in_flight is not None or retry)
+            else self._shutdown_idle()
+        )
         with self._state_lock:
-            self._state = STATE_CLOSED
-            self._process = None
-            self._reader = None
-            self._reader_io = None
             self._pending = None
+            if not confirmed:
+                return
+            self._forget_host_handles()
+            self._state = STATE_CLOSED
+            self._finish_cleanup_owner_locked(CLEANUP_OWNER_CLOSE)
         self._closed.set()
 
     def _ensure_ready(self, operation: str, deadline: float) -> None:
         with self._state_lock:
             if self._state == STATE_READY and self._process is not None:
                 return
-            if self._state == STATE_BROKEN:
-                self._reap(kill=True)
-                self._state = STATE_NEW
+            broken = self._state == STATE_BROKEN
+            if not broken and self._state != STATE_NEW:
+                raise ComClientError(
+                    "OneNote COM operation failed.",
+                    delivery_state=DELIVERY_NOT_SUBMITTED,
+                    operation=operation,
+                    generation=self._generation or None,
+                )
+        if broken:
+            confirmed = self._reap(kill=True)
+            with self._state_lock:
+                if self._state in {STATE_CLOSING, STATE_CLOSED}:
+                    raise ComClientError(
+                        "OneNote COM operation failed.",
+                        delivery_state=DELIVERY_NOT_SUBMITTED,
+                        operation=operation,
+                        generation=self._generation or None,
+                    )
+                if self._state == STATE_BROKEN:
+                    if not confirmed:
+                        raise ComClientError(
+                            "OneNote COM operation failed.",
+                            delivery_state=DELIVERY_NOT_SUBMITTED,
+                            operation=operation,
+                            generation=self._generation or None,
+                        )
+                    self._forget_host_handles()
+                    self._state = STATE_NEW
+        with self._state_lock:
             if self._state != STATE_NEW:
                 raise ComClientError(
                     "OneNote COM operation failed.",
@@ -607,6 +756,7 @@ class PersistentPowerShellClient:
             self._generation += 1
             self.generation = self._generation
             self._sequence = 0
+            self._com_epoch = None
             self._ready.clear()
             self._ready_error = None
         try:
@@ -667,6 +817,7 @@ class PersistentPowerShellClient:
         with self._state_lock:
             if self._state == STATE_STARTING:
                 self._state = STATE_READY
+                self._com_epoch = 1
 
     def _encoded_host_command(self) -> list[str]:
         encoded = encode_powershell_command(self._host_script)
@@ -680,6 +831,7 @@ class PersistentPowerShellClient:
         ]
 
     def _reader_main(self) -> None:
+        generation = self._generation
         first = True
         try:
             while True:
@@ -688,7 +840,7 @@ class PersistentPowerShellClient:
                 try:
                     line = self._reader_io.readline(self._max_encoded + len(FRAME_PREFIX))
                 except ComClientError as exc:
-                    self._on_protocol_failure(exc, first=first)
+                    self._on_protocol_failure(exc, first=first, generation=generation)
                     return
                 if line is None:
                     self._on_protocol_failure(
@@ -703,6 +855,7 @@ class PersistentPowerShellClient:
                             generation=self._generation,
                         ),
                         first=first,
+                        generation=generation,
                     )
                     return
                 try:
@@ -718,18 +871,16 @@ class PersistentPowerShellClient:
                         operation="protocol",
                         generation=self._generation,
                     )
-                    self._on_protocol_failure(error, first=first)
+                    self._on_protocol_failure(
+                        error, first=first, generation=generation
+                    )
                     return
                 if first:
                     first = False
                 if not should_continue:
                     return
         finally:
-            process = self._process
-            if process is not None and process.poll() is not None:
-                with self._state_lock:
-                    if self._state == STATE_READY:
-                        self._state = STATE_BROKEN
+            self._mark_broken(generation=generation)
 
     def _accept_host_frame(self, line: bytes, *, first: bool) -> bool:
         frame = decode_protocol_frame(
@@ -767,7 +918,13 @@ class PersistentPowerShellClient:
         pending.event.set()
         return True
 
-    def _on_protocol_failure(self, error: ComClientError, *, first: bool) -> None:
+    def _on_protocol_failure(
+        self,
+        error: ComClientError,
+        *,
+        first: bool,
+        generation: int,
+    ) -> None:
         if first:
             self._ready_error = error
             self._ready.set()
@@ -775,86 +932,269 @@ class PersistentPowerShellClient:
         if pending is not None:
             self._fail_pending(pending, error)
         if not first:
-            self._poison(kill=True)
+            self._mark_broken(generation=generation)
+
+    def _mark_broken(self, *, generation: int | None = None) -> None:
+        with self._state_lock:
+            if generation is not None and self._generation != generation:
+                return
+            if self._state not in {STATE_READY, STATE_STARTING}:
+                return
+            self._state = STATE_BROKEN
+
+    def _converge_broken_host(self) -> None:
+        with self._state_lock:
+            if self._state != STATE_BROKEN:
+                return
+        self._poison(kill=True)
 
     def _fail_pending(self, pending: _Pending, error: ComClientError) -> None:
         if pending.error is None and pending.response is None:
             pending.error = error
         pending.event.set()
 
-    def _poison(self, *, kill: bool) -> None:
+    def _admit_pending(self) -> _Pending | None:
+        with self._state_lock:
+            if self._state != STATE_READY:
+                return None
+            self._sequence += 1
+            pending = _Pending(self._generation, self._sequence)
+            self._pending = pending
+            return pending
+
+    def _admit_refresh_pending(self) -> tuple[_Pending | None, int | None]:
+        with self._state_lock:
+            if self._state != STATE_READY or self._com_epoch is None:
+                return None, None
+            self._sequence += 1
+            pending = _Pending(self._generation, self._sequence)
+            self._pending = pending
+            return pending, self._com_epoch + 1
+
+    def _refresh_second_admission_outcome(self) -> ComRefreshResult:
         with self._state_lock:
             if self._state in {STATE_CLOSING, STATE_CLOSED}:
-                return
-            self._state = STATE_BROKEN
-        self._reap(kill=kill)
-        with self._state_lock:
-            if self._state == STATE_BROKEN:
-                self._state = STATE_NEW
-                self._process = None
-                self._reader = None
-                self._reader_io = None
-
-    def _shutdown_idle(self) -> None:
-        process = self._process
-        if process is None:
-            self._reap(kill=False)
-            return
-        try:
-            if process.stdin is not None:
-                frame = encode_protocol_frame(
-                    {
-                        "protocol_version": PROTOCOL_VERSION,
-                        "generation": self._generation,
-                        "sequence": self._sequence + 1,
-                        "kind": "shutdown",
-                    },
-                    max_decoded=self._max_decoded,
-                    max_encoded=self._max_encoded,
+                return ComRefreshResult(outcome=REFRESH_REJECTED_CLOSED)
+            if self._state in {STATE_BROKEN, STATE_NEW}:
+                return ComRefreshResult(
+                    outcome=REFRESH_NOT_ATTEMPTED,
+                    reason=NOT_ATTEMPTED_HOST_TRANSITION,
                 )
-                process.stdin.write(frame)
-                process.stdin.flush()
-                process.stdin.close()
-        except (OSError, ValueError):
-            self._reap(kill=True)
+        return ComRefreshResult(
+            outcome=REFRESH_NOT_ATTEMPTED,
+            reason=NOT_ATTEMPTED_PRE_SUBMIT_FAILURE,
+        )
+
+    def _write_and_await_pending(
+        self,
+        pending: _Pending,
+        frame: bytes,
+        *,
+        operation: str,
+        timeout_seconds: float,
+        deadline: float,
+    ) -> None:
+        process = self._process
+        if process is None or process.stdin is None:
+            self._fail_pending(
+                pending,
+                ComClientError(
+                    "OneNote COM operation failed.",
+                    delivery_state=DELIVERY_POSSIBLY_DISPATCHED,
+                    operation=operation,
+                    generation=self._generation,
+                ),
+            )
+            if operation != KIND_REFRESH_COM:
+                self._poison(kill=True)
             return
         try:
-            process.wait(timeout=self._close_wait_seconds)
-        except subprocess.TimeoutExpired:
-            self._reap(kill=True)
+            process.stdin.write(frame)
+            process.stdin.flush()
+        except OSError as exc:
+            error = ComClientError(
+                "OneNote COM operation failed.",
+                delivery_state=DELIVERY_POSSIBLY_DISPATCHED,
+                operation=operation,
+                generation=self._generation,
+            )
+            self._fail_pending(pending, error)
+            if operation != KIND_REFRESH_COM:
+                self._poison(kill=True)
             return
-        self._reap(kill=False)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not pending.event.wait(timeout=remaining):
+            error = ComClientError(
+                f"OneNote COM operation timed out after {timeout_seconds:g} seconds.",
+                delivery_state=DELIVERY_POSSIBLY_DISPATCHED,
+                operation=operation,
+                timed_out=True,
+                generation=self._generation,
+            )
+            self._fail_pending(pending, error)
+            if operation != KIND_REFRESH_COM:
+                self._poison(kill=True)
 
-    def _reap(self, *, kill: bool) -> None:
-        process = self._process
-        if process is not None:
-            if kill and process.poll() is None:
+    def _finalize_refresh(
+        self,
+        pending: _Pending,
+        expected_epoch: int | None,
+    ) -> ComRefreshResult:
+        if pending.error is None and pending.response is not None and expected_epoch is not None:
+            if pending.response.get("ok") is True:
                 try:
-                    process.kill()
-                except (OSError, ValueError):
-                    pass
-            if process.stdin is not None:
-                try:
+                    epoch = validate_success_epoch(
+                        pending.response.get("data"),
+                        expected=expected_epoch,
+                    )
+                except ValueError:
+                    return self._commit_refresh_failure(pending)
+                with self._state_lock:
+                    if self._state == STATE_READY:
+                        self._com_epoch = epoch
+                        return ComRefreshResult(
+                            outcome=REFRESH_REFRESHED,
+                            generation=pending.generation,
+                            com_epoch=epoch,
+                        )
+        return self._commit_refresh_failure(pending)
+
+    def _commit_refresh_failure(self, pending: _Pending) -> ComRefreshResult:
+        if self._commit_refresh_hook is not None:
+            self._commit_refresh_hook()
+        with self._state_lock:
+            if self._state in {STATE_CLOSING, STATE_CLOSED}:
+                return ComRefreshResult(outcome=REFRESH_REJECTED_CLOSED)
+            if self._state == STATE_NEW:
+                return ComRefreshResult(
+                    outcome=REFRESH_HOST_DISCARDED,
+                    discarded_generation=pending.generation,
+                )
+            if not self._claim_cleanup_owner_locked(CLEANUP_OWNER_REFRESH):
+                return ComRefreshResult(
+                    outcome=REFRESH_NOT_ATTEMPTED,
+                    reason=NOT_ATTEMPTED_HOST_TRANSITION,
+                )
+            self._state = STATE_BROKEN
+        if self._broken_submitted_hook is not None:
+            self._broken_submitted_hook()
+        confirmed = self._reap(kill=True)
+        with self._state_lock:
+            if confirmed:
+                if self._state == STATE_BROKEN:
+                    self._forget_host_handles()
+                    self._state = STATE_NEW
+                self._finish_cleanup_owner_locked(CLEANUP_OWNER_REFRESH)
+                return ComRefreshResult(
+                    outcome=REFRESH_HOST_DISCARDED,
+                    discarded_generation=pending.generation,
+                )
+            self._finish_cleanup_owner_locked(CLEANUP_OWNER_REFRESH)
+            return ComRefreshResult(outcome=REFRESH_HOST_DISCARD_UNCONFIRMED)
+
+    def _forget_host_handles(self) -> None:
+        self._process = None
+        self._reader = None
+        self._reader_io = None
+        self._com_epoch = None
+
+    def _claim_cleanup_owner_locked(self, owner: str) -> bool:
+        current = self._cleanup_owner
+        if current is None:
+            self._cleanup_owner = owner
+            self._cleanup_done.clear()
+            return True
+        return current == owner
+
+    def _finish_cleanup_owner_locked(self, owner: str) -> None:
+        if self._cleanup_owner == owner:
+            self._cleanup_owner = None
+            self._cleanup_done.set()
+
+    def _poison(self, *, kill: bool) -> bool:
+        with self._state_lock:
+            if self._state in {STATE_CLOSING, STATE_CLOSED}:
+                return False
+            if self._cleanup_owner not in {None, CLEANUP_OWNER_POISON}:
+                return False
+            self._state = STATE_BROKEN
+            self._claim_cleanup_owner_locked(CLEANUP_OWNER_POISON)
+        confirmed = self._reap(kill=kill)
+        with self._state_lock:
+            if self._state == STATE_BROKEN and confirmed:
+                self._forget_host_handles()
+                self._state = STATE_NEW
+            self._finish_cleanup_owner_locked(CLEANUP_OWNER_POISON)
+        return confirmed
+
+    def _shutdown_idle(self) -> bool:
+        with self._cleanup_lock:
+            process = self._process
+            if process is None:
+                return self._reap(kill=False)
+            try:
+                if process.stdin is not None:
+                    frame = encode_protocol_frame(
+                        {
+                            "protocol_version": PROTOCOL_VERSION,
+                            "generation": self._generation,
+                            "sequence": self._sequence + 1,
+                            "kind": KIND_SHUTDOWN,
+                        },
+                        max_decoded=self._max_decoded,
+                        max_encoded=self._max_encoded,
+                    )
+                    process.stdin.write(frame)
+                    process.stdin.flush()
                     process.stdin.close()
-                except (OSError, ValueError):
-                    pass
+            except (OSError, ValueError):
+                return self._reap(kill=True)
             try:
                 process.wait(timeout=self._close_wait_seconds)
             except subprocess.TimeoutExpired:
+                return self._reap(kill=True)
+            return self._reap(kill=False)
+
+    def _reap(self, *, kill: bool) -> bool:
+        if self._reader is threading.current_thread():
+            return False
+        with self._cleanup_lock:
+            if self._cleanup_hook is not None:
+                self._cleanup_hook()
+            process = self._process
+            reader = self._reader
+            if process is not None:
+                if kill and process.poll() is None:
+                    try:
+                        process.kill()
+                    except (OSError, ValueError):
+                        pass
+                if process.stdin is not None:
+                    try:
+                        process.stdin.close()
+                    except (OSError, ValueError):
+                        pass
                 try:
-                    process.kill()
-                    process.wait(timeout=1)
-                except (OSError, subprocess.TimeoutExpired):
+                    process.wait(timeout=self._close_wait_seconds)
+                except subprocess.TimeoutExpired:
+                    try:
+                        process.kill()
+                        process.wait(timeout=1)
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+            if reader is not None and reader.is_alive():
+                reader.join(timeout=self._close_wait_seconds)
+            if process is not None and process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except (OSError, ValueError):
                     pass
-        reader = self._reader
-        if reader is not None and reader.is_alive() and reader is not threading.current_thread():
-            reader.join(timeout=self._close_wait_seconds)
-        if process is not None and process.stdout is not None:
-            try:
-                process.stdout.close()
-            except (OSError, ValueError):
-                pass
-        self._reader_io = None
+            process_exited = process is None or process.poll() is not None
+            reader_done = reader is None or not reader.is_alive()
+            confirmed = process_exited and reader_done
+            if confirmed:
+                self._reader_io = None
+            return confirmed
 
 
 def create_com_client(adapter_id: str, **kwargs: Any) -> ComClient:

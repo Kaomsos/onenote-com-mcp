@@ -30,11 +30,12 @@
 .venv\Scripts\python.exe tests\manual_validation\run.py onenote-convergence
 .venv\Scripts\python.exe tests\manual_validation\run.py query
 .venv\Scripts\python.exe tests\manual_validation\run.py hierarchy-navigation
+.venv\Scripts\python.exe tests\manual_validation\run.py com-refresh-mutation
 ```
 
 ### 独立 GUI 启动验收入口
 
-`launch_onenote_gui_check.py` 是唯一不属于 Scenario Registry、也不进入 `run.py all` 的 GUI effect 验收入口。它不创建 Notebook、不修改 Notebook 内容、不关闭 OneNote；真实执行只允许用户本人在交互式前台终端启动，并把 OneNote 留在运行状态。Agent、pytest、CI、hook、timer、watcher、后台任务和重定向 stdin 均不得运行真实命令。
+`launch_onenote_gui_check.py` 是唯一不属于 Scenario Registry、也不进入 `run.py all` 的 GUI effect 验收入口。它不创建 Notebook、不修改 Notebook 内容，也不由程序关闭 OneNote；真实执行只允许用户本人在交互式前台终端启动，中途会请用户关闭一次 OneNote 以验证同进程 COM 恢复。单窗口人工 verdict 必须在第二个 MCP 仍存活时完成；MCP teardown 后的 OneNote 状态不作断言。Agent、pytest、CI、hook、timer、watcher、后台任务和重定向 stdin 均不得运行真实命令。
 
 先检查零副作用静态计划：
 
@@ -48,13 +49,16 @@
 .venv\Scripts\python.exe tests\manual_validation\launch_onenote_gui_check.py --verbosity verbose
 ```
 
-入口要求两次 run-bound 终端确认，并顺序启动两个权限不可扩展的短命 MCP：
+入口要求三次 run-bound 终端确认，并顺序启动两个权限不可扩展的短命 MCP：
 
 1. UI Control 全关：两次 `health_check` 必须都证明进程和可见窗口不存在；中间的 `launch_onenote_gui` 必须以 `policy_disabled` 在 authorization stage、`backend_calls=0` 拒绝；
-2. 仅开启 UI Control：第一次 Launch 必须返回 `started / launch_attempts=1 / ready=true`；第二次必须返回 `already_running / launch_attempts=0`；随后 `health_check` 必须 ready，`list_notebooks` 必须完成一次 typed hierarchy COM 读取；
-3. 用户观察桌面并输入 run-bound verdict，确认只有一个可见 OneNote GUI，第二次调用没有打开额外窗口。
+2. 仅开启 UI Control，且保持该 MCP 进程不退出：第一次 Launch 必须返回 `started / launch_attempts=1 / ready=true`；随后 `health_check` 必须 ready，`list_notebooks` 必须先建立 persistent host（`READY(g, epoch=1)`）；下一次 Launch 必须返回 `already_running` 且 `com_client_refresh.outcome=refreshed`，generation 不变、`com_epoch` 单调增加；
+3. 用户按提示完全退出 OneNote 后继续：同一 MCP 在既有 timeout 内有界轮询 native `health_check`，直到 `process_running=false`、`visible_window_present=false`、`ready=false`。窗口已关但进程仍在必须继续等待，不得放宽，也不得在等待阶段 launch/COM/mutation 或结束 OneNote；probe/envelope 异常立即 fail closed。证据写入 `health-after-user-close.json`（含 attempts、elapsed、最后一次 desktop 状态）。通过后才能再调用一次 `launch_onenote_gui`（`retry_read=False`）。首选 `refreshed`（同 generation、epoch 再增加）；可接受 `host_discarded`，随后只读惰性重建的新 generation 必须大于 `discarded_generation`。`host_discard_unconfirmed`、`not_attempted` 或 `rejected_closed` 不算恢复验收成功。恢复后再做 `health_check` 与 `list_notebooks`，并重复若干次 `already_running → refreshed → hierarchy read`；
+4. 仍在同一 enabled MCP 内：先做一次 native `health_check`，必须 `process_running=true`、`visible_window_present=true`、`ready=true`，证据写入 `health-at-human-verdict.json`；再由用户输入 run-bound verdict，确认只有一个可见 OneNote GUI，already-running refresh 没有打开额外窗口。之后才关闭 MCP。teardown 后不再断言 OneNote 仍运行。
 
-`--verbosity quiet|normal|verbose` 只控制前台终端细节，默认 `normal`；排障时使用 `verbose`。该特殊入口不把 `calls.jsonl`、bridge audit 或 server stderr 写入对应 MCP runtime 日志文件，两个 MCP 的 server stderr 与 content-free progress 只流向当前前台终端。结构化验收证据仍写入普通 `.local-validation/run-<timestamp>/`，包含逐阶段 JSON、`run-state.json` 和最终 `run-result.json` 或 `run-failure.json`；它沿用 managed run ownership 形状，可由既有 human-gated `clear runs` 安全评估。OneNote/Office 可能在这个 run 的隔离 TEMP 下生成自身管理的 diagnostics/cache；它们不是 MCP runtime 日志，入口不会重定向、解释或自动清理。失败不自动关闭 OneNote 或改写证据。
+该入口仍不得 mutation。可恢复 mutation 由独立具名、`included_in_all=false` 的 `com-refresh-mutation` 承担。
+
+`--verbosity quiet|normal|verbose` 只控制前台终端细节，默认 `normal`；排障时使用 `verbose`。该特殊入口不把 `calls.jsonl`、bridge audit 或 server stderr 写入对应 MCP runtime 日志文件，两个 MCP 的 server stderr 与 content-free progress 只流向当前前台终端。结构化验收证据仍写入普通 `.local-validation/run-<timestamp>/`，包含逐阶段 JSON、`run-state.json` 和最终 `run-result.json` 或 `run-failure.json`；它沿用 managed run ownership 形状，可由既有 human-gated `clear runs` 安全评估。OneNote/Office 可能在这个 run 的隔离 TEMP 下生成自身管理的 diagnostics/cache；它们不是 MCP runtime 日志，入口不会重定向、解释或自动清理。失败不改写已落盘证据；也不为“结束后仍运行”去泄漏 MCP child 或 COM 引用。
 
 2026-08-16 用户真实运行 `run-2026-08-16-00-01-03` 通过：未授权请求在零 backend call 时拒绝；授权首调只发出一次 launch 并 ready；复调没有再次 launch；后续 health、typed hierarchy COM 读取及 run-bound 单窗口人工 verdict 全部通过。OneNote 按合同保持运行。
 
@@ -375,6 +379,13 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 .venv\Scripts\python.exe tests\manual_validation\run.py query --use-cache
 ```
 
+`com-refresh-mutation` 是默认 `included_in_all=false` 的独立 HUMAN-GATED 场景，用来补足 GUI standalone 入口不能 mutation 的缺口。它在 disposable 单 Notebook 上先完成 fixture COM 调用并建立 persistent host，再请用户完全退出 OneNote；同一 MCP 必须先用与 GUI 入口相同的 bounded native fully-stopped wait 证明进程与可见窗口都不存在，然后只调用一次 `launch_onenote_gui`（`retry_read=False`）恢复（`started`，`com_client_refresh` 为 `refreshed` 或 `host_discarded`）。验证框架另有两个独立 COM owner：harness `_internal_bridge`（内部 `get_page_xml`）和 `NotebookLifecycleWrapper`（exact Notebook get/close）。MCP child 刷新不能代替它们。recovery 后必须先分别刷新这两个 owner，再对 owned Page 做一次精确只读 XML probe、对 leased Notebook 做一次 `get_exact_notebook` probe；随后用有界 `expand_page` 观察 owned Page 的 title/id/parent/modified，连续稳定后才允许 run-bound 唯一 marker `rename_page`。前向 rename 之后必须再做比两次快速读取更充分的有界耐久观察，不能仅凭 `after.json` 一次 snapshot 与 restore 前置确认宣布成功。若 marker 随后回到原始标题，证据记为 `forward_not_durable`，不得调用 restore，也不得重试或重放 forward rename；默认 failure finalizer 仍按 exact lease 关闭 Notebook。任一 refresh/probe/baseline 失败必须在 mutation 前 fail closed；post-snapshot 或 finalization 读取失败不得重放 rename，也不得按 HRESULT 自动恢复。刷新后的 lifecycle wrapper 必须在 MCP/internal teardown 之前完成 exact close：顺序为 mutation/restore → lifecycle exact close → MCP 退出。成功写入 durable closed lease 后，外层 finalizer 只核验 pre-closed evidence，不再调用 COM。close 提交前读取失败保留 active lease 并记录 `close_not_submitted`；已提交且结果不确定才禁止重试。不得按 HRESULT 自动恢复或重放 mutation。finalization 失败写入 `run-failure.json` 与完整 lifecycle evidence，并以受控非零退出结束。静态权限仅含 fixture Write、UI Control 与 Page Rename；不得由 pytest、CI 或 agent 真跑。设计与完成条件由 [`TODO 051`](../../docs/todo/051_persistent_com_client_restart_refresh.md) 跟踪。真实运行只能由用户本人前台启动：
+
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py com-refresh-mutation
+.venv\Scripts\python.exe tests\manual_validation\run.py com-refresh-mutation --use-cache
+```
+
 `hierarchy-navigation` 是支持 fresh/cache、默认 `included_in_all=false` 的只读结构浏览场景；fixture 构建仍使用受限 Write。它在两个同时打开的 disposable Notebook role 上验证 `list_notebooks`、四个 typed Expand、`expand_hierarchy` 与 exact-ID `get_hierarchy_path`：包括四类 root、Page 缩进树、depth boundary，以及特殊字符 Page title 在 `path_segments` 中的原样名称/ID；legacy `path` 只作 display。fixture build、snapshot、cache convergence 和正式断言均不调用 Query 或读取 Page 正文。设计与完成条件由 [`TODO 033`](../../docs/todo/033_notebook_structure_list_and_expand_tools.md) 与 [`TODO 040`](../../docs/todo/040_move_readback_validation_followups.md) 跟踪。真实运行只能由用户本人前台启动：
 
 ```powershell
@@ -552,6 +563,11 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 .venv\Scripts\python.exe tests\manual_validation\run.py interactive-move-page-content --dry-run --json
 ```
 
+<!-- dry-run-case: com-refresh-mutation.default -->
+```powershell
+.venv\Scripts\python.exe tests\manual_validation\run.py com-refresh-mutation --dry-run --json
+```
+
 <!-- dry-run-case: all.default -->
 ```powershell
 .venv\Scripts\python.exe tests\manual_validation\run.py all --dry-run --json
@@ -627,7 +643,7 @@ Fixture bundle validation 由框架显式传入 role，逐 role 验证完整 man
 - `--run-dir` 必须不存在或为空；同名 Notebook 已存在时拒绝复用。
 - 默认仅在当前 scenario 和报告成功后，按 lifecycle lease 的精确 ID/name/path 并经即时回读后关闭源 Notebook。
 - `--keep-notebook` 保持源 Notebook 打开，供用户人工检查。
-- `--keep-worksite` 适用于全部公开具名场景，并同时保持源 Notebook 打开。可恢复的 `rename/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 不执行反向恢复；Page/Section/SectionGroup Copy 不执行回收站 cleanup；Notebook Copy 不关闭副本；其余 action 记录本来就会留下的 fixture、回收站或 Move 状态。`worksite.json` 和 `result.json` 记录精确目标 ID、当前位置/名称/路径以及 `manual_cleanup_required=true`；Page reparent 还记录新旧 ID 历史。未进入批处理的场景均设置 `included_in_all=False`，但仍注册 default/keep dry-run cases；特殊入口 `all` 不接受 `--keep-worksite`。
+- `--keep-worksite` 适用于全部公开具名场景，并同时保持源 Notebook 打开。可恢复的 `rename/com-refresh-mutation/reorder-page/reorder-section/reparent-page/reparent-section/reparent-section-group` 不执行反向恢复；Page/Section/SectionGroup Copy 不执行回收站 cleanup；Notebook Copy 不关闭副本；其余 action 记录本来就会留下的 fixture、回收站或 Move 状态。`worksite.json` 和 `result.json` 记录精确目标 ID、当前位置/名称/路径以及 `manual_cleanup_required=true`；Page reparent 还记录新旧 ID 历史。未进入批处理的场景均设置 `included_in_all=False`，但仍注册 default/keep dry-run cases；特殊入口 `all` 不接受 `--keep-worksite`。
 - 普通 Scenario 永不删除 run-scoped 本地 Notebook 目录、Notebook Copy 目录、普通 artifact 或失败现场。只有上述用户显式确认的 `clear` maintenance action 可以按逐目标安全门删除受管 payload；该授权不覆盖用户 Notebook 或任意外部路径。
 - `delete` 自动使用本次 manifest 中的 `disposable_group`，不接受外部 target ID，并保持非永久删除。
 - `rename` 另支持 `--new-name`；未提供时，固定 Section 与 SectionGroup case 分别使用基于原名称的临时名称。场景不暴露 fixture target selector。

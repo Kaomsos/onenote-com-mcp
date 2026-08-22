@@ -32,6 +32,7 @@ from tests.manual_validation.scenarios.common.fixture_models import FixtureBuild
 CASES = required_recipe_contract_cases(SCENARIO_REGISTRY)
 PINNED_RECIPE_VERSIONS = {
     "cache-invalidation": 1,
+    "com-refresh-mutation": 1,
     "copy-display-equation": 1,
     "copy-page": 16,
     "create": 5,

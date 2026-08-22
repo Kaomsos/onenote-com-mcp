@@ -287,10 +287,35 @@ function Read-HostFrame{{if($null-eq$script:In){{$script:In=[Console]::OpenStand
 
 POWERSHELL_PRODUCTION_CLIENT_BOOTSTRAP = r'''
 $onenote = New-Object -ComObject OneNote.Application
+$script:ComEpoch = 1
+function Invoke-RefreshComClient {
+    if ($null -ne $script:onenote) {
+        try { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($script:onenote) } catch { }
+        $script:onenote = $null
+    }
+    $script:onenote = New-Object -ComObject OneNote.Application
+    $windows = $null
+    try {
+        $windows = $script:onenote.Windows
+        $windowCount = [uint64]$windows.Count
+    } finally {
+        if ($null -ne $windows) {
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($windows)
+            $windows = $null
+        }
+    }
+    $script:ComEpoch += 1
+    return @{ com_epoch = [int]$script:ComEpoch }
+}
 '''
 
 POWERSHELL_FAKE_CLIENT_BOOTSTRAP = r'''
 $onenote = $null
+$script:ComEpoch = 1
+function Invoke-RefreshComClient {
+    $script:ComEpoch += 1
+    return @{ com_epoch = [int]$script:ComEpoch }
+}
 function Invoke-FakeBridgeOperation($op, $p) {
     if ($null -ne $p -and $p.PSObject.Properties["force_hresult"]) {
         $code = [int]$p.force_hresult
@@ -302,13 +327,13 @@ function Invoke-FakeBridgeOperation($op, $p) {
         return @{ xml = ("x" * $n) }
     }
     if ($op -eq "get_hierarchy") {
-        return @{ xml = ("<one:Notebooks>" + [string]$p.start_id + "</one:Notebooks>") }
+        return @{ xml = ("<one:Notebooks>" + [string]$p.start_id + "</one:Notebooks>"); com_epoch = [int]$script:ComEpoch }
     }
     if ($op -eq "create_new_page") {
-        return @{ page_id = "page-1" }
+        return @{ page_id = "page-1"; com_epoch = [int]$script:ComEpoch }
     }
     if ($op -eq "update_page_content") {
-        return @{ updated = $true }
+        return @{ updated = $true; com_epoch = [int]$script:ComEpoch }
     }
     throw "Unsupported OneNote bridge operation: $op"
 }
@@ -325,6 +350,7 @@ $sequence=Get-RequiredJsonInt $request "sequence"
 $kind=Get-RequiredJsonString $request "kind"
 if($null-eq$script:ExpectedGeneration){$script:ExpectedGeneration=$generation}elseif($generation-ne$script:ExpectedGeneration){throw "protocol_violation"}
 if($kind-eq"shutdown"){if($sequence-ne$script:ExpectedSequence){throw "protocol_violation"};break}
+if($kind-eq"refresh_com"){if($sequence-ne$script:ExpectedSequence){throw "protocol_violation"};$script:ExpectedSequence+=1;$data=$null;try{$data=Invoke-RefreshComClient;$result=New-Ok $data}catch{$result=New-Err $_};Write-HostFrame @{protocol_version=1;generation=$generation;sequence=$sequence;kind="response";ok=$result.ok;data=$result.data;error=$result.error};continue}
 if($kind-ne"request"-or$sequence-ne$script:ExpectedSequence){throw "protocol_violation"}
 $op=Get-RequiredJsonString $request "operation"
 if((","+$script:Allowed+",")-cnotlike("*,"+$op+",*")){throw "protocol_violation"}

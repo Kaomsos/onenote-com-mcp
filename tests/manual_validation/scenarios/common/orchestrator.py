@@ -72,6 +72,82 @@ def _keep_source_notebook(args: argparse.Namespace) -> bool:
     )
 
 
+def _close_active_leases_before_mcp_exit(
+    scenario,
+    args: argparse.Namespace,
+    wrappers: Mapping[str, NotebookLifecycleWrapper],
+    roles: tuple[str, ...],
+    run_dir: Path,
+) -> None:
+    """Close still-active leases while the scenario MCP client is alive."""
+
+    if not getattr(scenario, "close_source_before_mcp_exit", False):
+        return
+    if _keep_source_notebook(args):
+        return
+    evidence: dict[str, Any] = {
+        "schema_version": 1,
+        "status": "running",
+        "closed_before_mcp_exit": True,
+        "roles": {},
+        "started_at": utc_now(),
+    }
+    evidence_path = run_dir / "in-mcp-lifecycle-close.json"
+    write_json(evidence_path, evidence)
+    first_error: Exception | None = None
+    for role in roles:
+        wrapper = wrappers[role]
+        if not wrapper.lease_path.exists():
+            evidence["roles"][role] = {"status": "not_opened", "closed": True}
+            write_json(evidence_path, evidence)
+            continue
+        lease = read_json(wrapper.lease_path)
+        if lease.get("state") == "closed":
+            close_result = lease.get("close_result")
+            evidence["roles"][role] = {
+                "status": "already_closed",
+                "closed": True,
+                "close_result": close_result,
+            }
+            write_json(evidence_path, evidence)
+            continue
+        if lease.get("state") == "close_failed":
+            evidence["roles"][role] = {
+                "status": "close_retry_forbidden",
+                "closed": False,
+                "close_error": lease.get("close_error"),
+            }
+            write_json(evidence_path, evidence)
+            continue
+        try:
+            close_result = wrapper.close_exact_notebook()
+            if close_result.get("closed") is not True:
+                raise RestoreFailure(
+                    f"In-MCP close did not close Notebook role {role} precisely."
+                )
+            evidence["roles"][role] = {
+                "status": "closed",
+                "closed": True,
+                "close_result": close_result,
+            }
+        except Exception as exc:
+            evidence["roles"][role] = {
+                "status": "failed",
+                "closed": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            if first_error is None:
+                first_error = exc
+        write_json(evidence_path, evidence)
+    evidence.update(
+        status="closed" if first_error is None else "failed",
+        completed_at=utc_now(),
+    )
+    write_json(evidence_path, evidence)
+    if first_error is not None:
+        raise first_error
+
+
 def _interactive_phase_flags(recipe, options: RuntimeOptions) -> tuple[bool, bool, bool, int]:
     interactive = recipe.build_mode == BuildMode.HUMAN_BOOTSTRAP_REQUIRED
     interactive_fresh = interactive and not options.use_cache
@@ -509,6 +585,8 @@ async def finalize_notebook(
         timeout_seconds=options.timeout,
         **({} if role == "source" else {"role": role}),
     )
+    lifecycle: dict[str, Any] | None = None
+    lifecycle_path: Path | None = None
     try:
         notebook = manifest.get("notebooks", {}).get(role, manifest["notebook"])
         notebook_id = str(notebook["id"])
@@ -523,7 +601,7 @@ async def finalize_notebook(
         lifecycle_path = options.run_dir / (
             "lifecycle.json" if role == "source" else f"lifecycle-{role}.json"
         )
-        lifecycle: dict[str, Any] = {
+        lifecycle = {
             "started_at": utc_now(),
             "mode": "keep" if _keep_source_notebook(args) else "close",
             "source_notebook_id": notebook_id,
@@ -578,6 +656,18 @@ async def finalize_notebook(
         lifecycle.update(status="closed_preserved", completed_at=utc_now())
         write_json(lifecycle_path, lifecycle)
         return lifecycle
+    except Exception as exc:
+        if lifecycle is not None and lifecycle_path is not None:
+            lifecycle.update(
+                status="close_failed",
+                closed=False,
+                error=f"{type(exc).__name__}: {exc}",
+                failed_at=utc_now(),
+            )
+            write_json(lifecycle_path, lifecycle)
+        if isinstance(exc, RestoreFailure):
+            raise
+        raise RestoreFailure(f"Exact Notebook lifecycle failed: {exc}") from exc
     finally:
         closer = getattr(wrapper, "close_transport", None)
         if callable(closer):
@@ -1171,33 +1261,52 @@ async def run_validate(args: argparse.Namespace, options: RuntimeOptions) -> dic
                     options.run_dir / "scenario-before-snapshot-handoff.json",
                 )
             scenario.prepare_arguments(args, manifest)
-            if getattr(scenario, "requires_lifecycle_wrappers", False):
-                scenario_result = await scenario.execute_with_lifecycle(
-                    args,
-                    options,
-                    manifest,
-                    client=client,
-                    fixture_result=fixture_result,
-                    wrappers=wrappers,
-                )
-            else:
-                scenario_result = await scenario.execute(
-                    args,
-                    options,
-                    manifest,
-                    client=client,
-                    fixture_result=fixture_result,
-                )
-            if bootstrap_result is not None:
-                scenario_result = {
-                    **bootstrap_result,
-                    **scenario_result,
-                    "template_published": bootstrap_result.get("template_published", True),
-                    "post_publish_materialization_validated": bootstrap_result.get(
-                        "post_publish_materialization_validated", False
-                    ),
-                }
-            progress.phase_completed("scenario")
+            execute_error: BaseException | None = None
+            try:
+                if getattr(scenario, "requires_lifecycle_wrappers", False):
+                    scenario_result = await scenario.execute_with_lifecycle(
+                        args,
+                        options,
+                        manifest,
+                        client=client,
+                        fixture_result=fixture_result,
+                        wrappers=wrappers,
+                    )
+                else:
+                    scenario_result = await scenario.execute(
+                        args,
+                        options,
+                        manifest,
+                        client=client,
+                        fixture_result=fixture_result,
+                    )
+                if bootstrap_result is not None:
+                    scenario_result = {
+                        **bootstrap_result,
+                        **scenario_result,
+                        "template_published": bootstrap_result.get(
+                            "template_published", True
+                        ),
+                        "post_publish_materialization_validated": bootstrap_result.get(
+                            "post_publish_materialization_validated", False
+                        ),
+                    }
+                progress.phase_completed("scenario")
+            except BaseException as exc:
+                execute_error = exc
+                raise
+            finally:
+                try:
+                    _close_active_leases_before_mcp_exit(
+                        scenario,
+                        args,
+                        wrappers,
+                        roles,
+                        options.run_dir,
+                    )
+                except BaseException:
+                    if execute_error is None:
+                        raise
     finally:
         metrics["observed_mcp_process_starts"] = int(
             entered_client or getattr(client_handle, "process_started", False)
@@ -1389,6 +1498,14 @@ def _failure_finalization(
                     "closed": True,
                     "lease_present": True,
                     "close_result": close_result,
+                }
+            elif lease.get("state") == "close_failed":
+                result["roles"][role] = {
+                    "status": "close_retry_forbidden",
+                    "closed": False,
+                    "lease_present": True,
+                    "close_error": lease.get("close_error"),
+                    "close_submitted": True,
                 }
             else:
                 close_result = wrapper.close_exact_notebook()

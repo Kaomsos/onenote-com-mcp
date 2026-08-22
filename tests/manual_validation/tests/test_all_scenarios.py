@@ -57,6 +57,7 @@ SCENARIO_MODULES = {
     "search_all_open_notebooks": "SearchAllOpenNotebooksScenario",
     "query": "QueryScenario",
     "hierarchy_navigation": "HierarchyNavigationScenario",
+    "com_refresh_mutation": "ComRefreshMutationScenario",
     "interactive_copy_inserted_file": "InteractiveCopyInsertedFileScenario",
     "interactive_copy_ink_drawing": "InteractiveCopyInkDrawingScenario",
     "interactive_copy_media_file": "InteractiveCopyMediaFileScenario",

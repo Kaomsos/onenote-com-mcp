@@ -47,6 +47,7 @@ from .onenote_convergence import OneNoteConvergenceScenario
 from .search_all_open_notebooks import SearchAllOpenNotebooksScenario
 from .query import QueryScenario
 from .hierarchy_navigation import HierarchyNavigationScenario
+from .com_refresh_mutation import ComRefreshMutationScenario
 from .cache_invalidation import CacheInvalidationScenario
 from .interactive_user_authored_fixture import InteractiveUserAuthoredFixtureScenario
 from .interactive_move_page import InteractiveMovePageScenario
@@ -228,6 +229,7 @@ __all__ = [
     "SearchAllOpenNotebooksScenario",
     "QueryScenario",
     "HierarchyNavigationScenario",
+    "ComRefreshMutationScenario",
     "CacheInvalidationScenario",
     "InteractiveUserAuthoredFixtureScenario",
     "InteractiveMovePageScenario",

@@ -510,6 +510,28 @@ class MCPStdioClient:
         await self._stack.aclose()
         self._internal_bridge.close()
 
+    def refresh_internal_com_client(self) -> dict[str, Any]:
+        """Refresh the harness-owned validation COM independently of the MCP child.
+
+        ``launch_onenote_gui`` only refreshes the child-process persistent client.
+        Isolated Page XML evidence uses this process-local ``OneNoteBridge``, which
+        is a second COM owner and must be refreshed on its own after OneNote exits.
+        """
+
+        try:
+            result = self._internal_bridge.refresh_com_client()
+        except Exception as exc:
+            raise ClientFailure(f"Internal COM refresh failed: {exc}") from exc
+        projection = result.content_free_projection()
+        self._append_audit(
+            {
+                "tool": "refresh_internal_com_client",
+                "surface": "internal_validation_capability",
+                "result": summarize(projection),
+            }
+        )
+        return projection
+
     async def call_tool(
         self,
         name: str,

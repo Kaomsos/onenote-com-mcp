@@ -208,6 +208,13 @@ def _positional(
     return handler
 
 
+def _launch_onenote_gui(services: ServiceContainer) -> dict[str, Any]:
+    result = launch_desktop_gui()
+    refresh = services.hierarchy.bridge.refresh_com_client()
+    result["com_client_refresh"] = refresh.content_free_projection()
+    return result
+
+
 def _uses_batch_mode(
     arguments: Mapping[str, Any],
     *,
@@ -376,7 +383,7 @@ def build_operation_registry(
         kind=OperationKind.UI_EFFECT,
         backend=BackendCategory.PROCESS,
         coordination=CoordinationMode.EXCLUSIVE,
-        handler=lambda _a: launch_desktop_gui(),
+        handler=lambda _a: _launch_onenote_gui(services),
         handler_id="desktop.launch_onenote_gui",
         cache="live_bypass",
     )

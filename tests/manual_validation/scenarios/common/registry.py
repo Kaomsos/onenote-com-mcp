@@ -71,6 +71,7 @@ SCENARIO_TOOL_POLICY_REQUIREMENTS: dict[str, frozenset[str]] = {
         {"create_enabled", "writes_enabled", "deletes_enabled"}
     ),
     "export_object_to_pdf": frozenset({"local_file_io_enabled"}),
+    "launch_onenote_gui": frozenset({"ui_control_enabled"}),
     "navigate_to": frozenset({"ui_control_enabled"}),
     "close_notebook": frozenset({"notebook_lifecycle_enabled"}),
     "request_notebook_sync": frozenset({"notebook_lifecycle_enabled"}),

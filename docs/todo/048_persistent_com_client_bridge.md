@@ -4,13 +4,13 @@
 > 状态：已完成
 > 优先级：P0
 > 类型：OneNote COM / Bridge Transport / 性能 / Mutation 安全
-> 更新日期：2026-08-20
+> 更新日期：2026-08-22
 
 ## 决策摘要
 
 生产默认 adapter 现为 `persistent_powershell`：`OneNoteBridge` 持有单一 `ComClient`，懒启动一个 STA PowerShell host，并在该 host 内复用一个 `OneNote.Application` client。`one_shot_powershell` 只在 `LOCAL_ONENOTE_BRIDGE_ADAPTER` 显式选择时启用。本项不绑定 `pywin32` 或 Python 进程内 COM。Runtime、service 与公开 tool 只调用统一 `OneNoteBridge.call()`，不取得或跨线程/跨进程传递 COM proxy。
 
-实现、纯合同测试与用户真实回归均已落地，默认 adapter 已合入 `main`。本项不声明未经测量的量化性能收益；OneNote 重启后 stale COM proxy 与 manual-validation cache 嵌套 Section 闪退分别转由 [TODO 051](051_persistent_com_client_restart_refresh.md) 和 [TODO 052](052_nested_section_cache_crash_investigation.md) 跟踪，因此不再阻塞 048 完成。
+实现、纯合同测试与用户真实回归均已落地，默认 adapter 已合入 `main`。本项不声明未经测量的量化性能收益；OneNote 重启后 stale COM proxy 的原地 `com_epoch` 刷新由 [TODO 051](051_persistent_com_client_restart_refresh.md) 实现（不淘汰健康 host），manual-validation cache 嵌套 Section 闪退继续由 [TODO 052](052_nested_section_cache_crash_investigation.md) 跟踪，因此不再阻塞 048 完成。
 
 未来 adapter（包括 pywin32）可以接入该边界，但必须独立满足相同的 operation、错误、安全、生命周期和验证契约。它们不能成为默认 PowerShell adapter 的运行依赖，也不能改变公开 tool 权限或结果语义。
 

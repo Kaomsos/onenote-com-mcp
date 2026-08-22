@@ -17,7 +17,13 @@ from .progress import (
     print_compact_scenario_result,
     safe_error_text,
 )
-from .runtime import ALL_CHILD_ISOLATION_PREFIX, EXIT_ARGUMENT, EXIT_MCP, RunnerFailure
+from .runtime import (
+    ALL_CHILD_ISOLATION_PREFIX,
+    EXIT_ARGUMENT,
+    EXIT_MCP,
+    RestoreFailure,
+    RunnerFailure,
+)
 
 
 def _emit_all_child_isolation(args: argparse.Namespace, result: dict[str, Any]) -> None:
@@ -190,6 +196,9 @@ def main(argv: list[str] | None = None) -> int:
             print_result(error, json_output=bool(args.json_output))
             return EXIT_ARGUMENT
 
+    if getattr(args, "scenario", None) is None:
+        args.scenario = args.command
+
     try:
         result = asyncio.run(dispatch(args))
     except RunnerFailure as exc:
@@ -238,6 +247,38 @@ def main(argv: list[str] | None = None) -> int:
                 failure_finalization=failure_finalization,
             )
         return EXIT_MCP
+    except Exception as exc:
+        from local_onenote_mcp.onenote_errors import OneNoteBridgeError
+        from .scenarios.common.orchestrator import record_failure
+
+        progress = getattr(args, "progress", None)
+        phase = (
+            progress.current_phase
+            if isinstance(progress, RunProgressReporter)
+            else "preflight"
+        )
+        if isinstance(exc, OneNoteBridgeError) or phase == "lifecycle":
+            wrapped: RunnerFailure = RestoreFailure(
+                f"Exact Notebook lifecycle failed: {exc}"
+            )
+        else:
+            wrapped = RunnerFailure(
+                f"Unexpected validation failure: {type(exc).__name__}: {exc}",
+                EXIT_MCP,
+            )
+        failure_finalization = record_failure(args, wrapped, wrapped.exit_code)
+        _emit_all_child_isolation(args, failure_finalization)
+        if isinstance(progress, RunProgressReporter):
+            progress.failure(str(wrapped), run_dir=getattr(args, "run_dir", None))
+        print_failure(
+            wrapped,
+            json_output=bool(getattr(args, "json_output", False)),
+            run_dir=getattr(args, "run_dir", None),
+            verbosity=str(getattr(args, "verbosity", "normal")),
+            phase=phase,
+            failure_finalization=failure_finalization,
+        )
+        return wrapped.exit_code
     result = {"ok": True, **result}
     if bool(getattr(args, "json_output", False)):
         print_result(result, json_output=True)
